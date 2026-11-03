@@ -8,6 +8,7 @@ struct WoodruffMacWidgets: WidgetBundle {
     var body: some Widget {
         NowPlayingWidget()
         AllTVsWidget()
+        HomeDevicesWidget()
     }
 }
 
@@ -205,6 +206,150 @@ struct AllTVsWidgetView: View {
                         .buttonStyle(.plain)
                     }
                 }
+            }
+            Spacer(minLength: 0)
+        }
+        .containerBackground(.fill.tertiary, for: .widget)
+    }
+}
+
+// MARK: - Speakers & Lights
+
+struct HomeEntry: TimelineEntry {
+    let date: Date
+    let speaker: SonosRoom?
+    let lights: [GoveeLight]
+    let art: Data?
+}
+
+/// The Sonos room last used (asked live) and the lights, from what the app shared.
+struct HomeProvider: TimelineProvider {
+    func placeholder(in context: Context) -> HomeEntry { HomeEntry(date: .now, speaker: nil, lights: [], art: nil) }
+    func getSnapshot(in context: Context, completion: @escaping (HomeEntry) -> Void) { Task { completion(await load()) } }
+    func getTimeline(in context: Context, completion: @escaping (Timeline<HomeEntry>) -> Void) {
+        Task {
+            let e = await load()
+            completion(Timeline(entries: [e], policy: .after(.now.addingTimeInterval(e.speaker?.isPlaying == true ? 120 : 600))))
+        }
+    }
+
+    func load() async -> HomeEntry {
+        let snap = SharedStore.load()
+        let speakers = snap?.speakers ?? []
+        var speaker = speakers.first(where: \.isPlaying) ?? speakers.first
+        if let s = speaker { speaker = await Sonos.refresh(s) }
+        var art: Data?
+        if let u = speaker?.art { art = try? await URLSession.shared.data(from: u).0 }
+        return HomeEntry(date: .now, speaker: speaker, lights: snap?.lights ?? [], art: art)
+    }
+}
+
+/// Plays or pauses a Sonos room, or skips, straight from the widget.
+struct WidgetSonosIntent: AppIntent {
+    static let title: LocalizedStringResource = "Control a Sonos Room"
+    @Parameter(title: "Room") var roomID: String
+    @Parameter(title: "Action") var action: String
+    init() {}
+    init(roomID: String, action: String) { self.roomID = roomID; self.action = action }
+
+    func perform() async throws -> some IntentResult {
+        if let r = SharedStore.load()?.speakers?.first(where: { $0.id == roomID }) {
+            let fresh = await Sonos.refresh(r)
+            switch action {
+            case "next": try? await Sonos.next(r)
+            default: if fresh.isPlaying { try? await Sonos.pause(r) } else { try? await Sonos.play(r) }
+            }
+            try? await Task.sleep(nanoseconds: 500_000_000)
+        }
+        WidgetCenter.shared.reloadTimelines(ofKind: "com.woodruff.family.widget.home")
+        return .result()
+    }
+}
+
+/// Turns a light on or off over the Wi‑Fi from the widget.
+struct WidgetLightIntent: AppIntent {
+    static let title: LocalizedStringResource = "Turn a Light On or Off"
+    @Parameter(title: "Light") var lightID: String
+    init() {}
+    init(lightID: String) { self.lightID = lightID }
+
+    func perform() async throws -> some IntentResult {
+        if var snap = SharedStore.load(), var lights = snap.lights, let i = lights.firstIndex(where: { $0.id == lightID }), let ip = lights[i].ip {
+            lights[i].on.toggle()
+            Govee.lanTurn(ip, lights[i].on)
+            snap.lights = lights
+            SharedStore.save(snap)
+            try? await Task.sleep(nanoseconds: 300_000_000)
+        }
+        WidgetCenter.shared.reloadTimelines(ofKind: "com.woodruff.family.widget.home")
+        return .result()
+    }
+}
+
+struct HomeDevicesWidget: Widget {
+    var body: some WidgetConfiguration {
+        StaticConfiguration(kind: "com.woodruff.family.widget.home", provider: HomeProvider()) { e in
+            HomeDevicesWidgetView(entry: e)
+        }
+        .configurationDisplayName("Speakers & Lights")
+        .description("What Sonos is playing, and your lights at a click.")
+        .supportedFamilies([.systemSmall, .systemMedium, .systemLarge])
+    }
+}
+
+struct HomeDevicesWidgetView: View {
+    @Environment(\.widgetFamily) private var family
+    var entry: HomeEntry
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if let s = entry.speaker {
+                HStack(spacing: 10) {
+                    Group {
+                        if let d = entry.art, let img = NSImage(data: d) { Image(nsImage: img).resizable().scaledToFill() }
+                        else { Color.white.opacity(0.1).overlay { Image(systemName: "hifispeaker.fill").foregroundStyle(.secondary) } }
+                    }
+                    .frame(width: 40, height: 40).clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(s.name).font(.caption.weight(.semibold)).foregroundStyle(.secondary).lineLimit(1)
+                        Text(s.title ?? "Not Playing").font(.subheadline.weight(.semibold)).lineLimit(1)
+                        if family != .systemSmall, let a = s.artist { Text(a).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
+                    }
+                    Spacer(minLength: 0)
+                    if family != .systemSmall {
+                        Button(intent: WidgetSonosIntent(roomID: s.id, action: "playpause")) {
+                            Image(systemName: s.isPlaying ? "pause.fill" : "play.fill").font(.headline)
+                        }.buttonStyle(.plain)
+                        Button(intent: WidgetSonosIntent(roomID: s.id, action: "next")) {
+                            Image(systemName: "forward.fill").font(.headline)
+                        }.buttonStyle(.plain)
+                    }
+                }
+                if family == .systemSmall {
+                    Button(intent: WidgetSonosIntent(roomID: s.id, action: "playpause")) {
+                        Label(s.isPlaying ? "Pause" : "Play", systemImage: s.isPlaying ? "pause.fill" : "play.fill").font(.caption.weight(.semibold))
+                    }
+                }
+            }
+            if family != .systemSmall || entry.speaker == nil {
+                let cols = [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)]
+                LazyVGrid(columns: cols, spacing: 8) {
+                    ForEach(entry.lights.prefix(family == .systemLarge ? 10 : (entry.speaker == nil ? 4 : 2))) { l in
+                        Button(intent: WidgetLightIntent(lightID: l.id)) {
+                            HStack(spacing: 6) {
+                                Circle().fill(l.on ? Color.yellow : Color.secondary.opacity(0.4)).frame(width: 8, height: 8)
+                                Text(l.name).font(.caption.weight(.semibold)).lineLimit(1)
+                                Spacer(minLength: 0)
+                            }
+                            .padding(.horizontal, 10).padding(.vertical, 8)
+                            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(l.on ? Color.white.opacity(0.22) : Color.white.opacity(0.07)))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+            if entry.speaker == nil && entry.lights.isEmpty {
+                Text("Open Woodruff to find your Sonos and lights.").font(.subheadline).foregroundStyle(.secondary)
             }
             Spacer(minLength: 0)
         }

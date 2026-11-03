@@ -171,6 +171,8 @@ struct MacRoot: View {
     @Environment(Fleet.self) private var fleet
     @Binding var selection: AppSection
     @SceneStorage("mac.tv") private var tvSelection: String?
+    @State private var deviceSelection: String?
+    private var home = SmartHome.shared
     @State private var palette = false
     @State private var query = ""
     @State private var keyMonitor: Any?
@@ -182,11 +184,12 @@ struct MacRoot: View {
         @Bindable var fleet = fleet
         NavigationSplitView {
             List(selection: Binding<String?>(
-                get: { tvSelection.map { "tv:\($0)" } ?? section.rawValue },
+                get: { deviceSelection ?? tvSelection.map { "tv:\($0)" } ?? section.rawValue },
                 set: { v in
                     guard let v else { return }
-                    if v.hasPrefix("tv:") { tvSelection = String(v.dropFirst(3)) }
-                    else if let s = AppSection(rawValue: v) { tvSelection = nil; selection = s }
+                    if v.hasPrefix("tv:") { deviceSelection = nil; tvSelection = String(v.dropFirst(3)) }
+                    else if v.hasPrefix("spk:") || v.hasPrefix("light:") { tvSelection = nil; deviceSelection = v }
+                    else if let s = AppSection(rawValue: v) { tvSelection = nil; deviceSelection = nil; selection = s }
                 })) {
                 Section {
                     ForEach(AppSection.mac) { s in Label(s.title, systemImage: s.symbol).tag(s.rawValue) }
@@ -202,16 +205,42 @@ struct MacRoot: View {
                         .tag("tv:\(tv.id)")
                     }
                 }
+                if !home.speakers.isEmpty {
+                    Section("Speakers") {
+                        ForEach(home.speakers) { r in
+                            HStack {
+                                Text(r.name)
+                                Spacer()
+                                if r.isPlaying { Image(systemName: "waveform").font(.caption).foregroundStyle(.secondary).symbolEffect(.variableColor.iterative) }
+                            }
+                            .tag("spk:\(r.id)")
+                        }
+                    }
+                }
+                if !home.lights.isEmpty {
+                    Section("Lights") {
+                        ForEach(home.lights) { l in
+                            HStack {
+                                Text(l.name)
+                                Spacer()
+                                Circle().fill(l.on ? l.shade : Color.secondary.opacity(0.3)).frame(width: 7, height: 7)
+                            }
+                            .tag("light:\(l.id)")
+                        }
+                    }
+                }
             }
             .navigationSplitViewColumnWidth(min: 200, ideal: 220)
         } detail: {
             NavigationStack {
                 if !query.isEmpty { LibrarySearchResults(query: query) }
+                else if let d = deviceSelection, d.hasPrefix("spk:") { SpeakerDetailView(speakerID: String(d.dropFirst(4))) }
+                else if let d = deviceSelection, d.hasPrefix("light:") { LightDetailView(lightID: String(d.dropFirst(6))) }
                 else if let id = tvSelection { TVDetailView(tvID: id) } else { section.view }
             }
             .background { AmbientArtwork() }
             .safeAreaInset(edge: .bottom) {
-                if tvSelection == nil && section != .home && !fleet.remotePanel {
+                if tvSelection == nil && deviceSelection == nil && section != .home && !fleet.remotePanel {
                     NowPlayingBar().frame(maxWidth: 600).padding(.bottom, 8)
                 }
             }
@@ -224,6 +253,7 @@ struct MacRoot: View {
         }
         .onChange(of: fleet.tvs) { _, _ in NowPlayingBridge.shared.update(fleet); WidgetSync.update(fleet) }
         .onChange(of: fleet.selectedID) { _, _ in NowPlayingBridge.shared.update(fleet); WidgetSync.update(fleet) }
+        .onAppear { SmartHome.shared.onChange = { WidgetSync.update(fleet) } }
         .sheet(isPresented: Binding(get: { !welcomeShown && !Demo.isOn }, set: { if !$0 { welcomeShown = true } })) { MacWelcome() }
         .userActivity("com.woodruff.family.remote", isActive: fleet.remotePanel) { a in
             a.title = "Woodruff Remote"

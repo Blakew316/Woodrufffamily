@@ -35,6 +35,20 @@ struct CommandPalette: View {
             ("Mini Player", "The floating player", "rectangle.on.rectangle", { openWindow(id: "mini") }),
         ]
         for a in actions { all.append(Item(id: "a-\(a.0)", title: a.0, detail: a.1, symbol: a.2, run: a.3)) }
+        let home = SmartHome.shared
+        if !home.lights.isEmpty {
+            all.append(Item(id: "lights-off", title: "Turn Off All Lights", detail: "Every Govee light", symbol: "lightbulb.slash") { home.allLights(false) })
+            all.append(Item(id: "lights-on", title: "Turn On All Lights", detail: "Every Govee light", symbol: "lightbulb.fill") { home.allLights(true) })
+        }
+        for l in home.lights {
+            all.append(Item(id: "light-\(l.id)", title: l.name, detail: l.on ? "Light · On — turn off" : "Light · Off — turn on", symbol: "lightbulb") { home.setOn(l, !l.on) })
+        }
+        for r in home.speakers {
+            all.append(Item(id: "spk-\(r.id)", title: r.name, detail: r.isPlaying ? "Sonos · \(r.title ?? "Playing") — pause" : "Sonos — play", symbol: "hifispeaker") {
+                let playing = r.isPlaying
+                Task { await home.sonos(r) { playing ? try await Sonos.pause($0) : try await Sonos.play($0) } }
+            })
+        }
         if let lib = fleet.library {
             var seen = Set<String>()
             for t in (lib.featured ?? []) + (lib.recent ?? []) + (lib.movies?.items ?? []) + (lib.shows?.items ?? []) where seen.insert(t.id).inserted {
@@ -56,7 +70,7 @@ struct CommandPalette: View {
         VStack(spacing: 0) {
             HStack(spacing: 10) {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                TextField("Search TVs, titles and actions", text: $query)
+                TextField("Search TVs, speakers, lights, titles and actions", text: $query)
                     .textFieldStyle(.plain)
                     .font(.title3)
                     .focused($focused)

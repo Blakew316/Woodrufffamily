@@ -114,3 +114,47 @@ struct OpenRemoteIntent: AppIntent {
         return .result()
     }
 }
+
+// MARK: - Speakers and lights (Control Center)
+
+struct LightsOffControlIntent: LiveActivityIntent {
+    static let title: LocalizedStringResource = "Turn Off the Lights"
+    @MainActor func perform() async throws -> some IntentResult {
+        SmartHome.shared.allLights(false)
+        try? await Task.sleep(nanoseconds: 400_000_000)
+        return .result()
+    }
+}
+
+struct LightsOnControlIntent: LiveActivityIntent {
+    static let title: LocalizedStringResource = "Turn On the Lights"
+    @MainActor func perform() async throws -> some IntentResult {
+        SmartHome.shared.allLights(true)
+        try? await Task.sleep(nanoseconds: 400_000_000)
+        return .result()
+    }
+}
+
+struct SonosPlayPauseControlIntent: LiveActivityIntent {
+    static let title: LocalizedStringResource = "Play or Pause Sonos"
+    @MainActor func perform() async throws -> some IntentResult {
+        guard let r0 = SmartHome.shared.lastSpeaker else { return .result() }
+        let r = await Sonos.refresh(r0)
+        let playing = r.isPlaying
+        await SmartHome.shared.sonos(r) { playing ? try await Sonos.pause($0) : try await Sonos.play($0) }
+        return .result()
+    }
+}
+
+struct SonosVolumeControlIntent: LiveActivityIntent {
+    static let title: LocalizedStringResource = "Sonos Volume"
+    @Parameter(title: "Up") var up: Bool
+    init() {}
+    init(up: Bool) { self.up = up }
+    @MainActor func perform() async throws -> some IntentResult {
+        guard let r0 = SmartHome.shared.lastSpeaker else { return .result() }
+        let r = await Sonos.refresh(r0)
+        try? await Sonos.setVolume(r, r.volume + (up ? 5 : -5))
+        return .result()
+    }
+}

@@ -10,6 +10,11 @@ struct WoodruffWidgets: WidgetBundle {
         RemoteControl()
         PlayPauseControl()
         MuteControl()
+        LightsOffControl()
+        LightsOnControl()
+        SonosPlayPauseControl()
+        SonosVolumeUpControl()
+        SonosVolumeDownControl()
     }
 }
 
@@ -178,5 +183,65 @@ struct MuteControl: ControlWidget {
         }
         .displayName("Mute TV")
         .description("Mutes or unmutes the remote’s TV.")
+    }
+}
+
+// MARK: - Speakers and lights
+
+struct LightsOffControl: ControlWidget {
+    var body: some ControlWidgetConfiguration {
+        StaticControlConfiguration(kind: "com.woodruff.family.control.lightsoff") {
+            ControlWidgetButton(action: LightsOffControlIntent()) {
+                Label("Lights Off", systemImage: "lightbulb.slash")
+            }
+        }
+        .displayName("Lights Off")
+        .description("Turns off every Govee light.")
+    }
+}
+
+struct LightsOnControl: ControlWidget {
+    var body: some ControlWidgetConfiguration {
+        StaticControlConfiguration(kind: "com.woodruff.family.control.lightson") {
+            ControlWidgetButton(action: LightsOnControlIntent()) {
+                Label("Lights On", systemImage: "lightbulb.fill")
+            }
+        }
+        .displayName("Lights On")
+        .description("Turns on every Govee light.")
+    }
+}
+
+struct SonosPlayPauseControl: ControlWidget {
+    var body: some ControlWidgetConfiguration {
+        StaticControlConfiguration(kind: "com.woodruff.family.control.sonos") {
+            ControlWidgetButton(action: SonosPlayPauseControlIntent()) {
+                Label("Sonos", systemImage: "hifispeaker.fill")
+            }
+        }
+        .displayName("Sonos Play/Pause")
+        .description("Plays or pauses the Sonos room you used last.")
+    }
+}
+
+struct SonosVolumeUpControl: ControlWidget {
+    var body: some ControlWidgetConfiguration {
+        StaticControlConfiguration(kind: "com.woodruff.family.control.sonosup") {
+            ControlWidgetButton(action: SonosVolumeControlIntent(up: true)) {
+                Label("Sonos Up", systemImage: "speaker.plus.fill")
+            }
+        }
+        .displayName("Sonos Volume Up")
+    }
+}
+
+struct SonosVolumeDownControl: ControlWidget {
+    var body: some ControlWidgetConfiguration {
+        StaticControlConfiguration(kind: "com.woodruff.family.control.sonosdown") {
+            ControlWidgetButton(action: SonosVolumeControlIntent(up: false)) {
+                Label("Sonos Down", systemImage: "speaker.minus.fill")
+            }
+        }
+        .displayName("Sonos Volume Down")
     }
 }

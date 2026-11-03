@@ -6,15 +6,18 @@ import WoodruffKit
 // MARK: - Speakers
 
 struct SpeakersSection: View {
+    var room: String? = nil
     var home = SmartHome.shared
     @State private var open: SonosRoom?
 
+    private var shown: [SonosRoom] { room.map { r in home.speakers.filter { home.room(of: $0.id) == r } } ?? home.speakers }
+
     var body: some View {
-        if !home.speakers.isEmpty {
+        if !shown.isEmpty {
             VStack(alignment: .leading, spacing: 14) {
                 Text("Speakers").font(.title2.bold())
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 170), spacing: 14)], spacing: 14) {
-                    ForEach(home.speakers) { r in
+                    ForEach(shown) { r in
                         SpeakerTile(room: r) { open = r }
                     }
                 }
@@ -154,22 +157,25 @@ struct SpeakerSheet: View {
 // MARK: - Lights
 
 struct LightsSection: View {
+    var room: String? = nil
     var home = SmartHome.shared
     @State private var open: GoveeLight?
 
+    private var shown: [GoveeLight] { room.map { r in home.lights.filter { home.room(of: $0.id) == r } } ?? home.lights }
+
     var body: some View {
-        if !home.lights.isEmpty {
+        if !shown.isEmpty {
             VStack(alignment: .leading, spacing: 14) {
                 HStack(alignment: .firstTextBaseline) {
                     Text("Lights").font(.title2.bold())
                     Spacer()
-                    if home.lights.contains(where: \.on) {
-                        Button("All Off") { for l in home.lights where l.on { home.setOn(l, false) } }
+                    if shown.contains(where: \.on) {
+                        Button("All Off") { for l in shown where l.on { home.setOn(l, false) } }
                             .buttonStyle(.glass)
                     }
                 }
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 14)], spacing: 14) {
-                    ForEach(home.lights) { l in
+                    ForEach(shown) { l in
                         LightTile(light: l) { open = l }
                     }
                 }
@@ -209,7 +215,7 @@ struct LightTile: View {
                 .shadow(color: light.on ? light.shade.opacity(0.9) : .clear, radius: 10)
             VStack(alignment: .leading, spacing: 1) {
                 Text(light.name).font(.subheadline.weight(.semibold)).lineLimit(2)
-                Text(light.on ? "\(light.brightness)%" : "Off").font(.caption)
+                Text([SmartHome.shared.room(of: light.id), light.on ? "\(light.brightness)%" : "Off"].compactMap { $0 }.joined(separator: " · ")).font(.caption)
                     .foregroundStyle(light.on ? Color.black.opacity(0.55) : .secondary)
             }
         }
@@ -290,8 +296,8 @@ struct LightSheet: View {
                         .textFieldStyle(.plain)
                         .padding(.horizontal, 14).padding(.vertical, 10)
                         .glass(Capsule(), interactive: false)
-                        .onSubmit { home.rename(light, name) }
-                    Button("Rename") { home.rename(light, name) }.buttonStyle(.glass)
+                        .onSubmit { home.rename(light.id, name) }
+                    Button("Rename") { home.rename(light.id, name) }.buttonStyle(.glass)
                         .disabled(name.trimmingCharacters(in: .whitespaces) == light.name)
                 }
             }
@@ -341,34 +347,242 @@ struct LightSheet: View {
     }
 }
 
-// MARK: - Settings
+// MARK: - Speakers and Lights sections (like TVs)
 
-/// Settings → Speakers & Lights: what's been found, the Govee key, and how to bring Cync lights in.
-struct SmartHomeSettingsView: View {
+/// Every room the house knows: the TVs' rooms, Sonos's rooms, and any chosen or added here.
+@MainActor func allRooms(_ fleet: Fleet) -> [String] {
+    let tvs = fleet.tvs.filter { !$0.isUnpaired }.map(\.name)
+    return Array(Set(tvs).union(SmartHome.shared.knownRooms)).sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+}
+
+struct SpeakersListView: View {
+    var home = SmartHome.shared
+
+    var body: some View {
+        Form {
+            Section {
+                if home.speakers.isEmpty {
+                    Text("Looking for Sonos speakers on your Wi‑Fi…").foregroundStyle(.secondary)
+                }
+                ForEach(home.speakers) { r in
+                    NavigationLink { SpeakerDetailView(speakerID: r.id) } label: {
+                        IconRow(symbol: "", color: .clear, title: r.name,
+                                subtitle: r.title.map { [$0, r.artist].compactMap { $0 }.joined(separator: " · ") } ?? "Not Playing",
+                                value: home.room(of: r.id))
+                    }
+                }
+            } footer: {
+                Text("Sonos speakers are found on your Wi‑Fi by themselves, no account needed. Tap one to rename it or choose its room.")
+            }
+        }
+        .formStyle(.grouped)
+        .navigationTitle("Speakers")
+        .inlineTitle()
+        .refreshable { await home.findSonos(); await home.refreshSpeakers() }
+    }
+}
+
+struct LightsListView: View {
     var home = SmartHome.shared
     @State private var key = SmartHome.shared.goveeKey ?? ""
 
     var body: some View {
         Form {
             Section {
-                IconRow(symbol: "", color: .clear, title: "Sonos", value: home.speakers.isEmpty ? "Looking…" : "\(home.speakers.count) room\(home.speakers.count == 1 ? "" : "s")")
-                IconRow(symbol: "", color: .clear, title: "Govee", value: home.lights.isEmpty ? "None found" : "\(home.lights.count) light\(home.lights.count == 1 ? "" : "s")")
+                if home.lights.isEmpty {
+                    Text("No lights found yet.").foregroundStyle(.secondary)
+                }
+                ForEach(home.lights) { l in
+                    NavigationLink { LightDetailView(lightID: l.id) } label: {
+                        HStack(spacing: 12) {
+                            Circle().fill(l.on ? l.shade : Color.secondary.opacity(0.3)).frame(width: 12, height: 12)
+                            IconRow(symbol: "", color: .clear, title: l.name, subtitle: l.on ? "On · \(l.brightness)%" : "Off", value: home.room(of: l.id))
+                        }
+                    }
+                    .swipeActions { Button(l.on ? "Turn Off" : "Turn On") { home.setOn(l, !l.on) }.tint(l.on ? .gray : .yellow) }
+                }
             } footer: {
-                Text("Sonos speakers are found on your Wi‑Fi by themselves. For Govee lights, turn on LAN Control for each light in the Govee app (the light’s settings).")
+                Text("Govee lights answer on your Wi‑Fi once LAN Control is on for each one in the Govee app (the light’s settings). Tap a light to rename it or choose its room.")
+            }
+            if home.lights.contains(where: \.on) || home.lights.count > 1 {
+                Section {
+                    Button("Turn All Off") { home.allLights(false) }
+                    Button("Turn All On") { home.allLights(true) }
+                }
             }
             Section {
                 SecureField("Govee API Key", text: $key)
                 Button("Save Key") { home.goveeKey = key.trimmingCharacters(in: .whitespacesAndNewlines) }
                     .disabled(key == (home.goveeKey ?? ""))
                 if let e = home.goveeError { Text(e).foregroundStyle(Palette.attention) }
-            } header: { Text("Govee") } footer: {
-                Text("Optional. Gives your lights their names from the Govee app and controls lights without LAN Control. Get a key in the Govee app: Profile → Settings → Apply for API Key.")
+            } header: { Text("Govee Account") } footer: {
+                Text("Optional. Brings in your lights’ names from the Govee app and reaches lights without LAN Control. Get a key in the Govee app: Profile → Settings → Apply for API Key.")
             }
             Section {} header: { Text("Cync") } footer: {
-                Text("Cync lights don’t offer control over Wi‑Fi to other apps. They’re coming in a later update.")
+                Text("Cync lights only take commands through Cync’s own account, not over Wi‑Fi. They’ll appear here once that’s added.")
             }
         }
         .formStyle(.grouped)
-        .navigationTitle("Speakers & Lights")
+        .navigationTitle("Lights")
+        .inlineTitle()
+        .refreshable { await home.refreshCloud() }
+    }
+}
+
+/// Name and room, shared by the speaker and light pages.
+struct NameAndRoom: View {
+    @Environment(Fleet.self) private var fleet
+    var id: String
+    var current: String
+    var original: String?
+    var home = SmartHome.shared
+    @State private var name = ""
+    @State private var addingRoom = false
+    @State private var newRoom = ""
+
+    var body: some View {
+        Section("Name") {
+            TextField("Name", text: $name)
+                .onSubmit { home.rename(id, name) }
+                .onAppear { name = current }
+            if name.trimmingCharacters(in: .whitespaces) != current {
+                Button("Save Name") { home.rename(id, name) }
+            }
+            if let original, original != current {
+                Button("Use “\(original)”") { name = original; home.rename(id, "") }
+            }
+        }
+        Section {
+            Picker("Room", selection: Binding(get: { home.room(of: id) ?? "" }, set: { v in
+                if v == "+" { addingRoom = true } else { home.setRoom(id, v.isEmpty ? nil : v) }
+            })) {
+                Text("No Room").tag("")
+                ForEach(allRooms(fleet), id: \.self) { Text($0).tag($0) }
+                Text("New Room…").tag("+")
+            }
+        } footer: {
+            Text("Rooms group things together on Home, like the Home app.")
+        }
+        .alert("New Room", isPresented: $addingRoom) {
+            TextField("Room Name", text: $newRoom)
+            Button("Add") { home.setRoom(id, newRoom); newRoom = "" }
+            Button("Cancel", role: .cancel) { newRoom = "" }
+        }
+    }
+}
+
+struct SpeakerDetailView: View {
+    var speakerID: String
+    var home = SmartHome.shared
+    @State private var volume: Double = 0
+    @State private var dragging = false
+
+    var body: some View {
+        if let r = home.speaker(speakerID) {
+            Form {
+                Section {
+                    VStack(spacing: 16) {
+                        SpeakerArt(url: r.art, size: 180).shadow(color: .black.opacity(0.3), radius: 18, y: 10)
+                        VStack(spacing: 3) {
+                            Text(r.title ?? "Not Playing").font(.headline).lineLimit(1)
+                            Text([r.artist, r.album].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " — "))
+                                .font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                        }
+                        HStack(spacing: 28) {
+                            GlassCircle(symbol: "backward.fill", size: 50) { Task { await home.sonos(r) { try await Sonos.previous($0) } } }
+                            GlassCircle(symbol: r.isPlaying ? "pause.fill" : "play.fill", size: 64) {
+                                Task { await home.sonos(r) { r.isPlaying ? try await Sonos.pause($0) : try await Sonos.play($0) } }
+                            }
+                            GlassCircle(symbol: "forward.fill", size: 50) { Task { await home.sonos(r) { try await Sonos.next($0) } } }
+                        }
+                        .glassGroup(spacing: 24)
+                        HStack(spacing: 12) {
+                            Button { Task { await home.sonos(r) { try await Sonos.setMute($0, !r.muted) } } } label: {
+                                Image(systemName: r.muted ? "speaker.slash.fill" : "speaker.fill").frame(width: 24)
+                            }
+                            .buttonStyle(.plain).foregroundStyle(r.muted ? Palette.attention : .secondary)
+                            Slider(value: $volume, in: 0...100) { e in dragging = e; if !e { home.setVolume(r, Int(volume)) } }
+                                .onChange(of: volume) { _, v in if dragging { home.setVolume(r, Int(v)) } }
+                            Text("\(Int(volume))").monospacedDigit().foregroundStyle(.secondary).frame(width: 30, alignment: .trailing)
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 10)
+                }
+                NameAndRoom(id: r.id, current: r.name, original: r.zone)
+                Section("Sonos") {
+                    LabeledContent("Sonos Room", value: r.zone)
+                    if r.groupNames.count > 1 { LabeledContent("Playing With", value: r.groupNames.filter { $0 != r.name }.joined(separator: ", ")) }
+                    LabeledContent("Address", value: r.host)
+                }
+            }
+            .formStyle(.grouped)
+            .navigationTitle(r.name)
+            .inlineTitle()
+            .onAppear { volume = Double(r.volume) }
+            .onChange(of: r.volume) { _, v in if !dragging { volume = Double(v) } }
+        } else {
+            ContentUnavailableView("Speaker Not Found", systemImage: "hifispeaker")
+        }
+    }
+}
+
+struct LightDetailView: View {
+    var lightID: String
+    var home = SmartHome.shared
+    @State private var level: Double = 100
+    @State private var dragging = false
+
+    var body: some View {
+        if let l = home.light(lightID) {
+            Form {
+                Section {
+                    VStack(spacing: 18) {
+                        Circle()
+                            .fill(l.on ? l.shade : Color.secondary.opacity(0.25))
+                            .frame(width: 72, height: 72)
+                            .shadow(color: l.on ? l.shade.opacity(0.9) : .clear, radius: 24)
+                            .overlay { Circle().strokeBorder(.white.opacity(0.25)) }
+                            .onTapGesture { home.setOn(l, !l.on) }
+                        Toggle(l.on ? "On" : "Off", isOn: Binding(get: { l.on }, set: { home.setOn(l, $0) }))
+                            .toggleStyle(.switch)
+                        HStack(spacing: 12) {
+                            Image(systemName: "sun.min").foregroundStyle(.secondary)
+                            Slider(value: $level, in: 1...100) { e in dragging = e; if !e { home.setBrightness(l, Int(level)) } }
+                            Image(systemName: "sun.max.fill").foregroundStyle(.secondary)
+                        }
+                        swatches(LightSheet.colors.map { c in (c.color, l.color == c, { home.setColor(l, c) }) })
+                        swatches(LightSheet.whites.map { k in (LightColor.kelvin(k), l.color == nil && l.kelvin == k, { home.setWhite(l, kelvin: k) }) })
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 10)
+                }
+                NameAndRoom(id: l.id, current: l.name, original: nil)
+                Section("Govee") {
+                    LabeledContent("Model", value: l.sku)
+                    LabeledContent("Connection", value: l.ip != nil ? "Wi‑Fi (\(l.ip!))" : (l.cloud ? "Govee Account" : "Not reachable"))
+                }
+            }
+            .formStyle(.grouped)
+            .navigationTitle(l.name)
+            .inlineTitle()
+            .onAppear { level = Double(l.brightness) }
+            .onChange(of: l.brightness) { _, v in if !dragging { level = Double(v) } }
+        } else {
+            ContentUnavailableView("Light Not Found", systemImage: "lightbulb")
+        }
+    }
+
+    private func swatches(_ items: [(Color, Bool, () -> Void)]) -> some View {
+        HStack(spacing: 10) {
+            ForEach(items.indices, id: \.self) { i in
+                Button(action: items[i].2) {
+                    Circle().fill(items[i].0).frame(width: 28, height: 28)
+                        .overlay { if items[i].1 { Circle().strokeBorder(.white, lineWidth: 3) } }
+                        .glass(Circle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
     }
 }

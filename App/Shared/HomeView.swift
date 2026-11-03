@@ -6,6 +6,7 @@ import WoodruffKit
 struct HomeView: View {
     @Environment(Fleet.self) private var fleet
     @State private var openTV: String?
+    @AppStorage("home.room") private var room = ""
     @Namespace private var zoom
 
     private let columns = [GridItem(.adaptive(minimum: 320, maximum: 520), spacing: 18)]
@@ -14,18 +15,22 @@ struct HomeView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 30) {
                 summary
+                roomBar
+                if !shownTVs.isEmpty {
                 VStack(alignment: .leading, spacing: 14) {
                     Text("TVs").font(.title2.bold())
                     LazyVGrid(columns: columns, spacing: 18) {
-                        ForEach(fleet.tvs) { tv in
+                        ForEach(shownTVs) { tv in
                             HomeTVTile(tv: tv) { open(tv.id) }
                                 .matchedGeometryEffect(id: tv.id, in: zoom, isSource: openTV != tv.id)
                                 .opacity(openTV == tv.id ? 0 : 1)
                         }
                     }
                 }
-                SpeakersSection()
-                LightsSection()
+                }
+                SpeakersSection(room: room.isEmpty ? nil : room)
+                LightsSection(room: room.isEmpty ? nil : room)
+                if room.isEmpty {
                 VStack(alignment: .leading, spacing: 14) {
                     Text("Every TV").font(.title2.bold())
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 170), spacing: 14)], spacing: 14) {
@@ -37,6 +42,7 @@ struct HomeView: View {
                             fleet.say("Update All", failed.isEmpty ? "Asked \(n) TV\(n == 1 ? "" : "s") to update. Each installs once nobody’s watching." : failed.joined(separator: "\n"))
                         }
                     }
+                }
                 }
             }
             #if os(iOS)
@@ -108,6 +114,42 @@ struct HomeView: View {
             }
         }
         .scrollIndicators(.hidden)
+    }
+
+    /// Rooms with something in them, like the Home app's room bar; picking one shows just that room.
+    private var rooms: [String] {
+        let home = SmartHome.shared
+        let tvRooms = fleet.tvs.filter { !$0.isUnpaired }.map(\.name)
+        let deviceRooms = (home.speakers.map(\.id) + home.lights.map(\.id)).compactMap { home.room(of: $0) }
+        return Array(Set(tvRooms + deviceRooms)).sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+    }
+
+    private var shownTVs: [FleetTV] {
+        room.isEmpty ? fleet.tvs : fleet.tvs.filter { $0.name == room }
+    }
+
+    @ViewBuilder private var roomBar: some View {
+        if !SmartHome.shared.speakers.isEmpty || !SmartHome.shared.lights.isEmpty {
+            ScrollView(.horizontal) {
+                HStack(spacing: 8) {
+                    ForEach([""] + rooms, id: \.self) { r in
+                        Button {
+                            withAnimation(.smooth) { room = r }
+                        } label: {
+                            Text(r.isEmpty ? "All Rooms" : r)
+                                .font(.subheadline.weight(.semibold))
+                                .padding(.horizontal, 14).padding(.vertical, 8)
+                                .foregroundStyle(room == r ? Color.black : .primary)
+                                .background { if room == r { Capsule().fill(.white) } }
+                        }
+                        .buttonStyle(.plain)
+                        .glass(Capsule())
+                    }
+                }
+            }
+            .scrollIndicators(.hidden)
+            .onAppear { if !room.isEmpty && !rooms.contains(room) { room = "" } }
+        }
     }
 
     /// "4 TVs · 2 playing" under the title.

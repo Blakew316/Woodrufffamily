@@ -20,17 +20,17 @@ struct SettingsView: View {
     @State private var hub = HubSettings()
     @State private var route: String? = { let r = UserDefaults.standard.string(forKey: "route"); return r == "tvs" || r == "tv" ? r : nil }()
 
-    private var smartHomeSummary: String {
-        let h = SmartHome.shared
-        let parts = [h.speakers.isEmpty ? nil : "\(h.speakers.count) Sonos", h.lights.isEmpty ? nil : "\(h.lights.count) Govee"].compactMap { $0 }
-        return parts.isEmpty ? "None" : parts.joined(separator: " · ")
-    }
-
     var body: some View {
         Form {
             Section {
                 NavigationLink { TVsView() } label: {
                     IconRow(symbol: "tv.fill", color: .blue, title: "TVs", value: tvsSummary, valueColor: fleet.tvs.contains(where: \.needsAttention) ? Palette.attention : .secondary)
+                }
+                NavigationLink { SpeakersListView() } label: {
+                    IconRow(symbol: "", color: .clear, title: "Speakers", value: SmartHome.shared.speakers.isEmpty ? "None" : "\(SmartHome.shared.speakers.count)")
+                }
+                NavigationLink { LightsListView() } label: {
+                    IconRow(symbol: "", color: .clear, title: "Lights", value: SmartHome.shared.lights.isEmpty ? "None" : "\(SmartHome.shared.lights.count)")
                 }
                 NavigationLink { SoftwareUpdateView() } label: {
                     HStack {
@@ -46,9 +46,6 @@ struct SettingsView: View {
             Section {
                 NavigationLink { ConnectionsView(hub: hub) } label: {
                     IconRow(symbol: "cloud.fill", color: .blue, title: "Connections", value: connectionsSummary)
-                }
-                NavigationLink { SmartHomeSettingsView() } label: {
-                    IconRow(symbol: "", color: .clear, title: "Speakers & Lights", value: smartHomeSummary)
                 }
             }
 

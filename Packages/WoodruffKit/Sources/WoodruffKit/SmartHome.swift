@@ -13,9 +13,10 @@ import Network
 // MARK: - Sonos
 
 /// One Sonos room (a speaker, or the coordinator of a group of them).
-public struct SonosRoom: Identifiable, Hashable, Sendable {
+public struct SonosRoom: Identifiable, Hashable, Sendable, Codable {
     public var id: String            // RINCON_… of the room's speaker
-    public var name: String          // "Master Bedroom"
+    public var name: String          // what the family calls it here (the Sonos room name unless renamed)
+    public var zone: String = ""     // the room name in the Sonos app
     public var host: String          // its address
     public var coordinatorHost: String
     public var groupNames: [String]  // the rooms playing together with it
@@ -73,7 +74,7 @@ public enum Sonos {
             let names = members.compactMap { attr("ZoneName", in: $0) }
             for m in members {
                 guard let id = attr("UUID", in: m), let h = hostOf(m), let name = attr("ZoneName", in: m) else { continue }
-                out.append(SonosRoom(id: id, name: name, host: h, coordinatorHost: ch, groupNames: names))
+                out.append(SonosRoom(id: id, name: name, zone: name, host: h, coordinatorHost: ch, groupNames: names))
             }
         }
         return out.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
@@ -102,7 +103,7 @@ public enum Sonos {
     // MARK: Tiny XML helpers (the answers are small and regular)
 
     static func tag(_ name: String, in s: String) -> String? {
-        guard let open = s.range(of: "<\(name)(\s[^>]*)?>", options: .regularExpression),
+        guard let open = s.range(of: "<\(name)(\\s[^>]*)?>", options: .regularExpression),
               let close = s.range(of: "</\(name)>", range: open.upperBound..<s.endIndex) else { return nil }
         return String(s[open.upperBound..<close.lowerBound])
     }
@@ -133,7 +134,7 @@ public struct LightColor: Codable, Hashable, Sendable {
 }
 
 /// One Govee light.
-public struct GoveeLight: Identifiable, Hashable, Sendable {
+public struct GoveeLight: Identifiable, Hashable, Sendable, Codable {
     public var id: String          // its MAC-style device id ("1F:80:…")
     public var sku: String         // model, e.g. H6076
     public var name: String
@@ -152,6 +153,26 @@ public enum Govee {
     static func json(_ cmd: String, _ data: [String: Any]) -> Data {
         (try? JSONSerialization.data(withJSONObject: ["msg": ["cmd": cmd, "data": data]])) ?? Data()
     }
+
+    #if canImport(Network)
+    /// Sends one LAN command to a light (port 4003), or a scan (port 4001). Fire and forget.
+    public static func lan(_ ip: String, _ cmd: String, _ data: [String: Any], port: UInt16 = 4003) {
+        send(json(cmd, data), to: ip, port: port)
+    }
+
+    /// Turns a light on or off over the LAN (for widgets, which can't wait for the app).
+    public static func lanTurn(_ ip: String, _ on: Bool) { lan(ip, "turn", ["value": on ? 1 : 0]) }
+
+    static func send(_ data: Data, to host: String, port: UInt16) {
+        let c = NWConnection(host: NWEndpoint.Host(host), port: NWEndpoint.Port(rawValue: port)!, using: .udp)
+        c.stateUpdateHandler = { s in
+            if case .ready = s { c.send(content: data, completion: .contentProcessed { _ in c.cancel() }) }
+            if case .failed = s { c.cancel() }
+        }
+        c.start(queue: .global())
+        DispatchQueue.global().asyncAfter(deadline: .now() + 2) { c.cancel() }
+    }
+    #endif
 
     // MARK: Cloud
 
@@ -264,15 +285,7 @@ final class GoveeLAN {
         send(Govee.json("colorwc", ["color": ["r": 0, "g": 0, "b": 0], "colorTemInKelvin": k]), to: ip, port: 4003)
     }
 
-    private func send(_ data: Data, to host: String, port: UInt16) {
-        let c = NWConnection(host: NWEndpoint.Host(host), port: NWEndpoint.Port(rawValue: port)!, using: .udp)
-        c.stateUpdateHandler = { s in
-            if case .ready = s { c.send(content: data, completion: .contentProcessed { _ in c.cancel() }) }
-            if case .failed = s { c.cancel() }
-        }
-        c.start(queue: .global())
-        DispatchQueue.global().asyncAfter(deadline: .now() + 2) { c.cancel() }
-    }
+    private func send(_ data: Data, to host: String, port: UInt16) { Govee.send(data, to: host, port: port) }
 }
 #endif
 
@@ -285,8 +298,22 @@ public final class SmartHome {
 
     public private(set) var speakers: [SonosRoom] = []
     public private(set) var lights: [GoveeLight] = []
-    public var lightNames: [String: String] = Saved.load("lightNames", as: [String: String].self) ?? [:] {
-        didSet { Saved.save("lightNames", lightNames); applyNames() }
+    /// Names the family gave speakers and lights here (device id → name).
+    public var names: [String: String] = Saved.load("smartNames", as: [String: String].self) ?? Saved.load("lightNames", as: [String: String].self) ?? [:] {
+        didSet { Saved.save("smartNames", names); applyNames() }
+    }
+    /// Which room each speaker and light is in (device id → room).
+    public var rooms: [String: String] = Saved.load("smartRooms", as: [String: String].self) ?? [:] {
+        didSet { Saved.save("smartRooms", rooms) }
+    }
+    /// Rooms added by hand (besides the TVs' rooms and Sonos's own).
+    public var extraRooms: [String] = Saved.load("smartExtraRooms", as: [String].self) ?? [] {
+        didSet { Saved.save("smartExtraRooms", extraRooms) }
+    }
+    /// The speaker the Control Center and Siri buttons act on when none is named: the last one used.
+    public var lastSpeakerID: String? {
+        get { UserDefaults.standard.string(forKey: "lastSpeaker") }
+        set { UserDefaults.standard.set(newValue, forKey: "lastSpeaker") }
     }
     public var goveeKey: String? {
         get { Keychain.get("govee.key") }
@@ -301,7 +328,62 @@ public final class SmartHome {
     private var browser: NWBrowser?
     #endif
 
-    init() {}
+    init() {
+        // What was found last time, so Home, Siri and Control Center work straight away.
+        speakers = Saved.load("smartSpeakers", as: [SonosRoom].self) ?? []
+        lights = Saved.load("smartLights", as: [GoveeLight].self) ?? []
+        applyNames()
+    }
+
+    private func persist() {
+        Saved.save("smartSpeakers", speakers)
+        Saved.save("smartLights", lights)
+        onChange?()
+    }
+
+    /// Called when what's found or its state changes (the Mac shares it with its widgets).
+    public var onChange: (() -> Void)?
+
+    // MARK: Rooms and names
+
+    /// The room a speaker or light is in: chosen here, or a speaker's own Sonos room.
+    public func room(of id: String) -> String? {
+        if let r = rooms[id], !r.isEmpty { return r }
+        return speakers.first { $0.id == id }?.zone
+    }
+
+    public func setRoom(_ id: String, _ room: String?) {
+        let r = room?.trimmingCharacters(in: .whitespaces)
+        rooms[id] = (r?.isEmpty ?? true) ? nil : r
+        if let r, !r.isEmpty, !knownRooms.contains(r) { extraRooms.append(r) }
+    }
+
+    /// Every room in the house: given by the app (the TVs' names), chosen for devices, or added by hand.
+    public var knownRooms: [String] {
+        var out = Set(extraRooms).union(rooms.values).union(speakers.map(\.zone))
+        out.remove("")
+        return out.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+    }
+
+    /// Renames a speaker or light (an empty name goes back to its own).
+    public func rename(_ id: String, _ name: String) {
+        let n = name.trimmingCharacters(in: .whitespaces)
+        names[id] = n.isEmpty ? nil : n
+        if n.isEmpty {
+            if let i = speakers.firstIndex(where: { $0.id == id }) { speakers[i].name = speakers[i].zone }
+        }
+        persist()
+    }
+
+    public var lastSpeaker: SonosRoom? {
+        speakers.first { $0.id == lastSpeakerID } ?? speakers.first(where: \.isPlaying) ?? speakers.first
+    }
+
+    public func speaker(_ id: String) -> SonosRoom? { speakers.first { $0.id == id } }
+    public func light(_ id: String) -> GoveeLight? { lights.first { $0.id == id } }
+
+    public func allLights(_ on: Bool) { for l in lights where l.on != on { setOn(l, on) } }
+
 
     public func start() {
         guard loop == nil, !Demo.isOn else { return }
@@ -386,12 +468,15 @@ public final class SmartHome {
     private func merge(_ rooms: [SonosRoom]) {
         speakers = rooms.map { r in
             var r = r
+            if let n = names[r.id], !n.isEmpty { r.name = n }
+            r.groupNames = r.groupNames.map { g in rooms.first { $0.zone == g }.flatMap { names[$0.id] } ?? g }
             if let old = speakers.first(where: { $0.id == r.id }) {
                 r.state = old.state; r.title = old.title; r.artist = old.artist; r.album = old.album; r.art = old.art
                 r.volume = old.volume; r.muted = old.muted
             }
             return r
         }
+        persist()
     }
 
     public func refreshSpeakers() async {
@@ -403,11 +488,13 @@ public final class SmartHome {
             for await r in g { out.append(r) }
             return out
         }
-        speakers = current.map { r in fresh.first { $0.id == r.id } ?? r }
+        let next = current.map { r in fresh.first { $0.id == r.id } ?? r }
+        if next != speakers { speakers = next; onChange?() }
     }
 
     /// Runs [op] and refreshes the room straight after, so the tile answers at once.
     public func sonos(_ room: SonosRoom, _ op: @escaping @Sendable (SonosRoom) async throws -> Void) async {
+        lastSpeakerID = room.id
         do { try await op(room) } catch {}
         try? await Task.sleep(nanoseconds: 300_000_000)
         await refreshSpeakers()
@@ -434,8 +521,9 @@ public final class SmartHome {
 
     private func found(ip: String, id: String, sku: String) {
         if let i = lights.firstIndex(where: { $0.id == id }) { lights[i].ip = ip }
-        else { lights.append(GoveeLight(id: id, sku: sku, name: lightNames[id] ?? "Govee \(sku)", ip: ip, cloud: false)) }
+        else { lights.append(GoveeLight(id: id, sku: sku, name: names[id] ?? "Govee \(sku)", ip: ip, cloud: false)) }
         lights.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        persist()
         #if canImport(Network)
         lan.status(ip)
         #endif
@@ -446,6 +534,7 @@ public final class SmartHome {
         lights[i].on = on; lights[i].brightness = brightness
         if let color, color != LightColor(r: 0, g: 0, b: 0) { lights[i].color = color }
         lights[i].kelvin = kelvin
+        onChange?()
     }
 
     public func refreshCloud() async {
@@ -456,19 +545,21 @@ public final class SmartHome {
             for d in devs {
                 if let i = lights.firstIndex(where: { $0.id == d.id }) {
                     lights[i].cloud = true
-                    if lightNames[d.id] == nil { lights[i].name = d.name }
+                    if names[d.id] == nil { lights[i].name = d.name }
                 } else {
                     var l = d
-                    if let n = lightNames[d.id] { l.name = n }
+                    if let n = names[d.id] { l.name = n }
                     lights.append(await Govee.cloudState(l, key: key))
                 }
             }
             lights.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+            persist()
         } catch { goveeError = error.localizedDescription }
     }
 
     private func applyNames() {
-        for i in lights.indices { if let n = lightNames[lights[i].id], !n.isEmpty { lights[i].name = n } }
+        for i in lights.indices { if let n = names[lights[i].id], !n.isEmpty { lights[i].name = n } }
+        for i in speakers.indices { if let n = names[speakers[i].id], !n.isEmpty { speakers[i].name = n } }
     }
 
     /// Turns a light on or off: on the LAN when it's there, else through Govee's cloud.
@@ -504,13 +595,8 @@ public final class SmartHome {
         cloud(l, "colorTem", kelvin)
     }
 
-    public func rename(_ l: GoveeLight, _ name: String) {
-        let n = name.trimmingCharacters(in: .whitespaces)
-        lightNames[l.id] = n.isEmpty ? nil : n
-    }
-
     private func update(_ l: GoveeLight, _ f: (inout GoveeLight) -> Void) {
-        if let i = lights.firstIndex(where: { $0.id == l.id }) { f(&lights[i]) }
+        if let i = lights.firstIndex(where: { $0.id == l.id }) { f(&lights[i]); onChange?() }
     }
 
     private func cloud(_ l: GoveeLight, _ name: String, _ value: Any) {

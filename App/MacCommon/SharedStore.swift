@@ -16,6 +16,9 @@ enum SharedStore {
         var selectedID: String?
         /// TV id → the name the family gave it here (Elliot's Room…).
         var names: [String: String]
+        /// Sonos rooms and Govee lights, for the Speakers & Lights widget.
+        var speakers: [SonosRoom]? = nil
+        var lights: [GoveeLight]? = nil
     }
 
     static var groupID: String? {

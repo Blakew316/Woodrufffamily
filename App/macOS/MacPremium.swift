@@ -195,9 +195,11 @@ enum WidgetSync {
         // Never write an empty list over the backup: it's what restores the pairings if the app's own are lost.
         let hubs = fleet.hubs.isEmpty ? (SharedStore.load()?.hubs ?? [])
             : fleet.hubs.map { SharedStore.HubLink(id: $0.id, name: $0.name, base: $0.connection.base, key: $0.connection.key) }
-        SharedStore.save(.init(hubs: hubs, selectedID: fleet.selectedID, names: names))
+        let home = SmartHome.shared
+        SharedStore.save(.init(hubs: hubs, selectedID: fleet.selectedID, names: names, speakers: home.speakers, lights: home.lights))
         // Reload only when what a widget shows changes (titles, play state, on/off), not every refresh.
         let key = fleet.tvs.map { "\($0.id)|\($0.online)|\($0.playing?.title ?? "")|\($0.playing?.isPlaying ?? false)" }.joined(separator: ";") + "#\(fleet.selectedID ?? "")"
+            + home.speakers.map { "\($0.name)|\($0.title ?? "")|\($0.isPlaying)" }.joined() + home.lights.map { "\($0.name)|\($0.on)" }.joined()
         if key != lastKey {
             lastKey = key
             WidgetCenter.shared.reloadAllTimelines()
