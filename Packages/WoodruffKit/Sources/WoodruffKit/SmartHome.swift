@@ -653,6 +653,10 @@ public final class SmartHome {
     }
 
     private func persist() {
+        // Never the same light twice (found on the Wi‑Fi and through the account at the same moment).
+        var seen = Set<String>()
+        let unique = lights.filter { seen.insert($0.id).inserted }
+        if unique.count != lights.count { lights = unique }
         Saved.save("smartSpeakers2", speakers)
         Saved.save("smartLights", lights)
         onChange?()

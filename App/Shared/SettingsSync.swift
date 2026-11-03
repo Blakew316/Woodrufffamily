@@ -57,9 +57,9 @@ final class SettingsSync {
         guard loop == nil, !Demo.isOn else { return }
         self.fleet = fleet
         last = snapshot()
-        // Settings from before syncing began count as set now, so they reach the other devices.
-        let now = Date().timeIntervalSince1970
-        for (k, v) in last where stamps[k] == nil && !v.isEmpty { stamps[k] = now }
+        // Settings from before syncing began count as old: they fill in what's missing elsewhere but never
+        // replace anything set on another device (a new device mustn't overwrite the family's layout).
+        for (k, v) in last where stamps[k] == nil && !v.isEmpty { stamps[k] = 1 }
         saveStamps()
         listen()
         browse()
@@ -150,6 +150,14 @@ final class SettingsSync {
             let t = (item["t"] as? NSNumber)?.doubleValue ?? 0
             let v = item["v"] as? String ?? ""
             let mine = stamp(k)
+            if k == "ud:homeLayout", !v.isEmpty, let local = last[k], !local.isEmpty, local != v {
+                // Favourites merge one by one, whichever device's layout is newer otherwise.
+                let merged = Self.mergeLayout(local: local, remote: v, remoteNewer: t > mine)
+                if merged != local { write(k, merged); last[k] = merged; changed = true }
+                if t > mine { stamps[k] = t }
+                if merged != v { oursNewer = true; stamps[k] = max(stamps[k] ?? 0, t + 0.001) }
+                continue
+            }
             if t > mine {
                 if v != (last[k] ?? "") { write(k, v); last[k] = v; changed = true }
                 stamps[k] = t
@@ -161,6 +169,33 @@ final class SettingsSync {
         saveStamps()
         if changed { reload() }
         return oursNewer
+    }
+
+    /// Two Home layouts made one: the newer one's sections and order, and every favourite as its own latest
+    /// add or remove says. Canonical JSON out, so equal layouts compare equal.
+    static func mergeLayout(local: String, remote: String, remoteNewer: Bool) -> String {
+        guard let l = try? JSONSerialization.jsonObject(with: Data(local.utf8)) as? [String: Any],
+              let r = try? JSONSerialization.jsonObject(with: Data(remote.utf8)) as? [String: Any] else { return remoteNewer ? remote : local }
+        var base = remoteNewer ? r : l
+        let other = remoteNewer ? l : r
+        func state(_ o: [String: Any]) -> [String: Double] {
+            var out: [String: Double] = [:]
+            for f in o["favorites"] as? [String] ?? [] { out[f] = 0.5 }
+            for (id, t) in o["favoriteStamps"] as? [String: Any] ?? [:] { if let d = (t as? NSNumber)?.doubleValue { out[id] = d } }
+            return out
+        }
+        let a = state(base), b = state(other)
+        var stampsOut: [String: Double] = [:]
+        for id in Set(a.keys).union(b.keys) {
+            let x = a[id], y = b[id]
+            stampsOut[id] = [x, y].compactMap { $0 }.max { abs($0) < abs($1) }
+        }
+        var favs = (base["favorites"] as? [String] ?? []).filter { (stampsOut[$0] ?? 0) > 0 }
+        for id in (other["favorites"] as? [String] ?? []) where (stampsOut[id] ?? 0) > 0 && !favs.contains(id) { favs.append(id) }
+        base["favorites"] = favs
+        base["favoriteStamps"] = stampsOut.filter { $0.value != 0.5 }
+        guard let d = try? JSONSerialization.data(withJSONObject: base, options: [.sortedKeys]) else { return remoteNewer ? remote : local }
+        return String(decoding: d, as: UTF8.self)
     }
 
     private func write(_ k: String, _ v: String) {

@@ -354,6 +354,10 @@ struct WifiView: View {
                         }
                     }
                 }
+                #if os(macOS)
+                // The Mac window already has a search field in its toolbar (a second one crashes AppKit).
+                Section { TextField("Find a device", text: $search) }
+                #endif
                 ForEach(deco.nodes) { n in
                     let list = shownClients.filter { $0.node == n.id }
                     if !list.isEmpty {
@@ -394,7 +398,9 @@ struct WifiView: View {
         .formStyle(.grouped)
         .navigationTitle("Wi‑Fi")
         .inlineTitle()
+        #if os(iOS)
         .searchable(text: $search, prompt: "Find a device")
+        #endif
         .refreshable { await deco.refresh() }
         .toolbar { if inSheet { ToolbarItem(placement: .cancellationAction) { Button(role: .close) { dismiss() } } } }
         .confirmationDialog("Restart \(restarting?.name ?? "Deco")?", isPresented: Binding(get: { restarting != nil }, set: { if !$0 { restarting = nil } }), titleVisibility: .visible) {

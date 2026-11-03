@@ -45,8 +45,13 @@ final class HomeLayout {
     var favorites: [String] { didSet { save() } }
 
     func isFavorite(_ id: String) -> Bool { favorites.contains(id) }
+    /// When each favourite was last added (positive) or removed (negative), so devices merge them one by one.
+    var favoriteStamps: [String: Double] { didSet { save() } }
+
     func toggleFavorite(_ id: String) {
-        if let i = favorites.firstIndex(of: id) { favorites.remove(at: i) } else { favorites.append(id) }
+        let now = Date().timeIntervalSince1970
+        if let i = favorites.firstIndex(of: id) { favorites.remove(at: i); favoriteStamps[id] = -now }
+        else { favorites.append(id); favoriteStamps[id] = now }
     }
     /// Just the favourites from [items], in the favourites' order.
     func favoritesOnly<T: Identifiable>(_ items: [T]) -> [T] where T.ID == String {
@@ -62,6 +67,7 @@ final class HomeLayout {
         var groupByRoom: Bool?
         var favorites: [String]?
         var pinnedRooms: [String]?
+        var favoriteStamps: [String: Double]?
     }
 
     init() {
@@ -81,6 +87,7 @@ final class HomeLayout {
         groupByRoom = s?.groupByRoom ?? true
         favorites = s?.favorites ?? []
         pinnedRooms = s?.pinnedRooms ?? ["Kitchen", "Front Yard", "Living Room", "Backyard"]
+        favoriteStamps = s?.favoriteStamps ?? [:]
         if (s?.version ?? 1) < 2 { save() }
     }
 
@@ -96,10 +103,11 @@ final class HomeLayout {
         if let g = s.groupByRoom, g != groupByRoom { groupByRoom = g }
         if let f = s.favorites, f != favorites { favorites = f }
         if let p = s.pinnedRooms, p != pinnedRooms { pinnedRooms = p }
+        if let fs = s.favoriteStamps, fs != favoriteStamps { favoriteStamps = fs }
     }
 
     private func save() {
-        Saved.save("homeLayout", Stored(sections: sections, hiddenSections: hiddenSections.sorted(), order: order, hiddenItems: hiddenItems.sorted(), version: 2, groupByRoom: groupByRoom, favorites: favorites, pinnedRooms: pinnedRooms))
+        Saved.save("homeLayout", Stored(sections: sections, hiddenSections: hiddenSections.sorted(), order: order, hiddenItems: hiddenItems.sorted(), version: 2, groupByRoom: groupByRoom, favorites: favorites, pinnedRooms: pinnedRooms, favoriteStamps: favoriteStamps))
     }
 
     var visibleSections: [String] { sections.filter { !hiddenSections.contains($0) } }
@@ -200,7 +208,7 @@ struct EditHomeView: View {
                     }
                     ForEach(layout.favorites, id: \.self) { id in Text(favoriteName(id)) }
                         .onMove { layout.favorites.move(fromOffsets: $0, toOffset: $1) }
-                        .onDelete { layout.favorites.remove(atOffsets: $0) }
+                        .onDelete { offsets in for i in offsets.sorted(by: >) { layout.toggleFavorite(layout.favorites[i]) } }
                 } header: { Text("Favorites") } footer: {
                     Text("Favorites come first on Home. Drag to reorder; swipe to remove.")
                 }

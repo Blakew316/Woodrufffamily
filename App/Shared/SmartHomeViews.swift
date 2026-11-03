@@ -135,9 +135,12 @@ struct RoomTiles: View {
     }
 
     private var items: [Item] {
-        pick(home.speakers, "speakers", room: \.id).map(Item.speaker)
+        let all = pick(home.speakers, "speakers", room: \.id).map(Item.speaker)
             + pick(home.lights, "lights", room: \.id).map(Item.light)
             + pick(AccessoryStore.shared.all, "devices", room: \.id).map(Item.device)
+        // Each thing once (a light found twice would otherwise upset the grid).
+        var seen = Set<String>()
+        return all.filter { seen.insert($0.id).inserted }
     }
 
     var body: some View {
