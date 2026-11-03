@@ -129,8 +129,9 @@ struct CapsuleButton: View {
         Button(action: action) {
             HStack(spacing: 6) {
                 if let symbol { Image(systemName: symbol).font(.subheadline.weight(.bold)) }
-                Text(title).font(.subheadline.weight(.semibold))
+                Text(title).font(.subheadline.weight(.semibold)).lineLimit(1)
             }
+            .fixedSize()
             .padding(.horizontal, 18).padding(.vertical, 10)
             .foregroundStyle(prominent ? Color.black : .white)
             .background { if prominent { Capsule().fill(.white) } }

@@ -441,7 +441,14 @@ struct TitleSheet: View {
                 Text(facts(d)).font(.footnote.weight(.medium)).foregroundStyle(.white.opacity(0.75))
                 HStack(spacing: 10) {
                     if let p = d.play { CapsuleButton(title: p.label ?? "Play", symbol: "play.fill") { PlayRouter.start(p, fleet: fleet); dismiss() } }
-                    if let r = d.restart { CapsuleButton(title: r.label ?? "Start Over", symbol: "arrow.counterclockwise", prominent: false) { PlayRouter.start(r, fleet: fleet, fromStart: true); dismiss() } }
+                    if let r = d.restart {
+                        Button { PlayRouter.start(r, fleet: fleet, fromStart: true); dismiss() } label: {
+                            Image(systemName: "arrow.counterclockwise").font(.headline).foregroundStyle(.white)
+                                .frame(width: 40, height: 40).glass(Circle()).environment(\.colorScheme, .dark)
+                        }
+                        .buttonStyle(PressScale())
+                        .accessibilityLabel(r.label ?? "Start Over")
+                    }
                     if let p = d.play, fleet.tvs.count > 1 {
                         Menu { PlayOnMenu(action: p) } label: {
                             Image(systemName: "ellipsis").font(.headline).foregroundStyle(.white).frame(width: 40, height: 40).glass(Circle()).environment(\.colorScheme, .dark)

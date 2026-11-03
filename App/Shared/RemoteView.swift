@@ -8,26 +8,32 @@ struct RemoteView: View {
     @State private var field: TypeState?
     @State private var typing = false
     @State private var presses = 0
+    @State private var nowPlaying = false
 
     private var tv: FleetTV? { fleet.selected }
     private var all: Bool { fleet.remoteAll }
 
     var body: some View {
         GeometryReader { geo in
-            let pad = min(geo.size.width - 64, 300)
-            ScrollView {
-                VStack(spacing: 26) {
-                    status
-                    Clickpad(size: pad) { send($0) } onRepeat: { send($0, repeat: $1) }
-                    keys
-                    apps
-                }
-                .padding(.horizontal, 28)
-                .padding(.top, 8)
-                .padding(.bottom, 24)
-                .frame(maxWidth: .infinity)
+            // Everything fits on one screen, between the top bar and the tab bar: nothing scrolls under them.
+            let h = geo.size.height
+            let key = min(64, max(48, h * 0.088))
+            let gap = key * 0.27
+            let top: CGFloat = hasTop ? 70 : 0
+            let pad = max(180, min(geo.size.width - 64, 310, h - (key * 3 + gap * 2) - top - key * 0.8 - 3 * 18 - 24))
+            VStack(spacing: 18) {
+                if hasTop { status.frame(height: top) }
+                Spacer(minLength: 0)
+                Clickpad(size: pad) { send($0) } onRepeat: { send($0, repeat: $1) }
+                Spacer(minLength: 0)
+                keys(key, gap)
+                apps(key * 0.8)
             }
-            .scrollBounceBehavior(.basedOnSize)
+            .padding(.horizontal, 24)
+            .padding(.top, 6)
+            .padding(.bottom, 14)
+            .frame(maxWidth: 440)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .haptic(presses)
         .toolbar {
@@ -47,7 +53,12 @@ struct RemoteView: View {
         .inlineTitle()
         .sheet(isPresented: $typing) { if let tv { KeyboardSheet(tv: tv) } }
         .task(id: "\(fleet.selectedID ?? "")-\(all)") { await fieldLoop() }
-        .onAppear { if UserDefaults.standard.string(forKey: "route") == "keyboard" { typing = true } }
+        .sheet(isPresented: $nowPlaying) { NowPlayingSheet() }
+        .onAppear {
+            let r = UserDefaults.standard.string(forKey: "route")
+            if r == "keyboard" { typing = true }
+            if r == "nowplaying" { nowPlaying = true }
+        }
         #if os(macOS)
         .navigationTitle("Remote")
         .focusable()
@@ -57,6 +68,12 @@ struct RemoteView: View {
     }
 
     // MARK: Pieces
+
+    private var hasTop: Bool {
+        if all { return true }
+        guard let tv else { return false }
+        return !tv.online || tv.link == "refused" || tv.playing != nil || field?.field != nil
+    }
 
     @ViewBuilder private var status: some View {
         if all {
@@ -78,6 +95,18 @@ struct RemoteView: View {
             }
             .padding(14)
             .glass(RoundedRectangle(cornerRadius: 20, style: .continuous), interactive: false)
+        } else if let tv, let p = tv.playing {
+            NowPlayingCard(tv: tv, playing: p)
+                .overlay(alignment: .topTrailing) {
+                    if let f = field?.field {
+                        Button { typing = true } label: {
+                            Label("Type into \(f.label ?? "text box")", systemImage: "keyboard").labelStyle(.iconOnly)
+                                .font(.caption.weight(.bold)).foregroundStyle(.white)
+                                .frame(width: 26, height: 26).background(Circle().fill(Color.accentColor))
+                        }
+                        .buttonStyle(.plain).offset(x: 6, y: -8)
+                    }
+                }
         } else if let f = field?.field {
             Button { typing = true } label: {
                 Label("Type into \(f.label?.isEmpty == false ? f.label! : "the text box")", systemImage: "keyboard")
@@ -88,35 +117,33 @@ struct RemoteView: View {
             .foregroundStyle(Color.accentColor)
             .glass(Capsule(), tint: Color.accentColor.opacity(0.18))
             .transition(.scale.combined(with: .opacity))
-        } else {
-            Color.clear.frame(height: 40)
         }
     }
 
-    private var keys: some View {
+    private func keys(_ key: CGFloat, _ gap: CGFloat) -> some View {
         HStack(alignment: .top, spacing: 0) {
-            VStack(spacing: 18) {
-                RoundKey(symbol: "chevron.backward", label: "Back") { send("back") }
-                RoundKey(symbol: "playpause.fill", label: "Play/Pause") { send("playpause") }
-                RoundKey(symbol: "speaker.slash.fill", label: "Mute") { send("mute") }
+            VStack(spacing: gap) {
+                RoundKey(symbol: "chevron.backward", label: "Back", size: key) { send("back") }
+                RoundKey(symbol: "playpause.fill", label: "Play/Pause", size: key) { send("playpause") }
+                RoundKey(symbol: "speaker.slash.fill", label: "Mute", size: key) { send("mute") }
             }
             .frame(maxWidth: .infinity)
-            VStack(spacing: 18) {
-                RoundKey(symbol: "tv", label: "Home") { send("home") }
-                VolumeRocker { up, n in send(up ? "volup" : "voldown", repeat: n) }
+            VStack(spacing: gap) {
+                RoundKey(symbol: "tv", label: "Home", size: key) { send("home") }
+                VolumeRocker(width: key, height: key * 2 + gap) { up, n in send(up ? "volup" : "voldown", repeat: n) }
             }
             .frame(maxWidth: .infinity)
         }
         .frame(maxWidth: 300)
-        .glassGroup(spacing: 18)
+        .glassGroup(spacing: gap)
     }
 
-    private var apps: some View {
+    private func apps(_ height: CGFloat) -> some View {
         HStack(spacing: 12) {
-            AppKey(title: "Netflix", mark: AnyView(Text("N").font(.system(size: 19, weight: .black)).foregroundStyle(.red))) { send("netflix") }
-            AppKey(title: "YouTube", mark: AnyView(Image(systemName: "play.rectangle.fill").foregroundStyle(.white, .red))) { send("youtube") }
+            AppKey(title: "Netflix", height: height, mark: AnyView(Text("N").font(.system(size: 19, weight: .black)).foregroundStyle(.red))) { send("netflix") }
+            AppKey(title: "YouTube", height: height, mark: AnyView(Image(systemName: "play.rectangle.fill").foregroundStyle(.white, .red))) { send("youtube") }
         }
-        .frame(maxWidth: 320)
+        .frame(maxWidth: 340)
     }
 
     // MARK: Sending
@@ -279,13 +306,14 @@ struct Clickpad: View {
 struct RoundKey: View {
     var symbol: String
     var label: String
+    var size: CGFloat = 64
     var action: () -> Void
     var body: some View {
         Button(action: action) {
             Image(systemName: symbol)
-                .font(.system(size: 21, weight: .semibold))
+                .font(.system(size: size * 0.33, weight: .semibold))
                 .foregroundStyle(.primary)
-                .frame(width: 64, height: 64)
+                .frame(width: size, height: size)
                 .contentShape(Circle())
                 .glass(Circle())
         }
@@ -296,19 +324,21 @@ struct RoundKey: View {
 
 /// The tall + / − capsule; each half repeats while held.
 struct VolumeRocker: View {
+    var width: CGFloat = 64
+    var height: CGFloat = 146
     var send: (Bool, Int) -> Void
     var body: some View {
         VStack(spacing: 0) {
             half("plus", up: true)
-            Rectangle().fill(.separator).frame(width: 24, height: 0.5)
+            Rectangle().fill(.separator).frame(width: width * 0.38, height: 0.5)
             half("minus", up: false)
         }
-        .frame(width: 64, height: 146)
+        .frame(width: width, height: height)
         .glass(Capsule())
     }
     private func half(_ symbol: String, up: Bool) -> some View {
         RepeatPress(onPress: { send(up, $0) }) {
-            Image(systemName: symbol).font(.system(size: 21, weight: .semibold)).frame(width: 64, height: 72)
+            Image(systemName: symbol).font(.system(size: width * 0.33, weight: .semibold)).frame(width: width, height: height / 2)
         }
         .accessibilityLabel(up ? "Volume up" : "Volume down")
     }
@@ -347,6 +377,7 @@ struct RepeatPress<Label: View>: View {
 /// Netflix / YouTube capsules.
 struct AppKey: View {
     var title: String
+    var height: CGFloat = 50
     var mark: AnyView
     var action: () -> Void
     var body: some View {
@@ -356,7 +387,7 @@ struct AppKey: View {
                 Text(title).font(.headline)
             }
             .foregroundStyle(.primary)
-            .frame(maxWidth: .infinity, minHeight: 50)
+            .frame(maxWidth: .infinity, minHeight: height)
             .contentShape(Capsule())
             .glass(Capsule())
         }

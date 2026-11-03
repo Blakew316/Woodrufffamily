@@ -49,7 +49,9 @@ struct TVDetailView: View {
             .task(id: tvID) { await healthLoop() }
             .task(id: "screen-\(tvID)") { await screenLoop() }
             .onChange(of: tv.playing) { _, _ in fetchedAt = Date() }
-            .sheet(isPresented: $showScreen) { TVScreenSheet(tvID: tvID) }
+            .sheet(isPresented: $showScreen) {
+                if tv.playing != nil { NowPlayingSheet(tvID: tvID) } else { TVScreenSheet(tvID: tvID) }
+            }
             .sheet(item: Binding(get: { signIn.map { SignInGrant(grant: $0) } }, set: { signIn = $0?.grant })) { SignInSheet(grant: $0.grant, tv: tv) }
             .alert("Link \(tv.name) Again", isPresented: $askRelink) {
                 TextField("6-digit code", text: $relinkCode)
@@ -70,7 +72,8 @@ struct TVDetailView: View {
             Button { showScreen = true } label: {
                 ZStack {
                     Rectangle().fill(.black)
-                    if let screen { Image(platformImage: screen).resizable().aspectRatio(contentMode: .fill) }
+                    if tv.playing != nil { NowPlayingArt(playing: tv.playing, backdrop: true) }
+                    else if let screen { Image(platformImage: screen).resizable().aspectRatio(contentMode: .fill) }
                     else { Image(systemName: tv.online ? "tv" : "moon.zzz.fill").font(.title2).foregroundStyle(.white.opacity(0.5)) }
                 }
                 .frame(width: 136, height: 77)
@@ -82,21 +85,7 @@ struct TVDetailView: View {
                 if let p = tv.playing {
                     Text(p.title).font(.headline).lineLimit(2)
                     Text(p.app ?? "").font(.subheadline).foregroundStyle(.secondary)
-                    if let d = p.duration, d > 0 {
-                        TimelineView(.periodic(from: .now, by: 1)) { ctx in
-                            let pos = min(d, (p.position ?? 0) + (p.isPlaying ? ctx.date.timeIntervalSince(fetchedAt) * 1000 : 0))
-                            VStack(spacing: 3) {
-                                ProgressView(value: pos, total: d).tint(.primary)
-                                HStack {
-                                    Text(formatTime(ms: pos))
-                                    Spacer()
-                                    Text("−" + formatTime(ms: d - pos))
-                                }
-                                .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
-                            }
-                        }
-                        .padding(.top, 4)
-                    }
+                    LiveProgress(playing: p).padding(.top, 4)
                 } else {
                     Text(tv.online ? "Nothing Playing" : "Off").font(.headline)
                     Text(tv.online ? (tv.onScreen ? "Woodruff is on screen" : "Another app is on screen") : "Seen \(relative(tv.seen))")
@@ -251,7 +240,7 @@ struct TVDetailView: View {
 
     private func screenLoop() async {
         while !Task.isCancelled {
-            if !showScreen, let t = fleet.tv(tvID), t.online, fleet.platform(of: t) != .webOS, let c = fleet.client(for: t) {
+            if !showScreen, let t = fleet.tv(tvID), t.online, t.playing == nil, fleet.platform(of: t) != .webOS, let c = fleet.client(for: t) {
                 if let d = try? await c.screen(width: 480) { screen = PlatformImage(data: d) }
             }
             try? await Task.sleep(nanoseconds: 3_000_000_000)

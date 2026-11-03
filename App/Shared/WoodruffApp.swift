@@ -96,12 +96,13 @@ struct RootView: View {
             ForEach(AppSection.allCases) { s in
                 Tab(s.title, systemImage: s.symbol, value: s) {
                     NavigationStack { s.view }
+                        // What's playing floats above the tabs everywhere but Remote, which shows it itself.
+                        .safeAreaInset(edge: .bottom, spacing: 0) { if s != .remote { NowPlayingBar() } }
+                        .animation(.smooth, value: fleet.selected?.playing?.title)
                 }
                 .badge(s == .settings ? fleet.attentionCount + fleet.updatesWaiting : 0)
             }
         }
-        .tabBarMinimizeBehavior(.onScrollDown)
-        .tabViewBottomAccessory { NowPlayingAccessory() }
     }
     #endif
 }
@@ -147,7 +148,7 @@ struct MacRoot: View {
             }
             .safeAreaInset(edge: .bottom) {
                 if tvSelection == nil && selection != .remote {
-                    NowPlayingAccessory().frame(maxWidth: 560).padding(.bottom, 14)
+                    NowPlayingBar().frame(maxWidth: 600).padding(.bottom, 8)
                 }
             }
         }
@@ -155,81 +156,3 @@ struct MacRoot: View {
 }
 #endif
 
-/// What the remote's TV is playing, with ↺10, Play/Pause and 30↻ (the phone page's now-playing bar).
-struct NowPlayingAccessory: View {
-    @Environment(Fleet.self) private var fleet
-    @State private var showScreen = false
-
-    var body: some View {
-        let tv = fleet.selected
-        let p = tv?.playing
-        HStack(spacing: 12) {
-            Button { if tv != nil { showScreen = true } } label: {
-                HStack(spacing: 10) {
-                    NowPlayingArt(playing: p)
-                        .frame(width: 36, height: 36)
-                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(p?.title ?? "Nothing Playing").font(.subheadline.weight(.semibold)).lineLimit(1)
-                        Text(tv?.name ?? "No TV").font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                    }
-                    Spacer(minLength: 0)
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            if let tv, let p {
-                if p.can("back10") { control("gobackward.10") { await media(tv, "back10") } }
-                control(p.isPlaying ? "pause.fill" : "play.fill") { await media(tv, "playpause") }
-                if p.can("fwd30") { control("goforward.30") { await media(tv, "fwd30") } }
-            }
-        }
-        .padding(.horizontal, 14)
-        #if os(macOS)
-        .padding(.vertical, 8)
-        .glass(Capsule())
-        #endif
-        .sheet(isPresented: $showScreen) { if let tv { TVScreenSheet(tvID: tv.id) } }
-    }
-
-    private func control(_ symbol: String, _ op: @escaping () async -> Void) -> some View {
-        Button { Task { await op() } } label: {
-            Image(systemName: symbol).font(.system(size: 17, weight: .semibold))
-                .contentTransition(.symbolEffect(.replace))
-                .frame(width: 34, height: 34).contentShape(Rectangle())
-        }
-        .buttonStyle(PressScale())
-    }
-
-    private func media(_ tv: FleetTV, _ action: String) async {
-        guard let c = fleet.client(for: tv) else { return }
-        do {
-            if action == "playpause" { try await c.key("playpause") } else { try await c.media(action) }
-            try? await Task.sleep(nanoseconds: 700_000_000)
-            await fleet.refresh()
-        } catch { fleet.show(error) }
-    }
-}
-
-/// The poster of what's playing when it's a Woodruff video, else the app's tile.
-struct NowPlayingArt: View {
-    @Environment(Fleet.self) private var fleet
-    var playing: NowPlaying?
-    var body: some View {
-        if let key = playing?.key, key.hasPrefix("drive:"), let c = fleet.hubClient() {
-            Artwork(url: c.art("/api/poster?id=\(key.dropFirst(6))&kind=poster&v=1"))
-        } else {
-            ZStack {
-                LinearGradient(colors: [appColor, appColor.opacity(0.65)], startPoint: .topLeading, endPoint: .bottomTrailing)
-                Image(systemName: playing == nil ? "tv" : "play.fill").font(.caption.weight(.bold)).foregroundStyle(.white)
-            }
-        }
-    }
-    private var appColor: Color {
-        switch playing?.app?.lowercased() ?? "" {
-        case let a where a.contains("netflix"): return .red
-        case let a where a.contains("youtube"): return Color(red: 0.9, green: 0.1, blue: 0.1)
-        default: return .accentColor
-        }
-    }
-}

@@ -126,6 +126,7 @@ public final class Fleet {
                 if self.active || tick % 6 == 0 { await self.refresh() }
                 if tick % 120 == 0 { await self.checkReleases() }
                 if self.active || tick % 6 == 0 { await self.pollInbox() }
+                if tick % 24 == 0 { await self.refreshLibrary() }
                 tick += 1
                 try? await Task.sleep(nanoseconds: (self.active ? 5 : 30) * 1_000_000_000)
             }
@@ -245,6 +246,43 @@ public final class Fleet {
         if let r = healthReports[tv.id] { return r.platform }
         return nil
     }
+
+    // MARK: Artwork for what's playing
+
+    /// The hub's Watch home, kept to put pictures on what each TV is playing.
+    public private(set) var library: WatchHome?
+
+    public func refreshLibrary() async {
+        guard let hub = hubs.first else { return }
+        if let h = try? await TVClient(hub: hub, routeID: "this").watchHome() { library = h }
+    }
+
+    /// The poster and backdrop (TV-relative paths or TMDB links) of what [p] is: by its Drive key, else by title.
+    public func artwork(for p: NowPlaying?) -> NowPlayingArtwork? {
+        guard let p, let lib = library else { return nil }
+        let titles = (lib.featured ?? []) + (lib.recent ?? []) + (lib.movies?.items ?? []) + (lib.shows?.items ?? [])
+        func title(_ id: String?) -> Title? { id.flatMap { id in titles.first { $0.id == id } } }
+        let cont = lib.continue ?? []
+        if let key = p.key, let c = cont.first(where: { $0.key == key }) {
+            let t = title(c.titleId)
+            return NowPlayingArtwork(poster: c.poster ?? t?.poster, backdrop: t?.backdrop, titleID: c.titleId)
+        }
+        if let key = p.key, key.hasPrefix("drive:"), let t = titles.first(where: { "drive:" + $0.id == key }) {
+            return NowPlayingArtwork(poster: t.poster, backdrop: t.backdrop, titleID: t.id)
+        }
+        let want = Self.simple(String(p.title.split(separator: "·").first ?? Substring(p.title)))
+        guard !want.isEmpty else { return nil }
+        if let c = cont.first(where: { Self.simple($0.name) == want || want.hasPrefix(Self.simple($0.name)) }) {
+            let t = title(c.titleId)
+            return NowPlayingArtwork(poster: c.poster ?? t?.poster, backdrop: t?.backdrop, titleID: c.titleId)
+        }
+        if let t = titles.first(where: { Self.simple($0.title) == want || want.hasPrefix(Self.simple($0.title)) }) {
+            return NowPlayingArtwork(poster: t.poster, backdrop: t.backdrop, titleID: t.id)
+        }
+        return nil
+    }
+
+    static func simple(_ s: String) -> String { s.lowercased().filter { $0.isLetter || $0.isNumber } }
 
     // MARK: Lookup
 
@@ -418,6 +456,12 @@ public final class Fleet {
         if tvs.contains(where: { $0.playing != nil }) { return "play.tv" }
         return "tv"
     }
+}
+
+public struct NowPlayingArtwork: Hashable, Sendable {
+    public var poster: String?
+    public var backdrop: String?
+    public var titleID: String?
 }
 
 public enum FleetEvent: Sendable {

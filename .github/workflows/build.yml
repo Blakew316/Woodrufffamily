@@ -74,7 +74,7 @@ jobs:
           xcrun simctl ui "$DEV" appearance dark
           xcrun simctl status_bar "$DEV" override --time 9:41 --batteryState charged --batteryLevel 100 --cellularBars 4 --wifiBars 3 || true
           xcrun simctl install "$DEV" "build-sim/Build/Products/Debug-iphonesimulator/Woodruff Family.app"
-          for shot in remote: watch: send: memories: settings: settings:tvs settings:tv watch:title memories:photo remote:keyboard; do
+          for shot in remote: watch: send: memories: settings: settings:tvs settings:tv watch:title memories:photo remote:keyboard remote:nowplaying; do
             sec=${shot%%:*}; route=${shot#*:}
             xcrun simctl terminate "$DEV" com.woodruff.family.remote 2>/dev/null || true
             xcrun simctl launch "$DEV" com.woodruff.family.remote -demo YES -section "$sec" -route "${route:-none}"
