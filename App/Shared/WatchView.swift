@@ -26,6 +26,10 @@ struct WatchView: View {
             .padding(.bottom, 30)
         }
         .scrollIndicators(.hidden)
+        #if os(iOS)
+        // The billboard runs under the top bar, edge to edge, like the Apple TV app.
+        .ignoresSafeArea(edges: .top)
+        #endif
         .toolbar {
             ToolbarItem(placement: .principal) { TVPicker() }.sharedBackgroundVisibility(.hidden)
             ToolbarItem(placement: .primaryAction) {
@@ -51,7 +55,7 @@ struct WatchView: View {
             EmptyState(symbol: "film.stack", title: stateTitle(h.state), message: stateMessage(h.state, tv: h.tv)).padding(.top, 60)
         }
         if let featured = h.featured, !featured.isEmpty {
-            Billboard(titles: featured, page: $page).padding(.horizontal, 16)
+            Billboard(titles: featured, page: $page)
         }
         if let c = h.continue, !c.isEmpty {
             ShelfRow("Continue Watching") { ForEach(c) { ContinueTile(item: $0) } }
@@ -130,9 +134,10 @@ struct Billboard: View {
         }
         #if os(iOS)
         .tabViewStyle(.page(indexDisplayMode: .never))
+        .aspectRatio(0.82, contentMode: .fit)
+        #else
+        .aspectRatio(2.2, contentMode: .fit)
         #endif
-        .aspectRatio(1.3, contentMode: .fit)
-        .frame(maxWidth: 760)
         .frame(maxWidth: .infinity)
         .overlay(alignment: .bottomTrailing) {
             HStack(spacing: 5) {
@@ -140,17 +145,21 @@ struct Billboard: View {
                     Circle().fill(.white.opacity(i == page ? 0.95 : 0.4)).frame(width: 6, height: 6)
                 }
             }
-            .padding(.trailing, 22).padding(.bottom, 30)
+            .padding(.trailing, 24).padding(.bottom, 34)
             .animation(.snappy, value: page)
         }
     }
 
     private func card(_ t: Title) -> some View {
         ZStack(alignment: .bottomLeading) {
-            Color.clear.overlay { Artwork(url: fleet.hubClient()?.art(t.backdrop ?? t.poster)) }
-            LinearGradient(stops: [.init(color: .clear, location: 0.35), .init(color: .black.opacity(0.85), location: 1)], startPoint: .top, endPoint: .bottom)
+            Color.clear.overlay { Artwork(url: fleet.hubClient()?.art(t.backdrop ?? t.poster)) }.clipped()
+            // Fades into the page, so the billboard has no edge.
+            LinearGradient(stops: [.init(color: .black.opacity(0.35), location: 0), .init(color: .clear, location: 0.25),
+                                   .init(color: .clear, location: 0.42), .init(color: .black.opacity(0.82), location: 0.9),
+                                   .init(color: Palette.groupedBackground, location: 1)],
+                           startPoint: .top, endPoint: .bottom)
             VStack(alignment: .leading, spacing: 6) {
-                Text(t.title).font(.system(size: 30, weight: .bold)).foregroundStyle(.white).lineLimit(2)
+                Text(t.title).font(.largeTitle.bold()).foregroundStyle(.white).lineLimit(2).shadow(color: .black.opacity(0.4), radius: 8)
                 Text(meta(t)).font(.footnote.weight(.medium)).foregroundStyle(.white.opacity(0.75))
                 HStack(spacing: 10) {
                     if let p = t.play {
@@ -160,10 +169,10 @@ struct Billboard: View {
                 }
                 .padding(.top, 6)
             }
-            .padding(20)
+            .padding(.horizontal, 20)
+            .padding(.bottom, 24)
         }
-        .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
-        .contentShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
+        .contentShape(Rectangle())
         .onTapGesture { openTitle(t.id) }
         .contextMenu { TitleMenu(title: t) }
     }
@@ -437,7 +446,7 @@ struct TitleSheet: View {
                 .clipped()
             LinearGradient(stops: [.init(color: .clear, location: 0.3), .init(color: .black.opacity(0.9), location: 1)], startPoint: .top, endPoint: .bottom)
             VStack(alignment: .leading, spacing: 8) {
-                Text(d.title).font(.system(size: 34, weight: .bold)).foregroundStyle(.white)
+                Text(d.title).font(.largeTitle.bold()).foregroundStyle(.white)
                 Text(facts(d)).font(.footnote.weight(.medium)).foregroundStyle(.white.opacity(0.75))
                 HStack(spacing: 10) {
                     if let p = d.play { CapsuleButton(title: p.label ?? "Play", symbol: "play.fill") { PlayRouter.start(p, fleet: fleet); dismiss() } }

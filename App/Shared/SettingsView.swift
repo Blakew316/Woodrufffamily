@@ -119,6 +119,11 @@ struct PhoneSettingsView: View {
                     LabeledContent("ntfy topic", value: topic)
                     Button("Copy Topic") { copyToClipboard(topic) }
                 }
+                #if os(iOS)
+                Toggle("Now Playing on Lock Screen", isOn: Binding(
+                    get: { UserDefaults.standard.object(forKey: "liveActivity") as? Bool ?? true },
+                    set: { UserDefaults.standard.set($0, forKey: "liveActivity"); LiveActivitySync.shared.sync(fleet) }))
+                #endif
                 Toggle("TV Alerts", isOn: Binding(
                     get: { UserDefaults.standard.object(forKey: "notifyFleet") as? Bool ?? true },
                     set: { UserDefaults.standard.set($0, forKey: "notifyFleet"); if $0 { Notifier.requestPermission() } }))
@@ -206,7 +211,10 @@ struct TVRow: View {
     var body: some View {
         HStack(spacing: 14) {
             VStack(alignment: .leading, spacing: 3) {
-                Text(tv.name)
+                HStack(spacing: 6) {
+                    Text(tv.name)
+                    if tv.needsAttention { Circle().fill(Palette.attention).frame(width: 7, height: 7).accessibilityLabel("Needs attention") }
+                }
                 Text(line).font(.subheadline).foregroundStyle(tv.needsAttention && tv.link == "refused" ? Palette.attention : tv.isUnpaired ? Color.accentColor : .secondary).lineLimit(1)
                 if let p = tv.playing, let d = p.duration, d > 0 {
                     TimelineView(.periodic(from: .now, by: 1)) { ctx in
@@ -218,9 +226,6 @@ struct TVRow: View {
                         .frame(height: 3)
                     }
                     .padding(.top, 2)
-                }
-                if tv.needsAttention && tv.link != "refused" {
-                    Text("Needs attention · \(tv.health?.first ?? "")").font(.caption).foregroundStyle(Palette.attention).lineLimit(1)
                 }
             }
             Spacer(minLength: 0)

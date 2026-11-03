@@ -104,20 +104,25 @@ struct HomeTVTile: View {
 
     var body: some View {
         let p = tv.playing
+        // A TV that stopped keeps the picture of what it last played, dimmed, so the grid stays rich.
+        let art = p ?? (tv.isUnpaired ? nil : fleet.lastPlaying[tv.id])
         ZStack(alignment: .bottomLeading) {
-            if p != nil {
+            if art != nil && fleet.artwork(for: art) != nil {
                 Color.clear
-                    .overlay { NowPlayingArt(playing: p, backdrop: true) }
+                    .overlay { NowPlayingArt(playing: art, backdrop: true) }
                     .clipped()
-                LinearGradient(stops: [.init(color: .black.opacity(0.15), location: 0), .init(color: .black.opacity(0.85), location: 1)],
+                    .saturation(p == nil ? 0.35 : 1)
+                    .opacity(p == nil ? 0.55 : 1)
+                LinearGradient(stops: [.init(color: .black.opacity(0.15), location: 0), .init(color: .black.opacity(0.88), location: 1)],
                                startPoint: .top, endPoint: .bottom)
             }
             VStack(alignment: .leading, spacing: 0) {
-                HStack(alignment: .firstTextBaseline) {
+                HStack(alignment: .center) {
                     Text(tv.name).font(.title3.bold())
+                    if tv.needsAttention { Circle().fill(Palette.attention).frame(width: 8, height: 8) }
                     Spacer()
                     Text(state).font(.caption.weight(.semibold))
-                        .foregroundStyle(tv.needsAttention ? Palette.attention : .secondary)
+                        .foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 12)
                 if let p {
@@ -127,9 +132,6 @@ struct HomeTVTile: View {
                     LiveProgress(playing: p, times: false, tint: .white).padding(.top, 10)
                 } else {
                     Text(idleLine).font(.headline).foregroundStyle(tv.online ? .primary : .secondary)
-                    if tv.needsAttention, let first = tv.health?.first {
-                        Text(first).font(.subheadline).foregroundStyle(Palette.attention).lineLimit(1)
-                    }
                 }
                 HStack(spacing: 8) {
                     if let p { Transport(tv: tv, playing: p, compact: true) }
@@ -153,9 +155,9 @@ struct HomeTVTile: View {
             }
             .padding(18)
         }
-        .foregroundStyle(p != nil ? Color.white : Color.primary)
+        .foregroundStyle(hasArt ? Color.white : Color.primary)
         .frame(height: 230)
-        .background { if p == nil { RoundedRectangle(cornerRadius: 24, style: .continuous).fill(Palette.cardFill) } }
+        .background { RoundedRectangle(cornerRadius: 24, style: .continuous).fill(hasArt ? Color.black : Palette.cardFill) }
         .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 24, style: .continuous).strokeBorder(.white.opacity(hovering ? 0.18 : 0.06)))
         .opacity(tv.online ? 1 : 0.6)
@@ -180,11 +182,15 @@ struct HomeTVTile: View {
         }
     }
 
+    private var hasArt: Bool {
+        let art = tv.playing ?? (tv.isUnpaired ? nil : fleet.lastPlaying[tv.id])
+        return art != nil && fleet.artwork(for: art) != nil
+    }
+
     private var state: String {
         if tv.isUnpaired { return "Not Paired" }
         if tv.link == "refused" && tv.needsAttention { return "Link Again" }
         if !tv.online { return "Off" }
-        if tv.needsAttention { return "Needs Attention" }
         if fleet.isBehind(tv) { return "Update Available" }
         if let p = tv.playing { return p.isPlaying ? "Playing" : "Paused" }
         return "On"
@@ -222,5 +228,41 @@ struct SceneTile: View {
         }
         .buttonStyle(PressScale(scale: 0.97))
         .disabled(busy)
+    }
+}
+
+/// Search results for the Mac's toolbar search: Movies and TV Shows from the library.
+struct LibrarySearchResults: View {
+    @Environment(Fleet.self) private var fleet
+    var query: String
+    @State private var r: SearchResults?
+    @State private var openTitle: String?
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 26) {
+                if let r {
+                    let sections = r.first == "shows" ? [("TV Shows", r.shows), ("Movies", r.movies)] : [("Movies", r.movies), ("TV Shows", r.shows)]
+                    ForEach(sections, id: \.0) { name, list in
+                        if !list.isEmpty { ShelfRow(name) { ForEach(list) { PosterTile(title: $0) } } }
+                    }
+                    if r.movies.isEmpty && r.shows.isEmpty {
+                        EmptyState(symbol: "magnifyingglass", title: "No Results", message: "Nothing in Movies or TV Shows matches “\(query)”.")
+                            .padding(.top, 60)
+                    }
+                } else {
+                    ProgressView().frame(maxWidth: .infinity).padding(.top, 80)
+                }
+            }
+            .padding(.vertical, 24)
+        }
+        .navigationTitle("Search")
+        .environment(\.openTitle, OpenTitleAction { openTitle = $0 })
+        .sheet(item: Binding(get: { openTitle.map { TitleRef(id: $0) } }, set: { openTitle = $0?.id })) { TitleSheet(id: $0.id) }
+        .task(id: query) {
+            try? await Task.sleep(nanoseconds: 220_000_000)
+            guard !Task.isCancelled else { return }
+            r = try? await fleet.hubClient()?.search(query)
+        }
     }
 }

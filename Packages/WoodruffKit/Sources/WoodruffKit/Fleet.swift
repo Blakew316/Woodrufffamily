@@ -280,6 +280,9 @@ public final class Fleet {
             all.append(t)
         }
         tvs = all
+        var changedLast = false
+        for tv in all { if let p = tv.playing, lastPlaying[tv.id]?.title != p.title { lastPlaying[tv.id] = p; changedLast = true } }
+        if changedLast { Saved.save("lastPlaying", lastPlaying) }
         if selectedID == nil || !tvs.contains(where: { $0.id == selectedID && !$0.isUnpaired }) { selectedID = tvs.first { !$0.isUnpaired }?.id }
     }
 
@@ -345,6 +348,9 @@ public final class Fleet {
     }
 
     // MARK: Artwork for what's playing
+
+    /// What each TV last played (kept after it stops, so its tile keeps its picture).
+    public private(set) var lastPlaying: [String: NowPlaying] = Saved.load("lastPlaying", as: [String: NowPlaying].self) ?? [:]
 
     /// The hub's Watch home, kept to put pictures on what each TV is playing.
     public private(set) var library: WatchHome?

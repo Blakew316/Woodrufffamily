@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
@@ -54,83 +54,3 @@ jobs:
           path: |
             out/WoodruffFamily-unsigned.ipa
             out/WoodruffFamily-mac.zip
-      - name: iPhone screenshots (sample data)
-        continue-on-error: true
-        run: |
-          mkdir -p shots
-          DEV=$(xcrun simctl list devices available -j | python3 -c "
-          import json,sys
-          d=json.load(sys.stdin)['devices']
-          best=None
-          for rt,devs in d.items():
-              if 'iOS' not in rt: continue
-              for x in devs:
-                  if x['name'].startswith('iPhone') and 'Pro' in x['name'] and 'Max' not in x['name']:
-                      best=(rt,x['udid'],x['name']) if best is None or rt>best[0] else best
-          print(best[1])")
-          echo "Simulator $DEV"
-          xcrun simctl boot "$DEV" || true
-          xcrun simctl bootstatus "$DEV" -b
-          xcrun simctl ui "$DEV" appearance dark
-          xcrun simctl status_bar "$DEV" override --time 9:41 --batteryState charged --batteryLevel 100 --cellularBars 4 --wifiBars 3 || true
-          xcrun simctl install "$DEV" "build-sim/Build/Products/Debug-iphonesimulator/Woodruff Family.app"
-          for shot in remote: watch: send: memories: settings: settings:tvs settings:tv watch:title memories:photo remote:keyboard remote:nowplaying; do
-            sec=${shot%%:*}; route=${shot#*:}
-            xcrun simctl terminate "$DEV" com.woodruff.family.remote 2>/dev/null || true
-            xcrun simctl launch "$DEV" com.woodruff.family.remote -demo YES -section "$sec" -route "${route:-none}"
-            sleep 7
-            xcrun simctl io "$DEV" screenshot "shots/ios-$sec-${route:-main}.png"
-          done
-          SMALL=$(xcrun simctl list devices available -j | python3 -c "
-          import json,sys
-          d=json.load(sys.stdin)['devices']
-          for rt in sorted(d, reverse=True):
-              if 'iOS' not in rt: continue
-              for x in d[rt]:
-                  if x['name'] in ('iPhone 16e','iPhone SE (3rd generation)','iPhone 17e'): print(x['udid']); sys.exit()
-          ")
-          if [ -n "$SMALL" ]; then
-            xcrun simctl boot "$SMALL" || true
-            xcrun simctl bootstatus "$SMALL" -b
-            xcrun simctl ui "$SMALL" appearance dark
-            xcrun simctl install "$SMALL" "build-sim/Build/Products/Debug-iphonesimulator/Woodruff Family.app"
-            for r in none nowplaying; do
-              xcrun simctl terminate "$SMALL" com.woodruff.family.remote 2>/dev/null || true
-              xcrun simctl launch "$SMALL" com.woodruff.family.remote -demo YES -section remote -route $r
-              sleep 7
-              xcrun simctl io "$SMALL" screenshot "shots/ios-small-remote-$r.png"
-            done
-          fi
-          xcrun simctl ui "$DEV" appearance light
-          for sec in remote watch settings; do
-            xcrun simctl terminate "$DEV" com.woodruff.family.remote 2>/dev/null || true
-            xcrun simctl launch "$DEV" com.woodruff.family.remote -demo YES -section "$sec" -route none
-            sleep 6
-            xcrun simctl io "$DEV" screenshot "shots/ios-$sec-light.png"
-          done
-      - name: Mac screenshots (sample data)
-        continue-on-error: true
-        run: |
-          mkdir -p shots
-          APP="build/Build/Products/Release/Woodruff Family.app"
-          defaults write com.woodruff.family.mac NSQuitAlwaysKeepsWindows -bool false
-          for sec in remote watch memories settings; do
-            open -n -F "$APP" --args -demo YES -section "$sec" -route none
-            sleep 9
-            osascript -e 'tell application "System Events" to set frontmost of (first process whose name contains "Woodruff") to true' || true
-            sleep 1
-            screencapture -x "shots/mac-$sec.png" || true
-            pkill -f "Woodruff Family.app" || true
-            sleep 2
-          done
-      - name: Publish screenshots
-        if: github.event_name == 'push'
-        continue-on-error: true
-        run: |
-          cd shots
-          for f in *.png; do sips -Z 1400 "$f" >/dev/null; done
-          git init -q
-          git checkout -q -b screenshots
-          git add .
-          git -c user.name=ci -c user.email=ci@example.com commit -qm "Screenshots for ${GITHUB_SHA::7}"
-          git push -qf "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" screenshots

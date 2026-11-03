@@ -10,6 +10,8 @@ struct RemoteView: View {
     @State private var field: TypeState?
     @State private var typing = false
     @State private var presses = 0
+    @State private var arrowTicks = 0
+    @State private var okTicks = 0
     @State private var nowPlaying = false
     @State private var showPlaying = false
 
@@ -55,6 +57,8 @@ struct RemoteView: View {
                 if hasTop { status.frame(height: topH, alignment: .top) }
                 Spacer(minLength: 16)
                 Clickpad(size: pad) { send($0) } onRepeat: { send($0, repeat: $1) }
+                    .opacity(isOff ? 0.35 : 1)
+                    .allowsHitTesting(!isOff)
                     // Home and the keyboard sit in the clickpad's top corners, matched.
                     .overlay(alignment: .topLeading) {
                         CornerKey(symbol: "house.fill", label: "Home", size: key * 0.8) { send("home") }
@@ -77,10 +81,22 @@ struct RemoteView: View {
             .frame(width: geo.size.width, height: h)
             #endif
         }
-        .haptic(presses)
+        #if os(iOS)
+        // Like the Siri Remote: a tick for each arrow, a firmer click for OK, a light tap for the other keys.
+        .sensoryFeedback(.selection, trigger: arrowTicks)
+        .sensoryFeedback(.impact(weight: .medium, intensity: 0.9), trigger: okTicks)
+        .sensoryFeedback(.impact(weight: .light, intensity: 0.6), trigger: presses)
+        #endif
         .toolbar {
             if !embedded {
-            ToolbarItem(placement: .principal) { TVPicker(allowAll: true) }
+            ToolbarItem(placement: .principal) {
+                TVPicker(allowAll: true)
+                    // Swipe sideways on the TV's name to move to the next or previous TV.
+                    .simultaneousGesture(DragGesture(minimumDistance: 24).onEnded { v in
+                        guard abs(v.translation.width) > abs(v.translation.height) else { return }
+                        stepTV(v.translation.width < 0 ? 1 : -1)
+                    })
+            }
                 .sharedBackgroundVisibility(.hidden)
             if let tv, !all, fleet.lg(for: tv) != nil {
                 ToolbarItem(placement: .primaryAction) { LGMenu(tv: tv) }
@@ -106,7 +122,10 @@ struct RemoteView: View {
 
     // MARK: Pieces
 
+    private var isOff: Bool { !all && (tv.map { !$0.online || $0.link == "refused" } ?? false) }
+
     private var topHeight: CGFloat {
+        if isOff { return 30 }
         guard !all, let tv, tv.online, tv.link != "refused", tv.playing != nil else { return 66 }
         return showPlaying ? 120 : 44
     }
@@ -122,20 +141,16 @@ struct RemoteView: View {
             Text("Every key goes to the \(fleet.tvs.filter(\.online).count) TVs that are on.")
                 .font(.footnote).foregroundStyle(.secondary)
         } else if let tv, !tv.online || tv.link == "refused" {
-            HStack(spacing: 10) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Can’t Reach \(tv.name)").font(.subheadline.weight(.semibold))
-                    Text(tv.link == "refused" ? "Its link stopped working. Link it again in Settings → TVs." : "Check that it’s on and this device is on the same Wi‑Fi.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-                Spacer(minLength: 0)
-                if let mac = fleet.extras[tv.id]?.mac {
+            HStack(spacing: 6) {
+                Text(tv.link == "refused" ? "\(tv.name) needs linking again" : "\(tv.name) is off")
+                    .font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
+                if let mac = fleet.extras[tv.id]?.mac, tv.link != "refused" {
+                    Text("·").foregroundStyle(.tertiary)
                     Button("Turn On") { WakeOnLAN.wake(mac: mac, lastHost: fleet.extras[tv.id]?.lastHost) }
-                        .buttonStyle(.glassProminent)
+                        .font(.subheadline.weight(.semibold))
                 }
             }
-            .padding(14)
-            .glass(RoundedRectangle(cornerRadius: 20, style: .continuous), interactive: false)
+            .frame(maxWidth: .infinity)
         } else if let tv, let p = tv.playing {
             NowPlayingDropdown(tv: tv, playing: p, expanded: $showPlaying)
         } else if let f = field?.field {
@@ -174,10 +189,24 @@ struct RemoteView: View {
         .frame(maxWidth: 340)
     }
 
+    /// Moves the remote to the next (or previous) paired TV.
+    private func stepTV(_ by: Int) {
+        let list = fleet.tvs.filter { !$0.isUnpaired }
+        guard !list.isEmpty else { return }
+        let i = list.firstIndex { $0.id == fleet.selectedID } ?? 0
+        let next = list[(i + by + list.count) % list.count]
+        withAnimation(.snappy) { fleet.remoteAll = false; fleet.selectedID = next.id }
+        arrowTicks += 1
+    }
+
     // MARK: Sending
 
     private func send(_ key: String, repeat n: Int = 0) {
-        presses += 1
+        switch key {
+        case "up", "down", "left", "right": arrowTicks += 1
+        case "ok", "menu": okTicks += 1
+        default: presses += 1
+        }
         let targets = all ? fleet.tvs.filter(\.online) : (tv.map { [$0] } ?? [])
         for t in targets {
             Task {
@@ -239,6 +268,8 @@ struct Clickpad: View {
     @State private var hold: Task<Void, Never>?
     @State private var held = false
     @State private var began = false
+    @State private var swiped = false
+    @State private var bumps = 0
 
     var body: some View {
         ZStack {
@@ -247,7 +278,7 @@ struct Clickpad: View {
                 .shadow(color: .black.opacity(0.25), radius: 18, y: 8)
             Circle().fill(pressed == "ok" ? Palette.padCenter.opacity(0.7) : Palette.padCenter)
                 .frame(width: size * 0.42, height: size * 0.42)
-                .overlay(Text("OK").font(.system(size: size * 0.055, weight: .semibold)).foregroundStyle(.secondary))
+                .overlay(Text("OK").font(.title3.weight(.semibold)).foregroundStyle(.secondary))
                 .scaleEffect(pressed == "ok" ? 0.96 : 1)
             ForEach(["up", "down", "left", "right"], id: \.self) { d in
                 Image(systemName: "chevron.\(d == "up" ? "up" : d == "down" ? "down" : d == "left" ? "left" : "right")")
@@ -259,6 +290,9 @@ struct Clickpad: View {
         }
         .frame(width: size, height: size)
         .animation(.spring(response: 0.22, dampingFraction: 0.65), value: pressed)
+        #if os(iOS)
+        .sensoryFeedback(.impact(flexibility: .soft, intensity: 0.5), trigger: bumps)
+        #endif
         .contentShape(Circle())
         .gesture(
             DragGesture(minimumDistance: 0)
@@ -269,11 +303,14 @@ struct Clickpad: View {
                         pressed = zone
                         startHold(zone)
                     }
-                    if max(abs(v.translation.width), abs(v.translation.height)) > 26 { hold?.cancel() }
+                    if max(abs(v.translation.width), abs(v.translation.height)) > 26 {
+                        hold?.cancel()
+                        if !swiped { swiped = true; bumps += 1 }
+                    }
                 }
                 .onEnded { v in
                     hold?.cancel()
-                    defer { pressed = nil; began = false; held = false }
+                    defer { pressed = nil; began = false; held = false; swiped = false }
                     if held { return }
                     let dx = v.translation.width, dy = v.translation.height
                     if max(abs(dx), abs(dy)) >= 26 {

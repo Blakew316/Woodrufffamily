@@ -98,6 +98,13 @@ struct RootView: View {
     #if os(iOS)
     /// The Liquid Glass tab bar (it tucks away while scrolling), with what's playing riding above it.
     private var tabs: some View {
+        tabView
+            .onChange(of: fleet.selected?.playing) { _, _ in LiveActivitySync.shared.sync(fleet) }
+            .onChange(of: fleet.selectedID) { _, _ in LiveActivitySync.shared.sync(fleet) }
+            .onChange(of: fleet.remoteAll) { _, _ in LiveActivitySync.shared.sync(fleet) }
+    }
+
+    private var tabView: some View {
         TabView(selection: selection) {
             ForEach(AppSection.phone) { s in
                 Tab(s.title, systemImage: s.symbol, value: s) {
@@ -120,6 +127,8 @@ struct MacRoot: View {
     @Environment(Fleet.self) private var fleet
     @Binding var selection: AppSection
     @State private var tvSelection: String?
+    @State private var query = ""
+    @State private var keyMonitor: Any?
 
     private var section: AppSection { selection == .remote ? .home : selection }
 
@@ -152,7 +161,8 @@ struct MacRoot: View {
             .navigationSplitViewColumnWidth(min: 200, ideal: 220)
         } detail: {
             NavigationStack {
-                if let id = tvSelection { TVDetailView(tvID: id) } else { section.view }
+                if !query.isEmpty { LibrarySearchResults(query: query) }
+                else if let id = tvSelection { TVDetailView(tvID: id) } else { section.view }
             }
             .safeAreaInset(edge: .bottom) {
                 if tvSelection == nil && section != .home && !fleet.remotePanel {
@@ -160,6 +170,9 @@ struct MacRoot: View {
                 }
             }
         }
+        .searchable(text: $query, placement: .toolbar, prompt: "Movies and TV Shows")
+        .onAppear { installSpaceKey() }
+        .onDisappear { if let m = keyMonitor { NSEvent.removeMonitor(m) } }
         .inspector(isPresented: $fleet.remotePanel) {
             RemoteView(embedded: true)
                 .inspectorColumnWidth(min: 300, ideal: 320, max: 380)
@@ -172,6 +185,19 @@ struct MacRoot: View {
                 .help("Remote (⌥⌘R)")
                 .keyboardShortcut("r", modifiers: [.command, .option])
             }
+        }
+    }
+
+    /// Space plays or pauses the remote's TV from anywhere, except while typing in a text field.
+    private func installSpaceKey() {
+        guard keyMonitor == nil else { return }
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { e in
+            guard e.keyCode == 49, e.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty,
+                  !(NSApp.keyWindow?.firstResponder is NSText) else { return e }
+            Task { @MainActor in
+                if let tv = Fleet.shared.selected { try? await Fleet.shared.client(for: tv)?.key("playpause") }
+            }
+            return nil
         }
     }
 }

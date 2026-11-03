@@ -11,7 +11,7 @@ struct WelcomeView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
                         .shadow(color: Color.accentColor.opacity(0.55), radius: 30)
                         .padding(.top, 48)
-                    Text("Woodruff Family").font(.system(size: 34, weight: .bold))
+                    Text("Woodruff Family").font(.largeTitle.bold())
                     Text("Every TV in the house, in one place: the remote, what’s playing, Family Memories, messages, health and updates.")
                         .font(.body).multilineTextAlignment(.center).foregroundStyle(.secondary)
                         .frame(maxWidth: 440)
