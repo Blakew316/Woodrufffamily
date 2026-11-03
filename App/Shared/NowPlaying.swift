@@ -153,35 +153,64 @@ struct Transport: View {
     }
 }
 
-/// Inside the remote: what's on, compact, so the remote's buttons stay free. Tap for Now Playing.
-struct NowPlayingCard: View {
+/// Inside the remote: a slim bar with just the title that drops down into the full card (artwork, progress,
+/// transport). The artwork opens the full player.
+struct NowPlayingDropdown: View {
     @Environment(Fleet.self) private var fleet
     var tv: FleetTV
     var playing: NowPlaying
+    @Binding var expanded: Bool
     @State private var open = false
 
     var body: some View {
-        HStack(spacing: 12) {
-            Button { open = true } label: {
-                HStack(spacing: 12) {
-                    NowPlayingArt(playing: playing)
-                        .frame(width: 46, height: 46)
-                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(playing.title).font(.subheadline.weight(.semibold)).lineLimit(1)
-                        Text(playing.subtitle?.isEmpty == false ? playing.subtitle! : (playing.app ?? tv.name))
-                            .font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                        LiveProgress(playing: playing, times: false)
-                    }
-                    Spacer(minLength: 0)
+        VStack(alignment: .leading, spacing: 0) {
+            Button { withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) { expanded.toggle() } } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: playing.isPlaying ? "waveform" : "pause.fill")
+                        .font(.footnote.weight(.bold))
+                        .foregroundStyle(Color.accentColor)
+                        .symbolEffect(.variableColor.iterative, isActive: playing.isPlaying)
+                        .frame(width: 18)
+                    Text(playing.title).font(.subheadline.weight(.semibold)).lineLimit(1)
+                    Spacer(minLength: 4)
+                    Image(systemName: "chevron.down")
+                        .font(.footnote.weight(.bold)).foregroundStyle(.secondary)
+                        .rotationEffect(.degrees(expanded ? 180 : 0))
                 }
+                .padding(.horizontal, 16)
+                .frame(height: 44)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            Transport(tv: tv, playing: playing, compact: true)
+            .accessibilityLabel(expanded ? "Hide what’s playing" : "Show what’s playing: \(playing.title)")
+
+            if expanded {
+                HStack(spacing: 12) {
+                    Button { open = true } label: {
+                        NowPlayingArt(playing: playing)
+                            .frame(width: 52, height: 52)
+                            .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+                            .overlay(alignment: .bottomTrailing) {
+                                Image(systemName: "arrow.up.left.and.arrow.down.right")
+                                    .font(.system(size: 9, weight: .bold)).foregroundStyle(.white)
+                                    .padding(4).background(Circle().fill(.black.opacity(0.45))).padding(3)
+                            }
+                    }
+                    .buttonStyle(PressScale())
+                    .accessibilityLabel("Open the player")
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(playing.subtitle?.isEmpty == false ? playing.subtitle! : (playing.app ?? tv.name))
+                            .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        LiveProgress(playing: playing, times: true)
+                    }
+                    Transport(tv: tv, playing: playing, compact: true)
+                }
+                .padding(.horizontal, 12)
+                .padding(.bottom, 12)
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
         }
-        .padding(10)
-        .glass(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .glass(RoundedRectangle(cornerRadius: expanded ? 24 : 22, style: .continuous))
         .sheet(isPresented: $open) { NowPlayingSheet() }
     }
 }

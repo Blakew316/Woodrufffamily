@@ -9,6 +9,7 @@ struct RemoteView: View {
     @State private var typing = false
     @State private var presses = 0
     @State private var nowPlaying = false
+    @State private var showPlaying = false
 
     private var tv: FleetTV? { fleet.selected }
     private var all: Bool { fleet.remoteAll }
@@ -20,14 +21,14 @@ struct RemoteView: View {
             let h = geo.size.height
             let key = min(62, max(46, h * 0.085))
             let gap = key * 0.26
-            let keysH = key * 3 + gap * 2
+            let keysH = key * 2 + gap
             let appsH = key * 0.78
-            let topH: CGFloat = hasTop ? 66 : 0
+            let topH: CGFloat = hasTop ? topHeight : 0
             let rows: CGFloat = 4 // gaps between status, clickpad, keys, apps
             let fixed = topH + keysH + appsH + rows * 16 + 8 + 10
-            let pad = max(150, min(geo.size.width - 72, 300, h - fixed))
+            let pad = max(150, min(geo.size.width - 40, 360, h - fixed))
             VStack(spacing: 0) {
-                if hasTop { status.frame(height: topH) }
+                if hasTop { status.frame(height: topH, alignment: .top) }
                 Spacer(minLength: 16)
                 Clickpad(size: pad) { send($0) } onRepeat: { send($0, repeat: $1) }
                 Spacer(minLength: 16)
@@ -35,16 +36,20 @@ struct RemoteView: View {
                 Spacer(minLength: 16).frame(maxHeight: 22)
                 apps(appsH)
             }
-            .padding(.horizontal, 24)
+            .padding(.horizontal, 20)
             .padding(.top, 8)
             .padding(.bottom, 10)
-            .frame(maxWidth: 440)
+            .frame(maxWidth: 460)
             .frame(width: geo.size.width, height: h)
         }
         .haptic(presses)
         .toolbar {
             ToolbarItem(placement: .principal) { TVPicker(allowAll: true) }
                 .sharedBackgroundVisibility(.hidden)
+            ToolbarItem(placement: .primaryAction) {
+                Button { send("home") } label: { Image(systemName: "house") }
+                    .accessibilityLabel("Home")
+            }
             ToolbarItem(placement: .primaryAction) {
                 Button { typing = true } label: {
                     Image(systemName: "keyboard")
@@ -75,6 +80,11 @@ struct RemoteView: View {
 
     // MARK: Pieces
 
+    private var topHeight: CGFloat {
+        guard !all, let tv, tv.online, tv.link != "refused", tv.playing != nil else { return 66 }
+        return showPlaying ? 120 : 44
+    }
+
     private var hasTop: Bool {
         if all { return true }
         guard let tv else { return false }
@@ -102,17 +112,7 @@ struct RemoteView: View {
             .padding(14)
             .glass(RoundedRectangle(cornerRadius: 20, style: .continuous), interactive: false)
         } else if let tv, let p = tv.playing {
-            NowPlayingCard(tv: tv, playing: p)
-                .overlay(alignment: .topTrailing) {
-                    if let f = field?.field {
-                        Button { typing = true } label: {
-                            Label("Type into \(f.label ?? "text box")", systemImage: "keyboard").labelStyle(.iconOnly)
-                                .font(.caption.weight(.bold)).foregroundStyle(.white)
-                                .frame(width: 26, height: 26).background(Circle().fill(Color.accentColor))
-                        }
-                        .buttonStyle(.plain).offset(x: 6, y: -8)
-                    }
-                }
+            NowPlayingDropdown(tv: tv, playing: p, expanded: $showPlaying)
         } else if let f = field?.field {
             Button { typing = true } label: {
                 Label("Type into \(f.label?.isEmpty == false ? f.label! : "the text box")", systemImage: "keyboard")
@@ -126,19 +126,16 @@ struct RemoteView: View {
         }
     }
 
+    /// Back and Mute beside the volume rocker. OK on the clickpad plays and pauses; Home is in the top bar.
     private func keys(_ key: CGFloat, _ gap: CGFloat) -> some View {
         HStack(alignment: .top, spacing: 0) {
             VStack(spacing: gap) {
                 RoundKey(symbol: "chevron.backward", label: "Back", size: key) { send("back") }
-                RoundKey(symbol: "playpause.fill", label: "Play/Pause", size: key) { send("playpause") }
                 RoundKey(symbol: "speaker.slash.fill", label: "Mute", size: key) { send("mute") }
             }
             .frame(maxWidth: .infinity)
-            VStack(spacing: gap) {
-                RoundKey(symbol: "tv", label: "Home", size: key) { send("home") }
-                VolumeRocker(width: key, height: key * 2 + gap) { up, n in send(up ? "volup" : "voldown", repeat: n) }
-            }
-            .frame(maxWidth: .infinity)
+            VolumeRocker(width: key, height: key * 2 + gap) { up, n in send(up ? "volup" : "voldown", repeat: n) }
+                .frame(maxWidth: .infinity)
         }
         .frame(maxWidth: 300)
         .glassGroup(spacing: gap)
