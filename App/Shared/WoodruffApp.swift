@@ -188,7 +188,6 @@ struct MacRoot: View {
                             Text(tv.name)
                             Spacer()
                             if tv.needsAttention { Circle().fill(Palette.attention).frame(width: 7, height: 7) }
-                            else if tv.playing?.isPlaying == true { Circle().fill(Color.accentColor).frame(width: 7, height: 7) }
                         }
                         .foregroundStyle(tv.online ? .primary : .secondary)
                         .tag("tv:\(tv.id)")
