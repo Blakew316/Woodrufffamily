@@ -23,10 +23,27 @@ struct SendView: View {
     var body: some View {
         Form {
             Section {
-                TextField("Message", text: $message, axis: .vertical)
-                    .lineLimit(5...12)
-                    .focused($focused)
-                    .padding(.vertical, 4)
+                // Like Messages: the send arrow sits in the message itself, and the box grows as you write.
+                HStack(alignment: .bottom, spacing: 10) {
+                    TextField("Message", text: $message, axis: .vertical)
+                        .lineLimit(1...6)
+                        .focused($focused)
+                        .padding(.vertical, 6)
+                    Button { send() } label: {
+                        if sending {
+                            ProgressView().frame(width: 32, height: 32)
+                        } else {
+                            Image(systemName: "arrow.up.circle.fill")
+                                .font(.system(size: 30))
+                                .symbolRenderingMode(.palette)
+                                .foregroundStyle(.white, canSend ? Color.accentColor : Color.gray.opacity(0.4))
+                        }
+                    }
+                    .buttonStyle(PressScale())
+                    .disabled(!canSend || sending)
+                    .accessibilityLabel("Send")
+                    .animation(.snappy, value: canSend)
+                }
                 NavigationLink { SendToView(to: to) } label: {
                     LabeledContent("To", value: toSummary)
                 }
@@ -46,17 +63,10 @@ struct SendView: View {
         .formStyle(.grouped)
         .scrollDismissesKeyboard(.interactively)
         .screenTitle("Send")
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Button { send() } label: {
-                    if sending { ProgressView() } else { Text("Send") }
-                }
-                .buttonStyle(.glassProminent)
-                .disabled(message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || sending)
-            }
-        }
         .task { await loadPhones() }
     }
+
+    private var canSend: Bool { !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
     private var toSummary: String {
         let phonesOn = to.knownPhones.filter { to.phones.contains($0.id) }.count
