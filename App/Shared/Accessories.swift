@@ -5,7 +5,7 @@ import WoodruffKit
 // temperature…) and Samsung SmartThings appliances (washer, dryer, fridge…), as tiles on Home.
 
 struct HomeDevice: Identifiable, Hashable {
-    enum Kind: String { case outlet, toggle, lock, thermostat, sensor, fan, blinds, garage, washer, dryer, fridge, oven, dishwasher, appliance }
+    enum Kind: String { case outlet, toggle, lock, thermostat, sensor, fan, blinds, garage, washer, dryer, fridge, oven, dishwasher, aircon, vacuum, appliance }
 
     var id: String
     var name: String
@@ -29,6 +29,17 @@ struct HomeDevice: Identifiable, Hashable {
     var machineState: String?     // run / pause / stop
     var endsAt: Date?
     var remoteControl = false     // the appliance allows starting / pausing from the phone
+    var mode: String?             // vacuum movement, AC mode…
+
+    /// Busy right now (for the running animations).
+    var isRunning: Bool {
+        switch kind {
+        case .washer, .dryer, .dishwasher, .oven: return machineState == "run"
+        case .vacuum: return mode == "cleaning"
+        case .fridge: return reachable
+        default: return isOn == true
+        }
+    }
 
     var sourceName: String { source == "home" ? "Apple Home" : "SmartThings" }
 }
@@ -125,17 +136,26 @@ struct DeviceTile: View {
         case .garage: return device.doorOpen == true
         case .blinds: return (device.position ?? 0) > 0
         case .washer, .dryer, .dishwasher, .oven: return device.machineState == "run"
+        case .vacuum: return device.mode == "cleaning"
         default: return device.isOn == true
         }
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Image(systemName: symbol)
-                .font(.system(size: 20, weight: .semibold))
-                .foregroundStyle(device.alert ? Palette.attention : (lit ? Color.orange : .secondary))
-                .frame(height: 26)
-                .contentTransition(.symbolEffect(.replace))
+            Group {
+                if device.source == "smartthings" && device.isRunning && ApplianceArt.animates(device.kind) {
+                    ApplianceArt(kind: device.kind, running: true, alert: device.alert)
+                        .frame(width: 34, height: 34)
+                        .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+                } else {
+                    Image(systemName: symbol)
+                        .font(.system(size: 20, weight: .semibold))
+                        .foregroundStyle(device.alert ? Palette.attention : (lit ? Color.orange : .secondary))
+                        .contentTransition(.symbolEffect(.replace))
+                }
+            }
+            .frame(height: 34, alignment: .leading)
             VStack(alignment: .leading, spacing: 1) {
                 Text(device.name).font(.subheadline.weight(.semibold)).lineLimit(2)
                 Text(device.reachable ? device.status : "Not Responding").font(.caption)
@@ -195,6 +215,8 @@ func deviceSymbol(_ d: HomeDevice) -> String {
     case .fridge: return "refrigerator.fill"
     case .oven: return "oven.fill"
     case .dishwasher: return "dishwasher.fill"
+    case .aircon: return "air.conditioner.horizontal.fill"
+    case .vacuum: return "circle.circle.fill"
     case .appliance: return "powerplug.fill"
     }
 }
@@ -216,7 +238,9 @@ struct DeviceDetailView: View {
     @State private var position: Double = 0
 
     var body: some View {
-        if let d = store.device(deviceID) {
+        if let d = store.device(deviceID), d.source == "smartthings" {
+            ApplianceView(device: d, inSheet: inSheet)
+        } else if let d = store.device(deviceID) {
             ScrollView {
                 VStack(spacing: 16) {
                     VStack(spacing: 12) {

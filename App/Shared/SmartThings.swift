@@ -16,6 +16,9 @@ final class SmartThings {
     var connected: Bool { Keychain.get("st.refresh") != nil || Keychain.get("st.token") != nil }
 
     private var devices: [[String: Any]] = []
+    /// Each appliance's last full status and its capabilities, for its controls.
+    private(set) var raw: [String: [String: Any]] = [:]
+    private(set) var capabilities: [String: Set<String>] = [:]
     private var roomNames: [String: String] = [:]
     private var loop: Task<Void, Never>?
     private var lastMachine: [String: String] = [:]
@@ -135,11 +138,53 @@ final class SmartThings {
             for dev in devices {
                 guard let id = dev["deviceId"] as? String else { continue }
                 let status = (try? await call("GET", "/devices/\(id)/status")) ?? [:]
+                raw["st:" + id] = status
+                capabilities["st:" + id] = allCaps(dev)
                 if let d = make(dev, status) { out.append(d) }
             }
             error = nil
             AccessoryStore.shared.fromSmartThings = out
         } catch { self.error = error.localizedDescription }
+    }
+
+    private func allCaps(_ dev: [String: Any]) -> Set<String> {
+        var out = Set<String>()
+        for comp in dev["components"] as? [[String: Any]] ?? [] {
+            let cid = comp["id"] as? String ?? "main"
+            for c in comp["capabilities"] as? [[String: Any]] ?? [] {
+                if let id = c["id"] as? String { out.insert(cid == "main" ? id : "\(cid)/\(id)") }
+            }
+        }
+        return out
+    }
+
+    /// A value from an appliance's last status.
+    func read(_ deviceID: String, _ cap: String, _ attr: String, in component: String = "main") -> Any? {
+        guard let st = raw[deviceID] else { return nil }
+        return value(st, cap, attr, in: component)
+    }
+
+    /// The unit that came with a value ("F", "C", "W").
+    func unit(_ deviceID: String, _ cap: String, _ attr: String, in component: String = "main") -> String? {
+        ((((raw[deviceID]?["components"] as? [String: Any])?[component] as? [String: Any])?[cap] as? [String: Any])?[attr] as? [String: Any])?["unit"] as? String
+    }
+
+    func has(_ deviceID: String, _ cap: String, in component: String = "main") -> Bool {
+        capabilities[deviceID]?.contains(component == "main" ? cap : "\(component)/\(cap)") == true
+    }
+
+    /// Sends one command, then reads the appliance again.
+    func command(_ d: HomeDevice, _ cap: String, _ command: String, _ args: [Any] = [], component: String = "main") {
+        let id = String(d.id.dropFirst(3))
+        var c: [String: Any] = ["component": component, "capability": cap, "command": command]
+        if !args.isEmpty { c["arguments"] = args }
+        Task {
+            do {
+                _ = try await call("POST", "/devices/\(id)/commands", ["commands": [c]])
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                await refresh(full: false)
+            } catch { self.error = error.localizedDescription }
+        }
     }
 
     private func caps(_ dev: [String: Any]) -> Set<String> {
@@ -151,6 +196,7 @@ final class SmartThings {
     private func value(_ status: [String: Any], _ cap: String, _ attr: String, in component: String = "main") -> Any? {
         (((status["components"] as? [String: Any])?[component] as? [String: Any])?[cap] as? [String: Any])
             .flatMap { ($0[attr] as? [String: Any])?["value"] }
+            .flatMap { $0 is NSNull ? nil : $0 }
     }
 
     private func celsius(_ status: [String: Any], _ component: String, _ cap: String = "temperatureMeasurement", _ attr: String = "temperature") -> Double? {
@@ -195,6 +241,24 @@ final class SmartThings {
             if let z = celsius(st, "freezer") { bits.append("Freezer \(temperatureText(z))") }
             if (value(st, "contactSensor", "contact") as? String) == "open" { bits.insert("Door Open", at: 0); d.alert = true }
             d.status = bits.isEmpty ? "On" : bits.joined(separator: " · ")
+        } else if c.contains("robotCleanerMovement") {
+            d.kind = .vacuum
+            let move = value(st, "robotCleanerMovement", "robotCleanerMovement") as? String
+            d.mode = move
+            let battery = (value(st, "battery", "battery") as? NSNumber)?.intValue
+            let words = ["cleaning": "Cleaning", "homing": "Going Home", "charging": "Charging", "idle": "Docked", "pause": "Paused", "alarm": "Needs Help", "after": "Done"]
+            d.status = (move.flatMap { words[$0] } ?? "Ready") + (battery.map { " · \($0)%" } ?? "")
+            d.alert = move == "alarm"
+        } else if c.contains("airConditionerMode") {
+            d.kind = .aircon
+            let mode = value(st, "airConditionerMode", "airConditionerMode") as? String
+            d.mode = mode
+            var bits: [String] = [d.isOn == true ? (mode?.capitalized ?? "On") : "Off"]
+            if let t = celsius(st, "main") { d.temperature = t; bits.append(temperatureText(t)) }
+            d.status = bits.joined(separator: " · ")
+        } else if c.contains("airPurifierFanMode") {
+            d.kind = .fan
+            d.status = d.isOn == true ? ((value(st, "airPurifierFanMode", "airPurifierFanMode") as? String)?.capitalized ?? "On") : "Off"
         } else if c.contains("switch") {
             d.kind = .toggle
             d.status = d.isOn == true ? "On" : "Off"
