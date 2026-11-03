@@ -121,6 +121,20 @@ public final class Fleet {
     /// TVs whose "can't reach" notification actually went out (so "back" only follows one of those).
     private var offlineAnnounced: Set<String> = []
 
+    /// Whether this iPhone or Mac is on the home Wi‑Fi: the same network as a paired TV's address.
+    public var atHome: Bool {
+        #if canImport(Darwin)
+        let mine = LANScan.prefixes()
+        let tvHosts = hubs.compactMap { $0.connection.base.host } + extras.values.compactMap(\.lastHost)
+        return tvHosts.contains { host in
+            let parts = host.split(separator: ".")
+            return parts.count == 4 && mine.contains(parts.prefix(3).joined(separator: ".") + ".")
+        }
+        #else
+        return true
+        #endif
+    }
+
     /// Whether a TV that stopped answering is really unreachable, rather than just switched off: its
     /// address still answers on the network (or, for an LG, it says it's awake) but Woodruff on it doesn't.
     func cantTalkToIt(_ tv: FleetTV) async -> Bool {
@@ -383,6 +397,12 @@ public final class Fleet {
             offlineNotified.remove(tv.id)
             if offlineAnnounced.remove(tv.id) != nil { onChange?(.cameOnline(tv)) }
         } else if !tv.isUnpaired {
+            // Away from home (not on the TVs' Wi‑Fi), or every TV gone at once (the Wi‑Fi itself is down):
+            // the TVs only look gone from here, so no "can't reach" and no countdown toward one.
+            if !atHome || !tvs.contains(where: { $0.online && !$0.isUnpaired }) {
+                offlineSince[tv.id] = nil
+                return
+            }
             let since = offlineSince[tv.id] ?? Date()
             offlineSince[tv.id] = since
             if old?.online == true || old == nil { return }
@@ -391,7 +411,7 @@ public final class Fleet {
                 // Switched off is normal and says nothing. Only a TV still on the Wi‑Fi that won't talk to us
                 // (or an LG awake but not answering) is worth a notification.
                 Task { [weak self] in
-                    guard let self, await self.cantTalkToIt(tv) else { return }
+                    guard let self, self.atHome, await self.cantTalkToIt(tv) else { return }
                     self.offlineAnnounced.insert(tv.id)
                     self.onChange?(.wentOffline(tv))
                 }
