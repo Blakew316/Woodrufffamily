@@ -51,8 +51,8 @@ targets:
         UILaunchScreen: {}
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
         UISupportedInterfaceOrientations~ipad: [UIInterfaceOrientationPortrait, UIInterfaceOrientationPortraitUpsideDown, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
-        NSLocalNetworkUsageDescription: Woodruff finds and controls the family's TVs on your Wi-Fi.
-        NSBonjourServices: [_woodruff._tcp]
+        NSLocalNetworkUsageDescription: Woodruff finds and controls the family’s TVs, Sonos speakers and lights on your Wi-Fi.
+        NSBonjourServices: [_woodruff._tcp, _sonos._tcp]
         NSCameraUsageDescription: Scan the pairing QR code shown on a TV.
         NSPhotoLibraryUsageDescription: Add photos and videos to Family Memories on the TVs.
         NSPhotoLibraryAddUsageDescription: Save photos from the TV to your library.
@@ -119,8 +119,8 @@ targets:
         CFBundleDisplayName: Woodruff Family
         LSApplicationCategoryType: public.app-category.utilities
         LSMinimumSystemVersion: "26.0"
-        NSLocalNetworkUsageDescription: Woodruff finds and controls the family's TVs on your network.
-        NSBonjourServices: [_woodruff._tcp]
+        NSLocalNetworkUsageDescription: Woodruff finds and controls the family’s TVs, Sonos speakers and lights on your network.
+        NSBonjourServices: [_woodruff._tcp, _sonos._tcp]
         NSPhotoLibraryUsageDescription: Add photos and videos to Family Memories on the TVs.
         NSUserActivityTypes: [com.woodruff.family.remote]
         NSLocationUsageDescription: Your city sets the weather shown on your TVs' Home screens.

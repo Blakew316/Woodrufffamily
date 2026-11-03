@@ -17,6 +17,7 @@ struct WoodruffApp: App {
                     // Apple's own prompts on first launch: notifications, then location while using (for weather).
                     if !Demo.isOn { Notifier.attach(to: fleet) }
                     if !Demo.isOn && !fleet.hubs.isEmpty { LocationWeather.shared.start(fleet) }
+                    SmartHome.shared.start()
                     await fleet.start()
                 }
                 .onOpenURL { url in
@@ -71,8 +72,8 @@ struct WoodruffApp: App {
 enum AppSection: String, CaseIterable, Identifiable, Hashable {
     case home, remote, watch, send, memories, settings
     var id: String { rawValue }
-    /// iPhone tabs; the Mac has Home instead of Remote (the remote slides out on the right).
-    static let phone: [AppSection] = [.remote, .watch, .send, .memories, .settings]
+    /// iPhone tabs (Send is a button on Home); the Mac has no Remote tab (the remote slides out on the right).
+    static let phone: [AppSection] = [.home, .remote, .watch, .memories, .settings]
     static let mac: [AppSection] = [.home, .watch, .send, .memories, .settings]
     var title: String {
         switch self {
@@ -111,7 +112,14 @@ struct RootView: View {
     @AppStorage("section") private var stored: String = AppSection.remote.rawValue
 
     private var selection: Binding<AppSection> {
-        Binding(get: { AppSection(rawValue: stored) ?? .remote }, set: { stored = $0.rawValue })
+        Binding(get: {
+            let s = AppSection(rawValue: stored) ?? .home
+            #if os(iOS)
+            return AppSection.phone.contains(s) ? s : .home
+            #else
+            return s
+            #endif
+        }, set: { stored = $0.rawValue })
     }
 
     var body: some View {

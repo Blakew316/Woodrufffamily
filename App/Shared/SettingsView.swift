@@ -20,6 +20,12 @@ struct SettingsView: View {
     @State private var hub = HubSettings()
     @State private var route: String? = { let r = UserDefaults.standard.string(forKey: "route"); return r == "tvs" || r == "tv" ? r : nil }()
 
+    private var smartHomeSummary: String {
+        let h = SmartHome.shared
+        let parts = [h.speakers.isEmpty ? nil : "\(h.speakers.count) Sonos", h.lights.isEmpty ? nil : "\(h.lights.count) Govee"].compactMap { $0 }
+        return parts.isEmpty ? "None" : parts.joined(separator: " · ")
+    }
+
     var body: some View {
         Form {
             Section {
@@ -40,6 +46,9 @@ struct SettingsView: View {
             Section {
                 NavigationLink { ConnectionsView(hub: hub) } label: {
                     IconRow(symbol: "cloud.fill", color: .blue, title: "Connections", value: connectionsSummary)
+                }
+                NavigationLink { SmartHomeSettingsView() } label: {
+                    IconRow(symbol: "", color: .clear, title: "Speakers & Lights", value: smartHomeSummary)
                 }
             }
 

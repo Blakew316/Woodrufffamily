@@ -24,6 +24,8 @@ struct HomeView: View {
                         }
                     }
                 }
+                SpeakersSection()
+                LightsSection()
                 VStack(alignment: .leading, spacing: 14) {
                     Text("Every TV").font(.title2.bold())
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 170), spacing: 14)], spacing: 14) {
@@ -37,7 +39,11 @@ struct HomeView: View {
                     }
                 }
             }
+            #if os(iOS)
+            .padding(.horizontal, 16).padding(.vertical, 12)
+            #else
             .padding(28)
+            #endif
             .frame(maxWidth: 1180, alignment: .leading)
             .frame(maxWidth: .infinity)
         }
@@ -67,7 +73,16 @@ struct HomeView: View {
         .environment(\.colorScheme, .dark)
         .navigationTitle(openTV.flatMap { fleet.tv($0)?.name } ?? "Home")
         .navigationSubtitle(statusLine)
-        .refreshable { await fleet.refresh(); await fleet.loadAllHealth() }
+        .refreshable { await fleet.refresh(); await fleet.loadAllHealth(); await SmartHome.shared.refreshSpeakers() }
+        #if os(iOS)
+        .toolbar {
+            // Send lives here on iPhone, so Home can take its place in the tab bar.
+            ToolbarItem(placement: .primaryAction) {
+                NavigationLink { SendView() } label: { Image(systemName: "paperplane") }
+                    .accessibilityLabel("Send")
+            }
+        }
+        #endif
     }
 
     /// The Home app's status line: small capsules for what needs a look.
