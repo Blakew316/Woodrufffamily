@@ -17,7 +17,7 @@ final class SettingsSync {
         "govee.key",
         "st.client", "st.secret", "st.access", "st.refresh", "st.expires", "st.token",
         "nest.project", "nest.client", "nest.secret", "nest.access", "nest.refresh", "nest.expires", "nest.scopes", "nest.subscription",
-        "github.token",
+        "github.token", "dreo.email", "dreo.password",
     ]
     static let defaultsKeys = ["smartNames", "smartRooms", "smartExtraRooms", "goveeManualIPs"]
 
@@ -140,6 +140,8 @@ final class SettingsSync {
             await SmartHome.shared.refreshCloud()
             await SmartThings.shared.refresh(full: true)
             await NestCameras.shared.load()
+            Dreo.shared.start()
+            await Dreo.shared.refresh(full: true)
         }
     }
 

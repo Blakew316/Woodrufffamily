@@ -32,6 +32,7 @@ struct WoodruffApp: App {
                     if !Demo.isOn && !fleet.hubs.isEmpty { LocationWeather.shared.start(fleet) }
                     SmartHome.shared.start()
                     SmartThings.shared.start()
+                    Dreo.shared.start()
                     NestCameras.shared.start()
                     NestAlerts.shared.start(fleet)
                     SettingsSync.shared.start(fleet)

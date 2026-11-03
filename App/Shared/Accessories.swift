@@ -43,7 +43,7 @@ struct HomeDevice: Identifiable, Hashable {
         }
     }
 
-    var sourceName: String { source == "home" ? "Apple Home" : "SmartThings" }
+    var sourceName: String { source == "home" ? "Apple Home" : source == "dreo" ? "Dreo" : "SmartThings" }
 }
 
 enum DeviceCommand {
@@ -63,12 +63,13 @@ final class AccessoryStore {
 
     var fromHome: [HomeDevice] = [] { didSet { zones() } }
     var fromSmartThings: [HomeDevice] = [] { didSet { zones() } }
+    var fromDreo: [HomeDevice] = [] { didSet { zones() } }
     /// Carries out a change to an Apple Home accessory (set by the iPhone app).
     var homeControl: ((HomeDevice, DeviceCommand) -> Void)?
 
     var all: [HomeDevice] {
         let names = SmartHome.shared.names
-        return (fromHome + fromSmartThings).map { d in
+        return (fromHome + fromSmartThings + fromDreo).map { d in
             var d = d
             if let n = names[d.id], !n.isEmpty { d.name = n }
             return d
@@ -79,12 +80,16 @@ final class AccessoryStore {
     func device(_ id: String) -> HomeDevice? { all.first { $0.id == id } }
 
     func send(_ d: HomeDevice, _ c: DeviceCommand) {
-        if d.source == "home" { homeControl?(d, c) } else { SmartThings.shared.send(d, c) }
+        switch d.source {
+        case "home": homeControl?(d, c)
+        case "dreo": Dreo.shared.send(d, c)
+        default: SmartThings.shared.send(d, c)
+        }
     }
 
     private func zones() {
         var z: [String: String] = [:]
-        for d in fromHome + fromSmartThings { if let r = d.zone { z[d.id] = r } }
+        for d in fromHome + fromSmartThings + fromDreo { if let r = d.zone { z[d.id] = r } }
         SmartHome.shared.externalZones = z
     }
 }
@@ -377,6 +382,7 @@ struct DevicesListView: View {
                 #endif
             }
             SmartThingsSection()
+            DreoSection()
         }
         .formStyle(.grouped)
         .navigationTitle("Devices")
