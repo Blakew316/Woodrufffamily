@@ -3,54 +3,80 @@ import Network
 import CryptoKit
 import WoodruffKit
 
-/// Keeps what the family types in (API keys, sign-ins, app keys, light and speaker names, rooms) the same on
-/// the iPhone and the Mac. The two find each other on the home Wi‑Fi and swap changes straight away,
-/// encrypted with the TVs' pairing key, which both already have and nothing else on the network does.
-/// The newest change to each item wins; a sign-out on one signs out the other.
-@MainActor
+/// Keeps everything the family sets (API keys, sign-ins, app keys, names, rooms, the Home layout and favourites,
+/// TV names, hidden alerts, alert choices) the same on every iPhone and Mac.
+///
+/// Two ways, so it always gets there:
+/// 1. **Kept on the TVs.** Every device keeps an encrypted copy of all of it on each TV it's paired with
+///    (one small file). On opening, coming back, every 30 seconds, and right after any change, each device
+///    reads that copy, takes anything newer, and writes back anything it has that's newer. The TVs are always
+///    on, so a change reaches a device that was closed, away, or asleep the next time it opens.
+/// 2. **Straight across the Wi‑Fi.** Devices open at the same time also hand changes to each other directly,
+///    so they show within a couple of seconds.
+/// The newest change to each item wins; a sign-out on one device signs out the others.
+@Observable @MainActor
 final class SettingsSync {
     static let shared = SettingsSync()
     static let service = "_woodruffsync._tcp"
 
-    /// Keychain items and saved settings that travel.
+    /// Keychain items that travel.
     static let keychainKeys = [
         "govee.key",
         "st.client", "st.secret", "st.access", "st.refresh", "st.expires", "st.token",
         "nest.project", "nest.client", "nest.secret", "nest.access", "nest.refresh", "nest.expires", "nest.scopes", "nest.subscription",
         "github.token", "dreo.email", "dreo.password",
     ]
-    static let defaultsKeys = ["smartNames", "smartRooms", "smartExtraRooms", "goveeManualIPs"]
+    /// Saved settings that travel (JSON in UserDefaults).
+    static let dataKeys = ["smartNames", "smartRooms", "smartExtraRooms", "goveeManualIPs", "homeLayout", "extras", "hiddenAlerts"]
+    /// Plain preferences that travel.
+    static let valueKeys = ["nest.alert.person", "nest.alert.motion", "nest.alert.doorbell"]
 
-    private let me: String = {
+    /// "Saved on Living Room, Master Bedroom · 12:04" for Settings.
+    private(set) var status = "Not synced yet"
+    private(set) var lastSynced: Date?
+
+    @ObservationIgnored private let me: String = {
         if let s = UserDefaults.standard.string(forKey: "sync.id") { return s }
         let s = UUID().uuidString
         UserDefaults.standard.set(s, forKey: "sync.id")
         return s
     }()
-    /// When each item last changed here (or arrived from the other device).
-    private var stamps: [String: Double] = (UserDefaults.standard.dictionary(forKey: "sync.stamps") as? [String: Double]) ?? [:]
-    private var last: [String: String] = [:]
-    private var listener: NWListener?
-    private var browser: NWBrowser?
-    private var peers: [String: NWEndpoint] = [:]
-    private weak var fleet: Fleet?
-    private var loop: Task<Void, Never>?
+    @ObservationIgnored private var stamps: [String: Double] = (UserDefaults.standard.dictionary(forKey: "sync.stamps") as? [String: Double]) ?? [:]
+    @ObservationIgnored private var last: [String: String] = [:]
+    @ObservationIgnored private var listener: NWListener?
+    @ObservationIgnored private var browser: NWBrowser?
+    @ObservationIgnored private var peers: [String: NWEndpoint] = [:]
+    @ObservationIgnored private weak var fleet: Fleet?
+    @ObservationIgnored private var loop: Task<Void, Never>?
+    @ObservationIgnored private var tvBusy = false
+    @ObservationIgnored private var tvAgain = false
+    @ObservationIgnored private var pushSoon: Task<Void, Never>?
+    @ObservationIgnored private var folders: [String: String] = [:]
 
     func start(_ fleet: Fleet) {
         guard loop == nil, !Demo.isOn else { return }
         self.fleet = fleet
         last = snapshot()
+        // Settings from before syncing began count as set now, so they reach the other devices.
+        let now = Date().timeIntervalSince1970
+        for (k, v) in last where stamps[k] == nil && !v.isEmpty { stamps[k] = now }
+        saveStamps()
         listen()
         browse()
         loop = Task { [weak self] in
+            var tick = 0
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 1_500_000_000)
-                self?.check()
+                guard let self else { return }
+                self.check()
+                tick += 1
+                if tick % 20 == 0 { await self.syncTVs() }   // every 30 seconds
             }
         }
+        Task { await syncTVs() }
     }
 
-    /// Back to the front: look for the other device again and swap everything.
+    /// Back to the front: read the TVs' copy, look for the other devices, swap everything.
     func wake() {
         guard loop != nil else { return }
         if listener == nil { listen() }
@@ -58,28 +84,38 @@ final class SettingsSync {
         browse()
         check()
         broadcast()
+        Task { await syncTVs() }
     }
+
+    func syncNow() async { check(); await syncTVs(); broadcast() }
 
     // MARK: What's here
 
     private func canonical(_ key: String) -> String {
-        if key.hasPrefix("kc:") { return Keychain.get(String(key.dropFirst(3))) ?? "" }
-        guard let d = UserDefaults.standard.data(forKey: String(key.dropFirst(3))),
-              let o = try? JSONSerialization.jsonObject(with: d, options: [.fragmentsAllowed]),
-              let c = try? JSONSerialization.data(withJSONObject: o, options: [.sortedKeys, .fragmentsAllowed]) else { return "" }
+        let name = String(key.dropFirst(3))
+        if key.hasPrefix("kc:") { return Keychain.get(name) ?? "" }
+        guard let obj = UserDefaults.standard.object(forKey: name) else { return "" }
+        if key.hasPrefix("ud:") {
+            guard let d = obj as? Data, let o = try? JSONSerialization.jsonObject(with: d, options: [.fragmentsAllowed]),
+                  let c = try? JSONSerialization.data(withJSONObject: o, options: [.sortedKeys, .fragmentsAllowed]) else { return "" }
+            return String(decoding: c, as: UTF8.self)
+        }
+        guard let c = try? JSONSerialization.data(withJSONObject: obj, options: [.sortedKeys, .fragmentsAllowed]) else { return "" }
         return String(decoding: c, as: UTF8.self)
     }
 
     private func snapshot() -> [String: String] {
         var out: [String: String] = [:]
         for k in Self.keychainKeys { out["kc:" + k] = canonical("kc:" + k) }
-        for k in Self.defaultsKeys { out["ud:" + k] = canonical("ud:" + k) }
+        for k in Self.dataKeys { out["ud:" + k] = canonical("ud:" + k) }
+        for k in Self.valueKeys { out["uv:" + k] = canonical("uv:" + k) }
         return out
     }
 
-    /// An item's age: its stamp, or (never stamped) the oldest possible if it has a value, never if it hasn't.
+    /// An item's age: its stamp, or never if it has no value and no stamp.
     private func stamp(_ k: String) -> Double { stamps[k] ?? ((last[k] ?? "").isEmpty ? 0 : 1) }
 
+    /// Notices changes made here, stamps them, and sends them on.
     private func check() {
         let now = snapshot()
         var changed = false
@@ -88,38 +124,43 @@ final class SettingsSync {
             changed = true
         }
         last = now
-        if changed { saveStamps(); broadcast() }
+        guard changed else { return }
+        saveStamps()
+        broadcast()
+        // Onto the TVs straight away (a moment later, so a burst of edits goes as one).
+        pushSoon?.cancel()
+        pushSoon = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            guard !Task.isCancelled else { return }
+            await self?.syncTVs()
+        }
     }
 
     private func saveStamps() { UserDefaults.standard.set(stamps, forKey: "sync.stamps") }
 
-    // MARK: Taking the other device's changes
+    // MARK: Taking newer settings in
 
-    private func apply(_ items: [String: [String: Any]]) {
+    /// Takes whatever is newer in [items]; returns whether ours has anything newer than theirs.
+    @discardableResult
+    private func apply(_ items: [String: [String: Any]]) -> Bool {
         var changed = false
         var oursNewer = false
-        for (k, item) in items where k.hasPrefix("kc:") || k.hasPrefix("ud:") {
+        for (k, item) in items where k.hasPrefix("kc:") || k.hasPrefix("ud:") || k.hasPrefix("uv:") {
+            guard last[k] != nil else { continue }   // not something this version keeps
             let t = (item["t"] as? NSNumber)?.doubleValue ?? 0
             let v = item["v"] as? String ?? ""
             let mine = stamp(k)
-            if t > mine && v != (last[k] ?? "") {
-                write(k, v)
-                last[k] = v
-                stamps[k] = t
-                changed = true
-            } else if t > mine {
+            if t > mine {
+                if v != (last[k] ?? "") { write(k, v); last[k] = v; changed = true }
                 stamps[k] = t
             } else if mine > t && (last[k] ?? "") != v {
                 oursNewer = true
             }
         }
-        // Theirs may lack things only we have.
-        for k in last.keys where items[k] == nil && !(last[k] ?? "").isEmpty { oursNewer = true }
-        if changed {
-            saveStamps()
-            reload()
-        }
-        if oursNewer { broadcast() }
+        for (k, v) in last where items[k] == nil && !v.isEmpty { oursNewer = true }
+        saveStamps()
+        if changed { reload() }
+        return oursNewer
     }
 
     private func write(_ k: String, _ v: String) {
@@ -128,14 +169,19 @@ final class SettingsSync {
             Keychain.set(v.isEmpty ? nil : v, for: key)
         } else if v.isEmpty {
             UserDefaults.standard.removeObject(forKey: key)
-        } else {
+        } else if k.hasPrefix("ud:") {
             UserDefaults.standard.set(Data(v.utf8), forKey: key)
+        } else if let o = try? JSONSerialization.jsonObject(with: Data(v.utf8), options: [.fragmentsAllowed]) {
+            UserDefaults.standard.set(o, forKey: key)
         }
     }
 
     /// Everything that reads these picks up the new values.
     private func reload() {
         SmartHome.shared.reloadSaved()
+        HomeLayout.shared.reload()
+        fleet?.reloadSynced()
+        last = snapshot()   // what the reloads saved back is the same settings
         Task {
             await SmartHome.shared.refreshCloud()
             await SmartThings.shared.refresh(full: true)
@@ -145,12 +191,82 @@ final class SettingsSync {
         }
     }
 
-    // MARK: Sending
-
-    private func payload() -> Data? {
+    private func items() -> [String: Any] {
         var items: [String: Any] = [:]
         for (k, v) in last { items[k] = ["v": v, "t": stamp(k)] }
-        guard let plain = try? JSONSerialization.data(withJSONObject: ["from": me, "items": items]) else { return nil }
+        return items
+    }
+
+    // MARK: 1. Kept on the TVs
+
+    private func storeKey(_ hub: Hub) -> SymmetricKey {
+        SymmetricKey(data: SHA256.hash(data: Data("woodruff-settings-store:\(hub.connection.key)".utf8)))
+    }
+
+    /// Reads each TV's copy, takes what's newer, and writes back what we have that's newer.
+    func syncTVs() async {
+        guard let fleet, !fleet.hubs.isEmpty else { return }
+        if tvBusy { tvAgain = true; return }
+        tvBusy = true
+        defer {
+            tvBusy = false
+            if tvAgain { tvAgain = false; Task { await syncTVs() } }
+        }
+        var saved: [String] = []
+        for hub in fleet.hubs {
+            let c = TVClient(hub: hub, routeID: "this")
+            guard let folder = await folder(c) else { continue }
+            let path = folder + "/settings.wsync"
+            let key = storeKey(hub)
+            var remote: [String: [String: Any]] = [:]
+            var found = false      // a readable copy
+            var exists = false     // any file there (one that can't be read is replaced)
+            if let (d, _) = try? await c.t.data("GET", "/api/download", query: ["path": path], contentType: nil, timeout: 15) {
+                exists = true
+                if let box = try? AES.GCM.SealedBox(combined: d), let plain = try? AES.GCM.open(box, using: key),
+                   let o = try? JSONSerialization.jsonObject(with: plain) as? [String: Any], let its = o["items"] as? [String: [String: Any]] {
+                    remote = its
+                    found = true
+                }
+            }
+            let oursNewer = apply(remote)
+            if !found || oursNewer {
+                guard let plain = try? JSONSerialization.data(withJSONObject: ["v": 1, "from": me, "items": items()]),
+                      let sealed = try? AES.GCM.seal(plain, using: key).combined else { continue }
+                let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("settings-\(UUID().uuidString).wsync")
+                do {
+                    try sealed.write(to: tmp)
+                    defer { try? FileManager.default.removeItem(at: tmp) }
+                    if exists { try? await c.delete(path) }
+                    _ = try await c.upload(file: tmp, to: folder, name: "settings.wsync")
+                } catch { continue }
+            }
+            saved.append(hub.name)
+        }
+        if saved.isEmpty {
+            status = "Can’t reach a TV right now. Changes are kept here and saved when one answers."
+        } else {
+            lastSynced = Date()
+            status = "Saved on \(saved.joined(separator: ", "))"
+        }
+    }
+
+    /// Where the copy lives on a TV: a hidden folder at the top of its storage.
+    private func folder(_ c: TVClient) async -> String? {
+        if let f = folders[c.hub.id] { return f }
+        guard let root = (try? await c.roots())?.first?.path else { return nil }
+        for name in [".woodruff", "Woodruff Settings"] {
+            let f = root.hasSuffix("/") ? root + name : root + "/" + name
+            if (try? await c.list(f)) == nil { try? await c.mkdir(in: root, name: name) }
+            if (try? await c.list(f)) != nil { folders[c.hub.id] = f; return f }
+        }
+        return nil
+    }
+
+    // MARK: 2. Straight across the Wi‑Fi
+
+    private func payload() -> Data? {
+        guard let plain = try? JSONSerialization.data(withJSONObject: ["from": me, "items": items()]) else { return nil }
         var boxes: [String: String] = [:]
         for (id, key) in keys() {
             if let sealed = try? AES.GCM.seal(plain, using: key).combined { boxes[id] = sealed.base64EncodedString() }
@@ -186,8 +302,6 @@ final class SettingsSync {
         }
         c.start(queue: .main)
     }
-
-    // MARK: Receiving
 
     private func listen() {
         guard let l = try? NWListener(using: .tcp) else { return }
@@ -225,12 +339,10 @@ final class SettingsSync {
                   let plain = try? AES.GCM.open(box, using: key),
                   let p = try? JSONSerialization.jsonObject(with: plain) as? [String: Any],
                   (p["from"] as? String) != me, let items = p["items"] as? [String: [String: Any]] else { continue }
-            apply(items)
+            if apply(items) { broadcast() }
             return
         }
     }
-
-    // MARK: Finding the other device
 
     private func browse() {
         let b = NWBrowser(for: .bonjour(type: Self.service, domain: nil), using: .tcp)
@@ -243,7 +355,6 @@ final class SettingsSync {
                 }
                 let fresh = found.keys.filter { self.peers[$0] == nil }
                 self.peers = found
-                // Someone new (the other app just opened): swap everything.
                 if !fresh.isEmpty, let data = self.payload() { for n in fresh { if let ep = found[n] { self.send(data, to: ep) } } }
             }
         }

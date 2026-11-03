@@ -77,6 +77,8 @@ struct SettingsView: View {
                 }
             }
 
+            SyncSection()
+
             Section {
                 Text("Woodruff Family \(hub.s?.version ?? "")")
                     .frame(maxWidth: .infinity).font(.footnote).foregroundStyle(.secondary)
@@ -688,5 +690,31 @@ struct EveryTVView: View {
         }
         try? await Task.sleep(nanoseconds: 700_000_000)
         await fleet.refresh()
+    }
+}
+
+/// Settings → Sync Across Devices: where everything was last saved, and Sync Now.
+struct SyncSection: View {
+    private let sync = SettingsSync.shared
+    @State private var busy = false
+
+    var body: some View {
+        Section {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(sync.status)
+                if let t = sync.lastSynced {
+                    Text(t, style: .relative).font(.footnote).foregroundStyle(.secondary) + Text(" ago").font(.footnote).foregroundStyle(.secondary)
+                }
+            }
+            Button {
+                busy = true
+                Task { await sync.syncNow(); busy = false }
+            } label: {
+                HStack { Text("Sync Now"); if busy { Spacer(); ProgressView() } }
+            }
+            .disabled(busy)
+        } header: { Text("Sync Across Devices") } footer: {
+            Text("Keys, sign-ins, names, rooms, favourites, the Home layout and alert choices are kept on your TVs, so every iPhone and Mac paired with them has the same settings, even ones that were closed or away.")
+        }
     }
 }

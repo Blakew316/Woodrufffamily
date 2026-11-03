@@ -83,8 +83,22 @@ final class HomeLayout {
         if (s?.version ?? 1) < 2 { save() }
     }
 
+    /// Reads the layout again (after another of the family's devices changed it).
+    func reload() {
+        guard let s = Saved.load("homeLayout", as: Stored.self) else { return }
+        var secs = s.sections.filter { Self.allSections.contains($0) }
+        for k in Self.allSections where !secs.contains(k) { secs.append(k) }
+        if secs != sections { sections = secs }
+        if Set(s.hiddenSections) != hiddenSections { hiddenSections = Set(s.hiddenSections) }
+        if s.order != order { order = s.order }
+        if Set(s.hiddenItems) != hiddenItems { hiddenItems = Set(s.hiddenItems) }
+        if let g = s.groupByRoom, g != groupByRoom { groupByRoom = g }
+        if let f = s.favorites, f != favorites { favorites = f }
+        if let p = s.pinnedRooms, p != pinnedRooms { pinnedRooms = p }
+    }
+
     private func save() {
-        Saved.save("homeLayout", Stored(sections: sections, hiddenSections: Array(hiddenSections), order: order, hiddenItems: Array(hiddenItems), version: 2, groupByRoom: groupByRoom, favorites: favorites, pinnedRooms: pinnedRooms))
+        Saved.save("homeLayout", Stored(sections: sections, hiddenSections: hiddenSections.sorted(), order: order, hiddenItems: hiddenItems.sorted(), version: 2, groupByRoom: groupByRoom, favorites: favorites, pinnedRooms: pinnedRooms))
     }
 
     var visibleSections: [String] { sections.filter { !hiddenSections.contains($0) } }

@@ -78,6 +78,14 @@ public final class Fleet {
     public private(set) var hubs: [Hub] = []
     public private(set) var tvs: [FleetTV] = []
     public var extras: [String: TVExtras] = [:] { didSet { Saved.save("extras", extras) } }
+
+    /// Reads names, TV details and hidden alerts again (after another of the family's devices changed them).
+    public func reloadSynced() {
+        if let e = Saved.load("extras", as: [String: TVExtras].self), e != extras { extras = e }
+        let h = Saved.load("hiddenAlerts", as: [String: String].self) ?? [:]
+        if h != hiddenAlerts { hiddenAlerts = h }
+        Task { await refresh() }
+    }
     /// The TV the remote, Send and Memories act on.
     public var selectedID: String? { didSet { UserDefaults.standard.set(selectedID, forKey: "selectedTV") } }
     public var banner: Banner?
