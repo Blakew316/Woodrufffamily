@@ -44,7 +44,7 @@ struct PairPanel: View {
 
             #if os(iOS)
             Button { scanning = true } label: {
-                Label("Scan the TV's QR Code", systemImage: "qrcode.viewfinder").frame(maxWidth: .infinity)
+                Text("Scan the TV’s QR Code").frame(maxWidth: .infinity)
             }
             .buttonStyle(.glassProminent).controlSize(.large)
             #endif
@@ -80,13 +80,12 @@ struct PairPanel: View {
                     picked = tv
                 } label: {
                     HStack {
-                        Image(systemName: "tv").frame(width: 28)
                         VStack(alignment: .leading) {
                             Text(tv.name).font(.body)
                             Text("\(tv.host):\(tv.port)").font(.caption).foregroundStyle(.secondary)
                         }
                         Spacer()
-                        if paired { Label("Connected", systemImage: "checkmark.circle.fill").labelStyle(.iconOnly).foregroundStyle(.green) }
+                        if paired { Text("Connected").font(.subheadline).foregroundStyle(.secondary) }
                         else { Image(systemName: "chevron.right").foregroundStyle(.tertiary) }
                     }
                     .contentShape(Rectangle())

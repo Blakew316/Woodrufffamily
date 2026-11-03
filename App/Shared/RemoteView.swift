@@ -97,7 +97,6 @@ struct RemoteView: View {
                 .font(.footnote).foregroundStyle(.secondary)
         } else if let tv, !tv.online || tv.link == "refused" {
             HStack(spacing: 10) {
-                Image(systemName: "wifi.exclamationmark").foregroundStyle(Palette.attention)
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Can’t Reach \(tv.name)").font(.subheadline.weight(.semibold))
                     Text(tv.link == "refused" ? "Its link stopped working. Link it again in Settings → TVs." : "Check that it’s on and this device is on the same Wi‑Fi.")
@@ -115,7 +114,7 @@ struct RemoteView: View {
             NowPlayingDropdown(tv: tv, playing: p, expanded: $showPlaying)
         } else if let f = field?.field {
             Button { typing = true } label: {
-                Label("Type into \(f.label?.isEmpty == false ? f.label! : "the text box")", systemImage: "keyboard")
+                Text("Type into \(f.label?.isEmpty == false ? f.label! : "the text box")")
                     .font(.subheadline.weight(.semibold))
                     .padding(.horizontal, 16).padding(.vertical, 10)
             }

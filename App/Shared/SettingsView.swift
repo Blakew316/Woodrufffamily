@@ -28,7 +28,7 @@ struct SettingsView: View {
                 }
                 NavigationLink { SoftwareUpdateView() } label: {
                     HStack {
-                        IconRow(symbol: "arrow.down.circle.fill", color: .gray, title: "Software Update")
+                        IconRow(symbol: "", color: .clear, title: "Software Update")
                         if fleet.updatesWaiting > 0 {
                             Text("\(fleet.updatesWaiting)").font(.subheadline.weight(.semibold)).foregroundStyle(.white)
                                 .frame(minWidth: 22, minHeight: 22).background(Circle().fill(.red))
@@ -160,7 +160,7 @@ struct TVsView: View {
                 Text("Tap a TV for its screen, controls and health.")
             }
             Section {
-                Button { pairing = true } label: { Label("Pair Another TV", systemImage: "plus") }
+                Button("Pair Another TV") { pairing = true }
             } footer: {
                 Text("Pairing one TV brings every TV linked to it. Pair a second so the others stay reachable when one is off.")
             }
@@ -190,7 +190,6 @@ struct TVRow: View {
 
     var body: some View {
         HStack(spacing: 14) {
-            IconTile(symbol: "tv.fill", color: tv.online ? .blue : .gray)
             VStack(alignment: .leading, spacing: 3) {
                 Text(tv.name)
                 Text(line).font(.subheadline).foregroundStyle(tv.link == "refused" ? Palette.attention : .secondary).lineLimit(1)
@@ -211,7 +210,7 @@ struct TVRow: View {
             }
             Spacer(minLength: 0)
             if fleet.isBehind(tv) {
-                Image(systemName: "arrow.down.circle.fill").foregroundStyle(.blue)
+                Text("Update").font(.subheadline).foregroundStyle(.secondary)
             }
         }
         .padding(.vertical, 2)
@@ -238,9 +237,6 @@ struct SoftwareUpdateView: View {
         Form {
             Section {
                 VStack(spacing: 12) {
-                    Image("Emblem").resizable().frame(width: 76, height: 76)
-                        .clipShape(RoundedRectangle(cornerRadius: 17, style: .continuous))
-                        .shadow(color: .black.opacity(0.25), radius: 8, y: 4)
                     Text(headline).font(.title3.weight(.semibold)).multilineTextAlignment(.center)
                     Text(subline).font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
                     if fleet.updatesWaiting > 0 {
@@ -301,7 +297,6 @@ struct SoftwareUpdateView: View {
     @ViewBuilder private func row(_ tv: FleetTV) -> some View {
         let p = fleet.platform(of: tv)
         HStack(spacing: 14) {
-            IconTile(symbol: "tv.fill", color: tv.online ? .blue : .gray)
             VStack(alignment: .leading, spacing: 2) {
                 Text(tv.name)
                 Text([tv.version.map { "Version \($0)" } ?? "Version unknown", fleet.healthReports[tv.id]?.updates?.text].compactMap { $0 }.joined(separator: " · "))
@@ -321,7 +316,7 @@ struct SoftwareUpdateView: View {
                         .buttonStyle(.glass).disabled(!tv.online)
                 }
             } else if tv.version != nil {
-                Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                Text("Up to Date").font(.subheadline).foregroundStyle(.secondary)
             }
         }
     }
@@ -474,7 +469,7 @@ struct MailView: View {
                         .swipeActions { Button("Remove", role: .destructive) { Task { hub.s = try? await fleet.hubClient()?.deleteMail(m.id) } } }
                         .contextMenu { Button("Remove", role: .destructive) { Task { hub.s = try? await fleet.hubClient()?.deleteMail(m.id) } } }
                 }
-                Button { adding = true } label: { Label("Add Account", systemImage: "plus") }
+                Button("Add Account") { adding = true }
             } footer: { Text("New mail shows up on the TVs. Use an app-specific password.") }
         }
         .formStyle(.grouped)

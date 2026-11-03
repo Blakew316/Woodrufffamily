@@ -75,7 +75,6 @@ struct IconRow: View {
 
     var body: some View {
         HStack(spacing: 14) {
-            IconTile(symbol: symbol, color: color)
             VStack(alignment: .leading, spacing: 1) {
                 Text(title).foregroundStyle(.primary)
                 if let subtitle { Text(subtitle).font(.subheadline).foregroundStyle(.secondary).lineLimit(1) }

@@ -166,11 +166,6 @@ struct NowPlayingDropdown: View {
         VStack(alignment: .leading, spacing: 0) {
             Button { withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) { expanded.toggle() } } label: {
                 HStack(spacing: 10) {
-                    Image(systemName: playing.isPlaying ? "waveform" : "pause.fill")
-                        .font(.footnote.weight(.bold))
-                        .foregroundStyle(Color.accentColor)
-                        .symbolEffect(.variableColor.iterative, isActive: playing.isPlaying)
-                        .frame(width: 18)
                     Text(playing.title).font(.subheadline.weight(.semibold)).lineLimit(1)
                     Spacer(minLength: 4)
                     Image(systemName: "chevron.down")
@@ -190,11 +185,6 @@ struct NowPlayingDropdown: View {
                         NowPlayingArt(playing: playing)
                             .frame(width: 52, height: 52)
                             .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
-                            .overlay(alignment: .bottomTrailing) {
-                                Image(systemName: "arrow.up.left.and.arrow.down.right")
-                                    .font(.system(size: 9, weight: .bold)).foregroundStyle(.white)
-                                    .padding(4).background(Circle().fill(.black.opacity(0.45))).padding(3)
-                            }
                     }
                     .buttonStyle(PressScale())
                     .accessibilityLabel("Open the player")
@@ -255,7 +245,7 @@ struct NowPlayingSheet: View {
                     Spacer(minLength: 16)
                     if let tv { volume(tv).frame(width: width) }
                     if let tv {
-                        Label("Playing on \(tv.name)", systemImage: "tv")
+                        Text("Playing on \(tv.name)")
                             .font(.footnote.weight(.semibold))
                             .foregroundStyle(.white.opacity(0.55))
                             .padding(.top, 16)

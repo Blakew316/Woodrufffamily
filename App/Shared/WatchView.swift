@@ -156,7 +156,7 @@ struct Billboard: View {
                     if let p = t.play {
                         CapsuleButton(title: t.isShow ? "Play" : "Play", symbol: "play.fill") { PlayRouter.start(p, fleet: fleet) }
                     }
-                    CapsuleButton(title: "Details", symbol: "info.circle", prominent: false) { openTitle(t.id) }
+                    CapsuleButton(title: "Details", symbol: nil, prominent: false) { openTitle(t.id) }
                 }
                 .padding(.top, 6)
             }
@@ -390,7 +390,7 @@ struct TitleSheet: View {
                             if let key = d.watchKey, d.kind != "show" {
                                 Button {
                                     Task { do { try await client?.markWatched([key], !(d.watched ?? false)); await load() } catch { fleet.show(error) } }
-                                } label: { Label(d.watched == true ? "Mark as Unwatched" : "Mark as Watched", systemImage: d.watched == true ? "circle" : "checkmark.circle") }
+                                } label: { Text(d.watched == true ? "Mark as Unwatched" : "Mark as Watched") }
                                 .buttonStyle(.glass)
                             }
                             if let seasons = d.seasons, !seasons.isEmpty {

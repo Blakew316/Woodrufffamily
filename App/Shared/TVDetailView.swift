@@ -74,7 +74,7 @@ struct TVDetailView: View {
                     Rectangle().fill(.black)
                     if tv.playing != nil { NowPlayingArt(playing: tv.playing, backdrop: true) }
                     else if let screen { Image(platformImage: screen).resizable().aspectRatio(contentMode: .fill) }
-                    else { Image(systemName: tv.online ? "tv" : "moon.zzz.fill").font(.title2).foregroundStyle(.white.opacity(0.5)) }
+                    else { Text(tv.online ? "" : "Off").font(.caption.weight(.semibold)).foregroundStyle(.white.opacity(0.5)) }
                 }
                 .frame(width: 136, height: 77)
                 .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
@@ -113,10 +113,9 @@ struct TVDetailView: View {
     @ViewBuilder private func verdict(_ tv: FleetTV) -> some View {
         let attention = report?.attention?.count ?? tv.health?.count ?? 0
         HStack(spacing: 14) {
-            Image(systemName: verdictSymbol(tv, attention)).font(.system(size: 30)).symbolRenderingMode(.multicolor)
-                .foregroundStyle(verdictColor(tv, attention))
             VStack(alignment: .leading, spacing: 2) {
                 Text(verdictTitle(tv, attention)).font(.title3.weight(.semibold))
+                    .foregroundStyle(verdictColor(tv, attention) == .orange ? Palette.attention : .primary)
                 Text(verdictLine(tv)).font(.subheadline).foregroundStyle(.secondary)
             }
         }
@@ -130,8 +129,7 @@ struct TVDetailView: View {
             fix(tv, a)
         } label: {
             HStack(spacing: 12) {
-                Image(systemName: "exclamationmark.triangle.fill").symbolRenderingMode(.multicolor)
-                Text(a.words).foregroundStyle(.primary)
+                Text(a.words).foregroundStyle(Palette.attention)
                 Spacer()
                 Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary)
             }
@@ -152,17 +150,9 @@ struct TVDetailView: View {
     }
 
     private func signInRow(_ tv: FleetTV, _ name: String, _ row: SignInRow) -> some View {
-        let (symbol, color): (String, Color) = {
-            switch name {
-            case "Google Drive": return ("externaldrive.fill", .blue)
-            case "Google Photos": return ("photo.fill", .blue)
-            case "Google Calendar": return ("calendar", .blue)
-            case "Cameras": return ("video.fill", .green)
-            default: return ("bell.fill", .red)
-            }
-        }()
-        return IconRow(symbol: symbol, color: color, title: name, value: row.text ?? row.state ?? "",
-                       valueColor: row.attention == true ? Palette.attention : .secondary)
+        LabeledContent(name) {
+            Text(row.text ?? row.state ?? "").foregroundStyle(row.attention == true ? Palette.attention : .secondary)
+        }
     }
 
     @ViewBuilder private func updates(_ tv: FleetTV) -> some View {
@@ -371,9 +361,7 @@ struct SignInSheet: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 18) {
-                Image(systemName: done ? "checkmark.circle.fill" : "person.badge.key.fill")
-                    .font(.system(size: 56)).foregroundStyle(done ? Color.green : Color.accentColor)
-                    .symbolEffect(.bounce, value: done)
+                Text(done ? "Signed In" : "Signing In").font(.title2.bold())
                 Text(status).multilineTextAlignment(.center).foregroundStyle(.secondary)
                 if !done { ProgressView() }
             }
