@@ -10,7 +10,9 @@ struct SpeakersSection: View {
     var home = SmartHome.shared
     @State private var open: SonosRoom?
 
-    private var shown: [SonosRoom] { room.map { r in home.speakers.filter { home.room(of: $0.id) == r } } ?? home.speakers }
+    private var shown: [SonosRoom] {
+        HomeLayout.shared.arrange(room.map { r in home.speakers.filter { home.room(of: $0.id) == r } } ?? home.speakers, in: "speakers")
+    }
 
     var body: some View {
         if !shown.isEmpty {
@@ -102,7 +104,9 @@ struct LightsSection: View {
     var home = SmartHome.shared
     @State private var open: GoveeLight?
 
-    private var shown: [GoveeLight] { room.map { r in home.lights.filter { home.room(of: $0.id) == r } } ?? home.lights }
+    private var shown: [GoveeLight] {
+        HomeLayout.shared.arrange(room.map { r in home.lights.filter { home.room(of: $0.id) == r } } ?? home.lights, in: "lights")
+    }
 
     var body: some View {
         if !shown.isEmpty {

@@ -7,7 +7,9 @@ struct HomeView: View {
     @Environment(Fleet.self) private var fleet
     @State private var openTV: String?
     @AppStorage("home.room") private var room = ""
+    @State private var editing = false
     @Namespace private var zoom
+    private let layout = HomeLayout.shared
 
     private let columns = [GridItem(.adaptive(minimum: 320, maximum: 520), spacing: 18)]
 
@@ -15,28 +17,19 @@ struct HomeView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 30) {
                 #if os(iOS)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Home").font(.largeTitle.bold())
-                    Text(statusLine).font(.subheadline.weight(.medium)).foregroundStyle(.secondary)
+                HStack(alignment: .firstTextBaseline) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Home").font(.largeTitle.bold())
+                        Text(statusLine).font(.subheadline.weight(.medium)).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("Edit") { editing = true }.buttonStyle(.glass)
                 }
                 .padding(.bottom, -14)
                 #endif
-                summary
-                roomBar
-                if !shownTVs.isEmpty {
-                VStack(alignment: .leading, spacing: 14) {
-                    Text("TVs").font(.title2.bold())
-                    LazyVGrid(columns: columns, spacing: 18) {
-                        ForEach(shownTVs) { tv in
-                            HomeTVTile(tv: tv) { open(tv.id) }
-                                .matchedGeometryEffect(id: tv.id, in: zoom, isSource: openTV != tv.id)
-                                .opacity(openTV == tv.id ? 0 : 1)
-                        }
-                    }
+                ForEach(layout.visibleSections, id: \.self) { key in
+                    section(key)
                 }
-                }
-                SpeakersSection(room: room.isEmpty ? nil : room)
-                LightsSection(room: room.isEmpty ? nil : room)
             }
             #if os(iOS)
             .padding(.horizontal, 16).padding(.vertical, 12)
@@ -75,8 +68,36 @@ struct HomeView: View {
         #if os(iOS)
         // The title sits in the page itself, right under the status bar.
         .toolbar(.hidden, for: .navigationBar)
+        #else
+        .toolbar {
+            ToolbarItem(placement: .automatic) { Button("Edit Home") { editing = true } }
+        }
         #endif
+        .sheet(isPresented: $editing) { EditHomeView() }
         .refreshable { await fleet.refresh(); await fleet.loadAllHealth(); await SmartHome.shared.refreshSpeakers() }
+    }
+
+    @ViewBuilder private func section(_ key: String) -> some View {
+        switch key {
+        case "status": summary
+        case "rooms": roomBar
+        case "tvs":
+            if !shownTVs.isEmpty {
+                VStack(alignment: .leading, spacing: 14) {
+                    Text("TVs").font(.title2.bold())
+                    LazyVGrid(columns: columns, spacing: 18) {
+                        ForEach(shownTVs) { tv in
+                            HomeTVTile(tv: tv) { open(tv.id) }
+                                .matchedGeometryEffect(id: tv.id, in: zoom, isSource: openTV != tv.id)
+                                .opacity(openTV == tv.id ? 0 : 1)
+                        }
+                    }
+                }
+            }
+        case "speakers": SpeakersSection(room: room.isEmpty ? nil : room)
+        case "lights": LightsSection(room: room.isEmpty ? nil : room)
+        default: EmptyView()
+        }
     }
 
     /// The Home app's status line: small capsules for what needs a look.
@@ -113,7 +134,7 @@ struct HomeView: View {
     }
 
     private var shownTVs: [FleetTV] {
-        room.isEmpty ? fleet.tvs : fleet.tvs.filter { $0.name == room }
+        layout.arrange(room.isEmpty ? fleet.tvs : fleet.tvs.filter { $0.name == room }, in: "tvs")
     }
 
     @ViewBuilder private var roomBar: some View {
