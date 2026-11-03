@@ -305,6 +305,15 @@ public struct LightColor: Codable, Hashable, Sendable {
     public init(r: Int, g: Int, b: Int) { self.r = r; self.g = g; self.b = b }
 }
 
+/// One answer to the Govee search: an address and what's there.
+public struct LightAnswer: Identifiable, Hashable, Sendable {
+    public var ip: String
+    public var device: String
+    public var sku: String
+    public var at: Date
+    public var id: String { ip }
+}
+
 /// One Govee light.
 public struct GoveeLight: Identifiable, Hashable, Sendable, Codable {
     public var id: String          // its MAC-style device id ("1F:80:…")
@@ -749,16 +758,41 @@ public final class SmartHome {
         #endif
     }
 
+    /// Every light that answered the search, by address: what it says it is (shown in Settings → Lights).
+    public private(set) var answers: [LightAnswer] = []
+
     private func found(ip: String, id: String, sku: String) {
+        answers.removeAll { $0.ip == ip }
+        answers.append(LightAnswer(ip: ip, device: id, sku: sku, at: Date()))
+        answers.sort { $0.ip.localizedStandardCompare($1.ip) == .orderedAscending }
+        defer {
+            lights.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+            persist()
+            #if canImport(Network)
+            lan.status(ip)
+            #endif
+        }
+        // Already known at this address (this lamp, or its twin split off below).
+        if lights.contains(where: { $0.ip == ip && ($0.id == id || $0.id.hasPrefix(id + "@")) }) { return }
         // Addresses move; a light that used to have this one no longer does.
-        for i in lights.indices where lights[i].ip == ip && lights[i].id != id { lights[i].ip = nil }
-        if let i = lights.firstIndex(where: { $0.id == id }) { lights[i].ip = ip }
-        else { lights.append(GoveeLight(id: id, sku: sku, name: names[id] ?? "Govee \(sku)", ip: ip, cloud: false)) }
-        lights.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-        persist()
-        #if canImport(Network)
-        lan.status(ip)
-        #endif
+        for i in lights.indices where lights[i].ip == ip { lights[i].ip = nil }
+        if let i = lights.firstIndex(where: { $0.id == id }) {
+            // Two lamps answering with the same device ID from different addresses (some Govee lamps sold in
+            // pairs do): they're still two lamps, each controlled at its own address.
+            if let other = lights[i].ip, other != ip,
+               answers.contains(where: { $0.ip == other && $0.device == id && $0.at.timeIntervalSinceNow > -180 }) {
+                let twin = id + "@" + ip
+                if let j = lights.firstIndex(where: { $0.id == twin }) { lights[j].ip = ip }
+                else if let j = lights.firstIndex(where: { $0.id.hasPrefix(id + "@") && $0.ip == nil }) { lights[j].ip = ip }
+                else { lights.append(GoveeLight(id: twin, sku: sku, name: names[twin] ?? "\(lights[i].name) 2", ip: ip, cloud: false)) }
+            } else {
+                lights[i].ip = ip
+            }
+        } else if let j = lights.firstIndex(where: { $0.id.hasPrefix(id + "@") && $0.ip == nil }) {
+            lights[j].ip = ip
+        } else {
+            lights.append(GoveeLight(id: id, sku: sku, name: names[id] ?? "Govee \(sku)", ip: ip, cloud: false))
+        }
     }
 
     private func status(ip: String, on: Bool, brightness: Int, color: LightColor?, kelvin: Int?) {

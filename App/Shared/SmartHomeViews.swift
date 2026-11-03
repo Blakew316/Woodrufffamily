@@ -350,6 +350,22 @@ struct LightsListView: View {
             } footer: {
                 Text("Govee lights answer on your Wi‑Fi once LAN Control is on for each one in the Govee app (the light’s settings). Tap a light to rename it or choose its room.")
             }
+            if !home.answers.isEmpty {
+                Section {
+                    ForEach(home.answers) { a in
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack {
+                                Text(a.ip).font(.body.monospacedDigit())
+                                Spacer()
+                                Text("Govee \(a.sku)").foregroundStyle(.secondary)
+                            }
+                            Text(a.device).font(.caption.monospaced()).foregroundStyle(.secondary)
+                        }
+                    }
+                } header: { Text("Answering on Your Wi‑Fi") } footer: {
+                    Text("Each lamp that answered the search, with its address and device ID. Two lamps should be two addresses here.")
+                }
+            }
             Section {
                 Button("Search Again") { home.searchLights() }
                 Button("Add a Light by Address…") { adding = true }
