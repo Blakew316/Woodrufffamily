@@ -20,12 +20,16 @@ final class NestCameras {
     private(set) var cameras: [Camera] = []
     private(set) var error: String?
     private(set) var busy = false
-    var connected: Bool { Keychain.get("nest.refresh") != nil }
+    /// Signed in (kept in memory; the Keychain is only read when it changes).
+    private(set) var connected = Keychain.get("nest.refresh") != nil
+    @ObservationIgnored private var refreshing: Task<String, Error>?
 
     private var project: String? { Keychain.get("nest.project") }
     private var clientID: String? { Keychain.get("nest.client") }
 
     func start() {
+        connected = Keychain.get("nest.refresh") != nil
+        canAlert = (Keychain.get("nest.scopes") ?? "").contains("pubsub")
         guard connected, !Demo.isOn else { return }
         Task { await load() }
     }
@@ -64,14 +68,17 @@ final class NestCameras {
 
     func signOut() {
         for k in ["nest.refresh", "nest.access", "nest.expires"] { Keychain.set(nil, for: k) }
+        connected = false
         cameras = []
+        CameraStreams.shared.reset()
     }
 
     /// Whether this sign-in included Pub/Sub (alerts). Older ones didn't; connecting again adds it.
-    var canAlert: Bool { (Keychain.get("nest.scopes") ?? "").contains("pubsub") }
+    private(set) var canAlert = (Keychain.get("nest.scopes") ?? "").contains("pubsub")
 
     private func store(_ t: [String: Any]) {
-        if let sc = t["scope"] as? String { Keychain.set(sc, for: "nest.scopes") }
+        if let sc = t["scope"] as? String { Keychain.set(sc, for: "nest.scopes"); canAlert = sc.contains("pubsub") }
+        if t["refresh_token"] is String { connected = true }
         if let a = t["access_token"] as? String { Keychain.set(a, for: "nest.access") }
         if let r = t["refresh_token"] as? String { Keychain.set(r, for: "nest.refresh") }
         let exp = (t["expires_in"] as? Double) ?? Double((t["expires_in"] as? Int) ?? 3600)
@@ -82,11 +89,28 @@ final class NestCameras {
 
     private func token() async throws -> String {
         if let a = Keychain.get("nest.access"), let e = Keychain.get("nest.expires").flatMap(Double.init), e > Date().timeIntervalSince1970 { return a }
-        guard let r = Keychain.get("nest.refresh"), let id = clientID, let sec = Keychain.get("nest.secret") else {
-            throw OAuthRelay.Failure.refused("Connect the cameras again.")
+        // One refresh at a time; everyone else waits for it.
+        if let r = refreshing { return try await r.value }
+        let task = Task<String, Error> { @MainActor in
+            defer { self.refreshing = nil }
+            guard let r = Keychain.get("nest.refresh"), let id = self.clientID, let sec = Keychain.get("nest.secret") else {
+                throw OAuthRelay.Failure.refused("Connect the cameras again.")
+            }
+            do {
+                self.store(try await formPost("https://oauth2.googleapis.com/token", ["refresh_token": r, "client_id": id, "client_secret": sec, "grant_type": "refresh_token"]))
+            } catch {
+                // Google won't renew it (password changed, access removed): sign in again, don't keep trying.
+                if "\(error.localizedDescription)".contains("invalid_grant") || error.localizedDescription.contains("expired or revoked") {
+                    Keychain.set(nil, for: "nest.refresh")
+                    self.connected = false
+                    throw OAuthRelay.Failure.refused("Connect the cameras again.")
+                }
+                throw error
+            }
+            return Keychain.get("nest.access") ?? ""
         }
-        store(try await formPost("https://oauth2.googleapis.com/token", ["refresh_token": r, "client_id": id, "client_secret": sec, "grant_type": "refresh_token"]))
-        return Keychain.get("nest.access") ?? ""
+        refreshing = task
+        return try await task.value
     }
 
     private func call(_ method: String, _ path: String, _ body: [String: Any]? = nil) async throws -> [String: Any] {
@@ -112,6 +136,9 @@ final class NestCameras {
     }
 
     func load() async {
+        // Sign-ins can arrive from another device (settings sync): look again.
+        connected = Keychain.get("nest.refresh") != nil
+        canAlert = (Keychain.get("nest.scopes") ?? "").contains("pubsub")
         guard let project, connected else { return }
         do {
             let devices = (try await call("GET", "enterprises/\(project)/devices"))["devices"] as? [[String: Any]] ?? []
@@ -207,12 +234,14 @@ struct CamerasSection: View {
     var compact = false
     /// Off inside a room on Home (the room is the heading).
     var titled = true
+    /// Cameras shown elsewhere on the same screen (Favorites): one live picture can only be in one place.
+    var excluding: Set<String> = []
     private let nest = NestCameras.shared
     @State private var open: NestCameras.Camera?
 
     private var shown: [NestCameras.Camera] {
         let list = room.map { r in nest.cameras.filter { roomMatches(SmartHome.shared.rooms[$0.id] ?? $0.room, r) } } ?? nest.cameras
-        return favorites ? HomeLayout.shared.favoritesOnly(nest.cameras) : HomeLayout.shared.arrange(list, in: "cameras")
+        return favorites ? HomeLayout.shared.favoritesOnly(nest.cameras) : HomeLayout.shared.arrange(list.filter { !excluding.contains($0.id) }, in: "cameras")
     }
 
     var body: some View {
@@ -244,6 +273,16 @@ final class CameraStreams {
     @ObservationIgnored private var players: [String: LivePlayer] = [:]
     @ObservationIgnored private var watching = 0
     @ObservationIgnored private var idle: Task<Void, Never>?
+    @ObservationIgnored private var backgroundAt: Date?
+
+    /// Lets every stream go and forgets them (signed out).
+    func reset() {
+        for p in players.values { p.close() }
+        players = [:]
+        status = [:]
+        watching = 0
+        expanded = nil
+    }
 
     func player(_ cam: NestCameras.Camera) -> LivePlayer {
         if let p = players[cam.id] { return p }
@@ -268,11 +307,15 @@ final class CameraStreams {
     }
 
     /// The app went to the background: keep the streams a minute, in case it's a quick switch.
-    func background() { letGoSoon(after: 60) }
+    func background() { backgroundAt = Date(); letGoSoon(after: 60) }
 
     func foreground() {
         idle?.cancel(); idle = nil
-        if watching > 0 { for p in players.values { p.start() } }
+        // Away more than a minute: iOS froze the streams, so start them fresh.
+        let long = backgroundAt.map { $0.timeIntervalSinceNow < -60 } ?? false
+        backgroundAt = nil
+        guard watching > 0 else { return }
+        for p in players.values { if long { p.restart() } else { p.start() } }
     }
 
     private func letGoSoon(after seconds: Double) {
@@ -388,14 +431,17 @@ struct CameraLiveView: View {
 /// One camera's WebRTC session: the web view makes the offer, Google answers through Device Access, and
 /// it's renewed every four minutes (Google ends it after five). If it drops, it reconnects by itself.
 @MainActor
-final class LivePlayer: NSObject, WKScriptMessageHandler {
+final class LivePlayer: NSObject, WKNavigationDelegate {
     let web: WKWebView
     let camera: NestCameras.Camera
     var onStatus: ((String) -> Void)?
     private var session: String?
     private var running = false
+    private var live = false
     private var work: Task<Void, Never>?
     private var renew: Task<Void, Never>?
+    private var retry: Task<Void, Never>?
+    private var watchdog: Task<Void, Never>?
     private var failures = 0
 
     init(camera: NestCameras.Camera) {
@@ -407,8 +453,11 @@ final class LivePlayer: NSObject, WKScriptMessageHandler {
         config.mediaTypesRequiringUserActionForPlayback = []
         web = WKWebView(frame: .zero, configuration: config)
         super.init()
-        config.userContentController.add(self, name: "offer")
-        config.userContentController.add(self, name: "state")
+        // A weak go-between, so the page doesn't keep the player alive forever.
+        let proxy = ScriptProxy(self)
+        config.userContentController.add(proxy, name: "offer")
+        config.userContentController.add(proxy, name: "state")
+        web.navigationDelegate = self
         #if os(iOS)
         web.isOpaque = false
         web.backgroundColor = .black
@@ -419,64 +468,97 @@ final class LivePlayer: NSObject, WKScriptMessageHandler {
     /// Starts the stream unless it's already running.
     func start() {
         guard !running else { return }
+        retry?.cancel(); retry = nil
         running = true
+        live = false
         onStatus?("Starting…")
         web.loadHTMLString(Self.page, baseURL: URL(string: "https://localhost/"))
     }
 
+    /// Starts over with a fresh stream.
+    func restart() { pause(); start() }
+
     /// Lets the stream go without a command to Google (it ends by itself within five minutes).
     func pause() {
+        retry?.cancel(); retry = nil
+        watchdog?.cancel(); watchdog = nil
         guard running else { return }
         running = false
+        live = false
         work?.cancel(); renew?.cancel()
         session = nil
         web.evaluateJavaScript("stop()")
     }
 
+    /// For good: no more page or messages.
+    func close() {
+        pause()
+        web.configuration.userContentController.removeAllScriptMessageHandlers()
+        web.navigationDelegate = nil
+    }
+
     func setMuted(_ m: Bool) { web.evaluateJavaScript("setMuted(\(m))") }
 
+    /// Dropped: try again after a wait that grows each time it fails (5 s up to a minute).
     private func reconnect() {
         guard running else { return }
         running = false
-        work?.cancel(); renew?.cancel()
+        live = false
+        work?.cancel(); renew?.cancel(); watchdog?.cancel()
         session = nil
-        Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 3_000_000_000)
+        failures += 1
+        let wait = UInt64(min(60, 5 * (1 << min(failures - 1, 4))))
+        retry?.cancel()
+        retry = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: wait * 1_000_000_000)
+            guard !Task.isCancelled else { return }
             self?.start()
         }
     }
 
-    nonisolated func userContentController(_ c: WKUserContentController, didReceive message: WKScriptMessage) {
-        let name = message.name
-        let body = message.body as? String ?? ""
+    // The web page's process was ended by the system: start again.
+    nonisolated func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
         Task { @MainActor in
-            if name == "state" {
-                if body == "failed" { self.onStatus?("Reconnecting…"); self.reconnect() }
-                else { self.onStatus?(body) }
-                return
-            }
-            self.work?.cancel()
-            self.work = Task { [weak self] in
-                guard let self else { return }
-                do {
-                    self.onStatus?("Starting…")
-                    let (answer, s) = try await NestCameras.shared.startStream(self.camera, offer: body)
-                    guard self.running, !Task.isCancelled else { return }
-                    self.session = s
-                    self.failures = 0
-                    let js = (try? String(data: JSONSerialization.data(withJSONObject: [answer]), encoding: .utf8)) ?? "[\"\"]"
-                    _ = try? await self.web.evaluateJavaScript("answer(\(js)[0])")
-                    self.keepAlive()
-                } catch is CancellationError {
-                } catch {
-                    // Only a sign-in problem is worth words; anything else (Google busy, no internet) just retries.
-                    let m = error.localizedDescription
-                    self.onStatus?(m.contains("Connect") || m.contains("refused access") ? m : "Reconnecting…")
-                    self.failures += 1
-                    let wait = UInt64(min(60, 5 * (1 << min(self.failures, 4))))
-                    try? await Task.sleep(nanoseconds: wait * 1_000_000_000)
-                    if self.running && !Task.isCancelled { self.running = false; self.start() }
+            guard self.running else { return }
+            self.onStatus?("Reconnecting…")
+            self.reconnect()
+        }
+    }
+
+    func received(_ name: String, _ body: String) {
+        if name == "state" {
+            if body == "failed" { onStatus?("Reconnecting…"); reconnect(); return }
+            if body == "Live" { live = true; failures = 0; watchdog?.cancel() }
+            onStatus?(body)
+            return
+        }
+        guard running else { return }
+        work?.cancel()
+        work = Task { [weak self] in
+            guard let self else { return }
+            do {
+                self.onStatus?("Starting…")
+                let (answer, s) = try await NestCameras.shared.startStream(self.camera, offer: body)
+                guard self.running, !Task.isCancelled else { return }
+                self.session = s
+                let js = (try? String(data: JSONSerialization.data(withJSONObject: [answer]), encoding: .utf8)) ?? "[\"\"]"
+                _ = try? await self.web.evaluateJavaScript("answer(\(js)[0])")
+                self.keepAlive()
+                // Not live within 30 seconds of Google's answer: start over.
+                self.watchdog?.cancel()
+                self.watchdog = Task { [weak self] in
+                    try? await Task.sleep(nanoseconds: 30_000_000_000)
+                    guard let self, !Task.isCancelled, self.running, !self.live else { return }
+                    self.onStatus?("Reconnecting…")
+                    self.reconnect()
                 }
+            } catch is CancellationError {
+            } catch {
+                // Only a sign-in problem is worth words; anything else (Google busy, no internet) just retries.
+                let m = error.localizedDescription
+                self.onStatus?(m.contains("Connect") || m.contains("refused access") ? m : "Reconnecting…")
+                if m.contains("Connect") { self.pause(); return }   // signed out: wait for a new sign-in
+                self.reconnect()
             }
         }
     }
@@ -514,12 +596,22 @@ final class LivePlayer: NSObject, WKScriptMessageHandler {
       await pc.setLocalDescription(offer);
       window.webkit.messageHandlers.offer.postMessage(offer.sdp);
     }
-    function answer(sdp) { pc.setRemoteDescription({ type: 'answer', sdp }); }
+    function answer(sdp) { pc.setRemoteDescription({ type: 'answer', sdp }).catch(() => say('failed')); }
     function setMuted(m) { v.muted = m; }
     function stop() { try { pc.close(); } catch (e) {} }
     start();
     </script></body></html>
     """
+}
+
+/// Passes the page's messages to the player without the page keeping the player alive.
+final class ScriptProxy: NSObject, WKScriptMessageHandler {
+    weak var player: LivePlayer?
+    init(_ p: LivePlayer) { player = p }
+    func userContentController(_ c: WKUserContentController, didReceive message: WKScriptMessage) {
+        let name = message.name, body = message.body as? String ?? ""
+        Task { @MainActor [weak self] in self?.player?.received(name, body) }
+    }
 }
 
 #if os(iOS)

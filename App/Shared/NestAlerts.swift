@@ -50,7 +50,7 @@ final class NestAlerts {
             for m in r["receivedMessages"] as? [[String: Any]] ?? [] {
                 if let a = m["ackId"] as? String { acks.append(a) }
                 if let msg = m["message"] as? [String: Any], let b64 = msg["data"] as? String, let d = Data(base64Encoded: b64),
-                   let ev = try? JSONSerialization.jsonObject(with: d) as? [String: Any] { handle(ev) }
+                   let ev = try? JSONSerialization.jsonObject(with: d) as? [String: Any] { handle(ev, messageID: msg["messageId"] as? String) }
             }
             if !acks.isEmpty { _ = try? await call("POST", "\(sub):acknowledge", ["ackIds": acks]) }
             status = "On"
@@ -78,7 +78,7 @@ final class NestAlerts {
         }
         let parts = shared.split(separator: "/")
         let project = String(parts[1]), id = String(parts[3])
-        let device = (UserDefaults.standard.string(forKey: "sync.id") ?? UUID().uuidString).lowercased().filter { $0.isLetter || $0.isNumber }.prefix(12)
+        let device = DeviceID.value.lowercased().filter { $0.isLetter || $0.isNumber }.prefix(12)
         #if os(macOS)
         let suffix = "-mac-\(device)"
         #else
@@ -89,7 +89,7 @@ final class NestAlerts {
         guard !topic.isEmpty else { throw OAuthRelay.Failure.refused("The family’s doorbell subscription has no topic.") }
         do {
             _ = try await call("PUT", name, [
-                "topic": topic, "ackDeadlineSeconds": 10, "messageRetentionDuration": "600s",
+                "topic": topic, "ackDeadlineSeconds": 30, "messageRetentionDuration": "600s",
                 "expirationPolicy": ["ttl": "86400s"], "labels": ["made-by": "woodruff-family-app"],
             ])
         } catch let e as OAuthRelay.Failure where e.localizedDescription.contains("ALREADY_EXISTS") || e.localizedDescription.contains("409") {
@@ -121,7 +121,7 @@ final class NestAlerts {
 
     // MARK: Events → notifications
 
-    private func handle(_ ev: [String: Any]) {
+    private func handle(_ ev: [String: Any], messageID: String?) {
         guard let upd = ev["resourceUpdate"] as? [String: Any], let device = upd["name"] as? String,
               let events = upd["events"] as? [String: Any] else { return }
         // Old news (the phone was asleep) isn't worth a buzz.
@@ -130,31 +130,32 @@ final class NestAlerts {
         let camera = NestCameras.shared.cameras.first { $0.id == device }
         let name = camera?.name ?? "Camera"
         for (type, value) in events {
-            let session = (value as? [String: Any])?["eventSessionId"] as? String ?? UUID().uuidString
+            // The same event, however often Google sends it, is one key (and one notification, by its id).
+            let session = (value as? [String: Any])?["eventSessionId"] as? String ?? ev["eventId"] as? String ?? messageID ?? UUID().uuidString
             let key = "\(type)|\(session)"
             guard seen[key] == nil else { continue }
             seen[key] = Date()
             switch type {
             case "sdm.devices.events.DoorbellChime.Chime" where doorbell:
-                post(title: "Someone’s at the door", body: name, camera: device, ring: true)
+                post(title: "Someone’s at the door", body: name, camera: device, key: key)
             case "sdm.devices.events.CameraPerson.Person" where person:
-                post(title: "Person seen", body: name, camera: device, ring: false)
+                post(title: "Person seen", body: name, camera: device, key: key)
             case "sdm.devices.events.CameraMotion.Motion" where motion:
-                post(title: "Motion seen", body: name, camera: device, ring: false)
+                post(title: "Motion seen", body: name, camera: device, key: key)
             default: break
             }
         }
         seen = seen.filter { $0.value.timeIntervalSinceNow > -3600 }
     }
 
-    private func post(title: String, body: String, camera: String, ring: Bool) {
+    private func post(title: String, body: String, camera: String, key: String) {
         let c = UNMutableNotificationContent()
         c.title = title
         c.body = body
         c.sound = .default
         c.threadIdentifier = "nest-\(camera)"
         c.userInfo = ["camera": camera]
-        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "nest-\(UUID().uuidString)", content: c, trigger: nil))
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "nest-\(key)", content: c, trigger: nil))
     }
 }
 
@@ -186,5 +187,15 @@ struct AlertsSection: View {
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
             }
         }
+    }
+}
+
+/// This device's own lasting id (the same one settings sync uses), made once.
+enum DeviceID {
+    static var value: String {
+        if let s = UserDefaults.standard.string(forKey: "sync.id") { return s }
+        let s = UUID().uuidString
+        UserDefaults.standard.set(s, forKey: "sync.id")
+        return s
     }
 }

@@ -45,12 +45,23 @@ final class OAuthRelay: NSObject, ASWebAuthenticationPresentationContextProvidin
                 Task { @MainActor in
                     if let error, (error as? ASWebAuthenticationSessionError)?.code == .canceledLogin { self?.finish(.failure(Failure.cancelled)) }
                     else if let error { self?.finish(.failure(error)) }
+                    // Back in the app without a code (the relay couldn't reach this device): never hang.
+                    else {
+                        try? await Task.sleep(nanoseconds: 1_500_000_000)
+                        self?.finish(.failure(Failure.refused("Sign-in didn’t finish. Make sure this device is on the home Wi‑Fi and try again.")))
+                    }
                 }
             }
             s.presentationContextProvider = self
             s.prefersEphemeralWebBrowserSession = false
             session = s
             if !s.start() { finish(.failure(Failure.refused("Couldn’t open the sign-in page."))) }
+            // Never wait forever.
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: 300_000_000_000)
+                self?.finish(.failure(Failure.refused("Sign-in timed out.")))
+                self?.session?.cancel()
+            }
         }
     }
 
@@ -80,7 +91,8 @@ final class OAuthRelay: NSObject, ASWebAuthenticationPresentationContextProvidin
                 conn.send(content: Data(reply.utf8), completion: .contentProcessed { _ in conn.cancel() })
                 Task { @MainActor in
                     guard let self else { return }
-                    if let state, !self.stateMatches(state) { return }
+                    // Only an answer carrying this sign-in's own state counts.
+                    guard let state, self.stateMatches(state) else { return }
                     if let code { self.finish(.success(code)); self.session?.cancel() }
                     else if let error { self.finish(.failure(Failure.refused("Sign-in was refused (\(error))."))); self.session?.cancel() }
                 }
@@ -92,7 +104,8 @@ final class OAuthRelay: NSObject, ASWebAuthenticationPresentationContextProvidin
                 guard !done else { return }
                 switch s {
                 case .ready: done = true; c.resume(returning: l.port?.rawValue ?? 0)
-                case .failed(let e): done = true; c.resume(throwing: e)
+                case .failed(let e), .waiting(let e): done = true; c.resume(throwing: e)
+                case .cancelled: done = true; c.resume(throwing: Failure.noWiFi)
                 default: break
                 }
             }

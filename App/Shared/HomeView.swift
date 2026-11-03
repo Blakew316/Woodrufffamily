@@ -114,7 +114,7 @@ struct HomeView: View {
             }
         case "speakers": SpeakersSection(room: room.isEmpty ? nil : room)
         case "lights": LightsSection(room: room.isEmpty ? nil : room)
-        case "cameras": CamerasSection(room: room.isEmpty ? nil : room)
+        case "cameras": CamerasSection(room: room.isEmpty ? nil : room, excluding: room.isEmpty ? Set(layout.favorites) : [])
         case "devices": DevicesSection(room: room.isEmpty ? nil : room)
         case "wifi": if room.isEmpty { WifiSection() }
         default: EmptyView()
@@ -204,7 +204,7 @@ struct HomeView: View {
         let h = SmartHome.shared
         let shown = { (k: String) in !layout.hiddenSections.contains(k) }
         return (shown("tvs") && !tvs(in: r).isEmpty)
-            || (shown("cameras") && NestCameras.shared.cameras.contains { roomMatches(h.rooms[$0.id] ?? $0.room, r) && !layout.hiddenItems.contains($0.id) })
+            || (shown("cameras") && NestCameras.shared.cameras.contains { roomMatches(h.rooms[$0.id] ?? $0.room, r) && !layout.hiddenItems.contains($0.id) && !(room.isEmpty && layout.favorites.contains($0.id)) })
             || (shown("speakers") && h.speakers.contains { roomMatches(h.room(of: $0.id), r) && !layout.hiddenItems.contains($0.id) })
             || (shown("lights") && h.lights.contains { roomMatches(h.room(of: $0.id), r) && !layout.hiddenItems.contains($0.id) })
             || (shown("devices") && AccessoryStore.shared.all.contains { roomMatches(h.room(of: $0.id), r) && !layout.hiddenItems.contains($0.id) })
@@ -214,7 +214,8 @@ struct HomeView: View {
         let shown = { (k: String) in !layout.hiddenSections.contains(k) }
         return VStack(alignment: .leading, spacing: 10) {
             Text(r == noRoom ? "Other" : r).font(.title3.bold())
-            if shown("cameras") { CamerasSection(room: r, compact: true, titled: false) }
+            // A favourite camera already playing under Favorites isn't repeated here (one picture, one place).
+            if shown("cameras") { CamerasSection(room: r, compact: true, titled: false, excluding: room.isEmpty ? Set(layout.favorites) : []) }
             if shown("tvs") {
                 let list = tvs(in: r)
                 if !list.isEmpty {
