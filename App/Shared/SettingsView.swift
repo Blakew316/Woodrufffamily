@@ -23,23 +23,6 @@ struct SettingsView: View {
     var body: some View {
         Form {
             Section {
-                NavigationLink { PhoneSettingsView() } label: {
-                    HStack(spacing: 14) {
-                        Image(systemName: deviceSymbol)
-                            .font(.system(size: 24, weight: .regular))
-                            .foregroundStyle(.white)
-                            .frame(width: 58, height: 58)
-                            .background(Circle().fill(LinearGradient(colors: [Color(white: 0.62), Color(white: 0.42)], startPoint: .top, endPoint: .bottom)))
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(fleet.phone.name).font(.title3.weight(.semibold))
-                            Text(deviceLine).font(.subheadline).foregroundStyle(.secondary)
-                        }
-                    }
-                    .padding(.vertical, 4)
-                }
-            }
-
-            Section {
                 NavigationLink { TVsView() } label: {
                     IconRow(symbol: "tv.fill", color: .blue, title: "TVs", value: tvsSummary, valueColor: fleet.tvs.contains(where: \.needsAttention) ? Palette.attention : .secondary)
                 }
@@ -51,6 +34,12 @@ struct SettingsView: View {
                                 .frame(minWidth: 22, minHeight: 22).background(Circle().fill(.red))
                         }
                     }
+                }
+            }
+
+            Section {
+                NavigationLink { PhoneSettingsView() } label: {
+                    IconRow(symbol: "bell.badge.fill", color: .red, title: "Notifications", value: fleet.phone.alerts ? "On" : nil)
                 }
             }
 
@@ -92,23 +81,6 @@ struct SettingsView: View {
         .refreshable { await hub.load(fleet.hubClient()); await fleet.refresh() }
     }
 
-    private var deviceSymbol: String {
-        #if os(macOS)
-        return "laptopcomputer"
-        #else
-        return UIDevice.current.userInterfaceIdiom == .pad ? "ipad" : "iphone"
-        #endif
-    }
-
-    private var deviceLine: String {
-        #if os(macOS)
-        let kind = "This Mac"
-        #else
-        let kind = UIDevice.current.userInterfaceIdiom == .pad ? "This iPad" : "This phone"
-        #endif
-        return kind + (fleet.phone.alerts ? " · Lock-screen alerts on" : "")
-    }
-
     private var tvsSummary: String {
         let needing = fleet.tvs.filter(\.needsAttention)
         if needing.count == 1 { return "\(needing[0].name) needs attention" }
@@ -133,12 +105,7 @@ struct PhoneSettingsView: View {
     @State private var topic: String?
 
     var body: some View {
-        @Bindable var fleet = fleet
         Form {
-            Section {
-                TextField("Name", text: $fleet.phone.name)
-                    .onSubmit { Task { await fleet.sayHelloEverywhere() } }
-            } footer: { Text("Announcements pick phones by this name.") }
             Section {
                 Toggle("Lock-Screen Alerts", isOn: Binding(get: { fleet.phone.alerts }, set: { on in
                     fleet.phone.alerts = on
@@ -171,7 +138,7 @@ struct PhoneSettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .navigationTitle(fleet.phone.name)
+        .navigationTitle("Notifications")
         .inlineTitle()
     }
 }
