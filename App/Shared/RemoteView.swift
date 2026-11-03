@@ -27,6 +27,17 @@ struct RemoteView: View {
             let rows: CGFloat = 4 // gaps between status, clickpad, keys, apps
             let fixed = topH + keysH + appsH + rows * 16 + 8 + 10
             let pad = max(150, min(geo.size.width - 40, 360, h - fixed))
+            #if os(macOS)
+            // On the Mac, a small remote in the middle of the window (the keyboard drives it too).
+            VStack(spacing: 18) {
+                if hasTop { status.frame(height: topH, alignment: .top) }
+                Clickpad(size: 200) { send($0) } onRepeat: { send($0, repeat: $1) }
+                keys(42, 11)
+                apps(34)
+            }
+            .frame(width: 280)
+            .frame(width: geo.size.width, height: h)
+            #else
             VStack(spacing: 0) {
                 if hasTop { status.frame(height: topH, alignment: .top) }
                 Spacer(minLength: 16)
@@ -41,6 +52,7 @@ struct RemoteView: View {
             .padding(.bottom, 10)
             .frame(maxWidth: 460)
             .frame(width: geo.size.width, height: h)
+            #endif
         }
         .haptic(presses)
         .toolbar {
