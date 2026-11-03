@@ -18,6 +18,8 @@ struct WoodruffApp: App {
                     if !Demo.isOn { Notifier.attach(to: fleet) }
                     if !Demo.isOn && !fleet.hubs.isEmpty { LocationWeather.shared.start(fleet) }
                     SmartHome.shared.start()
+                    SmartThings.shared.start()
+                    NestCameras.shared.start()
                     #if os(iOS)
                     HomeKitLights.shared.start()
                     #endif
@@ -25,6 +27,7 @@ struct WoodruffApp: App {
                 }
                 .onOpenURL { url in
                     // woodruff://remote (widgets, Control Center): open the remote; anything else is a pairing link.
+                    if url.scheme == "woodruff" && url.host == "signed-in" { return }  // the end of a camera/Samsung sign-in
                     if url.scheme == "woodruff" && url.host == "remote" {
                         #if os(macOS)
                         fleet.remotePanel = true

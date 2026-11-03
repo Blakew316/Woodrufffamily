@@ -14,6 +14,7 @@ final class HomeKitLights: NSObject, HMHomeManagerDelegate, HMAccessoryDelegate 
 
     private var manager: HMHomeManager?
     private var accessories: [String: HMAccessory] = [:]
+    private var others: [String: HMAccessory] = [:]
     private var pending: Task<Void, Never>?
 
     func start() {
@@ -22,13 +23,14 @@ final class HomeKitLights: NSObject, HMHomeManagerDelegate, HMAccessoryDelegate 
         m.delegate = self
         manager = m
         SmartHome.shared.homeControl = { [weak self] light, command in self?.send(light, command) }
+        AccessoryStore.shared.homeControl = { [weak self] device, command in self?.send(device, command) }
     }
 
     /// Reads everything again (when the app comes back to the front).
     func refresh() {
         guard let manager else { return }
         for home in manager.homes {
-            for a in home.accessories { for s in a.services where s.serviceType == HMServiceTypeLightbulb { read(s) } }
+            for a in home.accessories { for s in a.services where s.serviceType != HMServiceTypeAccessoryInformation { read(s) } }
         }
     }
 
@@ -49,9 +51,22 @@ final class HomeKitLights: NSObject, HMHomeManagerDelegate, HMAccessoryDelegate 
     private func load() {
         guard let manager else { return }
         accessories = [:]
+        others = [:]
         for home in manager.homes {
             for a in home.accessories {
-                guard let s = bulb(a) else { continue }
+                guard let s = bulb(a) else {
+                    // Everything else: plugs, locks, thermostats, sensors, blinds, HomePod temperature…
+                    guard primary(a) != nil else { continue }
+                    a.delegate = self
+                    others[id(a)] = a
+                    for sv in a.services where sv.serviceType != HMServiceTypeAccessoryInformation {
+                        for c in sv.characteristics where c.properties.contains(HMCharacteristicPropertySupportsEventNotification) {
+                            c.enableNotification(true) { _ in }
+                        }
+                        read(sv)
+                    }
+                    continue
+                }
                 // Govee lights are already handled directly over the Wi‑Fi.
                 if a.manufacturer?.localizedCaseInsensitiveContains("govee") == true { continue }
                 a.delegate = self
@@ -101,6 +116,113 @@ final class HomeKitLights: NSObject, HMHomeManagerDelegate, HMAccessoryDelegate 
             return l
         }
         SmartHome.shared.setHomeLights(list)
+        AccessoryStore.shared.fromHome = others.values.compactMap(device)
+    }
+
+    // MARK: Other accessories
+
+    private static let order: [String] = [
+        HMServiceTypeLockMechanism, HMServiceTypeGarageDoorOpener, HMServiceTypeThermostat, HMServiceTypeWindowCovering,
+        HMServiceTypeFan, HMServiceTypeAirPurifier, HMServiceTypeOutlet, HMServiceTypeSwitch,
+        HMServiceTypeLeakSensor, HMServiceTypeSmokeSensor, HMServiceTypeCarbonMonoxideSensor, HMServiceTypeContactSensor,
+        HMServiceTypeMotionSensor, HMServiceTypeOccupancySensor, HMServiceTypeTemperatureSensor, HMServiceTypeHumiditySensor,
+    ]
+
+    /// The service that says what the accessory is.
+    private func primary(_ a: HMAccessory) -> HMService? {
+        for t in Self.order { if let s = a.services.first(where: { $0.serviceType == t }) { return s } }
+        return nil
+    }
+
+    private func num(_ a: HMAccessory, _ type: String) -> Double? {
+        for s in a.services {
+            if let c = s.characteristics.first(where: { $0.characteristicType == type }), let v = c.value as? NSNumber { return v.doubleValue }
+        }
+        return nil
+    }
+
+    private func device(_ a: HMAccessory) -> HomeDevice? {
+        guard let p = primary(a) else { return nil }
+        var d = HomeDevice(id: id(a), name: a.name, source: "home", kind: .sensor, zone: a.room?.name, status: "")
+        d.reachable = a.isReachable
+        let power = num(a, HMCharacteristicTypePowerState).map { $0 != 0 } ?? num(a, HMCharacteristicTypeActive).map { $0 != 0 }
+        switch p.serviceType {
+        case HMServiceTypeLockMechanism:
+            d.kind = .lock
+            let st = Int(num(a, HMCharacteristicTypeCurrentLockMechanismState) ?? 3)
+            d.locked = st == 1 ? true : st == 0 ? false : nil
+            d.status = ["Unlocked", "Locked", "Jammed", "Unknown"][min(st, 3)]
+            d.alert = st == 2
+        case HMServiceTypeGarageDoorOpener:
+            d.kind = .garage
+            let st = Int(num(a, HMCharacteristicTypeCurrentDoorState) ?? 1)
+            d.doorOpen = st != 1
+            d.status = ["Open", "Closed", "Opening", "Closing", "Stopped"][min(st, 4)]
+        case HMServiceTypeThermostat:
+            d.kind = .thermostat
+            d.temperature = num(a, HMCharacteristicTypeCurrentTemperature)
+            d.target = num(a, HMCharacteristicTypeTargetTemperature)
+            let mode = Int(num(a, HMCharacteristicTypeCurrentHeatingCooling) ?? 0)
+            var s = d.temperature.map { "\(temperatureText($0)) now" } ?? ""
+            if let t = d.target, mode != 0 { s = "\(mode == 1 ? "Heating" : "Cooling") to \(temperatureText(t))" + (s.isEmpty ? "" : " · " + s) }
+            d.status = s.isEmpty ? "Thermostat" : s
+        case HMServiceTypeWindowCovering:
+            d.kind = .blinds
+            let pos = Int(num(a, HMCharacteristicTypeCurrentPosition) ?? 0)
+            d.position = pos
+            d.status = pos == 0 ? "Closed" : pos >= 100 ? "Open" : "\(pos)% Open"
+        case HMServiceTypeFan, HMServiceTypeAirPurifier:
+            d.kind = .fan
+            d.isOn = power ?? false
+            let speed = num(a, HMCharacteristicTypeRotationSpeed)
+            d.status = d.isOn == true ? (speed.map { "On · \(Int($0))%" } ?? "On") : "Off"
+        case HMServiceTypeOutlet:
+            d.kind = .outlet
+            d.isOn = power ?? false
+            d.status = d.isOn == true ? "On" : "Off"
+        case HMServiceTypeSwitch:
+            d.kind = .toggle
+            d.isOn = power ?? false
+            d.status = d.isOn == true ? "On" : "Off"
+        default:
+            d.kind = .sensor
+            var bits: [String] = []
+            if num(a, HMCharacteristicTypeLeakDetected) == 1 { bits.append("Leak Detected"); d.alert = true }
+            if num(a, HMCharacteristicTypeSmokeDetected) == 1 { bits.append("Smoke Detected"); d.alert = true }
+            if num(a, HMCharacteristicTypeCarbonMonoxideDetected) == 1 { bits.append("Carbon Monoxide"); d.alert = true }
+            if let c = num(a, HMCharacteristicTypeContactState) { bits.append(c == 0 ? "Closed" : "Open") }
+            if let m = num(a, HMCharacteristicTypeMotionDetected) { bits.append(m != 0 ? "Motion" : "No Motion") }
+            if let o = num(a, HMCharacteristicTypeOccupancyDetected) { bits.append(o != 0 ? "Occupied" : "Empty") }
+            if let t = num(a, HMCharacteristicTypeCurrentTemperature) { d.temperature = t; bits.append(temperatureText(t)) }
+            if let h = num(a, HMCharacteristicTypeCurrentRelativeHumidity) { bits.append("\(Int(h))% Humidity") }
+            d.status = bits.isEmpty ? "Sensor" : bits.joined(separator: " · ")
+        }
+        return d
+    }
+
+    private func send(_ d: HomeDevice, _ command: DeviceCommand) {
+        guard let a = others[d.id] else { return }
+        func write(_ type: String, _ v: Any) {
+            for s in a.services {
+                if let c = s.characteristics.first(where: { $0.characteristicType == type && $0.properties.contains(HMCharacteristicPropertyWritable) }) {
+                    c.writeValue(v) { [weak self] _ in Task { @MainActor in self?.publishSoon() } }
+                    return
+                }
+            }
+        }
+        switch command {
+        case .power(let on):
+            if a.services.contains(where: { $0.characteristics.contains { $0.characteristicType == HMCharacteristicTypePowerState } }) {
+                write(HMCharacteristicTypePowerState, on)
+            } else {
+                write(HMCharacteristicTypeActive, on ? 1 : 0)
+            }
+        case .lock(let lock): write(HMCharacteristicTypeTargetLockMechanismState, lock ? 1 : 0)
+        case .door(let open): write(HMCharacteristicTypeTargetDoorState, open ? 0 : 1)
+        case .position(let p): write(HMCharacteristicTypeTargetPosition, max(0, min(100, p)))
+        case .target(let t): write(HMCharacteristicTypeTargetTemperature, t)
+        case .machine: break
+        }
     }
 
     // MARK: Control

@@ -35,6 +35,12 @@ struct SettingsView: View {
                 NavigationLink { LightsListView() } label: {
                     IconRow(symbol: "", color: .clear, title: "Lights", value: SmartHome.shared.lights.isEmpty ? "None" : "\(SmartHome.shared.lights.count)")
                 }
+                NavigationLink { CamerasPhoneView() } label: {
+                    IconRow(symbol: "", color: .clear, title: "Cameras", value: NestCameras.shared.connected ? "\(NestCameras.shared.cameras.count)" : "Not Connected")
+                }
+                NavigationLink { DevicesListView() } label: {
+                    IconRow(symbol: "", color: .clear, title: "Devices", value: AccessoryStore.shared.all.isEmpty ? "None" : "\(AccessoryStore.shared.all.count)")
+                }
                 NavigationLink { SoftwareUpdateView() } label: {
                     HStack {
                         IconRow(symbol: "", color: .clear, title: "Software Update")

@@ -96,6 +96,8 @@ struct HomeView: View {
             }
         case "speakers": SpeakersSection(room: room.isEmpty ? nil : room)
         case "lights": LightsSection(room: room.isEmpty ? nil : room)
+        case "cameras": CamerasSection(room: room.isEmpty ? nil : room)
+        case "devices": DevicesSection(room: room.isEmpty ? nil : room)
         default: EmptyView()
         }
     }
@@ -129,7 +131,8 @@ struct HomeView: View {
     private var rooms: [String] {
         let home = SmartHome.shared
         let tvRooms = fleet.tvs.filter { !$0.isUnpaired }.map(\.name)
-        let deviceRooms = (home.speakers.map(\.id) + home.lights.map(\.id)).compactMap { home.room(of: $0) }
+        let deviceRooms = (home.speakers.map(\.id) + home.lights.map(\.id) + AccessoryStore.shared.all.map(\.id)).compactMap { home.room(of: $0) }
+            + NestCameras.shared.cameras.compactMap(\.room)
         return Array(Set(tvRooms + deviceRooms)).sorted { $0.localizedStandardCompare($1) == .orderedAscending }
     }
 
@@ -138,7 +141,7 @@ struct HomeView: View {
     }
 
     @ViewBuilder private var roomBar: some View {
-        if !SmartHome.shared.speakers.isEmpty || !SmartHome.shared.lights.isEmpty {
+        if !SmartHome.shared.speakers.isEmpty || !SmartHome.shared.lights.isEmpty || !AccessoryStore.shared.all.isEmpty {
             ScrollView(.horizontal) {
                 HStack(spacing: 8) {
                     ForEach([""] + rooms, id: \.self) { r in

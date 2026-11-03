@@ -6,7 +6,7 @@ import WoodruffKit
 final class HomeLayout {
     static let shared = HomeLayout()
 
-    static let allSections = ["status", "rooms", "tvs", "speakers", "lights"]
+    static let allSections = ["status", "rooms", "tvs", "cameras", "speakers", "lights", "devices"]
     static func title(_ key: String) -> String {
         switch key {
         case "status": return "Status"
@@ -14,6 +14,8 @@ final class HomeLayout {
         case "tvs": return "TVs"
         case "speakers": return "Speakers"
         case "lights": return "Lights"
+        case "cameras": return "Cameras"
+        case "devices": return "Devices"
         default: return key
         }
     }
@@ -115,6 +117,24 @@ struct EditHomeView: View {
                             Toggle(l.name, isOn: shown(item: l.id))
                         }
                         .onMove { layout.move(home.lights, in: "lights", from: $0, to: $1) }
+                    }
+                }
+                let cams = NestCameras.shared.cameras
+                if !cams.isEmpty {
+                    Section("Cameras") {
+                        ForEach(layout.arrange(cams, in: "cameras", includeHidden: true)) { c in
+                            Toggle(c.name, isOn: shown(item: c.id))
+                        }
+                        .onMove { layout.move(cams, in: "cameras", from: $0, to: $1) }
+                    }
+                }
+                let devices = AccessoryStore.shared.all
+                if !devices.isEmpty {
+                    Section("Devices") {
+                        ForEach(layout.arrange(devices, in: "devices", includeHidden: true)) { d in
+                            Toggle(d.name, isOn: shown(item: d.id))
+                        }
+                        .onMove { layout.move(devices, in: "devices", from: $0, to: $1) }
                     }
                 }
                 Section {

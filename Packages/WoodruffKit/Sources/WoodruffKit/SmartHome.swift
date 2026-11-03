@@ -584,6 +584,9 @@ public final class SmartHome {
         onChange?()
     }
 
+    /// Rooms other devices report themselves (Apple Home, SmartThings), used until one is chosen here.
+    public var externalZones: [String: String] = [:]
+
     /// Carries out a change to an Apple Home light (set by the iPhone app).
     public var homeControl: ((GoveeLight, LightCommand) -> Void)?
 
@@ -606,7 +609,7 @@ public final class SmartHome {
     /// The room a speaker or light is in: chosen here, or a speaker's own Sonos room.
     public func room(of id: String) -> String? {
         if let r = rooms[id], !r.isEmpty { return r }
-        return speakers.first { $0.id == id }?.zone ?? lights.first { $0.id == id }?.zone
+        return speakers.first { $0.id == id }?.zone ?? lights.first { $0.id == id }?.zone ?? externalZones[id]
     }
 
     public func setRoom(_ id: String, _ room: String?) {
