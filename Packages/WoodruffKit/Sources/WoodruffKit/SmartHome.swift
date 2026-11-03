@@ -237,7 +237,7 @@ final class GoveeLAN {
         listener = l
     }
 
-    private func receive(_ c: NWConnection) {
+    nonisolated private func receive(_ c: NWConnection) {
         c.receiveMessage { [weak self] data, _, _, error in
             guard let self else { return }
             if let data, let v = try? JSONDecoder().decode(JSONValue.self, from: data), let msg = v["msg"] {
@@ -260,7 +260,7 @@ final class GoveeLAN {
                     }
                 }
             }
-            if error == nil { Task { @MainActor in self.receive(c) } }
+            if error == nil { self.receive(c) }
         }
     }
 
