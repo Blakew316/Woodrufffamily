@@ -22,6 +22,16 @@ struct MemoriesView: View {
     private var client: TVClient? { fleet.hubClient() }
     @Namespace private var zoom
     @AppStorage("memories.columns") private var columnCount = 3
+    @State private var topItem: String?
+    @State private var showMonth = false
+    @State private var hideMonth: Task<Void, Never>?
+
+    /// The month of the photos at the top of the screen ("July 2025").
+    private var monthLabel: String? {
+        guard let items = memories?.items, !items.isEmpty else { return nil }
+        let item = items.first { $0.path == topItem } ?? items.first
+        return item?.takenDate?.formatted(.dateTime.month(.wide).year())
+    }
     @State private var pinchBase: Int?
 
     /// Photos grouped by the month they were taken, newest first.
@@ -51,25 +61,15 @@ struct MemoriesView: View {
                     ProgressView("Adding \(u.done + 1) of \(u.of)…", value: Double(u.done), total: Double(u.of))
                         .padding(.horizontal, 20).padding(.bottom, 10)
                 }
-                // Like Photos: a glass header for each month that stays pinned while its photos scroll by.
-                LazyVGrid(columns: gridColumns, spacing: 2, pinnedViews: [.sectionHeaders]) {
-                    ForEach(months(m.items), id: \.0) { month, items in
-                        Section {
-                            ForEach(items) { item in
-                                Button { viewing = item } label: { tile(item).zoomSource(item.path, zoom) }
-                                    .buttonStyle(.plain)
-                                    .contextMenu { itemMenu(item) }
-                            }
-                        } header: {
-                            HStack {
-                                Text(month).font(.headline)
-                                Spacer()
-                            }
-                            .padding(.horizontal, 16).padding(.vertical, 8)
-                            .background(.ultraThinMaterial)
-                        }
+                // Like Photos: one continuous grid; the month floats in a glass capsule while scrolling.
+                LazyVGrid(columns: gridColumns, spacing: 2) {
+                    ForEach(m.items) { item in
+                        Button { viewing = item } label: { tile(item).zoomSource(item.path, zoom) }
+                            .buttonStyle(.plain)
+                            .contextMenu { itemMenu(item) }
                     }
                 }
+                .scrollTargetLayout()
                 #if os(iOS)
                 // Pinch to see more or fewer photos across, like Photos.
                 .simultaneousGesture(MagnifyGesture()
@@ -97,6 +97,34 @@ struct MemoriesView: View {
                     ForEach(0..<18, id: \.self) { _ in Placeholder(corner: 0).aspectRatio(1, contentMode: .fit) }
                 }
                 .shimmer()
+            }
+        }
+        .scrollPosition(id: $topItem, anchor: .top)
+        .onScrollPhaseChange { _, phase in
+            // Shows while scrolling, fades a moment after it stops (as Photos does).
+            if phase.isScrolling {
+                hideMonth?.cancel()
+                withAnimation(.smooth(duration: 0.25)) { showMonth = true }
+            } else {
+                hideMonth?.cancel()
+                hideMonth = Task {
+                    try? await Task.sleep(nanoseconds: 1_200_000_000)
+                    guard !Task.isCancelled else { return }
+                    withAnimation(.smooth(duration: 0.4)) { showMonth = false }
+                }
+            }
+        }
+        .overlay(alignment: .top) {
+            if showMonth, let monthLabel {
+                Text(monthLabel)
+                    .font(.subheadline.weight(.semibold))
+                    .contentTransition(.numericText())
+                    .padding(.horizontal, 16).padding(.vertical, 8)
+                    .glass(Capsule(), interactive: false)
+                    .padding(.top, 8)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .animation(.snappy, value: monthLabel)
+                    .allowsHitTesting(false)
             }
         }
         .screenTitle("Family Memories")
