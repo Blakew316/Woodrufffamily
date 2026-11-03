@@ -14,7 +14,6 @@ struct HomeView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 30) {
                 summary
-                if let tv = featuredTV, let p = tv.playing { NowPlayingBanner(tv: tv, playing: p) }
                 VStack(alignment: .leading, spacing: 14) {
                     Text("TVs").font(.title2.bold())
                     LazyVGrid(columns: columns, spacing: 18) {
