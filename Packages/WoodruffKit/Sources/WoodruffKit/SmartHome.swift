@@ -896,6 +896,17 @@ public final class SmartHome {
         #endif
     }
 
+    /// Reads names, rooms and hand-added lights again (after another device of the family's changed them).
+    public func reloadSaved() {
+        let n = Saved.load("smartNames", as: [String: String].self) ?? [:]
+        if n != names { names = n }
+        let r = Saved.load("smartRooms", as: [String: String].self) ?? [:]
+        if r != rooms { rooms = r }
+        let x = Saved.load("smartExtraRooms", as: [String].self) ?? []
+        if x != extraRooms { extraRooms = x }
+        manualIPs = Saved.load("goveeManualIPs", as: [String].self) ?? []
+    }
+
     /// Searches the Wi‑Fi for lights again now.
     public func searchLights() { scanLights() }
 

@@ -20,6 +20,7 @@ struct WoodruffApp: App {
                     SmartHome.shared.start()
                     SmartThings.shared.start()
                     NestCameras.shared.start()
+                    SettingsSync.shared.start(fleet)
                     #if os(iOS)
                     HomeKitLights.shared.start()
                     #endif
@@ -49,6 +50,7 @@ struct WoodruffApp: App {
             fleet.setActive(phase == .active)
             if phase == .active {
                 SmartHome.shared.wake()
+                SettingsSync.shared.wake()
                 #if os(iOS)
                 HomeKitLights.shared.refresh()
                 #endif
