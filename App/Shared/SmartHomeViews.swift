@@ -7,13 +7,16 @@ import WoodruffKit
 
 struct SpeakersSection: View {
     var room: String? = nil
+    /// Only the favourites (Home's Favorites).
+    var favorites = false
     /// Off inside a room on Home (the room is the heading).
     var titled = true
     var home = SmartHome.shared
     @State private var open: SonosRoom?
 
     private var shown: [SonosRoom] {
-        HomeLayout.shared.arrange(room.map { r in home.speakers.filter { roomMatches(home.room(of: $0.id), r) } } ?? home.speakers, in: "speakers")
+        favorites ? HomeLayout.shared.favoritesOnly(home.speakers)
+            : HomeLayout.shared.arrange(room.map { r in home.speakers.filter { roomMatches(home.room(of: $0.id), r) } } ?? home.speakers, in: "speakers")
     }
 
     var body: some View {
@@ -70,6 +73,7 @@ struct SpeakerTile: View {
             }
             Button("Next Track") { Task { await SmartHome.shared.sonos(room) { try await Sonos.next($0) } } }
             Button(room.muted ? "Unmute" : "Mute") { Task { await SmartHome.shared.sonos(room) { try await Sonos.setMute($0, !room.muted) } } }
+            FavoriteButton(id: room.id)
         }
     }
 
@@ -103,13 +107,16 @@ struct SpeakerArt: View {
 
 struct LightsSection: View {
     var room: String? = nil
+    /// Only the favourites (Home's Favorites).
+    var favorites = false
     /// Off inside a room on Home (the room is the heading).
     var titled = true
     var home = SmartHome.shared
     @State private var open: GoveeLight?
 
     private var shown: [GoveeLight] {
-        HomeLayout.shared.arrange(room.map { r in home.lights.filter { roomMatches(home.room(of: $0.id), r) } } ?? home.lights, in: "lights")
+        favorites ? HomeLayout.shared.favoritesOnly(home.lights)
+            : HomeLayout.shared.arrange(room.map { r in home.lights.filter { roomMatches(home.room(of: $0.id), r) } } ?? home.lights, in: "lights")
     }
 
     var body: some View {
@@ -191,6 +198,7 @@ struct LightTile: View {
         .contextMenu {
             Button(light.on ? "Turn Off" : "Turn On") { SmartHome.shared.setOn(light, !light.on) }
             Button("Controls…", action: openControls)
+            FavoriteButton(id: light.id)
         }
     }
 }

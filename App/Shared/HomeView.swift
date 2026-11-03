@@ -6,7 +6,8 @@ import WoodruffKit
 struct HomeView: View {
     @Environment(Fleet.self) private var fleet
     @State private var openTV: String?
-    @AppStorage("home.room") private var room = ""
+    /// The room bar's choice: Favorites (first, and where Home opens), All Rooms (""), or a room.
+    @AppStorage("home.room2") private var room = favoritesKey
     @State private var editing = false
     @Namespace private var zoom
     private let layout = HomeLayout.shared
@@ -27,15 +28,20 @@ struct HomeView: View {
                 }
                 .padding(.bottom, -14)
                 #endif
-                if layout.groupByRoom {
-                    // Like the Home app: each room with everything in it.
-                    ForEach(layout.visibleSections.filter { $0 == "status" || $0 == "rooms" }, id: \.self) { key in
-                        section(key)
-                    }
-                    ForEach(roomGroups, id: \.self) { r in roomGroup(r) }
-                } else {
-                    ForEach(layout.visibleSections, id: \.self) { key in
-                        section(key)
+                ForEach(layout.visibleSections.filter { $0 == "status" || $0 == "rooms" }, id: \.self) { key in
+                    section(key)
+                }
+                if room == favoritesKey || (room.isEmpty && !layout.favorites.isEmpty) {
+                    favoritesGroup
+                }
+                if room != favoritesKey {
+                    if layout.groupByRoom {
+                        // Like the Home app: each room with everything in it.
+                        ForEach(roomGroups, id: \.self) { r in roomGroup(r) }
+                    } else {
+                        ForEach(layout.visibleSections.filter { $0 != "status" && $0 != "rooms" }, id: \.self) { key in
+                            section(key)
+                        }
                     }
                 }
             }
@@ -82,6 +88,8 @@ struct HomeView: View {
         }
         #endif
         .sheet(isPresented: $editing) { EditHomeView() }
+        // With the room bar hidden there's no way to pick a room: show everything.
+        .onAppear { if layout.hiddenSections.contains("rooms") && !room.isEmpty { room = "" } }
         .refreshable { await refreshEverything() }
     }
 
@@ -161,6 +169,32 @@ struct HomeView: View {
         return list.filter(hasThings)
     }
 
+    /// Favorites: everything starred, whatever room it's in.
+    private var favoritesGroup: some View {
+        let favTVs = layout.favoritesOnly(fleet.tvs)
+        return VStack(alignment: .leading, spacing: 16) {
+            Text("Favorites").font(.title2.bold())
+            if layout.favorites.isEmpty {
+                Text("Touch and hold anything on Home (a camera, TV, speaker, light or device) and choose Add to Favorites. It shows up here.")
+                    .font(.subheadline).foregroundStyle(.secondary)
+                    .padding(16).frame(maxWidth: .infinity, alignment: .leading)
+                    .glass(RoundedRectangle(cornerRadius: 20, style: .continuous), interactive: false)
+            }
+            CamerasSection(titled: false, favorites: true)
+            if !favTVs.isEmpty {
+                LazyVGrid(columns: columns, spacing: 18) {
+                    ForEach(favTVs) { tv in
+                        // The same TV may also sit in its room below; only that one zooms.
+                        HomeTVTile(tv: tv) { open(tv.id) }
+                    }
+                }
+            }
+            SpeakersSection(titled: false, favorites: true)
+            LightsSection(titled: false, favorites: true)
+            DevicesSection(titled: false, favorites: true)
+        }
+    }
+
     private func tvs(in r: String) -> [FleetTV] {
         layout.arrange(fleet.tvs.filter { roomMatches(SmartHome.shared.rooms[$0.id] ?? $0.name, r) }, in: "tvs")
     }
@@ -203,14 +237,14 @@ struct HomeView: View {
     }
 
     @ViewBuilder private var roomBar: some View {
-        if !SmartHome.shared.speakers.isEmpty || !SmartHome.shared.lights.isEmpty || !AccessoryStore.shared.all.isEmpty {
+        do {
             ScrollView(.horizontal) {
                 HStack(spacing: 8) {
-                    ForEach([""] + rooms, id: \.self) { r in
+                    ForEach([favoritesKey, ""] + rooms, id: \.self) { r in
                         Button {
                             withAnimation(.smooth) { room = r }
                         } label: {
-                            Text(r.isEmpty ? "All Rooms" : r)
+                            Text(r == favoritesKey ? "Favorites" : r.isEmpty ? "All Rooms" : r)
                                 .font(.subheadline.weight(.semibold))
                                 .padding(.horizontal, 14).padding(.vertical, 8)
                                 .foregroundStyle(room == r ? Color.black : .primary)
@@ -222,7 +256,7 @@ struct HomeView: View {
                 }
             }
             .scrollIndicators(.hidden)
-            .onAppear { if !room.isEmpty && !rooms.contains(room) { room = "" } }
+            .onAppear { if !room.isEmpty && room != favoritesKey && !rooms.contains(room) { room = "" } }
         }
     }
 
@@ -383,6 +417,7 @@ struct HomeTVTile: View {
             Button("Check for Updates") { Task { do { try await fleet.pushUpdate(tv) } catch { fleet.show(error) } } }
             if tv.needsAttention { Button("Hide Alerts") { fleet.hideAlerts(tv) } }
             if tv.alertsHidden { Button("Show Hidden Alerts") { fleet.showAlerts(tv) } }
+            FavoriteButton(id: tv.id)
         }
     }
 

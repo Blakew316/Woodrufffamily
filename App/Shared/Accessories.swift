@@ -102,6 +102,8 @@ private let temperatureFormatter: MeasurementFormatter = {
 
 struct DevicesSection: View {
     var room: String? = nil
+    /// Only the favourites (Home's Favorites).
+    var favorites = false
     /// Off inside a room on Home (the room is the heading).
     var titled = true
     private let store = AccessoryStore.shared
@@ -109,7 +111,7 @@ struct DevicesSection: View {
 
     private var shown: [HomeDevice] {
         let list = room.map { r in store.all.filter { roomMatches(SmartHome.shared.room(of: $0.id), r) } } ?? store.all
-        return HomeLayout.shared.arrange(list, in: "devices")
+        return favorites ? HomeLayout.shared.favoritesOnly(store.all) : HomeLayout.shared.arrange(list, in: "devices")
     }
 
     var body: some View {
@@ -176,7 +178,10 @@ struct DeviceTile: View {
         .animation(.smooth(duration: 0.25), value: lit)
         .onTapGesture { tap() }
         .onLongPressGesture(minimumDuration: 0.35, perform: openControls)
-        .contextMenu { Button("Controls…", action: openControls) }
+        .contextMenu {
+            Button("Controls…", action: openControls)
+            FavoriteButton(id: device.id)
+        }
         .confirmationDialog("Unlock \(device.name)?", isPresented: $confirmUnlock, titleVisibility: .visible) {
             Button("Unlock") { AccessoryStore.shared.send(device, .lock(false)) }
         }

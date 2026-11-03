@@ -186,6 +186,8 @@ final class NestCameras {
 
 struct CamerasSection: View {
     var room: String? = nil
+    /// Only the favourites (Home's Favorites).
+    var favorites = false
     /// Off inside a room on Home (the room is the heading).
     var titled = true
     private let nest = NestCameras.shared
@@ -193,7 +195,7 @@ struct CamerasSection: View {
 
     private var shown: [NestCameras.Camera] {
         let list = room.map { r in nest.cameras.filter { roomMatches(SmartHome.shared.rooms[$0.id] ?? $0.room, r) } } ?? nest.cameras
-        return HomeLayout.shared.arrange(list, in: "cameras")
+        return favorites ? HomeLayout.shared.favoritesOnly(nest.cameras) : HomeLayout.shared.arrange(list, in: "cameras")
     }
 
     var body: some View {
@@ -309,6 +311,10 @@ struct LiveCameraTile: View {
         .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).strokeBorder(.white.opacity(0.08)))
         .contentShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         .onTapGesture { if camera.webRTC { streams.expanded = camera.id; open() } }
+        .contextMenu {
+            if camera.webRTC { Button("Open") { streams.expanded = camera.id; open() } }
+            FavoriteButton(id: camera.id)
+        }
         .onAppear { if camera.webRTC { streams.show(camera) } }
         .onDisappear { if camera.webRTC { streams.hide() } }
     }

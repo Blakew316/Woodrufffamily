@@ -27,6 +27,17 @@ final class HomeLayout {
     var hiddenItems: Set<String> { didSet { save() } }
     /// Home split up by room, like the Home app (otherwise by kind: Cameras, TVs, Speakers…).
     var groupByRoom: Bool { didSet { save() } }
+    /// Starred things (any kind), in the order shown under Favorites.
+    var favorites: [String] { didSet { save() } }
+
+    func isFavorite(_ id: String) -> Bool { favorites.contains(id) }
+    func toggleFavorite(_ id: String) {
+        if let i = favorites.firstIndex(of: id) { favorites.remove(at: i) } else { favorites.append(id) }
+    }
+    /// Just the favourites from [items], in the favourites' order.
+    func favoritesOnly<T: Identifiable>(_ items: [T]) -> [T] where T.ID == String {
+        items.filter { favorites.contains($0.id) }.sorted { (favorites.firstIndex(of: $0.id) ?? 0) < (favorites.firstIndex(of: $1.id) ?? 0) }
+    }
 
     private struct Stored: Codable {
         var sections: [String]
@@ -35,6 +46,7 @@ final class HomeLayout {
         var hiddenItems: [String]
         var version: Int?
         var groupByRoom: Bool?
+        var favorites: [String]?
     }
 
     init() {
@@ -52,11 +64,12 @@ final class HomeLayout {
         order = s?.order ?? [:]
         hiddenItems = Set(s?.hiddenItems ?? [])
         groupByRoom = s?.groupByRoom ?? true
+        favorites = s?.favorites ?? []
         if (s?.version ?? 1) < 2 { save() }
     }
 
     private func save() {
-        Saved.save("homeLayout", Stored(sections: sections, hiddenSections: Array(hiddenSections), order: order, hiddenItems: Array(hiddenItems), version: 2, groupByRoom: groupByRoom))
+        Saved.save("homeLayout", Stored(sections: sections, hiddenSections: Array(hiddenSections), order: order, hiddenItems: Array(hiddenItems), version: 2, groupByRoom: groupByRoom, favorites: favorites))
     }
 
     var visibleSections: [String] { sections.filter { !hiddenSections.contains($0) } }
@@ -102,6 +115,20 @@ final class HomeLayout {
     }
 }
 
+/// The Favorites choice in Home's room bar.
+let favoritesKey = "\u{1}favorites"
+
+/// "Add to Favorites" / "Remove from Favorites", for any tile's menu.
+struct FavoriteButton: View {
+    var id: String
+    var body: some View {
+        let fav = HomeLayout.shared.isFavorite(id)
+        Button(fav ? "Remove from Favorites" : "Add to Favorites", systemImage: fav ? "star.slash" : "star") {
+            withAnimation(.smooth) { HomeLayout.shared.toggleFavorite(id) }
+        }
+    }
+}
+
 /// Every room something is in: the TVs' rooms, and the rooms of cameras, speakers, lights and devices.
 @MainActor func homeRooms(_ fleet: Fleet) -> [String] {
     let h = SmartHome.shared
@@ -135,6 +162,17 @@ struct EditHomeView: View {
                     .onMove { layout.sections.move(fromOffsets: $0, toOffset: $1) }
                 } header: { Text("Sections") } footer: {
                     Text("Drag to change the order of Home. Turn one off to hide it.")
+                }
+
+                Section {
+                    if layout.favorites.isEmpty {
+                        Text("Touch and hold anything on Home and choose Add to Favorites.").foregroundStyle(.secondary)
+                    }
+                    ForEach(layout.favorites, id: \.self) { id in Text(favoriteName(id)) }
+                        .onMove { layout.favorites.move(fromOffsets: $0, toOffset: $1) }
+                        .onDelete { layout.favorites.remove(atOffsets: $0) }
+                } header: { Text("Favorites") } footer: {
+                    Text("Favorites come first on Home. Drag to reorder; swipe to remove.")
                 }
 
                 Section {
@@ -206,6 +244,15 @@ struct EditHomeView: View {
         #if os(macOS)
         .frame(minWidth: 420, minHeight: 520)
         #endif
+    }
+
+    private func favoriteName(_ id: String) -> String {
+        if let t = fleet.tv(id) { return t.name }
+        if let c = NestCameras.shared.cameras.first(where: { $0.id == id }) { return c.name }
+        if let r = home.speaker(id) { return r.name }
+        if let l = home.light(id) { return l.name }
+        if let d = AccessoryStore.shared.device(id) { return d.name }
+        return "Unavailable"
     }
 
     private func shown(section key: String) -> Binding<Bool> {
