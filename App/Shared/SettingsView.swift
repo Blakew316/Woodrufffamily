@@ -26,6 +26,9 @@ struct SettingsView: View {
                 NavigationLink { TVsView() } label: {
                     IconRow(symbol: "tv.fill", color: .blue, title: "TVs", value: tvsSummary, valueColor: fleet.tvs.contains(where: \.needsAttention) ? Palette.attention : .secondary)
                 }
+                NavigationLink { EveryTVView() } label: {
+                    IconRow(symbol: "", color: .clear, title: "Every TV")
+                }
                 NavigationLink { SpeakersListView() } label: {
                     IconRow(symbol: "", color: .clear, title: "Speakers", value: SmartHome.shared.speakers.isEmpty ? "None" : "\(SmartHome.shared.speakers.count)")
                 }
@@ -622,5 +625,62 @@ struct AddMailSheet: View {
             catch { fleet.show(error) }
             busy = false
         }
+    }
+}
+
+/// Settings → Every TV: one tap for all of them (it used to sit at the bottom of Home).
+struct EveryTVView: View {
+    @Environment(Fleet.self) private var fleet
+    @State private var busy: String?
+
+    var body: some View {
+        Form {
+            Section {
+                row("Pause All", "Everything that’s playing") { await keyAll("playpause", onlyPlaying: true) }
+                row("Mute All", "Every TV that’s on") { await keyAll("mute") }
+                row("Woodruff Home on All", "Every TV that’s on") { await keyAll("home") }
+            }
+            Section {
+                row("Update All", fleet.updatesWaiting == 0 ? "All up to date" : "\(fleet.updatesWaiting) waiting") {
+                    let (n, failed) = await fleet.pushUpdateToAll()
+                    fleet.say("Update All", failed.isEmpty ? "Asked \(n) TV\(n == 1 ? "" : "s") to update. Each installs once nobody’s watching." : failed.joined(separator: "\n"))
+                }
+            } footer: {
+                Text("TVs install the update once nobody’s watching.")
+            }
+        }
+        .formStyle(.grouped)
+        .navigationTitle("Every TV")
+        .inlineTitle()
+    }
+
+    private func row(_ title: String, _ detail: String, _ run: @escaping () async -> Void) -> some View {
+        Button {
+            busy = title
+            Task { await run(); busy = nil }
+        } label: {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title).foregroundStyle(.primary)
+                    Text(detail).font(.subheadline).foregroundStyle(.secondary)
+                }
+                Spacer()
+                if busy == title { ProgressView() }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(busy != nil)
+    }
+
+    private func keyAll(_ key: String, onlyPlaying: Bool = false) async {
+        await withTaskGroup(of: Void.self) { g in
+            for tv in fleet.tvs where tv.online && (!onlyPlaying || tv.playing?.isPlaying == true) {
+                guard let c = fleet.client(for: tv) else { continue }
+                g.addTask { try? await c.key(key) }
+            }
+        }
+        try? await Task.sleep(nanoseconds: 700_000_000)
+        await fleet.refresh()
     }
 }

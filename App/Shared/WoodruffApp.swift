@@ -155,6 +155,8 @@ struct RootView: View {
                     NavigationStack { s.view }
                         // What's playing floats above the tabs everywhere but Remote, which shows it itself.
                         .safeAreaInset(edge: .bottom, spacing: 0) { if s != .remote { NowPlayingBar() } }
+                        // Room under every page's last row for the bar, so nothing ends up stuck behind it.
+                        .contentMargins(.bottom, s != .remote && fleet.selected?.playing != nil ? 96 : 0, for: .scrollContent)
                         .animation(.smooth, value: fleet.selected?.playing?.title)
                 }
                 .badge(s == .settings ? fleet.attentionCount + fleet.updatesWaiting : 0)

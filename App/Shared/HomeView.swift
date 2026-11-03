@@ -14,6 +14,13 @@ struct HomeView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 30) {
+                #if os(iOS)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Home").font(.largeTitle.bold())
+                    Text(statusLine).font(.subheadline.weight(.medium)).foregroundStyle(.secondary)
+                }
+                .padding(.bottom, -14)
+                #endif
                 summary
                 roomBar
                 if !shownTVs.isEmpty {
@@ -30,20 +37,6 @@ struct HomeView: View {
                 }
                 SpeakersSection(room: room.isEmpty ? nil : room)
                 LightsSection(room: room.isEmpty ? nil : room)
-                if room.isEmpty {
-                VStack(alignment: .leading, spacing: 14) {
-                    Text("Every TV").font(.title2.bold())
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 170), spacing: 14)], spacing: 14) {
-                        SceneTile(title: "Pause All", detail: "Everything playing") { await all("playpause", onlyPlaying: true) }
-                        SceneTile(title: "Mute All", detail: "Every TV that’s on") { await all("mute") }
-                        SceneTile(title: "Woodruff Home", detail: "On every TV") { await all("home") }
-                        SceneTile(title: "Update All", detail: fleet.updatesWaiting == 0 ? "All up to date" : "\(fleet.updatesWaiting) waiting") {
-                            let (n, failed) = await fleet.pushUpdateToAll()
-                            fleet.say("Update All", failed.isEmpty ? "Asked \(n) TV\(n == 1 ? "" : "s") to update. Each installs once nobody’s watching." : failed.joined(separator: "\n"))
-                        }
-                    }
-                }
-                }
             }
             #if os(iOS)
             .padding(.horizontal, 16).padding(.vertical, 12)
@@ -79,6 +72,10 @@ struct HomeView: View {
         .environment(\.colorScheme, .dark)
         .navigationTitle(openTV.flatMap { fleet.tv($0)?.name } ?? "Home")
         .navigationSubtitle(statusLine)
+        #if os(iOS)
+        // The title sits in the page itself, right under the status bar.
+        .toolbar(.hidden, for: .navigationBar)
+        #endif
         .refreshable { await fleet.refresh(); await fleet.loadAllHealth(); await SmartHome.shared.refreshSpeakers() }
     }
 
@@ -165,17 +162,6 @@ struct HomeView: View {
 
     private func close() {
         withAnimation(.spring(response: 0.45, dampingFraction: 0.9)) { openTV = nil }
-    }
-
-    private func all(_ key: String, onlyPlaying: Bool = false) async {
-        await withTaskGroup(of: Void.self) { g in
-            for tv in fleet.tvs where tv.online && (!onlyPlaying || tv.playing?.isPlaying == true) {
-                guard let c = fleet.client(for: tv) else { continue }
-                g.addTask { try? await c.key(key) }
-            }
-        }
-        try? await Task.sleep(nanoseconds: 700_000_000)
-        await fleet.refresh()
     }
 }
 
