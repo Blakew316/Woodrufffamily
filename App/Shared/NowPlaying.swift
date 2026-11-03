@@ -19,7 +19,7 @@ func livePosition(_ p: NowPlaying, at date: Date, since: Date?) -> Double {
 final class VideoThumbnails {
     static let shared = VideoThumbnails()
     private(set) var found: [String: URL] = [:]
-    private var asked: Set<String> = []
+    @ObservationIgnored private var asked: Set<String> = []
 
     nonisolated static func key(_ p: NowPlaying) -> String { (p.title + "|" + (p.subtitle ?? "")).lowercased() }
 
@@ -50,6 +50,12 @@ final class VideoThumbnails {
     }
 
     static func thumb(_ id: String) -> URL { URL(string: "https://i.ytimg.com/vi/\(id)/hqdefault.jpg")! }
+}
+
+/// Whether there's a real picture for [p]: library art, or a YouTube video's thumbnail.
+@MainActor func hasPicture(_ fleet: Fleet, _ p: NowPlaying?) -> Bool {
+    guard let p else { return false }
+    return fleet.artwork(for: p) != nil || VideoThumbnails.shared.url(for: p) != nil
 }
 
 /// The picture of what's playing: the title's poster or backdrop from the library, a YouTube video's own

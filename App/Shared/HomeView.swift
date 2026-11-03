@@ -14,6 +14,7 @@ struct HomeView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 30) {
                 summary
+                if let tv = featuredTV, let p = tv.playing { NowPlayingBanner(tv: tv, playing: p) }
                 VStack(alignment: .leading, spacing: 14) {
                     Text("TVs").font(.title2.bold())
                     LazyVGrid(columns: columns, spacing: 18) {
@@ -62,6 +63,9 @@ struct HomeView: View {
                     .transition(.asymmetric(insertion: .identity, removal: .opacity))
             }
         }
+        .background { HomeBackdrop(playing: featuredTV?.playing) }
+        // Home is always the dark, cinematic room: its glass and text read over the backdrop.
+        .environment(\.colorScheme, .dark)
         .navigationTitle(openTV.flatMap { fleet.tv($0)?.name } ?? "Home")
         .refreshable { await fleet.refresh(); await fleet.loadAllHealth() }
     }
@@ -89,6 +93,12 @@ struct HomeView: View {
             }
         }
         .scrollIndicators(.hidden)
+    }
+
+    /// The TV the banner shows: the remote's, if it's playing, else any that is.
+    private var featuredTV: FleetTV? {
+        if let s = fleet.selected, s.playing != nil { return s }
+        return fleet.tvs.first { $0.playing?.isPlaying == true } ?? fleet.tvs.first { $0.playing != nil }
     }
 
     private func open(_ id: String) {
@@ -141,7 +151,7 @@ struct HomeTVTile: View {
         // A TV that stopped keeps the picture of what it last played, dimmed, so the grid stays rich.
         let art = p ?? (tv.isUnpaired ? nil : fleet.lastPlaying[tv.id])
         ZStack(alignment: .bottomLeading) {
-            if art != nil && fleet.artwork(for: art) != nil {
+            if hasPicture(fleet, art) {
                 Color.clear
                     .overlay { NowPlayingArt(playing: art, backdrop: true) }
                     .clipped()
@@ -191,7 +201,10 @@ struct HomeTVTile: View {
         }
         .foregroundStyle(hasArt ? Color.white : Color.primary)
         .frame(height: 230)
-        .background { RoundedRectangle(cornerRadius: 24, style: .continuous).fill(hasArt ? Color.black : Palette.cardFill) }
+        .background {
+            if hasArt { RoundedRectangle(cornerRadius: 24, style: .continuous).fill(Color.black) }
+            else { Color.clear.glass(RoundedRectangle(cornerRadius: 24, style: .continuous), interactive: false) }
+        }
         .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 24, style: .continuous).strokeBorder(.white.opacity(hovering ? 0.18 : 0.06)))
         .opacity(tv.online ? 1 : 0.6)
@@ -221,7 +234,7 @@ struct HomeTVTile: View {
 
     private var hasArt: Bool {
         let art = tv.playing ?? (tv.isUnpaired ? nil : fleet.lastPlaying[tv.id])
-        return art != nil && fleet.artwork(for: art) != nil
+        return hasPicture(fleet, art)
     }
 
     private var state: String {
@@ -260,7 +273,7 @@ struct SceneTile: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(16)
-            .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(Palette.cardFill))
+            .background { Color.clear.glass(RoundedRectangle(cornerRadius: 18, style: .continuous), interactive: false) }
             .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         }
         .buttonStyle(PressScale(scale: 0.97))
@@ -301,5 +314,92 @@ struct LibrarySearchResults: View {
             guard !Task.isCancelled else { return }
             r = try? await fleet.hubClient()?.search(query)
         }
+    }
+}
+
+/// Home's background: a slow, quiet gradient in the app's blues that drifts over half a minute, warmed by a
+/// soft blur of whatever's playing.
+struct HomeBackdrop: View {
+    @Environment(Fleet.self) private var fleet
+    var playing: NowPlaying?
+
+    var body: some View {
+        ZStack {
+            Color(red: 0.03, green: 0.05, blue: 0.09)
+            TimelineView(.animation(minimumInterval: 1 / 15)) { ctx in
+                let t = ctx.date.timeIntervalSinceReferenceDate / 30
+                let w = Float(sin(t) * 0.12), v = Float(cos(t * 0.8) * 0.12)
+                MeshGradient(width: 3, height: 3, points: [
+                    [0, 0], [0.5 + w, 0], [1, 0],
+                    [0, 0.5 + v], [0.5 - v, 0.5 + w], [1, 0.5 - w],
+                    [0, 1], [0.5 + v, 1], [1, 1],
+                ], colors: [
+                    Color(red: 0.05, green: 0.09, blue: 0.17), Color(red: 0.08, green: 0.18, blue: 0.30), Color(red: 0.04, green: 0.08, blue: 0.14),
+                    Color(red: 0.06, green: 0.20, blue: 0.26), Color(red: 0.10, green: 0.24, blue: 0.40), Color(red: 0.05, green: 0.12, blue: 0.22),
+                    Color(red: 0.03, green: 0.06, blue: 0.11), Color(red: 0.07, green: 0.14, blue: 0.24), Color(red: 0.04, green: 0.10, blue: 0.16),
+                ])
+                .opacity(0.9)
+            }
+            if hasPicture(fleet, playing) {
+                GeometryReader { g in
+                    NowPlayingArt(playing: playing, backdrop: true)
+                        .frame(width: g.size.width, height: g.size.height)
+                        .blur(radius: 110, opaque: true)
+                        .saturation(1.2)
+                        .clipped()
+                }
+                .opacity(0.32)
+                .transition(.opacity)
+                .id(playing?.title)
+            }
+            LinearGradient(colors: [.clear, .black.opacity(0.35)], startPoint: .top, endPoint: .bottom)
+        }
+        .ignoresSafeArea()
+        .animation(.easeInOut(duration: 1.2), value: playing?.title)
+        .allowsHitTesting(false)
+    }
+}
+
+/// What's playing, large, at the top of Home: the picture, the title, the TV, live progress and the transport.
+struct NowPlayingBanner: View {
+    @Environment(Fleet.self) private var fleet
+    var tv: FleetTV
+    var playing: NowPlaying
+    @State private var open = false
+
+    var body: some View {
+        ZStack(alignment: .bottomLeading) {
+            Color.clear
+                .overlay { NowPlayingArt(playing: playing, backdrop: true) }
+                .clipped()
+            LinearGradient(stops: [.init(color: .clear, location: 0.25), .init(color: .black.opacity(0.88), location: 1)],
+                           startPoint: .top, endPoint: .bottom)
+            HStack(alignment: .bottom, spacing: 24) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Now Playing on \(tv.name)".uppercased())
+                        .font(.caption.weight(.bold)).tracking(1.2).foregroundStyle(.white.opacity(0.65))
+                    Text(playing.title).font(.largeTitle.bold()).lineLimit(2)
+                    if let s = [playing.subtitle, playing.app].compactMap({ $0?.isEmpty == false ? $0 : nil }).first {
+                        Text(s).font(.title3).foregroundStyle(.white.opacity(0.7)).lineLimit(1)
+                    }
+                    LiveProgress(playing: playing, tint: .white).frame(maxWidth: 420).padding(.top, 8)
+                }
+                Spacer(minLength: 0)
+                Transport(tv: tv, playing: playing, compact: true)
+                    .font(.title2)
+                    .padding(.horizontal, 10).padding(.vertical, 6)
+                    .glass(Capsule())
+            }
+            .foregroundStyle(.white)
+            .padding(28)
+        }
+        .frame(height: 300)
+        .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 28, style: .continuous).strokeBorder(.white.opacity(0.08)))
+        .shadow(color: .black.opacity(0.35), radius: 24, y: 12)
+        .contentShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+        .onTapGesture { open = true }
+        .sheet(isPresented: $open) { NowPlayingSheet(tvID: tv.id) }
+        .animation(.smooth, value: playing.title)
     }
 }
