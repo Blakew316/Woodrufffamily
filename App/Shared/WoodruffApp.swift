@@ -37,7 +37,7 @@ struct WoodruffApp: App {
 }
 
 /// The app's sections: the same on iPhone (tabs), iPad and Mac (sidebar).
-enum Section: String, CaseIterable, Identifiable, Hashable {
+enum AppSection: String, CaseIterable, Identifiable, Hashable {
     case tvs, remote, send, memories, watch, updates, settings
     var id: String { rawValue }
     var title: String {
@@ -66,7 +66,7 @@ enum Section: String, CaseIterable, Identifiable, Hashable {
 
 struct RootView: View {
     @Environment(Fleet.self) private var fleet
-    @AppStorage("section") private var stored: String = Section.tvs.rawValue
+    @AppStorage("section") private var stored: String = AppSection.tvs.rawValue
     @Environment(\.horizontalSizeClass) private var sizeClass
 
     var body: some View {
@@ -86,13 +86,13 @@ struct RootView: View {
         }
     }
 
-    private var selection: Binding<Section> {
-        Binding(get: { Section(rawValue: stored) ?? .tvs }, set: { stored = $0.rawValue })
+    private var selection: Binding<AppSection> {
+        Binding(get: { AppSection(rawValue: stored) ?? .tvs }, set: { stored = $0.rawValue })
     }
 
     @ViewBuilder private var tabs: some View {
         TabView(selection: selection) {
-            ForEach(Section.allCases) { s in
+            ForEach(AppSection.allCases) { s in
                 NavigationStack { s.view }
                     .tabItem { Label(s.title, systemImage: s.symbol) }
                     .tag(s)
@@ -102,8 +102,8 @@ struct RootView: View {
 
     @ViewBuilder private var sidebar: some View {
         NavigationSplitView {
-            List(selection: Binding<Section?>(get: { selection.wrappedValue }, set: { if let s = $0 { selection.wrappedValue = s } })) {
-                ForEach(Section.allCases) { s in
+            List(selection: Binding<AppSection?>(get: { selection.wrappedValue }, set: { if let s = $0 { selection.wrappedValue = s } })) {
+                ForEach(AppSection.allCases) { s in
                     Label(s.title, systemImage: s.symbol)
                         .badge(s == .updates ? fleet.updatesWaiting : (s == .tvs ? fleet.attentionCount : 0))
                         .tag(s)
@@ -121,7 +121,7 @@ struct RootView: View {
     }
 }
 
-extension Section {
+extension AppSection {
     @ViewBuilder var view: some View {
         switch self {
         case .tvs: DashboardView()
