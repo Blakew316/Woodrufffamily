@@ -6,7 +6,7 @@ import WoodruffKit
 final class HomeLayout {
     static let shared = HomeLayout()
 
-    static let allSections = ["status", "rooms", "tvs", "cameras", "speakers", "lights", "devices"]
+    static let allSections = ["status", "rooms", "cameras", "tvs", "speakers", "lights", "devices"]
     static func title(_ key: String) -> String {
         switch key {
         case "status": return "Status"
@@ -31,20 +31,28 @@ final class HomeLayout {
         var hiddenSections: [String]
         var order: [String: [String]]
         var hiddenItems: [String]
+        var version: Int?
     }
 
     init() {
         let s = Saved.load("homeLayout", as: Stored.self)
         var secs = s?.sections ?? Self.allSections
         for k in Self.allSections where !secs.contains(k) { secs.append(k) }
+        // Cameras go first, right under the status and room bars.
+        if (s?.version ?? 1) < 2 {
+            secs.removeAll { $0 == "cameras" }
+            let at = (secs.lastIndex { $0 == "status" || $0 == "rooms" }).map { $0 + 1 } ?? 0
+            secs.insert("cameras", at: at)
+        }
         sections = secs.filter { Self.allSections.contains($0) }
         hiddenSections = Set(s?.hiddenSections ?? [])
         order = s?.order ?? [:]
         hiddenItems = Set(s?.hiddenItems ?? [])
+        if (s?.version ?? 1) < 2 { save() }
     }
 
     private func save() {
-        Saved.save("homeLayout", Stored(sections: sections, hiddenSections: Array(hiddenSections), order: order, hiddenItems: Array(hiddenItems)))
+        Saved.save("homeLayout", Stored(sections: sections, hiddenSections: Array(hiddenSections), order: order, hiddenItems: Array(hiddenItems), version: 2))
     }
 
     var visibleSections: [String] { sections.filter { !hiddenSections.contains($0) } }

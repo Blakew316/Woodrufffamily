@@ -74,7 +74,7 @@ struct HomeView: View {
         }
         #endif
         .sheet(isPresented: $editing) { EditHomeView() }
-        .refreshable { await fleet.refresh(); await fleet.loadAllHealth(); await SmartHome.shared.refreshSpeakers() }
+        .refreshable { await refreshEverything() }
     }
 
     @ViewBuilder private func section(_ key: String) -> some View {
@@ -100,6 +100,21 @@ struct HomeView: View {
         case "devices": DevicesSection(room: room.isEmpty ? nil : room)
         default: EmptyView()
         }
+    }
+
+    /// Pull down on Home: every TV, speaker, light, camera and device asked again.
+    private func refreshEverything() async {
+        SmartHome.shared.searchLights()
+        SmartHome.shared.wake()
+        #if os(iOS)
+        HomeKitLights.shared.refresh()
+        #endif
+        async let tvs: Void = fleet.refresh()
+        async let speakers: Void = SmartHome.shared.refreshSpeakers()
+        async let samsung: Void = SmartThings.shared.refresh(full: false)
+        async let cams: Void = NestCameras.shared.load()
+        _ = await (tvs, speakers, samsung, cams)
+        await fleet.loadAllHealth()
     }
 
     /// The Home app's status line: small capsules for what needs a look.

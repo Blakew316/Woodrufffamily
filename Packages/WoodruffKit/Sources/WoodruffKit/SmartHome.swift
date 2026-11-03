@@ -354,6 +354,20 @@ public enum LightCommand: Sendable {
     case kelvin(Int)
 }
 
+extension Govee {
+    /// What Govee calls a model, for a light's first name ("Table Lamp 2 Pro" rather than "H6020").
+    public static func product(_ sku: String) -> String {
+        let known: [String: String] = [
+            "H6020": "Table Lamp 2 Pro", "H6022": "Table Lamp 2", "H6076": "Floor Lamp", "H6072": "Lyra Floor Lamp",
+            "H6079": "Floor Lamp Pro", "H607C": "Floor Lamp 2", "H60B0": "Uplighter Floor Lamp", "H6078": "Cylinder Floor Lamp",
+            "H6073": "Floor Lamp", "H6058": "Glide Hexa", "H6061": "Glide Hexa Pro", "H6046": "TV Light Bars",
+            "H6047": "Gaming Light Bars", "H6056": "Flow Plus Light Bars", "H6199": "TV Backlight", "H6168": "TV Backlight",
+            "H6008": "Smart Bulb", "H6010": "Smart Bulb", "H6159": "Light Strip", "H619A": "Light Strip", "H61A2": "Light Strip",
+        ]
+        return known[sku.uppercased()].map { "Govee \($0)" } ?? "Govee \(sku)"
+    }
+}
+
 /// Govee's LAN API (UDP: scan on 4001, answers on 4002, commands on 4003) and its cloud API.
 public enum Govee {
     static let cloudBase = "https://developer-api.govee.com/v1"
@@ -865,14 +879,14 @@ public final class SmartHome {
                 let twin = id + "@" + ip
                 if let j = lights.firstIndex(where: { $0.id == twin }) { lights[j].ip = ip }
                 else if let j = lights.firstIndex(where: { $0.id.hasPrefix(id + "@") && $0.ip == nil }) { lights[j].ip = ip }
-                else { lights.append(GoveeLight(id: twin, sku: sku, name: names[twin] ?? "\(lights[i].name) 2", ip: ip, cloud: false)) }
+                else { lights.append(GoveeLight(id: twin, sku: sku, name: names[twin] ?? "\(Govee.product(sku)) 2", ip: ip, cloud: false)) }
             } else {
                 lights[i].ip = ip
             }
         } else if let j = lights.firstIndex(where: { $0.id.hasPrefix(id + "@") && $0.ip == nil }) {
             lights[j].ip = ip
         } else {
-            lights.append(GoveeLight(id: id, sku: sku, name: names[id] ?? "Govee \(sku)", ip: ip, cloud: false))
+            lights.append(GoveeLight(id: id, sku: sku, name: names[id] ?? Govee.product(sku), ip: ip, cloud: false))
         }
     }
 
@@ -905,7 +919,10 @@ public final class SmartHome {
     }
 
     private func applyNames() {
-        for i in lights.indices { if let n = names[lights[i].id], !n.isEmpty { lights[i].name = n } }
+        for i in lights.indices {
+            if let n = names[lights[i].id], !n.isEmpty { lights[i].name = n }
+            else if lights[i].name == "Govee \(lights[i].sku)" { lights[i].name = Govee.product(lights[i].sku) }
+        }
         for i in speakers.indices { if let n = names[speakers[i].id], !n.isEmpty { speakers[i].name = n } }
     }
 
