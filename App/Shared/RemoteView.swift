@@ -183,8 +183,17 @@ struct RemoteView: View {
 
     private func apps(_ height: CGFloat) -> some View {
         HStack(spacing: 12) {
-            AppKey(title: "Netflix", height: height, mark: AnyView(Text("N").font(.system(size: 19, weight: .black)).foregroundStyle(.red))) { send("netflix") }
-            AppKey(title: "YouTube", height: height, mark: AnyView(Image(systemName: "play.rectangle.fill").foregroundStyle(.white, .red))) { send("youtube") }
+            AppKey(title: "Netflix", height: height, mark: AnyView(
+                Text("N").font(.system(size: 21, weight: .black, design: .default))
+                    .foregroundStyle(Color(red: 229 / 255, green: 9 / 255, blue: 20 / 255))
+            )) { send("netflix") }
+            AppKey(title: "YouTube", height: height, mark: AnyView(
+                Image(systemName: "play.fill")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 26, height: 18)
+                    .background(RoundedRectangle(cornerRadius: 5, style: .continuous).fill(Color(red: 1, green: 0, blue: 0)))
+            )) { send("youtube") }
         }
         .frame(maxWidth: 340)
     }
@@ -475,7 +484,8 @@ struct AppKey: View {
             .foregroundStyle(.primary)
             .frame(maxWidth: .infinity, minHeight: height)
             .contentShape(Capsule())
-            .glass(Capsule())
+            // Glass behind, not around, so the brand colours stay true (glass tints what it contains).
+            .background { Color.clear.glass(Capsule()) }
         }
         .buttonStyle(PressScale(scale: 0.96))
     }
