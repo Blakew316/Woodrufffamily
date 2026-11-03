@@ -136,3 +136,67 @@ public enum WakeOnLAN {
     }
 }
 #endif
+
+#if canImport(Darwin)
+import Darwin
+
+/// Finds Woodruff TVs by asking every address on the home network (for a TV whose network announcement doesn't
+/// reach Apple devices, as LG's can't): each TV answers `/manifest.webmanifest` with its name, no key needed.
+public enum LANScan {
+    /// This device's IPv4 networks as "a.b.c." prefixes (Wi‑Fi / Ethernet, not VPNs).
+    public static func prefixes() -> [String] {
+        var out: [String] = []
+        var ifaddr: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&ifaddr) == 0, let first = ifaddr else { return [] }
+        defer { freeifaddrs(ifaddr) }
+        for p in sequence(first: first, next: { $0.pointee.ifa_next }) {
+            let i = p.pointee
+            guard let addr = i.ifa_addr, addr.pointee.sa_family == UInt8(AF_INET) else { continue }
+            let name = String(cString: i.ifa_name)
+            guard name.hasPrefix("en") || name.hasPrefix("bridge") else { continue }
+            var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            guard getnameinfo(addr, socklen_t(addr.pointee.sa_len), &host, socklen_t(host.count), nil, 0, NI_NUMERICHOST) == 0 else { continue }
+            let ip = String(cString: host)
+            let parts = ip.split(separator: ".")
+            guard parts.count == 4, !ip.hasPrefix("169.254"), !ip.hasPrefix("100.") else { continue }
+            let prefix = parts.prefix(3).joined(separator: ".") + "."
+            if !out.contains(prefix) { out.append(prefix) }
+        }
+        return out
+    }
+
+    /// Every Woodruff TV answering on the home network (about two seconds).
+    public static func find() async -> [DiscoveredTV] {
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 1.2
+        config.timeoutIntervalForResource = 1.5
+        config.httpMaximumConnectionsPerHost = 2
+        let session = URLSession(configuration: config)
+        var hosts: [String] = []
+        for p in prefixes() { for n in 1...254 { hosts.append(p + String(n)) } }
+        var found: [DiscoveredTV] = []
+        await withTaskGroup(of: DiscoveredTV?.self) { g in
+            var it = hosts.makeIterator()
+            func next() -> String? { it.next() }
+            for _ in 0..<48 { if let h = next() { g.addTask { await probe(h, session) } } }
+            while let r = await g.next() {
+                if let r { found.append(r) }
+                if let h = next() { g.addTask { await probe(h, session) } }
+            }
+        }
+        session.invalidateAndCancel()
+        return found.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
+
+    private static func probe(_ host: String, _ s: URLSession) async -> DiscoveredTV? {
+        for port in [8090, 8080] {
+            guard let url = URL(string: "http://\(host):\(port)/manifest.webmanifest"),
+                  let (d, r) = try? await s.data(from: url), (r as? HTTPURLResponse)?.statusCode == 200,
+                  let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
+                  let name = o["name"] as? String, (o["icons"] as? [Any]) != nil else { continue }
+            return DiscoveredTV(id: "lan-\(host)", name: name, host: host, port: port)
+        }
+        return nil
+    }
+}
+#endif

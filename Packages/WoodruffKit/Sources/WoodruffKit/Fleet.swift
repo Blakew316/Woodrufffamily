@@ -103,6 +103,18 @@ public final class Fleet {
     /// TV id → the alerts hidden for it (their signature).
     public private(set) var hiddenAlerts: [String: String] = Saved.load("hiddenAlerts", as: [String: String].self) ?? [:]
     private let discovery = TVDiscovery()
+    /// TVs found by asking every address on the home network (for those whose announcement doesn't arrive).
+    public private(set) var lanFound: [DiscoveredTV] = []
+    private var lanScannedAt: Date?
+
+    /// Looks for Woodruff TVs on the home network now (also runs every 10 minutes by itself).
+    public func scanNetwork() async {
+        #if canImport(Darwin)
+        lanScannedAt = Date()
+        lanFound = await LANScan.find()
+        await refresh()
+        #endif
+    }
     private var notifiedAlerts: [String: String] = Saved.load("notifiedAlerts", as: [String: String].self) ?? [:]
     private var offlineSince: [String: Date] = [:]
     private var offlineNotified: Set<String> = []
@@ -187,6 +199,7 @@ public final class Fleet {
                 if tick % 120 == 0 { await self.checkReleases() }
                 if self.active || tick % 6 == 0 { await self.pollInbox() }
                 if tick % 24 == 0 { await self.refreshLibrary() }
+                if !Demo.isOn && (self.lanScannedAt == nil || Date().timeIntervalSince(self.lanScannedAt!) > 600) { await self.scanNetwork() }
                 tick += 1
                 try? await Task.sleep(nanoseconds: (self.active ? 5 : 30) * 1_000_000_000)
             }
@@ -305,7 +318,12 @@ public final class Fleet {
             return t
         }
         // TVs heard on the Wi‑Fi that no paired TV knows: listed so they can be paired.
-        for f in discovery.found where !all.contains(where: { $0.id == f.id || $0.name.caseInsensitiveCompare(f.name) == .orderedSame }) {
+        let pairedHosts = Set(hubs.compactMap { $0.connection.base.host })
+        let heardAll = discovery.found + lanFound.filter { l in !discovery.found.contains { $0.host == l.host } }
+        for f in heardAll where !pairedHosts.contains(f.host) {
+            let shown = f.name.caseInsensitiveCompare("LG TV") == .orderedSame ? "Elliot’s Room" : f.name
+            if all.contains(where: { $0.id == f.id || $0.name.caseInsensitiveCompare(f.name) == .orderedSame
+                || $0.name.caseInsensitiveCompare(shown) == .orderedSame }) { continue }
             let heard = f.name.caseInsensitiveCompare("LG TV") == .orderedSame ? "Elliot’s Room" : f.name
             var t = FleetTV(id: f.id, name: extras[f.id]?.alias ?? heard, online: true, onScreen: false, playing: nil, version: nil, seen: nil,
                             link: "unpaired", health: nil, hubID: "", routeID: "", platform: extras[f.id]?.platform)
