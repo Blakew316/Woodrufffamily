@@ -27,8 +27,16 @@ struct HomeView: View {
                 }
                 .padding(.bottom, -14)
                 #endif
-                ForEach(layout.visibleSections, id: \.self) { key in
-                    section(key)
+                if layout.groupByRoom {
+                    // Like the Home app: each room with everything in it.
+                    ForEach(layout.visibleSections.filter { $0 == "status" || $0 == "rooms" }, id: \.self) { key in
+                        section(key)
+                    }
+                    ForEach(roomGroups, id: \.self) { r in roomGroup(r) }
+                } else {
+                    ForEach(layout.visibleSections, id: \.self) { key in
+                        section(key)
+                    }
                 }
             }
             #if os(iOS)
@@ -143,12 +151,51 @@ struct HomeView: View {
     }
 
     /// Rooms with something in them, like the Home app's room bar; picking one shows just that room.
-    private var rooms: [String] {
-        let home = SmartHome.shared
-        let tvRooms = fleet.tvs.filter { !$0.isUnpaired }.map(\.name)
-        let deviceRooms = (home.speakers.map(\.id) + home.lights.map(\.id) + AccessoryStore.shared.all.map(\.id)).compactMap { home.room(of: $0) }
-            + NestCameras.shared.cameras.compactMap(\.room)
-        return Array(Set(tvRooms + deviceRooms)).sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+    private var rooms: [String] { homeRooms(fleet) }
+
+    // MARK: By room
+
+    /// The rooms Home shows (the one picked in the room bar, or all with something in them), then Other.
+    private var roomGroups: [String] {
+        let list = room.isEmpty ? layout.arrangeRooms(rooms) + [noRoom] : [room]
+        return list.filter(hasThings)
+    }
+
+    private func tvs(in r: String) -> [FleetTV] {
+        layout.arrange(fleet.tvs.filter { roomMatches(SmartHome.shared.rooms[$0.id] ?? $0.name, r) }, in: "tvs")
+    }
+
+    private func hasThings(_ r: String) -> Bool {
+        let h = SmartHome.shared
+        let shown = { (k: String) in !layout.hiddenSections.contains(k) }
+        return (shown("tvs") && !tvs(in: r).isEmpty)
+            || (shown("cameras") && NestCameras.shared.cameras.contains { roomMatches(h.rooms[$0.id] ?? $0.room, r) && !layout.hiddenItems.contains($0.id) })
+            || (shown("speakers") && h.speakers.contains { roomMatches(h.room(of: $0.id), r) && !layout.hiddenItems.contains($0.id) })
+            || (shown("lights") && h.lights.contains { roomMatches(h.room(of: $0.id), r) && !layout.hiddenItems.contains($0.id) })
+            || (shown("devices") && AccessoryStore.shared.all.contains { roomMatches(h.room(of: $0.id), r) && !layout.hiddenItems.contains($0.id) })
+    }
+
+    private func roomGroup(_ r: String) -> some View {
+        let shown = { (k: String) in !layout.hiddenSections.contains(k) }
+        return VStack(alignment: .leading, spacing: 16) {
+            Text(r == noRoom ? "Other" : r).font(.title2.bold())
+            if shown("cameras") { CamerasSection(room: r, titled: false) }
+            if shown("tvs") {
+                let list = tvs(in: r)
+                if !list.isEmpty {
+                    LazyVGrid(columns: columns, spacing: 18) {
+                        ForEach(list) { tv in
+                            HomeTVTile(tv: tv) { open(tv.id) }
+                                .matchedGeometryEffect(id: tv.id, in: zoom, isSource: openTV != tv.id)
+                                .opacity(openTV == tv.id ? 0 : 1)
+                        }
+                    }
+                }
+            }
+            if shown("speakers") { SpeakersSection(room: r, titled: false) }
+            if shown("lights") { LightsSection(room: r, titled: false) }
+            if shown("devices") { DevicesSection(room: r, titled: false) }
+        }
     }
 
     private var shownTVs: [FleetTV] {

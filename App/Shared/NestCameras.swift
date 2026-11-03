@@ -186,18 +186,20 @@ final class NestCameras {
 
 struct CamerasSection: View {
     var room: String? = nil
+    /// Off inside a room on Home (the room is the heading).
+    var titled = true
     private let nest = NestCameras.shared
     @State private var open: NestCameras.Camera?
 
     private var shown: [NestCameras.Camera] {
-        let list = room.map { r in nest.cameras.filter { ($0.room ?? "") == r || SmartHome.shared.rooms[$0.id] == r } } ?? nest.cameras
+        let list = room.map { r in nest.cameras.filter { roomMatches(SmartHome.shared.rooms[$0.id] ?? $0.room, r) } } ?? nest.cameras
         return HomeLayout.shared.arrange(list, in: "cameras")
     }
 
     var body: some View {
         if !shown.isEmpty {
             VStack(alignment: .leading, spacing: 14) {
-                Text("Cameras").font(.title2.bold())
+                if titled { Text("Cameras").font(.title2.bold()) }
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 320), spacing: 14)], spacing: 14) {
                     ForEach(shown) { cam in
                         LiveCameraTile(camera: cam) { open = cam }

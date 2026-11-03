@@ -25,6 +25,8 @@ final class HomeLayout {
     /// Section → tile ids, in the order chosen.
     var order: [String: [String]] { didSet { save() } }
     var hiddenItems: Set<String> { didSet { save() } }
+    /// Home split up by room, like the Home app (otherwise by kind: Cameras, TVs, Speakers…).
+    var groupByRoom: Bool { didSet { save() } }
 
     private struct Stored: Codable {
         var sections: [String]
@@ -32,6 +34,7 @@ final class HomeLayout {
         var order: [String: [String]]
         var hiddenItems: [String]
         var version: Int?
+        var groupByRoom: Bool?
     }
 
     init() {
@@ -48,11 +51,12 @@ final class HomeLayout {
         hiddenSections = Set(s?.hiddenSections ?? [])
         order = s?.order ?? [:]
         hiddenItems = Set(s?.hiddenItems ?? [])
+        groupByRoom = s?.groupByRoom ?? true
         if (s?.version ?? 1) < 2 { save() }
     }
 
     private func save() {
-        Saved.save("homeLayout", Stored(sections: sections, hiddenSections: Array(hiddenSections), order: order, hiddenItems: Array(hiddenItems), version: 2))
+        Saved.save("homeLayout", Stored(sections: sections, hiddenSections: Array(hiddenSections), order: order, hiddenItems: Array(hiddenItems), version: 2, groupByRoom: groupByRoom))
     }
 
     var visibleSections: [String] { sections.filter { !hiddenSections.contains($0) } }
@@ -79,7 +83,38 @@ final class HomeLayout {
         hiddenSections = []
         order = [:]
         hiddenItems = []
+        groupByRoom = true
     }
+
+    /// Rooms in the order chosen (new ones after, alphabetically).
+    func arrangeRooms(_ rooms: [String]) -> [String] {
+        let o = order["roomOrder"] ?? []
+        return rooms.sorted { a, b in
+            let ia = o.firstIndex(of: a) ?? Int.max, ib = o.firstIndex(of: b) ?? Int.max
+            return ia != ib ? ia < ib : a.localizedStandardCompare(b) == .orderedAscending
+        }
+    }
+
+    func moveRooms(_ rooms: [String], from: IndexSet, to: Int) {
+        var r = arrangeRooms(rooms)
+        r.move(fromOffsets: from, toOffset: to)
+        order["roomOrder"] = r
+    }
+}
+
+/// Every room something is in: the TVs' rooms, and the rooms of cameras, speakers, lights and devices.
+@MainActor func homeRooms(_ fleet: Fleet) -> [String] {
+    let h = SmartHome.shared
+    let tvRooms = fleet.tvs.filter { !$0.isUnpaired }.map { h.rooms[$0.id] ?? $0.name }
+    let deviceRooms = (h.speakers.map(\.id) + h.lights.map(\.id) + AccessoryStore.shared.all.map(\.id)).compactMap { h.room(of: $0) }
+    let cameraRooms = NestCameras.shared.cameras.compactMap { h.rooms[$0.id] ?? $0.room }
+    return Array(Set(tvRooms + deviceRooms + cameraRooms).filter { !$0.isEmpty }).sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+}
+
+/// Matches a thing's room against the room wanted; ``noRoom`` asks for things with none.
+let noRoom = "\u{1}none"
+func roomMatches(_ actual: String?, _ wanted: String) -> Bool {
+    wanted == noRoom ? (actual ?? "").isEmpty : actual == wanted
 }
 
 /// Edit Home: drag sections and tiles into the order you want, and turn off what you don't want on Home.
@@ -100,6 +135,16 @@ struct EditHomeView: View {
                     .onMove { layout.sections.move(fromOffsets: $0, toOffset: $1) }
                 } header: { Text("Sections") } footer: {
                     Text("Drag to change the order of Home. Turn one off to hide it.")
+                }
+
+                Section {
+                    Toggle("Group by Room", isOn: $layout.groupByRoom)
+                    if layout.groupByRoom {
+                        ForEach(layout.arrangeRooms(homeRooms(fleet)), id: \.self) { r in Text(r) }
+                            .onMove { layout.moveRooms(homeRooms(fleet), from: $0, to: $1) }
+                    }
+                } header: { Text("Rooms") } footer: {
+                    Text(layout.groupByRoom ? "Home shows each room with everything in it. Drag rooms into the order you want." : "Home shows Cameras, TVs, Speakers, Lights and Devices each together.")
                 }
 
                 let tvs = fleet.tvs.filter { !$0.isUnpaired }

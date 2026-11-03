@@ -7,17 +7,19 @@ import WoodruffKit
 
 struct SpeakersSection: View {
     var room: String? = nil
+    /// Off inside a room on Home (the room is the heading).
+    var titled = true
     var home = SmartHome.shared
     @State private var open: SonosRoom?
 
     private var shown: [SonosRoom] {
-        HomeLayout.shared.arrange(room.map { r in home.speakers.filter { home.room(of: $0.id) == r } } ?? home.speakers, in: "speakers")
+        HomeLayout.shared.arrange(room.map { r in home.speakers.filter { roomMatches(home.room(of: $0.id), r) } } ?? home.speakers, in: "speakers")
     }
 
     var body: some View {
         if !shown.isEmpty {
             VStack(alignment: .leading, spacing: 14) {
-                Text("Speakers").font(.title2.bold())
+                if titled { Text("Speakers").font(.title2.bold()) }
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 170), spacing: 14)], spacing: 14) {
                     ForEach(shown) { r in
                         SpeakerTile(room: r) { open = r }
@@ -101,18 +103,20 @@ struct SpeakerArt: View {
 
 struct LightsSection: View {
     var room: String? = nil
+    /// Off inside a room on Home (the room is the heading).
+    var titled = true
     var home = SmartHome.shared
     @State private var open: GoveeLight?
 
     private var shown: [GoveeLight] {
-        HomeLayout.shared.arrange(room.map { r in home.lights.filter { home.room(of: $0.id) == r } } ?? home.lights, in: "lights")
+        HomeLayout.shared.arrange(room.map { r in home.lights.filter { roomMatches(home.room(of: $0.id), r) } } ?? home.lights, in: "lights")
     }
 
     var body: some View {
         if !shown.isEmpty {
             VStack(alignment: .leading, spacing: 14) {
                 HStack(alignment: .firstTextBaseline) {
-                    Text("Lights").font(.title2.bold())
+                    if titled { Text("Lights").font(.title2.bold()) }
                     Spacer()
                     if shown.contains(where: \.on) {
                         Button("All Off") { for l in shown where l.on { home.setOn(l, false) } }

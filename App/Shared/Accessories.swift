@@ -102,18 +102,20 @@ private let temperatureFormatter: MeasurementFormatter = {
 
 struct DevicesSection: View {
     var room: String? = nil
+    /// Off inside a room on Home (the room is the heading).
+    var titled = true
     private let store = AccessoryStore.shared
     @State private var open: HomeDevice?
 
     private var shown: [HomeDevice] {
-        let list = room.map { r in store.all.filter { SmartHome.shared.room(of: $0.id) == r } } ?? store.all
+        let list = room.map { r in store.all.filter { roomMatches(SmartHome.shared.room(of: $0.id), r) } } ?? store.all
         return HomeLayout.shared.arrange(list, in: "devices")
     }
 
     var body: some View {
         if !shown.isEmpty {
             VStack(alignment: .leading, spacing: 14) {
-                Text("Devices").font(.title2.bold())
+                if titled { Text("Devices").font(.title2.bold()) }
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 14)], spacing: 14) {
                     ForEach(shown) { d in DeviceTile(device: d) { open = d } }
                 }
