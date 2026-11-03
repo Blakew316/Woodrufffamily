@@ -5,6 +5,8 @@ import WoodruffKit
 /// allows: LG direct control when it's connected (reaches every app), otherwise Woodruff on the TV.
 struct RemoteView: View {
     @Environment(Fleet.self) private var fleet
+    /// In the Mac's right-hand sidebar: its own header instead of the window's toolbar.
+    var embedded = false
     @State private var field: TypeState?
     @State private var typing = false
     @State private var presses = 0
@@ -30,13 +32,24 @@ struct RemoteView: View {
             #if os(macOS)
             // On the Mac, a small remote in the middle of the window (the keyboard drives it too).
             VStack(spacing: 18) {
+                if embedded {
+                    HStack {
+                        TVPicker(allowAll: true)
+                        Spacer()
+                        Button { send("home") } label: { Image(systemName: "house") }
+                            .buttonStyle(.glass).help("Home")
+                        Button { typing = true } label: { Image(systemName: "keyboard") }
+                            .buttonStyle(.glass).help("Keyboard").disabled(all)
+                    }
+                }
                 if hasTop { status.frame(height: topH, alignment: .top) }
                 Clickpad(size: 200) { send($0) } onRepeat: { send($0, repeat: $1) }
                 keys(42, 11)
                 apps(34)
             }
             .frame(width: 280)
-            .frame(width: geo.size.width, height: h)
+            .frame(width: geo.size.width, height: h, alignment: embedded ? .top : .center)
+            .padding(.top, embedded ? 16 : 0)
             #else
             VStack(spacing: 0) {
                 if hasTop { status.frame(height: topH, alignment: .top) }
@@ -56,6 +69,7 @@ struct RemoteView: View {
         }
         .haptic(presses)
         .toolbar {
+            if !embedded {
             ToolbarItem(placement: .principal) { TVPicker(allowAll: true) }
                 .sharedBackgroundVisibility(.hidden)
             ToolbarItem(placement: .primaryAction) {
@@ -71,6 +85,7 @@ struct RemoteView: View {
             }
             if let tv, !all, fleet.lg(for: tv) != nil {
                 ToolbarItem(placement: .primaryAction) { LGMenu(tv: tv) }
+            }
             }
         }
         .inlineTitle()

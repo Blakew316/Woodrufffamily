@@ -33,10 +33,14 @@ struct WoodruffApp: App {
 
 /// The phone page's five sections.
 enum AppSection: String, CaseIterable, Identifiable, Hashable {
-    case remote, watch, send, memories, settings
+    case home, remote, watch, send, memories, settings
     var id: String { rawValue }
+    /// iPhone tabs; the Mac has Home instead of Remote (the remote slides out on the right).
+    static let phone: [AppSection] = [.remote, .watch, .send, .memories, .settings]
+    static let mac: [AppSection] = [.home, .watch, .send, .memories, .settings]
     var title: String {
         switch self {
+        case .home: return "Home"
         case .remote: return "Remote"
         case .watch: return "Watch"
         case .send: return "Send"
@@ -46,6 +50,7 @@ enum AppSection: String, CaseIterable, Identifiable, Hashable {
     }
     var symbol: String {
         switch self {
+        case .home: return "house.fill"
         case .remote: return "appletvremote.gen4.fill"
         case .watch: return "play.tv.fill"
         case .send: return "paperplane.fill"
@@ -55,6 +60,7 @@ enum AppSection: String, CaseIterable, Identifiable, Hashable {
     }
     @ViewBuilder var view: some View {
         switch self {
+        case .home: HomeView()
         case .remote: RemoteView()
         case .watch: WatchView()
         case .send: SendView()
@@ -93,7 +99,7 @@ struct RootView: View {
     /// The Liquid Glass tab bar (it tucks away while scrolling), with what's playing riding above it.
     private var tabs: some View {
         TabView(selection: selection) {
-            ForEach(AppSection.allCases) { s in
+            ForEach(AppSection.phone) { s in
                 Tab(s.title, systemImage: s.symbol, value: s) {
                     NavigationStack { s.view }
                         // What's playing floats above the tabs everywhere but Remote, which shows it itself.
@@ -108,48 +114,63 @@ struct RootView: View {
 }
 
 #if os(macOS)
-/// Mac: a glass sidebar with the same sections and every TV under them; what's playing floats at the bottom.
+/// Mac: a glass sidebar (Home, Watch, Send, Memories, Settings, and the TVs like rooms), and the remote as a
+/// sidebar on the right that slides out only when it's wanted.
 struct MacRoot: View {
     @Environment(Fleet.self) private var fleet
     @Binding var selection: AppSection
     @State private var tvSelection: String?
 
+    private var section: AppSection { selection == .remote ? .home : selection }
+
     var body: some View {
+        @Bindable var fleet = fleet
         NavigationSplitView {
             List(selection: Binding<String?>(
-                get: { tvSelection.map { "tv:\($0)" } ?? selection.rawValue },
+                get: { tvSelection.map { "tv:\($0)" } ?? section.rawValue },
                 set: { v in
                     guard let v else { return }
                     if v.hasPrefix("tv:") { tvSelection = String(v.dropFirst(3)) }
                     else if let s = AppSection(rawValue: v) { tvSelection = nil; selection = s }
                 })) {
                 Section {
-                    ForEach(AppSection.allCases) { s in Label(s.title, systemImage: s.symbol).tag(s.rawValue) }
+                    ForEach(AppSection.mac) { s in Label(s.title, systemImage: s.symbol).tag(s.rawValue) }
                 }
                 Section("TVs") {
                     ForEach(fleet.tvs) { tv in
-                        Label {
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text(tv.name)
-                                Text(tv.needsAttention ? (tv.health?.first ?? "Needs attention") : statusWord(tv))
-                                    .font(.caption).foregroundStyle(tv.needsAttention ? Palette.attention : .secondary).lineLimit(1)
-                            }
-                        } icon: {
-                            Image(systemName: "tv.fill").foregroundStyle(tv.online ? Color.accentColor : .secondary)
+                        HStack {
+                            Text(tv.name)
+                            Spacer()
+                            if tv.needsAttention { Circle().fill(Palette.attention).frame(width: 7, height: 7) }
+                            else if tv.playing?.isPlaying == true { Circle().fill(Color.accentColor).frame(width: 7, height: 7) }
                         }
+                        .foregroundStyle(tv.online ? .primary : .secondary)
                         .tag("tv:\(tv.id)")
                     }
                 }
             }
-            .navigationSplitViewColumnWidth(min: 220, ideal: 250)
+            .navigationSplitViewColumnWidth(min: 200, ideal: 220)
         } detail: {
             NavigationStack {
-                if let id = tvSelection { TVDetailView(tvID: id) } else { selection.view }
+                if let id = tvSelection { TVDetailView(tvID: id) } else { section.view }
             }
             .safeAreaInset(edge: .bottom) {
-                if tvSelection == nil && selection != .remote {
+                if tvSelection == nil && section != .home && !fleet.remotePanel {
                     NowPlayingBar().frame(maxWidth: 600).padding(.bottom, 8)
                 }
+            }
+        }
+        .inspector(isPresented: $fleet.remotePanel) {
+            RemoteView(embedded: true)
+                .inspectorColumnWidth(min: 300, ideal: 320, max: 380)
+        }
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button { withAnimation(.smooth) { fleet.remotePanel.toggle() } } label: {
+                    Image(systemName: "appletvremote.gen4")
+                }
+                .help("Remote (⌥⌘R)")
+                .keyboardShortcut("r", modifiers: [.command, .option])
             }
         }
     }

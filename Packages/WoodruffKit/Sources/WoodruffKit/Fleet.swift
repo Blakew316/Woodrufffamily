@@ -66,6 +66,8 @@ public final class Fleet {
     public var banner: Banner?
     /// The remote sends to every TV that's on.
     public var remoteAll = false
+    /// Mac: the remote's sidebar is out.
+    public var remotePanel = false
     public private(set) var refreshedAt: Date?
     public private(set) var refreshing = false
     public private(set) var latest: [TVPlatform: Release] = [:]
