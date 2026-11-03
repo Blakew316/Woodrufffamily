@@ -238,7 +238,7 @@ struct FilesView: View {
     enum Layout: String { case list, grid }
     enum Sort: String { case name, date, size, kind }
     enum Show: String { case all, folders, photos, videos, music, documents }
-    @AppStorage("files.layout") private var layout: Layout = .list
+    @AppStorage("files.layout2") private var layout: Layout = .grid
     @AppStorage("files.sort") private var sort: Sort = .name
     @AppStorage("files.show") private var show: Show = .all
     @AppStorage("files.hidden") private var showHidden = false
@@ -281,7 +281,7 @@ struct FilesView: View {
         }
         .searchable(text: $filter, prompt: "Search")
         .navigationTitle(listing.map { $0.path == root?.path ? (root?.name ?? "Photos & Files") : ($0.path as NSString).lastPathComponent } ?? "Photos & Files")
-        .inlineTitle()
+        .screenTitle(listing.map { $0.path == root?.path ? (root?.name ?? "Photos & Files") : ($0.path as NSString).lastPathComponent } ?? "Photos & Files")
         .toolbar {
             ToolbarItem(placement: .primaryAction) { optionsMenu }
             ToolbarItem(placement: .primaryAction) {
@@ -336,48 +336,69 @@ struct FilesView: View {
         } label: { Image(systemName: "ellipsis") }
     }
 
-    private var header: String {
-        var parts: [String] = []
+    /// The footer, as Files writes it: "15 items, 15.37 GB available".
+    private var footer: String {
         let n = shown.count
-        parts.append(n == 1 ? "1 item" : "\(n) items")
-        if let f = listing?.free ?? root?.free { parts.append("\(formatBytes(f)) free") }
-        return parts.joined(separator: " · ")
+        var t = n == 1 ? "1 item" : "\(n) items"
+        if let f = listing?.free ?? root?.free { t += ", \(formatBytes(f)) available" }
+        return t
+    }
+
+    private var upButton: (String, String)? {
+        guard let l = listing, let parent = l.parent, l.path != root?.path else { return nil }
+        return (parent, (parent as NSString).lastPathComponent)
     }
 
     private var listView: some View {
         List {
-            if let progress { Section { HStack(spacing: 12) { ProgressView(); Text(progress).font(.subheadline) } } }
-            Section {
-                if let l = listing, let parent = l.parent, l.path != root?.path {
-                    Button { open(parent) } label: { IconRow(symbol: "", color: .clear, title: "Back to \((parent as NSString).lastPathComponent)") }
-                        .buttonStyle(.plain)
+            if let progress { HStack(spacing: 12) { ProgressView(); Text(progress).font(.subheadline) } }
+            if let up = upButton {
+                Button { open(up.0) } label: {
+                    HStack(spacing: 12) {
+                        FileGlyph(kind: .up, size: 40)
+                        Text(up.1).foregroundStyle(.primary)
+                    }
                 }
-                ForEach(shown) { f in row(f) }
-            } header: { Text(header) }
+                .buttonStyle(.plain)
+            }
+            ForEach(shown) { f in row(f) }
+            Text(footer).font(.footnote).foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity).listRowSeparator(.hidden).padding(.vertical, 10)
         }
-        #if os(iOS)
-        .listStyle(.insetGrouped)
-        #endif
+        .listStyle(.plain)
     }
 
     private var gridView: some View {
         ScrollView {
             if let progress { HStack(spacing: 12) { ProgressView(); Text(progress).font(.subheadline) }.padding() }
-            Text(header).font(.footnote).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 20).padding(.top, 8)
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 100, maximum: 150), spacing: 14, alignment: .top)], spacing: 18) {
-                if let l = listing, let parent = l.parent, l.path != root?.path {
-                    Button { open(parent) } label: { tileLabel(icon: "arrow.turn.left.up", title: "Back", sub: (parent as NSString).lastPathComponent, url: nil, tint: .gray) }
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 104, maximum: 140), spacing: 12, alignment: .top)], spacing: 22) {
+                if let up = upButton {
+                    Button { open(up.0) } label: { tileLabel(kind: .up, title: up.1, sub: "Back") }
                         .buttonStyle(PressScale(scale: 0.95))
                 }
                 ForEach(shown) { f in tile(f) }
             }
-            .padding(.horizontal, 16).padding(.vertical, 12)
+            .padding(.horizontal, 16).padding(.top, 8)
+            Text(footer).font(.footnote).foregroundStyle(.secondary).padding(.vertical, 24)
         }
     }
 
+    private func kindOf(_ f: FileEntry) -> FileGlyph.Kind {
+        if f.dir { return .folder }
+        if f.isImage, let u = client?.downloadURL(f.path) { return .image(u) }
+        if f.isVideo { return .video }
+        if f.isAudio { return .audio }
+        return .document(f.ext.uppercased())
+    }
+
+    private func detail(_ f: FileEntry) -> String {
+        let date = f.modified.map { Date(timeIntervalSince1970: $0 / 1000).formatted(date: .numeric, time: .omitted) }
+        if f.dir { return date ?? "Folder" }
+        return [date, formatBytes(f.size)].compactMap { $0 }.joined(separator: " – ")
+    }
+
     @ViewBuilder private func tile(_ f: FileEntry) -> some View {
-        let label = tileLabel(icon: icon(f), title: f.name, sub: f.dir ? "Folder" : formatBytes(f.size),
-                              url: f.isImage ? client?.downloadURL(f.path) : nil, tint: color(f))
+        let label = tileLabel(kind: kindOf(f), title: f.name, sub: detail(f))
         Group {
             if f.dir { Button { open(f.path) } label: { label }.buttonStyle(PressScale(scale: 0.95)) }
             else { Menu { menu(f) } label: { label }.menuStyle(.button).buttonStyle(.plain) }
@@ -385,32 +406,25 @@ struct FilesView: View {
         .contextMenu { menu(f) }
     }
 
-    /// A Files-style icon: a photo's own picture, else the kind of file.
-    private func tileLabel(icon: String, title: String, sub: String, url: URL?, tint: Color) -> some View {
+    /// A Files icon: the glyph or photo, the name (two lines, cut in the middle) and the date / size.
+    private func tileLabel(kind: FileGlyph.Kind, title: String, sub: String) -> some View {
         VStack(spacing: 6) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Palette.cardFill)
-                if let url {
-                    Artwork(url: url).clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                } else {
-                    Image(systemName: icon).font(.system(size: 34, weight: .regular)).foregroundStyle(tint)
-                }
-            }
-            .frame(height: 92)
-            Text(title).font(.caption.weight(.medium)).lineLimit(2).truncationMode(.middle).multilineTextAlignment(.center)
+            FileGlyph(kind: kind, size: 78).frame(height: 84)
+            Text(title).font(.caption).lineLimit(2).truncationMode(.middle).multilineTextAlignment(.center)
             Text(sub).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
         }
+        .frame(maxWidth: .infinity)
         .contentShape(Rectangle())
     }
 
     @ViewBuilder private func row(_ f: FileEntry) -> some View {
-        let label = HStack(spacing: 14) {
+        let label = HStack(spacing: 12) {
+            FileGlyph(kind: kindOf(f), size: 40)
             VStack(alignment: .leading, spacing: 2) {
                 Text(f.name).lineLimit(1).truncationMode(.middle)
-                Text(f.dir ? "Folder" : "\(kind(f)) · \(formatBytes(f.size))").font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                Text(detail(f)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
-            Spacer(minLength: 8)
-            if f.dir { Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary) }
+            Spacer(minLength: 0)
         }
         .contentShape(Rectangle())
         Group {
@@ -505,5 +519,49 @@ struct FilesView: View {
                 #endif
             } catch { fleet.show(error) }
         }
+    }
+}
+
+/// File icons in the style of Apple's Files app: the blue folder, a photo's own picture, or a page with its kind.
+struct FileGlyph: View {
+    enum Kind { case folder, up, image(URL), video, audio, document(String) }
+    var kind: Kind
+    var size: CGFloat
+
+    var body: some View {
+        switch kind {
+        case .folder:
+            Image(systemName: "folder.fill")
+                .resizable().aspectRatio(contentMode: .fit)
+                .foregroundStyle(LinearGradient(colors: [Color(red: 0.45, green: 0.75, blue: 1), Color(red: 0.27, green: 0.6, blue: 0.97)], startPoint: .top, endPoint: .bottom))
+                .frame(width: size, height: size * 0.82)
+        case .up:
+            Image(systemName: "arrow.turn.left.up")
+                .font(.system(size: size * 0.4, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: size, height: size * 0.82)
+        case .image(let url):
+            Artwork(url: url)
+                .frame(width: size * 0.92, height: size * 0.72)
+                .clipShape(RoundedRectangle(cornerRadius: max(3, size * 0.06), style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: max(3, size * 0.06), style: .continuous).strokeBorder(.white.opacity(0.15), lineWidth: 0.5))
+                .shadow(color: .black.opacity(0.25), radius: 2, y: 1)
+        case .video: page(symbol: "play.fill", tint: .purple)
+        case .audio: page(symbol: "music.note", tint: .pink)
+        case .document(let ext): page(text: ext.isEmpty ? "DOC" : String(ext.prefix(4)), tint: .gray)
+        }
+    }
+
+    /// A white page with a folded corner and the file's kind.
+    private func page(symbol: String? = nil, text: String? = nil, tint: Color) -> some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: size * 0.08, style: .continuous)
+                .fill(Color(white: 0.96))
+                .overlay(RoundedRectangle(cornerRadius: size * 0.08, style: .continuous).strokeBorder(.black.opacity(0.08), lineWidth: 0.5))
+            if let symbol { Image(systemName: symbol).font(.system(size: size * 0.3, weight: .semibold)).foregroundStyle(tint) }
+            if let text { Text(text).font(.system(size: size * 0.16, weight: .bold, design: .rounded)).foregroundStyle(tint) }
+        }
+        .frame(width: size * 0.66, height: size * 0.84)
+        .shadow(color: .black.opacity(0.18), radius: 1.5, y: 1)
     }
 }
