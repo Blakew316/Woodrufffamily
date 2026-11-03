@@ -396,6 +396,9 @@ public final class Fleet {
     /// The poster and backdrop (TV-relative paths or TMDB links) of what [p] is: by its Drive key, else by title.
     public func artwork(for p: NowPlaying?) -> NowPlayingArtwork? {
         guard let p, let lib = library else { return nil }
+        // Only Woodruff's own player plays library titles: never guess a YouTube or Netflix title from the library.
+        let ours = p.key?.hasPrefix("drive:") == true || (p.app ?? "").lowercased().contains("woodruff")
+        guard ours else { return nil }
         let titles = (lib.featured ?? []) + (lib.recent ?? []) + (lib.movies?.items ?? []) + (lib.shows?.items ?? [])
         func title(_ id: String?) -> Title? { id.flatMap { id in titles.first { $0.id == id } } }
         let cont = lib.continue ?? []

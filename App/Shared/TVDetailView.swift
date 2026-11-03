@@ -113,7 +113,6 @@ struct TVDetailView: View {
             if p.can("back10") { GlassCircle(symbol: "gobackward.10", size: 52) { media(tv, "back10") } }
             GlassCircle(symbol: p.isPlaying ? "pause.fill" : "play.fill", size: 64) { media(tv, "playpause") }
             if p.can("fwd30") { GlassCircle(symbol: "goforward.30", size: 52) { media(tv, "fwd30") } }
-            if p.can("next") { GlassCircle(symbol: "forward.end.fill", size: 52) { media(tv, "next") } }
             Spacer()
         }
         .glassGroup(spacing: 24)

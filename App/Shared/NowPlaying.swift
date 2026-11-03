@@ -13,7 +13,47 @@ func livePosition(_ p: NowPlaying, at date: Date, since: Date?) -> Double {
     return pos
 }
 
-/// The title's poster (or backdrop), else a tile in the app's colour.
+/// Finds the real thumbnail of a YouTube video the TV is playing, from its title and channel (YouTube doesn't
+/// hand its artwork to the TV app). Answers are kept, so each video is looked up once.
+@Observable @MainActor
+final class VideoThumbnails {
+    static let shared = VideoThumbnails()
+    private(set) var found: [String: URL] = [:]
+    private var asked: Set<String> = []
+
+    nonisolated static func key(_ p: NowPlaying) -> String { (p.title + "|" + (p.subtitle ?? "")).lowercased() }
+
+    func url(for p: NowPlaying?) -> URL? {
+        guard let p, (p.app ?? "").lowercased().contains("youtube") else { return nil }
+        let k = Self.key(p)
+        if let u = found[k] { return u }
+        if !asked.contains(k) { asked.insert(k); Task { await look(p, k) } }
+        return nil
+    }
+
+    private func look(_ p: NowPlaying, _ k: String) async {
+        if let id = UserDefaults.standard.dictionary(forKey: "ytThumbs")?[k] as? String { found[k] = Self.thumb(id); return }
+        var c = URLComponents(string: "https://www.youtube.com/results")!
+        c.queryItems = [URLQueryItem(name: "search_query", value: [p.title, p.subtitle ?? ""].joined(separator: " "))]
+        var r = URLRequest(url: c.url!, timeoutInterval: 12)
+        r.setValue("en-US,en;q=0.9", forHTTPHeaderField: "Accept-Language")
+        r.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15", forHTTPHeaderField: "User-Agent")
+        guard let (data, _) = try? await URLSession.shared.data(for: r) else { return }
+        let html = String(decoding: data, as: UTF8.self)
+        guard let m = html.range(of: #""videoId":"([A-Za-z0-9_-]{11})""#, options: .regularExpression) else { return }
+        let id = String(html[m].dropFirst(11).prefix(11))
+        var saved = UserDefaults.standard.dictionary(forKey: "ytThumbs") ?? [:]
+        saved[k] = id
+        if saved.count > 200 { saved = [k: id] }
+        UserDefaults.standard.set(saved, forKey: "ytThumbs")
+        found[k] = Self.thumb(id)
+    }
+
+    static func thumb(_ id: String) -> URL { URL(string: "https://i.ytimg.com/vi/\(id)/hqdefault.jpg")! }
+}
+
+/// The picture of what's playing: the title's poster or backdrop from the library, a YouTube video's own
+/// thumbnail, or a quiet tile with the app's name.
 struct NowPlayingArt: View {
     @Environment(Fleet.self) private var fleet
     var playing: NowPlaying?
@@ -24,23 +64,21 @@ struct NowPlayingArt: View {
         let path = backdrop ? (art?.backdrop ?? art?.poster) : (art?.poster ?? art?.backdrop)
         if let path, let url = fleet.hubClient()?.art(path) {
             Artwork(url: url)
+        } else if let url = VideoThumbnails.shared.url(for: playing) {
+            // hqdefault is 4:3 with black bars; filling crops them away.
+            Artwork(url: url).scaleEffect(1.34)
         } else {
             ZStack {
-                LinearGradient(colors: [appColor, appColor.opacity(0.55)], startPoint: .topLeading, endPoint: .bottomTrailing)
-                Image(systemName: symbol).font(.system(size: 18, weight: .bold)).foregroundStyle(.white.opacity(0.9))
+                LinearGradient(colors: [Color(white: 0.2), Color(white: 0.09)], startPoint: .topLeading, endPoint: .bottomTrailing)
+                Text(playing?.app ?? "TV")
+                    .font(.system(.headline, design: .rounded).weight(.semibold))
+                    .foregroundStyle(.white.opacity(0.55))
+                    .minimumScaleFactor(0.4)
+                    .lineLimit(1)
+                    .padding(6)
             }
         }
     }
-
-    private var app: String { playing?.app?.lowercased() ?? "" }
-    private var appColor: Color {
-        if app.contains("netflix") { return Color(red: 0.75, green: 0.05, blue: 0.08) }
-        if app.contains("youtube") { return Color(red: 0.85, green: 0.1, blue: 0.1) }
-        if app.contains("disney") { return Color(red: 0.05, green: 0.2, blue: 0.55) }
-        if app.contains("prime") || app.contains("amazon") { return Color(red: 0.0, green: 0.55, blue: 0.85) }
-        return .accentColor
-    }
-    private var symbol: String { playing == nil ? "tv" : app.contains("music") ? "music.note" : "play.fill" }
 }
 
 /// A thin progress bar with elapsed and remaining time, moving every second.
@@ -121,11 +159,10 @@ struct Transport: View {
 
     var body: some View {
         let isPlaying = flipped ?? playing.isPlaying
-        HStack(spacing: compact ? 4 : 36) {
+        HStack(spacing: compact ? 4 : 52) {
             if playing.can("back10") { button("gobackward.10", "back10", size: compact ? 17 : 30) }
             button(isPlaying ? "pause.fill" : "play.fill", "playpause", size: compact ? 19 : 46)
             if playing.can("fwd30") { button("goforward.30", "fwd30", size: compact ? 17 : 30) }
-            if !compact && playing.can("next") { button("forward.end.fill", "next", size: 26) }
         }
         .onChange(of: playing.isPlaying) { _, _ in flipped = nil }
     }
@@ -205,9 +242,9 @@ struct NowPlayingDropdown: View {
     }
 }
 
-/// Now Playing, full screen, like Apple Music's player: the poster large and centred over a field blurred from
-/// it, the title, a scrubber that moves every second, big transport controls and the volume.
-/// (Android) the corner button swaps the poster for the TV's own screen.
+/// Now Playing, full screen: the picture of what's playing (16:9) over a deep blur of it, the title, a thin
+/// progress bar, three transport controls and three matching volume buttons. (Android) the corner button shows
+/// the TV's own screen instead of the picture.
 struct NowPlayingSheet: View {
     @Environment(Fleet.self) private var fleet
     @Environment(\.dismiss) private var dismiss
@@ -222,35 +259,39 @@ struct NowPlayingSheet: View {
         let p = tv?.playing
         NavigationStack {
             GeometryReader { geo in
-                let width = min(geo.size.width, 520) - 56
+                let w = min(geo.size.width, 560) - 48
                 VStack(spacing: 0) {
-                    Spacer(minLength: 8)
-                    hero(p, width: width, height: geo.size.height * 0.46)
-                    Spacer(minLength: 20)
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(p?.title ?? "Nothing Playing").font(.title3.bold()).lineLimit(1)
-                        Text(subtitle(p)).font(.body).foregroundStyle(.white.opacity(0.6)).lineLimit(1)
+                    Spacer(minLength: 12)
+                    picture(p)
+                        .frame(width: w, height: w * 9 / 16)
+                        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).strokeBorder(.white.opacity(0.08)))
+                        .shadow(color: .black.opacity(0.5), radius: 30, y: 16)
+                        .scaleEffect(p?.isPlaying == false ? 0.92 : 1)
+                        .animation(.spring(response: 0.5, dampingFraction: 0.8), value: p?.isPlaying)
+                    Spacer(minLength: 28)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(p?.title ?? "Nothing Playing")
+                            .font(.title3.weight(.bold))
+                            .lineLimit(2)
+                        Text(subtitle(p))
+                            .font(.callout)
+                            .foregroundStyle(.white.opacity(0.6))
+                            .lineLimit(1)
                     }
-                    .frame(width: width, alignment: .leading)
+                    .frame(width: w, alignment: .leading)
                     if let p {
                         LiveProgress(playing: p, tint: .white)
-                            .frame(width: width)
-                            .padding(.top, 22)
+                            .frame(width: w)
+                            .padding(.top, 20)
                     }
+                    Spacer(minLength: 18)
                     if let tv, let p {
                         Transport(tv: tv, playing: p)
-                            .foregroundStyle(.white)
-                            .padding(.top, 18)
                     }
+                    Spacer(minLength: 22)
+                    if let tv { volume(tv) }
                     Spacer(minLength: 16)
-                    if let tv { volume(tv).frame(width: width) }
-                    if let tv {
-                        Text("Playing on \(tv.name)")
-                            .font(.footnote.weight(.semibold))
-                            .foregroundStyle(.white.opacity(0.55))
-                            .padding(.top, 16)
-                    }
-                    Spacer(minLength: 12)
                 }
                 .frame(width: geo.size.width, height: geo.size.height)
             }
@@ -263,12 +304,12 @@ struct NowPlayingSheet: View {
                         .accessibilityLabel("Close")
                 }
                 if tvID == nil { ToolbarItem(placement: .principal) { TVPicker() }.sharedBackgroundVisibility(.hidden) }
-                if tv.map({ fleet.platform(of: $0) != .webOS }) ?? false {
+                if tv.map({ fleet.platform(of: $0) != .webOS && $0.onScreen }) ?? false {
                     ToolbarItem(placement: .primaryAction) {
                         Button { withAnimation(.smooth) { showScreen.toggle() } } label: {
                             Image(systemName: showScreen ? "photo" : "rectangle.on.rectangle")
                         }
-                        .accessibilityLabel(showScreen ? "Show Artwork" : "Show TV Screen")
+                        .accessibilityLabel(showScreen ? "Show the Picture" : "Show the TV’s Screen")
                     }
                 }
             }
@@ -276,74 +317,53 @@ struct NowPlayingSheet: View {
         }
         .presentationDragIndicator(.visible)
         #if os(macOS)
-        .frame(minWidth: 480, minHeight: 760)
+        .frame(minWidth: 480, minHeight: 720)
         #endif
     }
 
-    /// A deep field of the artwork's own colours, held to the screen's size.
+    /// The picture: the video's thumbnail, the title's backdrop, or the TV's screen (Woodruff's own menus).
+    @ViewBuilder private func picture(_ p: NowPlaying?) -> some View {
+        ZStack {
+            Color.black
+            if showScreen {
+                if let screen { Image(platformImage: screen).resizable().aspectRatio(contentMode: .fit) }
+                else { Text(screenNote ?? "Loading the TV’s screen…").font(.footnote).foregroundStyle(.white.opacity(0.6)).padding() }
+            } else {
+                NowPlayingArt(playing: p, backdrop: true)
+            }
+        }
+    }
+
+    /// A deep, dark blur of the picture, held to the screen.
     private func backdrop(_ p: NowPlaying?) -> some View {
         GeometryReader { g in
-            NowPlayingArt(playing: p)
-                .frame(width: g.size.width, height: g.size.height)
-                .blur(radius: 70, opaque: true)
-                .saturation(1.4)
-                .clipped()
-                .overlay(LinearGradient(colors: [.black.opacity(0.25), .black.opacity(0.55), .black.opacity(0.8)], startPoint: .top, endPoint: .bottom))
+            ZStack {
+                Color(white: 0.07)
+                NowPlayingArt(playing: p, backdrop: true)
+                    .frame(width: g.size.width, height: g.size.height)
+                    .blur(radius: 80, opaque: true)
+                    .saturation(1.2)
+                    .opacity(0.55)
+                    .clipped()
+                LinearGradient(colors: [.black.opacity(0.2), .black.opacity(0.55), .black.opacity(0.85)], startPoint: .top, endPoint: .bottom)
+            }
         }
         .ignoresSafeArea()
     }
 
-    /// The poster (2:3) when the title has one, else its backdrop (16:9), or the TV's screen.
-    @ViewBuilder private func hero(_ p: NowPlaying?, width: CGFloat, height: CGFloat) -> some View {
-        let poster = fleet.artwork(for: p)?.poster != nil
-        let size: CGSize = {
-            if showScreen || !poster { return CGSize(width: width, height: width * 9 / 16) }
-            let h = min(height, width * 1.5)
-            return CGSize(width: h / 1.5, height: h)
-        }()
-        ZStack {
-            if showScreen {
-                Rectangle().fill(.black)
-                if let screen { Image(platformImage: screen).resizable().aspectRatio(contentMode: .fit) }
-                else { Text(screenNote ?? "Loading the TV’s screen…").font(.subheadline).foregroundStyle(.white.opacity(0.6)).multilineTextAlignment(.center).padding() }
-            } else {
-                NowPlayingArt(playing: p, backdrop: !poster)
-            }
-        }
-        .frame(width: size.width, height: size.height)
-        .clipShape(RoundedRectangle(cornerRadius: poster && !showScreen ? 14 : 18, style: .continuous))
-        .shadow(color: .black.opacity(0.45), radius: 30, y: 18)
-        .scaleEffect(p?.isPlaying == false ? 0.86 : 1)
-        .animation(.spring(response: 0.5, dampingFraction: 0.75), value: p?.isPlaying)
-    }
-
     private func subtitle(_ p: NowPlaying?) -> String {
-        var parts: [String] = []
-        if let s = p?.subtitle, !s.isEmpty { parts.append(s) }
-        if let a = p?.app, !a.isEmpty { parts.append(a) }
+        let parts = [p?.subtitle, p?.app].compactMap { $0?.isEmpty == false ? $0 : nil }
         return parts.isEmpty ? " " : parts.joined(separator: " · ")
     }
 
+    /// Three matching glass buttons: down, mute, up (each repeats while held, like the remote's).
     private func volume(_ tv: FleetTV) -> some View {
-        HStack(spacing: 12) {
-            Button { key(tv, "mute", 0) } label: {
-                Image(systemName: "speaker.slash.fill").font(.subheadline).frame(width: 44, height: 44)
-            }
-            .buttonStyle(PressScale())
-            .accessibilityLabel("Mute")
-            HStack(spacing: 0) {
-                RepeatPress(onPress: { n in key(tv, "voldown", n) }) {
-                    Image(systemName: "speaker.minus.fill").font(.body).frame(maxWidth: .infinity, minHeight: 46)
-                }
-                .accessibilityLabel("Volume down")
-                Rectangle().fill(.white.opacity(0.2)).frame(width: 0.5, height: 22)
-                RepeatPress(onPress: { n in key(tv, "volup", n) }) {
-                    Image(systemName: "speaker.plus.fill").font(.body).frame(maxWidth: .infinity, minHeight: 46)
-                }
-                .accessibilityLabel("Volume up")
-            }
-            .glass(Capsule())
+        HStack(spacing: 28) {
+            VolumeCircle(symbol: "speaker.minus.fill", label: "Volume Down") { n in key(tv, "voldown", n) }
+            VolumeCircle(symbol: "speaker.slash.fill", label: "Mute", repeats: false) { _ in key(tv, "mute", 0) }
+            VolumeCircle(symbol: "speaker.plus.fill", label: "Volume Up") { n in key(tv, "volup", n) }
         }
+        .glassGroup(spacing: 28)
     }
 
     private func key(_ tv: FleetTV, _ k: String, _ n: Int) {
@@ -367,5 +387,24 @@ struct NowPlayingSheet: View {
             }
             try? await Task.sleep(nanoseconds: wait)
         }
+    }
+}
+
+/// A round glass volume button that repeats while held.
+struct VolumeCircle: View {
+    var symbol: String
+    var label: String
+    var repeats = true
+    var press: (Int) -> Void
+
+    var body: some View {
+        RepeatPress(onPress: { n in if repeats || n == 0 { press(n) } }) {
+            Image(systemName: symbol)
+                .font(.system(size: 19, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 58, height: 58)
+                .glass(Circle())
+        }
+        .accessibilityLabel(label)
     }
 }
