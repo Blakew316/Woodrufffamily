@@ -69,8 +69,10 @@ struct SendView: View {
     private var canSend: Bool { !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
     private var toSummary: String {
-        let phonesOn = to.knownPhones.filter { to.phones.contains($0.id) }.count
-        if to.allTVs && (to.knownPhones.isEmpty || phonesOn == to.knownPhones.filter { $0.id != fleet.phone.id }.count) { return to.pin ? "Everyone · Pinned" : "Everyone" }
+        let others = to.knownPhones.filter { $0.id != fleet.phone.id && $0.name.caseInsensitiveCompare(fleet.phone.name) != .orderedSame }
+        let names = Set(others.map { $0.name.lowercased() })
+        let phonesOn = Set(others.filter { to.phones.contains($0.id) }.map { $0.name.lowercased() }).count
+        if to.allTVs && (names.isEmpty || phonesOn == names.count) { return to.pin ? "Everyone · Pinned" : "Everyone" }
         var parts: [String] = []
         if to.allTVs { parts.append("All TVs") } else if !to.tvs.isEmpty { parts.append(to.tvs.count == 1 ? (fleet.tv(to.tvs.first!)?.name ?? "1 TV") : "\(to.tvs.count) TVs") }
         if phonesOn > 0 { parts.append(phonesOn == 1 ? "1 phone" : "\(phonesOn) phones") }
@@ -80,7 +82,7 @@ struct SendView: View {
     private func loadPhones() async {
         guard !to.loadedPhones, let c = fleet.hubClient(), let p = try? await c.phones() else { return }
         to.knownPhones = p
-        to.phones = Set(p.filter { $0.id != fleet.phone.id }.map(\.id))
+        to.phones = Set(p.filter { $0.id != fleet.phone.id && $0.name.caseInsensitiveCompare(fleet.phone.name) != .orderedSame }.map(\.id))
         to.loadedPhones = true
     }
 
@@ -118,6 +120,20 @@ struct SendToView: View {
     @Environment(Fleet.self) private var fleet
     @Bindable var to: Recipients
 
+    struct PhoneGroup { var name: String; var ids: Set<String>; var lockScreen: Bool }
+
+    private var phoneGroups: [PhoneGroup] {
+        var groups: [String: PhoneGroup] = [:]
+        for p in to.knownPhones where p.id != fleet.phone.id && p.name.caseInsensitiveCompare(fleet.phone.name) != .orderedSame {
+            let key = p.name.lowercased()
+            var g = groups[key] ?? PhoneGroup(name: p.name, ids: [], lockScreen: false)
+            g.ids.insert(p.id)
+            g.lockScreen = g.lockScreen || p.alerts == true
+            groups[key] = g
+        }
+        return groups.values.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
+
     var body: some View {
         Form {
             Section {
@@ -129,11 +145,15 @@ struct SendToView: View {
                         }
                     }
                 }
-                ForEach(to.knownPhones) { p in
-                    Toggle(isOn: Binding(get: { to.phones.contains(p.id) }, set: { if $0 { to.phones.insert(p.id) } else { to.phones.remove(p.id) } })) {
-                        IconRow(symbol: p.name.lowercased().contains("ipad") ? "ipad" : "iphone", color: p.alerts == true ? .green : .gray,
-                                title: p.id == fleet.phone.id ? "\(p.name) (this device)" : p.name,
-                                subtitle: p.alerts == true ? "Lock screen" : "When Woodruff is open")
+                // One row per device (earlier installs left copies under the same name), none for this device.
+                ForEach(phoneGroups, id: \.name) { g in
+                    Toggle(isOn: Binding(
+                        get: { !to.phones.isDisjoint(with: g.ids) },
+                        set: { on in if on { to.phones.formUnion(g.ids) } else { to.phones.subtract(g.ids) } })) {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(g.name)
+                            Text(g.lockScreen ? "Lock screen" : "When Woodruff is open").font(.subheadline).foregroundStyle(.secondary)
+                        }
                     }
                 }
             }

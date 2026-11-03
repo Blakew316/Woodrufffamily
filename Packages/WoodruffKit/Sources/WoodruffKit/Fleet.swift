@@ -1,5 +1,10 @@
 import Foundation
 import Observation
+#if os(macOS)
+import IOKit
+#elseif canImport(UIKit)
+import UIKit
+#endif
 
 /// A TV this app is paired with directly (its QR code): a "hub". Every hub also reports the TVs linked to it,
 /// so pairing one TV is enough to see and control the whole family; pairing more makes each one reachable
@@ -98,6 +103,9 @@ public final class Fleet {
     /// TV id → the alerts hidden for it (their signature).
     public private(set) var hiddenAlerts: [String: String] = Saved.load("hiddenAlerts", as: [String: String].self) ?? [:]
     private let discovery = TVDiscovery()
+    private var notifiedAlerts: [String: String] = Saved.load("notifiedAlerts", as: [String: String].self) ?? [:]
+    private var offlineSince: [String: Date] = [:]
+    private var offlineNotified: Set<String> = []
 
     private var active = true
     private var loop: Task<Void, Never>?
@@ -250,11 +258,7 @@ public final class Fleet {
             return a.name.localizedStandardCompare(b.name) == .orderedAscending
         }
         for tv in list {
-            if let old = before[tv.id] {
-                if old.online && !tv.online { onChange?(.wentOffline(tv)) }
-                if !old.online && tv.online && old.seen != nil { onChange?(.cameOnline(tv)) }
-                if !old.needsAttention && tv.needsAttention { onChange?(.needsAttention(tv)) }
-            }
+            notifyIfNeeded(tv, was: before[tv.id])
             if extras[tv.id]?.platform == nil, let p = guessPlatform(tv) { extras[tv.id, default: TVExtras()].platform = p }
         }
         var all = list.map { tv -> FleetTV in
@@ -277,6 +281,35 @@ public final class Fleet {
         }
         tvs = all
         if selectedID == nil || !tvs.contains(where: { $0.id == selectedID && !$0.isUnpaired }) { selectedID = tvs.first { !$0.isUnpaired }?.id }
+    }
+
+    /// Alerts once per problem: a TV's alert is announced again only when what it says changes, and "went
+    /// offline" only after two minutes without an answer (a missed check isn't an outage), once per outage.
+    private func notifyIfNeeded(_ tv: FleetTV, was old: FleetTV?) {
+        let hidden = hiddenAlerts[tv.id] == tv.alertSignature
+        if tv.hasAlerts && !hidden && tv.online {
+            if notifiedAlerts[tv.id] != tv.alertSignature {
+                notifiedAlerts[tv.id] = tv.alertSignature
+                Saved.save("notifiedAlerts", notifiedAlerts)
+                if old != nil { onChange?(.needsAttention(tv)) }
+            }
+        } else if tv.health?.status == "good" && tv.link == "ok" && notifiedAlerts[tv.id] != nil {
+            // Only a clean report clears it: a TV that skips one check doesn't re-alert when it answers again.
+            notifiedAlerts[tv.id] = nil
+            Saved.save("notifiedAlerts", notifiedAlerts)
+        }
+        if tv.online {
+            offlineSince[tv.id] = nil
+            if offlineNotified.remove(tv.id) != nil { onChange?(.cameOnline(tv)) }
+        } else if !tv.isUnpaired {
+            let since = offlineSince[tv.id] ?? Date()
+            offlineSince[tv.id] = since
+            if old?.online == true || old == nil { return }
+            if Date().timeIntervalSince(since) >= 120 && !offlineNotified.contains(tv.id) {
+                offlineNotified.insert(tv.id)
+                onChange?(.wentOffline(tv))
+            }
+        }
     }
 
     private func guessPlatform(_ tv: FleetTV) -> TVPlatform? {
@@ -469,7 +502,15 @@ public final class Fleet {
 
     @discardableResult
     func hello(_ hub: Hub) async throws -> JSONValue {
-        try await TVTransport(hub.connection).post("/api/phone/hello", ["id": phone.id, "name": phone.name, "alerts": phone.alerts])
+        let r = try await TVTransport(hub.connection).post("/api/phone/hello", ["id": phone.id, "name": phone.name, "alerts": phone.alerts])
+        // Earlier installs of this app registered under other ids with this device's name: forget those copies.
+        let t = TVTransport(hub.connection)
+        for p in r["phones"]?.array ?? [] {
+            guard let id = p["id"]?.string, id != phone.id,
+                  p["name"]?.string?.caseInsensitiveCompare(phone.name) == .orderedSame else { continue }
+            _ = try? await t.post("/api/phone/delete", ["id": id])
+        }
+        return r
     }
 
     public func sayHelloEverywhere() async {
@@ -483,7 +524,8 @@ public final class Fleet {
     /// Asks each hub for messages kept for this phone, showing only new ones (by seq within an epoch, and by id).
     public func pollInbox() async {
         var cursors = Saved.load("inboxCursors", as: [String: InboxCursor].self) ?? [:]
-        var seen = Set(Saved.load("inboxSeen", as: [String].self) ?? [])
+        var seenOrder = Saved.load("inboxSeen", as: [String].self) ?? []
+        var seen = Set(seenOrder)
         for hub in hubs {
             var cur = cursors[hub.id] ?? InboxCursor()
             guard let box = try? await TVClient(hub: hub, routeID: "this").inbox(phone: phone.id, after: cur.after, epoch: cur.epoch) else { continue }
@@ -491,6 +533,7 @@ public final class Fleet {
             let first = cursors[hub.id] == nil
             for m in box.messages where m.seq > (cur.after ?? 0) && !seen.contains(m.id) {
                 seen.insert(m.id)
+                seenOrder.append(m.id)
                 recentMessages.insert(m, at: 0)
                 // The first poll after pairing only catches up; it doesn't replay old messages as alerts.
                 if !first { onChange?(.message(m, from: hub.name)) }
@@ -501,7 +544,7 @@ public final class Fleet {
         let weekAgo = (Date().timeIntervalSince1970 - 7 * 86400) * 1000
         recentMessages = Array(recentMessages.filter { ($0.at ?? weekAgo + 1) > weekAgo }.prefix(20))
         Saved.save("recentMessages", recentMessages)
-        Saved.save("inboxSeen", Array(seen.suffix(50)))
+        Saved.save("inboxSeen", Array(seenOrder.suffix(200)))
         Saved.save("inboxCursors", cursors)
     }
 
@@ -542,15 +585,37 @@ public struct PhoneIdentity: Codable, Hashable, Sendable {
     public var name: String
     public var alerts: Bool
 
-    static func load() -> PhoneIdentity {
-        if let p = Saved.load("phone", as: PhoneIdentity.self) { return p }
-        #if os(macOS)
-        let name = Host.current().localizedName ?? "Mac"
-        #else
-        let name = "iPhone"
-        #endif
-        return PhoneIdentity(id: UUID().uuidString.lowercased(), name: name, alerts: false)
+    @MainActor static func load() -> PhoneIdentity {
+        var p = Saved.load("phone", as: PhoneIdentity.self)
+            ?? PhoneIdentity(id: "", name: defaultName, alerts: false)
+        // The device's own id, so a reinstall or a new build is the same phone to the TVs, not another one.
+        if let stable = stableID { p.id = stable }
+        else if p.id.isEmpty { p.id = UUID().uuidString.lowercased() }
+        return p
     }
+
+    static var defaultName: String {
+        #if os(macOS)
+        return Host.current().localizedName ?? "Mac"
+        #else
+        return "iPhone"
+        #endif
+    }
+
+    @MainActor static var stableID: String? {
+        #if os(macOS)
+        let service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("IOPlatformExpertDevice"))
+        defer { IOObjectRelease(service) }
+        guard service != 0, let uuid = IORegistryEntryCreateCFProperty(service, "IOPlatformUUID" as CFString, kCFAllocatorDefault, 0)?
+            .takeRetainedValue() as? String else { return nil }
+        return "mac-" + uuid.lowercased()
+        #elseif canImport(UIKit)
+        return UIDevice.current.identifierForVendor.map { "ios-" + $0.uuidString.lowercased() }
+        #else
+        return nil
+        #endif
+    }
+
     func save() { Saved.save("phone", self) }
 }
 
