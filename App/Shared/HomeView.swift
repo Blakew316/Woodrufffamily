@@ -180,7 +180,7 @@ struct HomeView: View {
                     .padding(16).frame(maxWidth: .infinity, alignment: .leading)
                     .glass(RoundedRectangle(cornerRadius: 20, style: .continuous), interactive: false)
             }
-            CamerasSection(titled: false, favorites: true)
+            CamerasSection(favorites: true, compact: true, titled: false)
             if !favTVs.isEmpty {
                 LazyVGrid(columns: columns, spacing: 18) {
                     ForEach(favTVs) { tv in
@@ -189,9 +189,7 @@ struct HomeView: View {
                     }
                 }
             }
-            SpeakersSection(titled: false, favorites: true)
-            LightsSection(titled: false, favorites: true)
-            DevicesSection(titled: false, favorites: true)
+            RoomTiles(favorites: true)
         }
     }
 
@@ -211,9 +209,9 @@ struct HomeView: View {
 
     private func roomGroup(_ r: String) -> some View {
         let shown = { (k: String) in !layout.hiddenSections.contains(k) }
-        return VStack(alignment: .leading, spacing: 16) {
-            Text(r == noRoom ? "Other" : r).font(.title2.bold())
-            if shown("cameras") { CamerasSection(room: r, titled: false) }
+        return VStack(alignment: .leading, spacing: 10) {
+            Text(r == noRoom ? "Other" : r).font(.title3.bold())
+            if shown("cameras") { CamerasSection(room: r, compact: true, titled: false) }
             if shown("tvs") {
                 let list = tvs(in: r)
                 if !list.isEmpty {
@@ -226,9 +224,7 @@ struct HomeView: View {
                     }
                 }
             }
-            if shown("speakers") { SpeakersSection(room: r, titled: false) }
-            if shown("lights") { LightsSection(room: r, titled: false) }
-            if shown("devices") { DevicesSection(room: r, titled: false) }
+            RoomTiles(room: r)
         }
     }
 

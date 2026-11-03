@@ -146,29 +146,31 @@ struct DeviceTile: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        // Compact, like the Home app: icon on the left, name and state beside it.
+        HStack(spacing: 10) {
             Group {
                 if device.source == "smartthings" && device.isRunning && ApplianceArt.animates(device.kind) {
                     ApplianceArt(kind: device.kind, running: true, alert: device.alert)
-                        .frame(width: 34, height: 34)
-                        .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+                        .frame(width: 30, height: 30)
+                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                 } else {
                     Image(systemName: symbol)
-                        .font(.system(size: 20, weight: .semibold))
+                        .font(.system(size: 18, weight: .semibold))
                         .foregroundStyle(device.alert ? Palette.attention : (lit ? Color.orange : .secondary))
                         .contentTransition(.symbolEffect(.replace))
                 }
             }
-            .frame(height: 34, alignment: .leading)
+            .frame(width: 30, height: 30)
             VStack(alignment: .leading, spacing: 1) {
-                Text(device.name).font(.subheadline.weight(.semibold)).lineLimit(2)
+                Text(device.name).font(.footnote.weight(.semibold)).lineLimit(2)
                 Text(device.reachable ? device.status : "Not Responding").font(.caption)
-                    .foregroundStyle(device.alert ? Palette.attention : (lit ? Color.black.opacity(0.55) : .secondary)).lineLimit(2)
+                    .foregroundStyle(device.alert ? Palette.attention : (lit ? Color.black.opacity(0.55) : .secondary)).lineLimit(1)
             }
+            Spacer(minLength: 0)
         }
         .foregroundStyle(lit ? Color.black : .primary)
-        .padding(14)
-        .frame(maxWidth: .infinity, minHeight: 104, alignment: .topLeading)
+        .padding(.horizontal, 12).padding(.vertical, 10)
+        .frame(maxWidth: .infinity, minHeight: 64, alignment: .leading)
         .background {
             if lit { RoundedRectangle(cornerRadius: 20, style: .continuous).fill(.white.opacity(0.94)) }
         }

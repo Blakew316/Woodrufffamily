@@ -42,10 +42,10 @@ struct SpeakerTile: View {
     var openControls: () -> Void
 
     var body: some View {
-        HStack(spacing: 12) {
-            SpeakerArt(url: room.art, size: 46)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(room.name).font(.subheadline.weight(.semibold)).lineLimit(1)
+        HStack(spacing: 10) {
+            SpeakerArt(url: room.art, size: 38)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(room.name).font(.footnote.weight(.semibold)).lineLimit(1)
                 Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer(minLength: 4)
@@ -54,16 +54,16 @@ struct SpeakerTile: View {
                     Task { await SmartHome.shared.sonos(room) { room.isPlaying ? try await Sonos.pause($0) : try await Sonos.play($0) } }
                 } label: {
                     Image(systemName: room.isPlaying ? "pause.fill" : "play.fill")
-                        .font(.system(size: 15, weight: .semibold))
-                        .frame(width: 34, height: 34)
+                        .font(.system(size: 13, weight: .semibold))
+                        .frame(width: 30, height: 30)
                         .contentTransition(.symbolEffect(.replace))
                 }
                 .buttonStyle(.plain)
                 .glass(Circle())
             }
         }
-        .padding(12)
-        .frame(maxWidth: .infinity, minHeight: 74, alignment: .leading)
+        .padding(.horizontal, 10).padding(.vertical, 10)
+        .frame(maxWidth: .infinity, minHeight: 64, alignment: .leading)
         .contentShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         .glass(RoundedRectangle(cornerRadius: 20, style: .continuous))
         .onTapGesture(perform: openControls)
@@ -100,6 +100,72 @@ struct SpeakerArt: View {
             }
             .frame(width: size, height: size)
             .clipShape(RoundedRectangle(cornerRadius: size * 0.18, style: .continuous))
+    }
+}
+
+// MARK: - A room's small tiles, together
+
+/// Everything small in a room (speakers, lights, devices) in one even grid, two across on iPhone, rather than
+/// a short grid per kind.
+struct RoomTiles: View {
+    var room: String? = nil
+    var favorites = false
+    private let home = SmartHome.shared
+    private let layout = HomeLayout.shared
+    @State private var openSpeaker: SonosRoom?
+    @State private var openLight: GoveeLight?
+    @State private var openDevice: HomeDevice?
+
+    private enum Item: Identifiable {
+        case speaker(SonosRoom), light(GoveeLight), device(HomeDevice)
+        var id: String {
+            switch self {
+            case .speaker(let r): return r.id
+            case .light(let l): return l.id
+            case .device(let d): return d.id
+            }
+        }
+    }
+
+    private func pick<T: Identifiable>(_ list: [T], _ kind: String, room id: (T) -> String) -> [T] where T.ID == String {
+        if favorites { return layout.favoritesOnly(list) }
+        guard !layout.hiddenSections.contains(kind) else { return [] }
+        let inRoom = room.map { r in list.filter { roomMatches(home.room(of: id($0)), r) } } ?? list
+        return layout.arrange(inRoom, in: kind)
+    }
+
+    private var items: [Item] {
+        pick(home.speakers, "speakers", room: \.id).map(Item.speaker)
+            + pick(home.lights, "lights", room: \.id).map(Item.light)
+            + pick(AccessoryStore.shared.all, "devices", room: \.id).map(Item.device)
+    }
+
+    var body: some View {
+        let list = items
+        if !list.isEmpty {
+            LazyVGrid(columns: columns, spacing: 10) {
+                ForEach(list) { item in
+                    switch item {
+                    case .speaker(let r): SpeakerTile(room: r) { openSpeaker = r }
+                    case .light(let l): LightTile(light: l) { openLight = l }
+                    case .device(let d): DeviceTile(device: d) { openDevice = d }
+                    }
+                }
+            }
+            .sheet(item: $openSpeaker) { r in
+                NavigationStack { SpeakerDetailView(speakerID: r.id, inSheet: true) }.presentationBackground(.clear)
+            }
+            .sheet(item: $openLight) { l in LightSheet(lightID: l.id) }
+            .sheet(item: $openDevice) { d in NavigationStack { DeviceDetailView(deviceID: d.id, inSheet: true) } }
+        }
+    }
+
+    private var columns: [GridItem] {
+        #if os(iOS)
+        [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)]
+        #else
+        [GridItem(.adaptive(minimum: 200), spacing: 10)]
+        #endif
     }
 }
 
@@ -164,20 +230,22 @@ struct LightTile: View {
     var openControls: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        // Compact, like the Home app: the light's colour on the left, its name and state beside it.
+        HStack(spacing: 10) {
             Circle()
                 .fill(light.on ? light.shade : .white.opacity(0.18))
-                .frame(width: 26, height: 26)
-                .shadow(color: light.on ? light.shade.opacity(0.9) : .clear, radius: 10)
+                .frame(width: 24, height: 24)
+                .shadow(color: light.on ? light.shade.opacity(0.9) : .clear, radius: 8)
             VStack(alignment: .leading, spacing: 1) {
-                Text(light.name).font(.subheadline.weight(.semibold)).lineLimit(2)
-                Text([SmartHome.shared.room(of: light.id), light.on ? "\(light.brightness)%" : "Off"].compactMap { $0 }.joined(separator: " · ")).font(.caption)
+                Text(light.name).font(.footnote.weight(.semibold)).lineLimit(2)
+                Text(light.on ? "\(light.brightness)%" : "Off").font(.caption)
                     .foregroundStyle(light.on ? Color.black.opacity(0.55) : .secondary)
             }
+            Spacer(minLength: 0)
         }
         .foregroundStyle(light.on ? Color.black : .primary)
-        .padding(14)
-        .frame(maxWidth: .infinity, minHeight: 104, alignment: .topLeading)
+        .padding(.horizontal, 12).padding(.vertical, 10)
+        .frame(maxWidth: .infinity, minHeight: 64, alignment: .leading)
         .background {
             if light.on {
                 RoundedRectangle(cornerRadius: 20, style: .continuous)

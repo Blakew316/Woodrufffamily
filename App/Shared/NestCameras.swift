@@ -188,6 +188,8 @@ struct CamerasSection: View {
     var room: String? = nil
     /// Only the favourites (Home's Favorites).
     var favorites = false
+    /// Two across on iPhone (inside a room), rather than one big one each.
+    var compact = false
     /// Off inside a room on Home (the room is the heading).
     var titled = true
     private let nest = NestCameras.shared
@@ -202,7 +204,7 @@ struct CamerasSection: View {
         if !shown.isEmpty {
             VStack(alignment: .leading, spacing: 14) {
                 if titled { Text("Cameras").font(.title2.bold()) }
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 320), spacing: 14)], spacing: 14) {
+                LazyVGrid(columns: compact ? [GridItem(.adaptive(minimum: 160), spacing: 10)] : [GridItem(.adaptive(minimum: 320), spacing: 14)], spacing: compact ? 10 : 14) {
                     ForEach(shown) { cam in
                         LiveCameraTile(camera: cam) { open = cam }
                     }
