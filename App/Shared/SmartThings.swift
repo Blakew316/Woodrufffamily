@@ -9,7 +9,9 @@ final class SmartThings {
     static let shared = SmartThings()
     static let api = "https://api.smartthings.com/v1"
     static let tokenURL = "https://auth-global.api.smartthings.com/oauth/token"
-    static let scopes = "r:devices:* x:devices:* r:locations:*"
+    /// Asked for in turn: the app's keys may have been made with fewer of these, and SmartThings refuses
+    /// a sign-in that asks for any it doesn't have.
+    static let scopeSets = ["r:devices:* x:devices:* r:locations:*", "r:devices:* x:devices:*", "r:devices:$ x:devices:$", "r:devices:*"]
 
     private(set) var error: String?
     private(set) var busy = false
@@ -46,15 +48,29 @@ final class SmartThings {
         busy = true; error = nil
         defer { busy = false }
         do {
-            let relay = OAuthRelay()
-            let code = try await relay.signIn { state in
-                var c = URLComponents(string: "https://api.smartthings.com/oauth/authorize")!
-                c.queryItems = [
-                    URLQueryItem(name: "client_id", value: id), URLQueryItem(name: "response_type", value: "code"),
-                    URLQueryItem(name: "redirect_uri", value: OAuthRelay.redirect), URLQueryItem(name: "scope", value: Self.scopes),
-                    URLQueryItem(name: "state", value: state),
-                ]
-                return c.url!
+            var code: String?
+            var lastError: Error?
+            for scopes in Self.scopeSets {
+                do {
+                    code = try await OAuthRelay().signIn { state in
+                        var c = URLComponents(string: "https://api.smartthings.com/oauth/authorize")!
+                        c.queryItems = [
+                            URLQueryItem(name: "client_id", value: id), URLQueryItem(name: "response_type", value: "code"),
+                            URLQueryItem(name: "redirect_uri", value: OAuthRelay.redirect), URLQueryItem(name: "scope", value: scopes),
+                            URLQueryItem(name: "state", value: state),
+                        ]
+                        return c.url!
+                    }
+                    break
+                } catch {
+                    lastError = error
+                    // Only a scope the app wasn't made with is worth another try with fewer.
+                    guard error.localizedDescription.contains("scope") else { throw error }
+                    try? await Task.sleep(nanoseconds: 800_000_000)  // let the last sign-in sheet close first
+                }
+            }
+            guard let code else {
+                throw OAuthRelay.Failure.refused("SmartThings refused the permissions (\(lastError?.localizedDescription ?? "invalid scope")). Make sure the SmartThings app was created with r:devices:* and x:devices:*.")
             }
             let t = try await formPost(Self.tokenURL, ["grant_type": "authorization_code", "code": code, "client_id": id, "redirect_uri": OAuthRelay.redirect], basic: (id, sec))
             Keychain.set(id, for: "st.client")
@@ -125,7 +141,8 @@ final class SmartThings {
             if full || devices.isEmpty {
                 devices = (try await call("GET", "/devices"))["items"] as? [[String: Any]] ?? []
                 var rooms: [String: String] = [:]
-                for loc in (try await call("GET", "/locations"))["items"] as? [[String: Any]] ?? [] {
+                // Rooms need r:locations:*; without it devices just have no room.
+                for loc in (try? await call("GET", "/locations"))?["items"] as? [[String: Any]] ?? [] {
                     guard let lid = loc["locationId"] as? String else { continue }
                     for room in (try? await call("GET", "/locations/\(lid)/rooms"))?["items"] as? [[String: Any]] ?? [] {
                         if let rid = room["roomId"] as? String, let n = room["name"] as? String { rooms[rid] = n }
