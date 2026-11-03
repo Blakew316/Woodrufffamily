@@ -50,12 +50,12 @@ struct NowPlayingLiveActivity: Widget {
             } compactLeading: {
                 Image(systemName: s.isPlaying ? "play.tv.fill" : "pause.fill").foregroundStyle(.tint)
             } compactTrailing: {
-                if s.isPlaying, let end = s.endsAt, end > .now {
-                    Text(timerInterval: Date.now...end, countsDown: true, showsHours: false)
-                        .monospacedDigit().font(.caption2.weight(.semibold)).frame(maxWidth: 44)
-                } else {
-                    Text("Paused").font(.caption2.weight(.semibold))
-                }
+                // What's playing, in the island's right-hand side.
+                Text(s.title)
+                    .font(.caption.weight(.semibold))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: 92, alignment: .trailing)
             } minimal: {
                 Image(systemName: s.isPlaying ? "play.tv.fill" : "pause.fill").foregroundStyle(.tint)
             }
