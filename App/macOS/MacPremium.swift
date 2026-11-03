@@ -190,9 +190,11 @@ enum WidgetSync {
     private static var lastKey = ""
 
     static func update(_ fleet: Fleet) {
-        let names = Dictionary(uniqueKeysWithValues: fleet.tvs.map { ($0.id, $0.name) })
-        SharedStore.save(.init(hubs: fleet.hubs.map { .init(id: $0.id, name: $0.name, base: $0.connection.base, key: $0.connection.key) },
-                               selectedID: fleet.selectedID, names: names))
+        let names = Dictionary(fleet.tvs.map { ($0.id, $0.name) }, uniquingKeysWith: { a, _ in a })
+        // Never write an empty list over the backup: it's what restores the pairings if the app's own are lost.
+        let hubs = fleet.hubs.isEmpty ? (SharedStore.load()?.hubs ?? [])
+            : fleet.hubs.map { SharedStore.HubLink(id: $0.id, name: $0.name, base: $0.connection.base, key: $0.connection.key) }
+        SharedStore.save(.init(hubs: hubs, selectedID: fleet.selectedID, names: names))
         // Reload only when what a widget shows changes (titles, play state, on/off), not every refresh.
         let key = fleet.tvs.map { "\($0.id)|\($0.online)|\($0.playing?.title ?? "")|\($0.playing?.isPlaying ?? false)" }.joined(separator: ";") + "#\(fleet.selectedID ?? "")"
         if key != lastKey {
@@ -263,5 +265,23 @@ struct MacWelcome: View {
         }
         .padding(36)
         .frame(width: 520, height: 420)
+    }
+}
+
+// MARK: - Pairing backup
+
+/// The Mac keeps a copy of the pairings in its app group (shared with the widgets): if the app's own copy is
+/// ever gone (a new bundle id, a reset), the TVs come back from there instead of having to be paired again.
+@MainActor
+enum MacPairingBackup {
+    static func attach(_ fleet: Fleet) {
+        fleet.pairingsChanged = { hubs in
+            var snap = SharedStore.load() ?? SharedStore.Snapshot(hubs: [], selectedID: nil, names: [:])
+            snap.hubs = hubs.map { .init(id: $0.id, name: $0.name, base: $0.connection.base, key: $0.connection.key) }
+            SharedStore.save(snap)
+        }
+        if let snap = SharedStore.load() {
+            fleet.restorePairings(snap.hubs.map { Hub(id: $0.id, name: $0.name, connection: TVConnection(base: $0.base, key: $0.key)) })
+        }
     }
 }

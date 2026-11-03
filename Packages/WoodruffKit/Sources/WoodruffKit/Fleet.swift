@@ -123,22 +123,55 @@ public final class Fleet {
             latest = Demo.releases
             return
         }
-        hubs = Saved.load("hubs", as: [Hub].self) ?? []
-        // Pairing keys live in the Keychain, not in UserDefaults.
-        for i in hubs.indices { if let k = Keychain.get("hub.\(hubs[i].id)") { hubs[i].connection.key = k } }
+        hubs = Fleet.loadPairings()
         extras = Saved.load("extras", as: [String: TVExtras].self) ?? [:]
         selectedID = UserDefaults.standard.string(forKey: "selectedTV")
         tvs = hubs.map { FleetTV(id: $0.id, name: $0.name, online: false, onScreen: false, playing: nil, version: nil, seen: nil, link: "ok", health: nil, hubID: $0.id, routeID: "this", platform: extras[$0.id]?.platform) }
     }
 
+    /// Pairings are kept in three places so no update, reinstall or re-signed build ever signs the family out:
+    /// the app's settings (with their keys: a re-signed Mac build can't read the Keychain items of the one
+    /// before), the Keychain as one record (it outlives deleting and reinstalling the app on iPhone), and a
+    /// copy the app can hand to its widgets (`pairingBackup`, also used to restore).
     private func saveHubs() {
         if Demo.isOn { return }
-        var plain = hubs
-        for i in plain.indices {
-            Keychain.set(plain[i].connection.key, for: "hub.\(plain[i].id)")
-            plain[i].connection.key = ""
+        let good = hubs.filter { !$0.connection.key.isEmpty }
+        Saved.save("pairings", good)
+        UserDefaults.standard.removeObject(forKey: "hubs") // the old split copy, now merged into "pairings"
+        if let data = try? JSONEncoder().encode(good) { Keychain.set(String(decoding: data, as: UTF8.self), for: "pairings") }
+        for h in good { Keychain.set(h.connection.key, for: "hub.\(h.id)") }
+        pairingsChanged?(good)
+    }
+
+    /// Called whenever the pairings change (the Mac app copies them to its app group).
+    public var pairingsChanged: (([Hub]) -> Void)?
+
+    /// The family's paired TVs from wherever they survived, keys filled in from any copy that has them.
+    static func loadPairings() -> [Hub] {
+        var found: [String: Hub] = [:]
+        func add(_ list: [Hub]?) {
+            for h in list ?? [] {
+                if var have = found[h.id] {
+                    if have.connection.key.isEmpty && !h.connection.key.isEmpty { have.connection = h.connection; found[h.id] = have }
+                } else { found[h.id] = h }
+            }
         }
-        Saved.save("hubs", plain)
+        add(Saved.load("pairings", as: [Hub].self))
+        if let json = Keychain.get("pairings"), let list = try? JSONDecoder().decode([Hub].self, from: Data(json.utf8)) { add(list) }
+        add(Saved.load("hubs", as: [Hub].self)) // before this version: keys were only in the Keychain
+        for (id, h) in found where h.connection.key.isEmpty {
+            if let k = Keychain.get("hub.\(id)") { found[id]?.connection.key = k }
+        }
+        return found.values.filter { !$0.connection.key.isEmpty }.sorted { $0.addedAt < $1.addedAt }
+    }
+
+    /// Restores pairings from a copy kept outside the app (the Mac's app group), when the app's own are gone.
+    public func restorePairings(_ list: [Hub]) {
+        let missing = list.filter { h in !h.connection.key.isEmpty && !hubs.contains { $0.id == h.id } }
+        guard !missing.isEmpty else { return }
+        hubs += missing
+        saveHubs()
+        Task { await refresh() }
     }
 
     // MARK: Lifecycle

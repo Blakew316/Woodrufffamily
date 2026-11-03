@@ -10,7 +10,13 @@ struct WoodruffApp: App {
         WindowGroup {
             RootView()
                 .environment(fleet)
-                .task { if !Demo.isOn { Notifier.attach(to: fleet) }; await fleet.start() }
+                .task {
+                    #if os(macOS)
+                    if !Demo.isOn { MacPairingBackup.attach(fleet) }
+                    #endif
+                    if !Demo.isOn { Notifier.attach(to: fleet) }
+                    await fleet.start()
+                }
                 .onOpenURL { url in
                     // woodruff://remote (widgets, Control Center): open the remote; anything else is a pairing link.
                     if url.scheme == "woodruff" && url.host == "remote" {
