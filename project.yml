@@ -88,12 +88,7 @@ targets:
     settings:
       base:
         WOODRUFF_BUNDLE_ID: com.woodruff.family.remote
-        PRODUCT_BUNDLE_IDENTIFIER: $(WOODRUFF_BUNDLE_ID)
-        # Apple Home (Cync over Matter). If signing ever refuses HomeKit, build with
-        # WOODRUFF_HOMEKIT=NO WOODRUFF_ENTITLEMENTS= and everything else still works.
-        WOODRUFF_HOMEKIT: "YES"
-        WOODRUFF_ENTITLEMENTS: App/iOS/WoodruffFamily.entitlements
-        CODE_SIGN_ENTITLEMENTS: $(WOODRUFF_ENTITLEMENTS).widgets
+        PRODUCT_BUNDLE_IDENTIFIER: $(WOODRUFF_BUNDLE_ID).widgets
         PRODUCT_NAME: WoodruffWidgets
         TARGETED_DEVICE_FAMILY: "1,2"
         SKIP_INSTALL: YES
