@@ -103,6 +103,8 @@ final class NestCameras {
         guard (200..<300).contains(code) else {
             if code == 401 { Keychain.set(nil, for: "nest.access") }
             if code == 429 { throw RateLimited() }
+            // Google's own hiccups ("Internal error encountered", unavailable): try again, quietly.
+            if code >= 500 { throw Busy() }
             let msg = ((json["error"] as? [String: Any])?["message"] as? String) ?? "Google answered \(code)."
             throw OAuthRelay.Failure.refused(code == 403 ? "Google refused access: \(msg)" : msg)
         }
@@ -132,6 +134,7 @@ final class NestCameras {
     // MARK: Live
 
     struct RateLimited: Error {}
+    struct Busy: Error {}
 
     /// Google allows only so many camera commands a minute. Commands wait their turn: a few seconds apart
     /// overall, longer for the same camera, and a refusal just means waiting longer and trying again,
@@ -141,12 +144,13 @@ final class NestCameras {
     private var backoff: [String: Double] = [:]
 
     private func paced<T>(_ cam: String, _ op: () async throws -> T) async throws -> T {
+        var busy = 0
         while true {
             try Task.checkCancellation()
             let wait = max(nextAny, nextFor[cam] ?? .distantPast).timeIntervalSinceNow
             if wait > 0 { try await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000)) ; continue }
-            nextAny = Date().addingTimeInterval(4)
-            nextFor[cam] = Date().addingTimeInterval(12)
+            nextAny = Date().addingTimeInterval(2)
+            nextFor[cam] = Date().addingTimeInterval(8)
             do {
                 let r = try await op()
                 backoff[cam] = nil
@@ -156,6 +160,11 @@ final class NestCameras {
                 backoff[cam] = b
                 nextFor[cam] = Date().addingTimeInterval(b)
                 nextAny = Date().addingTimeInterval(15)
+            } catch is Busy {
+                // A couple of quick retries; after that the player starts over with a fresh offer.
+                busy += 1
+                if busy >= 3 { throw Busy() }
+                nextFor[cam] = Date().addingTimeInterval(Double(busy) * 4)
             }
         }
     }
@@ -206,7 +215,7 @@ struct CamerasSection: View {
                 if titled { Text("Cameras").font(.title2.bold()) }
                 LazyVGrid(columns: compact ? [GridItem(.adaptive(minimum: 160), spacing: 10)] : [GridItem(.adaptive(minimum: 320), spacing: 14)], spacing: compact ? 10 : 14) {
                     ForEach(shown) { cam in
-                        LiveCameraTile(camera: cam) { open = cam }
+                        LiveCameraTile(camera: cam, compact: compact) { open = cam }
                     }
                 }
             }
@@ -274,6 +283,8 @@ final class CameraStreams {
 /// A camera on Home: its live picture right in the tile (muted), its name over it. Tap for the big view.
 struct LiveCameraTile: View {
     var camera: NestCameras.Camera
+    /// Two across: taller (4:3) so the picture isn't small, and a smaller LIVE mark so the name fits.
+    var compact = false
     var open: () -> Void
     private let streams = CameraStreams.shared
 
@@ -295,20 +306,25 @@ struct LiveCameraTile: View {
             LinearGradient(colors: [.clear, .black.opacity(0.65)], startPoint: .center, endPoint: .bottom)
                 .allowsHitTesting(false)
             HStack(alignment: .bottom) {
-                Text(camera.name).font(.subheadline.weight(.semibold)).foregroundStyle(.white).lineLimit(1)
+                Text(camera.name).font(compact ? .footnote.weight(.semibold) : .subheadline.weight(.semibold))
+                    .foregroundStyle(.white).lineLimit(1).minimumScaleFactor(0.85)
                 Spacer()
                 if status == "Live" {
-                    HStack(spacing: 5) {
-                        Circle().fill(.red).frame(width: 7, height: 7)
-                        Text("LIVE").font(.caption2.weight(.heavy)).foregroundStyle(.white)
+                    if compact {
+                        Circle().fill(.red).frame(width: 8, height: 8).shadow(color: .red.opacity(0.8), radius: 3)
+                    } else {
+                        HStack(spacing: 5) {
+                            Circle().fill(.red).frame(width: 7, height: 7)
+                            Text("LIVE").font(.caption2.weight(.heavy)).foregroundStyle(.white)
+                        }
+                        .padding(.horizontal, 8).padding(.vertical, 4)
+                        .background(Capsule().fill(.black.opacity(0.45)))
                     }
-                    .padding(.horizontal, 8).padding(.vertical, 4)
-                    .background(Capsule().fill(.black.opacity(0.45)))
                 }
             }
-            .padding(12)
+            .padding(compact ? 10 : 12)
         }
-        .aspectRatio(16 / 9, contentMode: .fit)
+        .aspectRatio(compact ? 4 / 3 : 16 / 9, contentMode: .fit)
         .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).strokeBorder(.white.opacity(0.08)))
         .contentShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
@@ -374,6 +390,7 @@ final class LivePlayer: NSObject, WKScriptMessageHandler {
     private var running = false
     private var work: Task<Void, Never>?
     private var renew: Task<Void, Never>?
+    private var failures = 0
 
     init(camera: NestCameras.Camera) {
         self.camera = camera
@@ -440,14 +457,18 @@ final class LivePlayer: NSObject, WKScriptMessageHandler {
                     let (answer, s) = try await NestCameras.shared.startStream(self.camera, offer: body)
                     guard self.running, !Task.isCancelled else { return }
                     self.session = s
+                    self.failures = 0
                     let js = (try? String(data: JSONSerialization.data(withJSONObject: [answer]), encoding: .utf8)) ?? "[\"\"]"
                     _ = try? await self.web.evaluateJavaScript("answer(\(js)[0])")
                     self.keepAlive()
                 } catch is CancellationError {
                 } catch {
-                    self.onStatus?(error.localizedDescription)
-                    // Anything else (no internet, Google busy): try again shortly.
-                    try? await Task.sleep(nanoseconds: 20_000_000_000)
+                    // Only a sign-in problem is worth words; anything else (Google busy, no internet) just retries.
+                    let m = error.localizedDescription
+                    self.onStatus?(m.contains("Connect") || m.contains("refused access") ? m : "Reconnecting…")
+                    self.failures += 1
+                    let wait = UInt64(min(60, 5 * (1 << min(self.failures, 4))))
+                    try? await Task.sleep(nanoseconds: wait * 1_000_000_000)
                     if self.running && !Task.isCancelled { self.running = false; self.start() }
                 }
             }
