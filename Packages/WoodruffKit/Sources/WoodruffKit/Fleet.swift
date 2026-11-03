@@ -130,13 +130,22 @@ public final class Fleet {
     private var offlineAnnounced: Set<String> = []
 
     /// Whether this iPhone or Mac is on the home Wi‑Fi: the same network as a paired TV's address.
+    /// Clearly away from home (TVs known, none on this network): no point searching the Wi‑Fi for things.
+    public var probablyAway: Bool { !(hubs.isEmpty && extras.isEmpty) && !atHome }
+
     public var atHome: Bool {
         #if canImport(Darwin)
         let mine = LANScan.prefixes()
         let tvHosts = hubs.compactMap { $0.connection.base.host } + extras.values.compactMap(\.lastHost)
+        // Same network, allowing for ones wider than 256 addresses (a Deco's is 192.168.68.0–71.255).
+        func block(_ p: [Substring]) -> String? {
+            guard p.count >= 3, let third = Int(p[2]) else { return nil }
+            return "\(p[0]).\(p[1]).\(third / 4)"
+        }
+        let myBlocks = Set(mine.compactMap { block($0.split(separator: ".")) })
         return tvHosts.contains { host in
             let parts = host.split(separator: ".")
-            return parts.count == 4 && mine.contains(parts.prefix(3).joined(separator: ".") + ".")
+            return parts.count == 4 && block(parts).map(myBlocks.contains) == true
         }
         #else
         return true
@@ -378,7 +387,7 @@ public final class Fleet {
             t.foundAt = f.base
             all.append(t)
         }
-        tvs = all
+        if all != tvs { tvs = all }
         var changedLast = false
         for tv in all { if let p = tv.playing, lastPlaying[tv.id]?.title != p.title { lastPlaying[tv.id] = p; changedLast = true } }
         if changedLast { Saved.save("lastPlaying", lastPlaying) }
@@ -420,6 +429,8 @@ public final class Fleet {
                 // (or an LG awake but not answering) is worth a notification.
                 Task { [weak self] in
                     guard let self, self.atHome, await self.cantTalkToIt(tv) else { return }
+                    // It may have answered again while we were checking.
+                    guard self.tv(tv.id)?.online == false else { self.offlineNotified.remove(tv.id); return }
                     self.offlineAnnounced.insert(tv.id)
                     self.onChange?(.wentOffline(tv))
                 }

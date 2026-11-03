@@ -33,7 +33,8 @@ final class HomeLayout {
 
     /// The pinned rooms that exist, by their real names, in the pinned order.
     func pinned(in rooms: [String]) -> [String] {
-        pinnedRooms.compactMap { p in rooms.first { $0.caseInsensitiveCompare(p) == .orderedSame } }
+        var seen = Set<String>()
+        return pinnedRooms.compactMap { p in rooms.first { $0.caseInsensitiveCompare(p) == .orderedSame } }.filter { seen.insert($0).inserted }
     }
 
     func togglePinned(_ room: String) {

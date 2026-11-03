@@ -6,8 +6,27 @@ import Security
 /// Secrets (pairing keys, LG client keys, the GitHub token) in the Keychain; everything else in UserDefaults.
 public enum Keychain {
     static let service = "com.woodruff.family"
+    /// Goes up with every write, so a watcher knows when to read again (writes all happen in this app).
+    nonisolated(unsafe) public private(set) static var generation = 0
+
+    /// A read that tells "not there" apart from "couldn't read just now" (a locked keychain): `ok` is false
+    /// only for the latter, so a hiccup is never mistaken for a sign-out.
+    public static func read(_ account: String) -> (value: String?, ok: Bool) {
+        #if canImport(Security)
+        let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: account,
+                                kSecReturnData as String: true, kSecMatchLimit as String: kSecMatchLimitOne]
+        var out: AnyObject?
+        let status = SecItemCopyMatching(q as CFDictionary, &out)
+        if status == errSecItemNotFound { return (nil, true) }
+        guard status == errSecSuccess, let d = out as? Data else { return (nil, false) }
+        return (String(data: d, encoding: .utf8), true)
+        #else
+        return (UserDefaults.standard.string(forKey: "kc." + account), true)
+        #endif
+    }
 
     public static func set(_ value: String?, for account: String) {
+        generation &+= 1
         #if canImport(Security)
         let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: account]
         SecItemDelete(q as CFDictionary)

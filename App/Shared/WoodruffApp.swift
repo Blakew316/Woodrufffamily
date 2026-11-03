@@ -63,7 +63,8 @@ struct WoodruffApp: App {
                 }
         }
         .onChange(of: scenePhase) { _, phase in
-            fleet.setActive(phase == .active)
+            // Only really leaving pauses things (not a glance at Notification Center or the app switcher).
+            if phase == .active { fleet.setActive(true) } else if phase == .background { fleet.setActive(false) }
             if phase == .background {
                 CameraStreams.shared.background()
                 #if os(iOS)
@@ -280,9 +281,10 @@ struct MacRoot: View {
         } detail: {
             NavigationStack {
                 if !query.isEmpty { LibrarySearchResults(query: query) }
-                else if let d = deviceSelection, d.hasPrefix("spk:") { SpeakerDetailView(speakerID: String(d.dropFirst(4))) }
-                else if let d = deviceSelection, d.hasPrefix("light:") { LightDetailView(lightID: String(d.dropFirst(6))) }
-                else if let id = tvSelection { TVDetailView(tvID: id) } else { section.view }
+                // .id: a new item gets a fresh page (no name or level left over from the last one).
+                else if let d = deviceSelection, d.hasPrefix("spk:") { SpeakerDetailView(speakerID: String(d.dropFirst(4))).id(d) }
+                else if let d = deviceSelection, d.hasPrefix("light:") { LightDetailView(lightID: String(d.dropFirst(6))).id(d) }
+                else if let id = tvSelection { TVDetailView(tvID: id).id(id) } else { section.view }
             }
             .background { AmbientArtwork() }
             .safeAreaInset(edge: .bottom) {

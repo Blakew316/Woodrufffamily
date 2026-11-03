@@ -197,7 +197,8 @@ struct HomeView: View {
     }
 
     private func tvs(in r: String) -> [FleetTV] {
-        layout.arrange(fleet.tvs.filter { roomMatches(SmartHome.shared.rooms[$0.id] ?? $0.name, r) }, in: "tvs")
+        // A TV not set up yet has no room of its own (its name isn't a room): it shows under Other.
+        layout.arrange(fleet.tvs.filter { roomMatches(SmartHome.shared.rooms[$0.id] ?? ($0.isUnpaired ? nil : $0.name), r) }, in: "tvs")
     }
 
     private func hasThings(_ r: String) -> Bool {
@@ -233,7 +234,7 @@ struct HomeView: View {
     }
 
     private var shownTVs: [FleetTV] {
-        layout.arrange(room.isEmpty ? fleet.tvs : fleet.tvs.filter { $0.name == room }, in: "tvs")
+        room.isEmpty ? layout.arrange(fleet.tvs, in: "tvs") : tvs(in: room)
     }
 
     /// The room bar: Favorites, the few rooms chosen for it (Kitchen, Front Yard, Living Room, Backyard), and

@@ -599,7 +599,7 @@ struct LibraryGrid: View {
             if loading { ProgressView().padding() }
         }
         .navigationTitle(place == "shows" ? "TV Shows" : "Movies")
-        .searchable(text: $query, prompt: place == "shows" ? "TV Shows" : "Movies")
+        .pageSearch(text: $query, prompt: place == "shows" ? "TV Shows" : "Movies")
         .environment(\.openTitle, OpenTitleAction { openTitle = $0 })
         .sheet(item: Binding(get: { openTitle.map { TitleRef(id: $0) } }, set: { openTitle = $0?.id })) { TitleSheet(id: $0.id) }
         .toolbar {
@@ -660,7 +660,7 @@ struct SearchPage: View {
             .padding(.vertical)
         }
         .navigationTitle("Search")
-        .searchable(text: $query, prompt: "Movies and TV Shows")
+        .pageSearch(text: $query, prompt: "Movies and TV Shows")
         .environment(\.openTitle, OpenTitleAction { openTitle = $0 })
         .sheet(item: Binding(get: { openTitle.map { TitleRef(id: $0) } }, set: { openTitle = $0?.id })) { TitleSheet(id: $0.id) }
         .task(id: query) {

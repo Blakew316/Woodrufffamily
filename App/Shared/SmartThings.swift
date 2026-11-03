@@ -103,9 +103,21 @@ final class SmartThings {
         Keychain.set(nil, for: "st.token")
     }
 
-    private func token() async throws -> String {
+    @ObservationIgnored private var renewing: Task<String, Error>?
+
+    /// The sign-in to use. A renewal runs one at a time (the renewal key works once, so two at once would
+    /// sign the loser out); everyone else waits for it.
+    private func token(force: Bool = false) async throws -> String {
         if let pat = Keychain.get("st.token") { return pat }
-        if let a = Keychain.get("st.access"), let e = Keychain.get("st.expires").flatMap(Double.init), e > Date().timeIntervalSince1970 { return a }
+        if !force, let a = Keychain.get("st.access"), let e = Keychain.get("st.expires").flatMap(Double.init), e > Date().timeIntervalSince1970 { return a }
+        if let running = renewing { return try await running.value }
+        let t = Task { try await self.renew() }
+        renewing = t
+        defer { renewing = nil }
+        return try await t.value
+    }
+
+    private func renew() async throws -> String {
         guard let r = Keychain.get("st.refresh"), let id = Keychain.get("st.client"), let sec = Keychain.get("st.secret") else {
             throw OAuthRelay.Failure.refused("Sign in to SmartThings again.")
         }
@@ -114,10 +126,11 @@ final class SmartThings {
         return Keychain.get("st.access") ?? ""
     }
 
-    private func call(_ method: String, _ path: String, _ body: Any? = nil) async throws -> [String: Any] {
-        var r = URLRequest(url: URL(string: Self.api + path)!, timeoutInterval: 20)
+    private func call(_ method: String, _ path: String, _ body: Any? = nil, retried: Bool = false) async throws -> [String: Any] {
+        guard let url = URL(string: Self.api + path) else { throw OAuthRelay.Failure.refused("SmartThings answered oddly.") }
+        var r = URLRequest(url: url, timeoutInterval: 20)
         r.httpMethod = method
-        r.setValue("Bearer \(try await token())", forHTTPHeaderField: "Authorization")
+        r.setValue("Bearer \(try await token(force: retried))", forHTTPHeaderField: "Authorization")
         if let body {
             r.setValue("application/json", forHTTPHeaderField: "Content-Type")
             r.httpBody = try JSONSerialization.data(withJSONObject: body)
@@ -126,6 +139,10 @@ final class SmartThings {
         let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
         let json = (try? JSONSerialization.jsonObject(with: d) as? [String: Any]) ?? [:]
         guard (200..<300).contains(code) else {
+            // Signed in with an account (not a pasted token) and the sign-in ran out early: renew once and retry.
+            if code == 401, !retried, Keychain.get("st.token") == nil, Keychain.get("st.refresh") != nil {
+                return try await call(method, path, body, retried: true)
+            }
             if code == 401 { throw OAuthRelay.Failure.refused(Keychain.get("st.token") != nil ? "The SmartThings token expired. Paste a new one or sign in." : "Sign in to SmartThings again.") }
             let msg = ((json["error"] as? [String: Any])?["message"] as? String) ?? "SmartThings answered \(code)."
             throw OAuthRelay.Failure.refused(msg)
@@ -152,16 +169,32 @@ final class SmartThings {
                 listedAt = Date()
             }
             var out: [HomeDevice] = []
+            let before = AccessoryStore.shared.fromSmartThings
             for dev in devices {
                 guard let id = dev["deviceId"] as? String else { continue }
-                let status = (try? await call("GET", "/devices/\(id)/status")) ?? [:]
-                raw["st:" + id] = status
                 capabilities["st:" + id] = allCaps(dev)
+                guard let status = try? await call("GET", "/devices/\(id)/status") else {
+                    // Couldn't read it this time: keep what it last said (never a false "done" or "Idle").
+                    if let old = before.first(where: { $0.id == "st:" + id }) { out.append(old) }
+                    continue
+                }
+                raw["st:" + id] = status
                 if let d = make(dev, status) { out.append(d) }
             }
             error = nil
             AccessoryStore.shared.fromSmartThings = out
         } catch { self.error = error.localizedDescription }
+    }
+
+    /// Reads one appliance again (after a command), so its tile updates in a second.
+    func reread(_ id: String) async {
+        guard let dev = devices.first(where: { ($0["deviceId"] as? String) == id }),
+              let status = try? await call("GET", "/devices/\(id)/status") else { return }
+        raw["st:" + id] = status
+        guard let d = make(dev, status) else { return }
+        var list = AccessoryStore.shared.fromSmartThings
+        if let i = list.firstIndex(where: { $0.id == d.id }) { list[i] = d } else { list.append(d) }
+        AccessoryStore.shared.fromSmartThings = list
     }
 
     private func allCaps(_ dev: [String: Any]) -> Set<String> {
@@ -198,8 +231,8 @@ final class SmartThings {
         Task {
             do {
                 _ = try await call("POST", "/devices/\(id)/commands", ["commands": [c]])
-                try? await Task.sleep(nanoseconds: 1_500_000_000)
-                await refresh(full: false)
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                await reread(id)
             } catch { self.error = error.localizedDescription }
         }
     }
@@ -291,9 +324,10 @@ final class SmartThings {
 
     /// "The washer is done" when a cycle ends while the app is open.
     private func notifyIfFinished(_ d: HomeDevice, name: String) {
+        guard let now = d.machineState else { return }   // not known this time: nothing has finished
         let was = lastMachine[d.id]
-        lastMachine[d.id] = d.machineState
-        guard was == "run", d.machineState == "stop" || d.machineState == nil else { return }
+        lastMachine[d.id] = now
+        guard was == "run", now == "stop" else { return }
         let c = UNMutableNotificationContent()
         c.title = "\(name) is done"
         c.body = d.kind == .dryer ? "The dryer has finished." : d.kind == .washer ? "The wash has finished. Time to move it to the dryer." : "It has finished."
@@ -322,8 +356,8 @@ final class SmartThings {
         Task {
             do {
                 _ = try await call("POST", "/devices/\(id)/commands", ["commands": [command]])
-                try? await Task.sleep(nanoseconds: 1_200_000_000)
-                await refresh(full: false)
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                await reread(id)
             } catch { self.error = error.localizedDescription }
         }
     }

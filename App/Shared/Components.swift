@@ -387,3 +387,30 @@ struct ShareSheet: UIViewControllerRepresentable {
     func updateUIViewController(_ c: UIActivityViewController, context: Context) {}
 }
 #endif
+
+// MARK: - Search that's safe on the Mac
+
+extension View {
+    /// A search field: the system one on iPhone; on the Mac one inside the page, because the window already has
+    /// a search field in its toolbar and a second one crashes AppKit.
+    @ViewBuilder func pageSearch(text: Binding<String>, prompt: String) -> some View {
+        #if os(iOS)
+        self.searchable(text: text, prompt: prompt)
+        #else
+        self.safeAreaInset(edge: .top, spacing: 0) {
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                TextField(prompt, text: text).textFieldStyle(.plain)
+                if !text.wrappedValue.isEmpty {
+                    Button { text.wrappedValue = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
+                        .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 12).padding(.vertical, 8)
+            .glass(Capsule(), interactive: false)
+            .frame(maxWidth: 420)
+            .padding(.horizontal, 16).padding(.vertical, 8)
+        }
+        #endif
+    }
+}

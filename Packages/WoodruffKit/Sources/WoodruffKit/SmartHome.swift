@@ -275,6 +275,12 @@ public enum Sonos {
             if let stream = tag("r:streamContent", in: meta).map(unescape), !stream.isEmpty { r.artist = r.title; r.title = stream }
             if r.isTV { r.title = "TV"; r.artist = nil; r.album = nil; r.art = nil }
         }
+        return await levels(r)
+    }
+
+    /// Just a room's own volume and mute (what's playing comes from its group's leader).
+    public static func levels(_ r: SonosRoom) async -> SonosRoom {
+        var r = r
         if let v = try? await rendering(r.host, "GetVolume") { r.volume = Int(tag("CurrentVolume", in: v) ?? "") ?? r.volume }
         if let m = try? await rendering(r.host, "GetMute") { r.muted = tag("CurrentMute", in: m) == "1" }
         return r
@@ -506,6 +512,8 @@ public enum Govee {
 @MainActor
 final class GoveeLAN {
     private var listener: NWListener?
+    /// Each light's own channel to us; closed with the listener so none are left open.
+    private var connections: [ObjectIdentifier: NWConnection] = [:]
     var onScan: ((String, String, String) -> Void)?          // ip, device id, sku
     var onStatus: ((String, Bool, Int, LightColor?, Int?) -> Void)? // ip, on, brightness, color, kelvin
 
@@ -515,8 +523,19 @@ final class GoveeLAN {
         params.allowLocalEndpointReuse = true
         guard let l = try? NWListener(using: params, on: port) else { return }
         l.newConnectionHandler = { [weak self] c in
-            c.start(queue: .main)
-            self?.receive(c)
+            MainActor.assumeIsolated {
+                guard let self else { c.cancel(); return }
+                let key = ObjectIdentifier(c)
+                self.connections[key] = c
+                c.stateUpdateHandler = { [weak self] st in
+                    switch st {
+                    case .failed, .cancelled: MainActor.assumeIsolated { _ = self?.connections.removeValue(forKey: key) }
+                    default: break
+                    }
+                }
+                c.start(queue: .main)
+                self.receive(c)
+            }
         }
         // iOS closes it while the app is in the background; open a new one when that happens.
         l.stateUpdateHandler = { [weak self] state in
@@ -540,6 +559,8 @@ final class GoveeLAN {
         let old = listener
         listener = nil
         old?.cancel()
+        for c in connections.values { c.cancel() }
+        connections.removeAll()
         start()
     }
 
@@ -735,12 +756,14 @@ public final class SmartHome {
             var tick = 0
             while !Task.isCancelled {
                 guard let self else { return }
+                // Away from home nothing on this network is ours: no searching, and the speakers less often.
+                let away = Fleet.shared.probablyAway
                 if tick % 60 == 0 { await self.findSonos() }
                 if tick % 24 == 0 { await self.refreshCloud() }
                 // Ask for lights a few times early on (UDP answers can get lost), then every five minutes.
-                if [0, 1, 3, 6, 12].contains(tick) || tick % 60 == 0 { self.scanLights() }
-                await self.refreshSpeakers()
-                self.pollLights()
+                if !away, [0, 1, 3, 6, 12].contains(tick) || tick % 60 == 0 { self.scanLights() }
+                if !away || tick % 6 == 0 { await self.refreshSpeakers() }
+                if !away { self.pollLights() }
                 tick += 1
                 try? await Task.sleep(nanoseconds: 5_000_000_000)
             }
@@ -798,6 +821,7 @@ public final class SmartHome {
     /// The household's rooms, from the last speaker that answered (or by asking the network on port 1400).
     public func findSonos() async {
         if let s = sonosSeed, let rooms = try? await Sonos.rooms(from: s), !rooms.isEmpty { merge(rooms); return }
+        guard !Fleet.shared.probablyAway else { return }
         #if canImport(Darwin)
         let hosts = LANScan.prefixes().flatMap { p in (1...254).map { p + String($0) } }
         let found: String? = await withTaskGroup(of: String?.self) { g in
@@ -859,18 +883,32 @@ public final class SmartHome {
     public func refreshSpeakers() async {
         guard !speakers.isEmpty else { return }
         let current = speakers
-        let fresh = await withTaskGroup(of: SonosRoom.self) { g in
-            for r in current { g.addTask { await Sonos.refresh(r) } }
+        // What's playing is asked once per group (of its leader); each room only for its own volume.
+        var leaders: [String: SonosRoom] = [:]
+        for r in current where leaders[r.coordinatorHost] == nil { leaders[r.coordinatorHost] = r }
+        let leaderIDs = Set(leaders.values.map(\.id))
+        var fresh = await withTaskGroup(of: SonosRoom.self) { g in
+            for r in current { g.addTask {
+                if leaderIDs.contains(r.id) { return await Sonos.refresh(r) }
+                return await Sonos.levels(r)
+            } }
             var out: [SonosRoom] = []
             for await r in g { out.append(r) }
             return out
         }
+        let playing = Dictionary(fresh.filter { leaderIDs.contains($0.id) }.map { ($0.coordinatorHost, $0) }, uniquingKeysWith: { a, _ in a })
+        for i in fresh.indices where !leaderIDs.contains(fresh[i].id) {
+            guard let l = playing[fresh[i].coordinatorHost] else { continue }
+            fresh[i].state = l.state; fresh[i].title = l.title; fresh[i].artist = l.artist; fresh[i].album = l.album; fresh[i].art = l.art; fresh[i].isTV = l.isTV
+        }
+        let held = pendingVolume.filter { $0.value.timeIntervalSinceNow > -2.5 }.keys
         // Only the playing state comes from the refresh; names, models and parts may have changed meanwhile.
         let next = speakers.map { cur -> SonosRoom in
             guard let f = fresh.first(where: { $0.id == cur.id }) else { return cur }
             var r = cur
             r.state = f.state; r.title = f.title; r.artist = f.artist; r.album = f.album; r.art = f.art
-            r.volume = f.volume; r.muted = f.muted; r.isTV = f.isTV
+            if !held.contains(cur.id) { r.volume = f.volume }   // not while it's being dragged
+            r.muted = f.muted; r.isTV = f.isTV
             return r
         }
         if next != speakers { speakers = next; onChange?() }
@@ -884,9 +922,23 @@ public final class SmartHome {
         await refreshSpeakers()
     }
 
+    @ObservationIgnored private var pendingVolume: [String: Date] = [:]
+    @ObservationIgnored private var volumeSends: [String: Task<Void, Never>] = [:]
+
+    /// Dragging the slider: shows each value at once, but sends at most every ~150 ms and always the latest
+    /// (so the speaker never ends on a stale value), and the refresh leaves it alone until it settles.
     public func setVolume(_ room: SonosRoom, _ v: Int) {
         if let i = speakers.firstIndex(where: { $0.id == room.id }) { speakers[i].volume = v }
-        Task { try? await Sonos.setVolume(room, v) }
+        pendingVolume[room.id] = Date()
+        guard volumeSends[room.id] == nil else { return }   // the one waiting picks up the newest value
+        volumeSends[room.id] = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 150_000_000)
+            guard let self else { return }
+            let latest = self.speakers.first(where: { $0.id == room.id })?.volume ?? v
+            self.volumeSends[room.id] = nil
+            try? await Sonos.setVolume(room, latest)
+            self.pendingVolume[room.id] = Date()
+        }
     }
 
     // MARK: Govee
@@ -952,7 +1004,8 @@ public final class SmartHome {
             // Two lamps answering with the same device ID from different addresses (some Govee lamps sold in
             // pairs do): they're still two lamps, each controlled at its own address.
             if let other = lights[i].ip, other != ip,
-               answers.contains(where: { $0.ip == other && $0.device == id && $0.at.timeIntervalSinceNow > -180 }) {
+               // Both answering in the same search round (not one lamp that just moved to a new address).
+               answers.contains(where: { $0.ip == other && $0.device == id && $0.at.timeIntervalSinceNow > -20 }) {
                 let twin = id + "@" + ip
                 if let j = lights.firstIndex(where: { $0.id == twin }) { lights[j].ip = ip }
                 else if let j = lights.firstIndex(where: { $0.id.hasPrefix(id + "@") && $0.ip == nil }) { lights[j].ip = ip }
@@ -969,13 +1022,30 @@ public final class SmartHome {
 
     private func status(ip: String, on: Bool, brightness: Int, color: LightColor?, kelvin: Int?) {
         guard let i = lights.firstIndex(where: { $0.ip == ip }) else { return }
-        lights[i].on = on; lights[i].brightness = brightness
-        if let color, color != LightColor(r: 0, g: 0, b: 0) { lights[i].color = color }
-        lights[i].kelvin = kelvin
+        var l = lights[i]
+        l.on = on; l.brightness = brightness
+        // White (a colour temperature) or a colour, never a stale mix of both.
+        if let kelvin, kelvin > 0 { l.kelvin = kelvin; l.color = nil }
+        else if let color, color != LightColor(r: 0, g: 0, b: 0) { l.color = color; l.kelvin = nil }
+        else { l.kelvin = kelvin }
+        // Lamps answer every few seconds; only an actual change redraws anything.
+        guard l != lights[i] else { return }
+        lights[i] = l
         onChange?()
     }
 
+    @ObservationIgnored private var cloudRefresh: Task<Void, Never>?
+
+    /// One at a time: a second call waits for the one already running.
     public func refreshCloud() async {
+        if let running = cloudRefresh { await running.value; return }
+        let t = Task { await self.refreshCloudNow() }
+        cloudRefresh = t
+        await t.value
+        cloudRefresh = nil
+    }
+
+    private func refreshCloudNow() async {
         guard let key = goveeKey, !key.isEmpty else { goveeError = nil; return }
         do {
             // Govee's current API lists every model; the original one only older ones.
@@ -994,9 +1064,16 @@ public final class SmartHome {
                     lights.append(l)
                 }
             }
-            // Lights not answering on the Wi‑Fi: their state comes from Govee.
-            for i in lights.indices where lights[i].cloud && lights[i].ip == nil {
-                lights[i] = open ? await Govee.openState(lights[i], key: key) : await Govee.cloudState(lights[i], key: key)
+            // Lights not answering on the Wi‑Fi: their state comes from Govee. The list can change while
+            // waiting (a search, a rename), so each answer is put back by ID, state only.
+            let targets = lights.filter { $0.cloud && $0.ip == nil }
+            for l in targets {
+                let fresh = open ? await Govee.openState(l, key: key) : await Govee.cloudState(l, key: key)
+                guard let i = lights.firstIndex(where: { $0.id == l.id }), lights[i].ip == nil else { continue }
+                lights[i].on = fresh.on
+                lights[i].brightness = fresh.brightness
+                lights[i].color = fresh.color
+                lights[i].kelvin = fresh.kelvin
             }
             lights.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
             persist()

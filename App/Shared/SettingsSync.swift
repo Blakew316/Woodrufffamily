@@ -31,6 +31,10 @@ final class SettingsSync {
     /// Plain preferences that travel.
     static let valueKeys = ["nest.alert.person", "nest.alert.motion", "nest.alert.doorbell"]
 
+    /// Saved settings kept entry by entry (one TV's name, one light's room), so two devices changing
+    /// different entries at the same time both keep their change.
+    static let entryKeys: Set<String> = ["ud:smartNames", "ud:smartRooms", "ud:extras", "ud:hiddenAlerts"]
+
     /// "Saved on Living Room, Master Bedroom · 12:04" for Settings.
     private(set) var status = "Not synced yet"
     private(set) var lastSynced: Date?
@@ -42,6 +46,8 @@ final class SettingsSync {
         return s
     }()
     @ObservationIgnored private var stamps: [String: Double] = (UserDefaults.standard.dictionary(forKey: "sync.stamps") as? [String: Double]) ?? [:]
+    @ObservationIgnored private var entryStamps: [String: [String: Double]] =
+        (UserDefaults.standard.dictionary(forKey: "sync.entryStamps") as? [String: [String: Double]]) ?? [:]
     @ObservationIgnored private var last: [String: String] = [:]
     @ObservationIgnored private var listener: NWListener?
     @ObservationIgnored private var browser: NWBrowser?
@@ -52,6 +58,11 @@ final class SettingsSync {
     @ObservationIgnored private var tvAgain = false
     @ObservationIgnored private var pushSoon: Task<Void, Never>?
     @ObservationIgnored private var folders: [String: String] = [:]
+    /// Something may have changed here since the last look (a saved setting or a keychain write).
+    @ObservationIgnored private var dirty = true
+    @ObservationIgnored private var seenGeneration = -1
+    @ObservationIgnored private var lastLook = Date.distantPast
+    @ObservationIgnored private var defaultsWatch: NSObjectProtocol?
 
     func start(_ fleet: Fleet) {
         guard loop == nil, !Demo.isOn else { return }
@@ -61,6 +72,9 @@ final class SettingsSync {
         // replace anything set on another device (a new device mustn't overwrite the family's layout).
         for (k, v) in last where stamps[k] == nil && !v.isEmpty { stamps[k] = 1 }
         saveStamps()
+        defaultsWatch = NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.dirty = true }
+        }
         listen()
         browse()
         loop = Task { [weak self] in
@@ -68,7 +82,8 @@ final class SettingsSync {
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 1_500_000_000)
                 guard let self else { return }
-                self.check()
+                // Only looks when something was saved (or every 30 s regardless), so it costs nothing at rest.
+                if self.dirty || Keychain.generation != self.seenGeneration || Date().timeIntervalSince(self.lastLook) > 30 { self.check() }
                 tick += 1
                 if tick % 20 == 0 { await self.syncTVs() }   // every 30 seconds
             }
@@ -91,24 +106,34 @@ final class SettingsSync {
 
     // MARK: What's here
 
-    private func canonical(_ key: String) -> String {
+    /// The current value as text, or nil when it can't be read just now (a locked keychain): then the last
+    /// known value stands, so a hiccup never reads as a sign-out.
+    private func canonical(_ key: String) -> String? {
         let name = String(key.dropFirst(3))
-        if key.hasPrefix("kc:") { return Keychain.get(name) ?? "" }
+        if key.hasPrefix("kc:") {
+            let r = Keychain.read(name)
+            return r.ok ? (r.value ?? "") : nil
+        }
         guard let obj = UserDefaults.standard.object(forKey: name) else { return "" }
         if key.hasPrefix("ud:") {
-            guard let d = obj as? Data, let o = try? JSONSerialization.jsonObject(with: d, options: [.fragmentsAllowed]),
-                  let c = try? JSONSerialization.data(withJSONObject: o, options: [.sortedKeys, .fragmentsAllowed]) else { return "" }
-            return String(decoding: c, as: UTF8.self)
+            guard let d = obj as? Data, let o = try? JSONSerialization.jsonObject(with: d, options: [.fragmentsAllowed]) else { return "" }
+            return SyncMerge.canonical(o) ?? ""
         }
-        guard let c = try? JSONSerialization.data(withJSONObject: obj, options: [.sortedKeys, .fragmentsAllowed]) else { return "" }
-        return String(decoding: c, as: UTF8.self)
+        return SyncMerge.canonical(obj) ?? ""
+    }
+
+    /// Every key that travels, including each LG TV's sign-in (so a TV paired on one device works on all).
+    private func allKeys() -> [String] {
+        var out = Self.keychainKeys.map { "kc:" + $0 } + Self.dataKeys.map { "ud:" + $0 } + Self.valueKeys.map { "uv:" + $0 }
+        var lg = Set((fleet?.tvs ?? []).map { "kc:lg.\($0.id)" })
+        for k in stamps.keys where k.hasPrefix("kc:lg.") { lg.insert(k) }
+        out += lg.sorted()
+        return out
     }
 
     private func snapshot() -> [String: String] {
         var out: [String: String] = [:]
-        for k in Self.keychainKeys { out["kc:" + k] = canonical("kc:" + k) }
-        for k in Self.dataKeys { out["ud:" + k] = canonical("ud:" + k) }
-        for k in Self.valueKeys { out["uv:" + k] = canonical("uv:" + k) }
+        for k in allKeys() { out[k] = canonical(k) ?? last[k] ?? "" }
         return out
     }
 
@@ -117,11 +142,22 @@ final class SettingsSync {
 
     /// Notices changes made here, stamps them, and sends them on.
     private func check() {
+        dirty = false
+        seenGeneration = Keychain.generation
+        lastLook = Date()
         let now = snapshot()
         var changed = false
-        for (k, v) in now where last[k] != nil && last[k] != v {
-            stamps[k] = Date().timeIntervalSince1970
-            changed = true
+        let t = Date().timeIntervalSince1970
+        for (k, v) in now where last[k] != v {
+            if let old = last[k] {
+                stamps[k] = t
+                if Self.entryKeys.contains(k) {
+                    entryStamps[k] = SyncMerge.stampEntries(old: old, new: v, stamps: entryStamps[k] ?? [:], now: t)
+                }
+                changed = true
+            } else if !v.isEmpty && stamps[k] == nil {
+                stamps[k] = 1   // a key that just started travelling (a newly added TV) counts as old
+            }
         }
         last = now
         guard changed else { return }
@@ -136,66 +172,66 @@ final class SettingsSync {
         }
     }
 
-    private func saveStamps() { UserDefaults.standard.set(stamps, forKey: "sync.stamps") }
+    private func saveStamps() {
+        UserDefaults.standard.set(stamps, forKey: "sync.stamps")
+        UserDefaults.standard.set(entryStamps, forKey: "sync.entryStamps")
+    }
 
     // MARK: Taking newer settings in
 
     /// Takes whatever is newer in [items]; returns whether ours has anything newer than theirs.
     @discardableResult
     private func apply(_ items: [String: [String: Any]]) -> Bool {
-        var changed = false
+        check()   // a change made here a moment ago is stamped before anything is compared
+        var written: Set<String> = []
         var oursNewer = false
         for (k, item) in items where k.hasPrefix("kc:") || k.hasPrefix("ud:") || k.hasPrefix("uv:") {
-            guard last[k] != nil else { continue }   // not something this version keeps
+            guard last[k] != nil || k.hasPrefix("kc:lg.") else { continue }   // not something this version keeps
             let t = (item["t"] as? NSNumber)?.doubleValue ?? 0
             let v = item["v"] as? String ?? ""
+            let local = last[k] ?? ""
             let mine = stamp(k)
-            if k == "ud:homeLayout", !v.isEmpty, let local = last[k], !local.isEmpty, local != v {
+
+            if k == "ud:homeLayout", !v.isEmpty, !local.isEmpty, local != v {
                 // Favourites merge one by one, whichever device's layout is newer otherwise.
-                let merged = Self.mergeLayout(local: local, remote: v, remoteNewer: t > mine)
-                if merged != local { write(k, merged); last[k] = merged; changed = true }
-                if t > mine { stamps[k] = t }
-                if merged != v { oursNewer = true; stamps[k] = max(stamps[k] ?? 0, t + 0.001) }
+                let remoteNewer = t > mine || (t == mine && v > local)
+                let merged = SyncMerge.mergeLayout(local: local, remote: v, remoteNewer: remoteNewer)
+                if merged != local { write(k, merged); last[k] = merged; written.insert(k) }
+                if remoteNewer { stamps[k] = t }
+                if merged != v {
+                    oursNewer = true
+                    // Our favourites add something theirs lacks: ours has to count as newer to go back up.
+                    if SyncMerge.favoritesPart(merged) != SyncMerge.favoritesPart(v) && (stamps[k] ?? 0) <= t { stamps[k] = t + 0.001 }
+                }
                 continue
             }
-            if t > mine {
-                if v != (last[k] ?? "") { write(k, v); last[k] = v; changed = true }
+
+            if Self.entryKeys.contains(k) {
+                let theirs = (item["e"] as? [String: Any] ?? [:]).compactMapValues { ($0 as? NSNumber)?.doubleValue }
+                let ours = entryStamps[k] ?? [:]
+                let m = SyncMerge.mergeEntries(local: local.isEmpty ? "{}" : local, localStamps: ours,
+                                               remote: v.isEmpty ? "{}" : v, remoteStamps: theirs)
+                let mergedValue = m.value == "{}" && local.isEmpty ? "" : m.value
+                if mergedValue != local { write(k, mergedValue); last[k] = mergedValue; written.insert(k) }
+                entryStamps[k] = m.stamps
+                stamps[k] = max(mine, t)
+                if m.value != (v.isEmpty ? "{}" : v) || m.stamps != theirs { oursNewer = true }
+                continue
+            }
+
+            // Newer wins. On a tie with different values (two old copies), every device picks the same one.
+            let takeTheirs = t > mine || (t == mine && v != local && (local.isEmpty || (!v.isEmpty && v > local)))
+            if takeTheirs {
+                if v != local { write(k, v); last[k] = v; written.insert(k) }
                 stamps[k] = t
-            } else if mine > t && (last[k] ?? "") != v {
+            } else if v != local {
                 oursNewer = true
             }
         }
         for (k, v) in last where items[k] == nil && !v.isEmpty { oursNewer = true }
         saveStamps()
-        if changed { reload() }
+        if !written.isEmpty { reload(written) }
         return oursNewer
-    }
-
-    /// Two Home layouts made one: the newer one's sections and order, and every favourite as its own latest
-    /// add or remove says. Canonical JSON out, so equal layouts compare equal.
-    static func mergeLayout(local: String, remote: String, remoteNewer: Bool) -> String {
-        guard let l = try? JSONSerialization.jsonObject(with: Data(local.utf8)) as? [String: Any],
-              let r = try? JSONSerialization.jsonObject(with: Data(remote.utf8)) as? [String: Any] else { return remoteNewer ? remote : local }
-        var base = remoteNewer ? r : l
-        let other = remoteNewer ? l : r
-        func state(_ o: [String: Any]) -> [String: Double] {
-            var out: [String: Double] = [:]
-            for f in o["favorites"] as? [String] ?? [] { out[f] = 0.5 }
-            for (id, t) in o["favoriteStamps"] as? [String: Any] ?? [:] { if let d = (t as? NSNumber)?.doubleValue { out[id] = d } }
-            return out
-        }
-        let a = state(base), b = state(other)
-        var stampsOut: [String: Double] = [:]
-        for id in Set(a.keys).union(b.keys) {
-            let x = a[id], y = b[id]
-            stampsOut[id] = [x, y].compactMap { $0 }.max { abs($0) < abs($1) }
-        }
-        var favs = (base["favorites"] as? [String] ?? []).filter { (stampsOut[$0] ?? 0) > 0 }
-        for id in (other["favorites"] as? [String] ?? []) where (stampsOut[id] ?? 0) > 0 && !favs.contains(id) { favs.append(id) }
-        base["favorites"] = favs
-        base["favoriteStamps"] = stampsOut.filter { $0.value != 0.5 }
-        guard let d = try? JSONSerialization.data(withJSONObject: base, options: [.sortedKeys]) else { return remoteNewer ? remote : local }
-        return String(decoding: d, as: UTF8.self)
     }
 
     private func write(_ k: String, _ v: String) {
@@ -206,31 +242,44 @@ final class SettingsSync {
             UserDefaults.standard.removeObject(forKey: key)
         } else if k.hasPrefix("ud:") {
             UserDefaults.standard.set(Data(v.utf8), forKey: key)
-        } else if let o = try? JSONSerialization.jsonObject(with: Data(v.utf8), options: [.fragmentsAllowed]) {
+        } else if let o = SyncMerge.object(v) {
             UserDefaults.standard.set(o, forKey: key)
         }
     }
 
-    /// Everything that reads these picks up the new values.
-    private func reload() {
-        SmartHome.shared.reloadSaved()
-        HomeLayout.shared.reload()
-        fleet?.reloadSynced()
+    /// Only the parts that read what changed pick it up (a synced token refresh doesn't restart everything).
+    private func reload(_ keys: Set<String>) {
+        func any(_ prefixes: [String]) -> Bool { keys.contains { k in prefixes.contains { k.hasPrefix($0) } } }
+        if any(["ud:smartNames", "ud:smartRooms", "ud:smartExtraRooms", "ud:goveeManualIPs", "kc:govee."]) { SmartHome.shared.reloadSaved() }
+        if keys.contains("ud:homeLayout") { HomeLayout.shared.reload() }
+        if any(["ud:extras", "ud:hiddenAlerts"]) { fleet?.reloadSynced() }
         last = snapshot()   // what the reloads saved back is the same settings
+        dirty = false
+        seenGeneration = Keychain.generation
+        // Sign-ins: only a new account or key (not a routine token refresh from another device) restarts a service.
+        let goveeKey = keys.contains("kc:govee.key")
+        let st = any(["kc:st.client", "kc:st.secret", "kc:st.token"]) || (keys.contains("kc:st.refresh") && (last["kc:st.refresh"] ?? "").isEmpty)
+        let nest = any(["kc:nest.project", "kc:nest.client", "kc:nest.secret", "kc:nest.scopes"])
+            || (keys.contains("kc:nest.refresh") && (last["kc:nest.refresh"] ?? "").isEmpty)
+        let dreo = any(["kc:dreo."])
+        let deco = any(["kc:deco."])
+        guard goveeKey || st || nest || dreo || deco else { return }
         Task {
-            await SmartHome.shared.refreshCloud()
-            await SmartThings.shared.refresh(full: true)
-            await NestCameras.shared.load()
-            Dreo.shared.start()
-            await Dreo.shared.refresh(full: true)
-            DecoWifi.shared.start()
-            await DecoWifi.shared.refresh()
+            if goveeKey { await SmartHome.shared.refreshCloud() }
+            if st { await SmartThings.shared.refresh(full: true) }
+            if nest { await NestCameras.shared.load() }
+            if dreo { Dreo.shared.start(); await Dreo.shared.refresh(full: true) }
+            if deco { DecoWifi.shared.start(); await DecoWifi.shared.refresh() }
         }
     }
 
     private func items() -> [String: Any] {
         var items: [String: Any] = [:]
-        for (k, v) in last { items[k] = ["v": v, "t": stamp(k)] }
+        for (k, v) in last {
+            var item: [String: Any] = ["v": v, "t": stamp(k)]
+            if Self.entryKeys.contains(k), let e = entryStamps[k], !e.isEmpty { item["e"] = e }
+            items[k] = item
+        }
         return items
     }
 
@@ -275,7 +324,14 @@ final class SettingsSync {
                     try sealed.write(to: tmp)
                     defer { try? FileManager.default.removeItem(at: tmp) }
                     if exists { try? await c.delete(path) }
-                    _ = try await c.upload(file: tmp, to: folder, name: "settings.wsync")
+                    let name = try await c.upload(file: tmp, to: folder, name: "settings.wsync")
+                    if name != "settings.wsync" {
+                        // The old copy was still there and the TV saved this one beside it: clear both and retry.
+                        try? await c.delete(folder + "/" + name)
+                        try? await c.delete(path)
+                        let again = try await c.upload(file: tmp, to: folder, name: "settings.wsync")
+                        if again != "settings.wsync" { try? await c.delete(folder + "/" + again); continue }
+                    }
                 } catch { continue }
             }
             saved.append(hub.name)
@@ -291,7 +347,8 @@ final class SettingsSync {
     /// Where the copy lives on a TV: a hidden folder at the top of its storage.
     private func folder(_ c: TVClient) async -> String? {
         if let f = folders[c.hub.id] { return f }
-        guard let root = (try? await c.roots())?.first?.path else { return nil }
+        // Built-in storage, never a USB drive that might be unplugged.
+        guard let roots = try? await c.roots(), let root = (roots.first { $0.removable != true } ?? roots.first)?.path else { return nil }
         for name in [".woodruff", "Woodruff Settings"] {
             let f = root.hasSuffix("/") ? root + name : root + "/" + name
             if (try? await c.list(f)) == nil { try? await c.mkdir(in: root, name: name) }

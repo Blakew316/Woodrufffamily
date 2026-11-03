@@ -50,6 +50,7 @@ final class DecoWifi {
     @ObservationIgnored private var scheme = "http"
     @ObservationIgnored private var loop: Task<Void, Never>?
     @ObservationIgnored private var wasUp: Bool?
+    @ObservationIgnored private var refreshing: Task<Void, Never>?
     @ObservationIgnored private let session: URLSession = {
         let c = URLSessionConfiguration.ephemeral
         c.httpShouldSetCookies = false
@@ -58,8 +59,14 @@ final class DecoWifi {
         return URLSession(configuration: c, delegate: LocalTrust.shared, delegateQueue: nil)
     }()
 
-    /// The main Deco is the home network's router: x.y.z.1.
-    static func guessHost() -> String? { LANScan.prefixes().first.map { $0 + "1" } }
+    /// The main Deco is the home network's router. A Deco's own network is 192.168.68.0–71.255 with the
+    /// router at 192.168.68.1; otherwise it's x.y.z.1.
+    static func guessHost() -> String? {
+        guard let p = LANScan.prefixes().first else { return nil }
+        let parts = p.split(separator: ".")
+        if parts.count >= 3, parts[0] == "192", parts[1] == "168", let third = Int(parts[2]), (68...71).contains(third) { return "192.168.68.1" }
+        return p + "1"
+    }
 
     func start() {
         guard connected, loop == nil, !Demo.isOn else { return }
@@ -72,15 +79,19 @@ final class DecoWifi {
     }
 
     func signIn(host: String, password: String) async {
-        let h = host.trimmingCharacters(in: .whitespacesAndNewlines)
+        var h = host.trimmingCharacters(in: .whitespacesAndNewlines)
+        for p in ["https://", "http://"] where h.lowercased().hasPrefix(p) { h = String(h.dropFirst(p.count)) }
+        while h.hasSuffix("/") { h.removeLast() }
         guard !password.isEmpty else { error = "Enter the Deco password."; return }
+        guard !h.contains(" "), URL(string: "http://\(h.isEmpty ? "192.168.68.1" : h)/")?.host != nil else { error = "That Deco address isn’t valid."; return }
         busy = true; error = nil
         defer { busy = false }
         Keychain.set(h.isEmpty ? nil : h, for: "deco.host")
         Keychain.set(password, for: "deco.password")
         stok = nil
-        await refresh()
+        await refresh(evenAway: true)
         if nodes.isEmpty {
+            if error == "The Deco password changed. Sign in again." { error = "The Deco didn’t accept that password." }
             Keychain.set(nil, for: "deco.password")
             if error == nil { error = "The Deco didn’t answer. Check you’re on the home Wi‑Fi." }
         } else {
@@ -96,7 +107,18 @@ final class DecoWifi {
 
     // MARK: Reading
 
-    func refresh() async {
+    /// One at a time (a second sign-in mid-request would swap the keys under it); callers share the one running.
+    /// Only at home: away, whatever router has the Deco's address is someone else's, and gets no password.
+    func refresh(evenAway: Bool = false) async {
+        guard connected, evenAway || Fleet.shared.atHome else { return }
+        if let running = refreshing { await running.value; return }
+        let t = Task { await self.refreshNow() }
+        refreshing = t
+        await t.value
+        refreshing = nil
+    }
+
+    private func refreshNow() async {
         guard connected else { return }
         do {
             if stok == nil { try await login() }
@@ -136,11 +158,19 @@ final class DecoWifi {
             error = nil
             updated = Date()
             noticeInternet()
+        } catch WrongPassword.refused {
+            // The password changed on the Deco: stop trying the old one (which would lock the owner out).
+            loop?.cancel(); loop = nil
+            Keychain.set(nil, for: "deco.password")
+            stok = nil; nodes = []; clients = []
+            self.error = "The Deco password changed. Sign in again."
         } catch {
             stok = nil
             if Fleet.shared.atHome { self.error = error.localizedDescription }
         }
     }
+
+    private enum WrongPassword: Error { case refused }
 
     /// "The internet is down" when the main Deco loses it (and "back" when it returns).
     private func noticeInternet() {
@@ -157,6 +187,7 @@ final class DecoWifi {
     // MARK: Restart
 
     func restart(_ node: Node) async {
+        if let running = refreshing { await running.value }
         do {
             if stok == nil { try await login() }
             _ = try await call("/admin/device", form: "system", ["operation": "reboot", "params": ["mac_list": [["mac": node.id]]]])
@@ -184,7 +215,7 @@ final class DecoWifi {
         let r = try await post("/cgi-bin/luci/;stok=/login", form: "login", body: try encode(["params": ["password": encPW], "operation": "login"]))
         let data = try decrypt(r)
         let code = (data["error_code"] as? NSNumber)?.intValue ?? -1
-        if code == -5002 { throw OAuthRelay.Failure.refused("The Deco didn’t accept that password.") }
+        if code == -5002 { throw WrongPassword.refused }
         guard code == 0, let t = (data["result"] as? [String: Any])?["stok"] as? String else {
             throw OAuthRelay.Failure.refused("The Deco refused the sign-in (\(code)). If the Deco app is signed in as the owner on another device, try again in a minute.")
         }
@@ -230,9 +261,10 @@ final class DecoWifi {
     }
 
     private func post(_ path: String, form: String, body: Data) async throws -> [String: Any] {
-        var c = URLComponents(string: "\(scheme)://\(host)\(path)")!
+        guard var c = URLComponents(string: "\(scheme)://\(host)\(path)") else { throw OAuthRelay.Failure.refused("That Deco address isn’t valid.") }
         c.queryItems = [URLQueryItem(name: "form", value: form)]
-        var r = URLRequest(url: c.url!)
+        guard let url = c.url else { throw OAuthRelay.Failure.refused("That Deco address isn’t valid.") }
+        var r = URLRequest(url: url)
         r.httpMethod = "POST"
         r.httpBody = body
         r.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -261,10 +293,15 @@ final class DecoWifi {
 /// Trusts the Deco's own self-signed certificate on the home network (and only addresses on it).
 final class LocalTrust: NSObject, URLSessionDelegate, @unchecked Sendable {
     static let shared = LocalTrust()
+    /// 172.16.0.0–172.31.255.255 only (the rest of 172.* is the public internet).
+    static func private172(_ host: String) -> Bool {
+        let p = host.split(separator: ".")
+        return p.count == 4 && p[0] == "172" && (Int(p[1]).map { (16...31).contains($0) } ?? false)
+    }
     func urlSession(_ session: URLSession, didReceive challenge: URLAuthenticationChallenge,
                     completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
         let host = challenge.protectionSpace.host
-        let local = host.hasPrefix("192.168.") || host.hasPrefix("10.") || host.hasPrefix("172.") || host.hasSuffix(".local") || host == "tplinkdeco.net"
+        let local = host.hasPrefix("192.168.") || host.hasPrefix("10.") || Self.private172(host) || host.hasSuffix(".local") || host == "tplinkdeco.net"
         if local, challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust, let t = challenge.protectionSpace.serverTrust {
             completionHandler(.useCredential, URLCredential(trust: t))
         } else {
@@ -354,10 +391,6 @@ struct WifiView: View {
                         }
                     }
                 }
-                #if os(macOS)
-                // The Mac window already has a search field in its toolbar (a second one crashes AppKit).
-                Section { TextField("Find a device", text: $search) }
-                #endif
                 ForEach(deco.nodes) { n in
                     let list = shownClients.filter { $0.node == n.id }
                     if !list.isEmpty {
@@ -398,9 +431,7 @@ struct WifiView: View {
         .formStyle(.grouped)
         .navigationTitle("Wi‑Fi")
         .inlineTitle()
-        #if os(iOS)
-        .searchable(text: $search, prompt: "Find a device")
-        #endif
+        .pageSearch(text: $search, prompt: "Find a device")
         .refreshable { await deco.refresh() }
         .toolbar { if inSheet { ToolbarItem(placement: .cancellationAction) { Button(role: .close) { dismiss() } } } }
         .confirmationDialog("Restart \(restarting?.name ?? "Deco")?", isPresented: Binding(get: { restarting != nil }, set: { if !$0 { restarting = nil } }), titleVisibility: .visible) {

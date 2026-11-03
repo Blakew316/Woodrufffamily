@@ -314,7 +314,7 @@ struct SoftwareUpdateView: View {
             } header: { Text("Newest Releases") }
 
             Section {
-                SecureField("GitHub token", text: Binding(get: { fleet.githubToken ?? "" }, set: { fleet.githubToken = $0 }))
+                GitHubTokenField()
             } footer: {
                 Text("Only needed for LG TVs: the webOS releases are in a private repository. A fine-grained token with read access to Contents of Blakew316/woodrufffiles-webos.")
             }
@@ -396,6 +396,26 @@ struct SoftwareUpdateView: View {
 }
 
 // MARK: - Connections and the other pages
+
+/// Saved when you press Return or leave it (not on every keystroke, which would check releases and sync each letter).
+private struct GitHubTokenField: View {
+    @Environment(Fleet.self) private var fleet
+    @State private var text = ""
+    @State private var loaded = false
+
+    var body: some View {
+        SecureField("GitHub token", text: $text)
+            .onAppear { if !loaded { text = fleet.githubToken ?? ""; loaded = true } }
+            .onSubmit(save)
+            .onDisappear(perform: save)
+    }
+
+    private func save() {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard t != (fleet.githubToken ?? "") else { return }
+        fleet.githubToken = t.isEmpty ? nil : t
+    }
+}
 
 struct ConnectionsView: View {
     @Environment(Fleet.self) private var fleet

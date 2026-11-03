@@ -290,7 +290,7 @@ struct FilesView: View {
                 listView
             }
         }
-        .searchable(text: $filter, prompt: "Search")
+        .pageSearch(text: $filter, prompt: "Search")
         .navigationTitle(listing.map { $0.path == root?.path ? (root?.name ?? "Photos & Files") : ($0.path as NSString).lastPathComponent } ?? "Photos & Files")
         .screenTitle(listing.map { $0.path == root?.path ? (root?.name ?? "Photos & Files") : ($0.path as NSString).lastPathComponent } ?? "Photos & Files")
         .toolbar {

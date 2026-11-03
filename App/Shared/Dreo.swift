@@ -39,6 +39,7 @@ final class Dreo {
     private var token = ""
     private var fans: [String: Fan] = [:]
     private var socket: URLSessionWebSocketTask?
+    private var socketFailures = 0
     private var loop: Task<Void, Never>?
     private var keepalive: Task<Void, Never>?
 
@@ -131,7 +132,8 @@ final class Dreo {
     func refresh(full: Bool) async {
         guard connected else { return }
         do {
-            if token.isEmpty { try await login(); openSocket() }
+            if token.isEmpty { try await login() }
+            if socket == nil { openSocket() }
             if full || fans.isEmpty {
                 let list = (try await request("GET", "/api/app/index/family/room/devices"))["list"] as? [[String: Any]] ?? []
                 var next: [String: Fan] = [:]
@@ -217,6 +219,7 @@ final class Dreo {
                 guard let self, self.socket === ws else { return }
                 switch result {
                 case .success(let m):
+                    self.socketFailures = 0
                     if case let .string(text) = m, let d = text.data(using: .utf8),
                        let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
                        let sn = o["devicesn"] as? String, let reported = o["reported"] as? [String: Any] {
@@ -225,12 +228,15 @@ final class Dreo {
                     }
                     self.listen(ws)
                 case .failure:
-                    // Dropped: open again shortly (signing in again if the token ran out).
+                    // Dropped: open again, waiting longer each time it keeps failing (5 s up to 5 min). The
+                    // saved sign-in is reused; it's only renewed every few failures in case it ran out.
                     self.socket = nil
-                    try? await Task.sleep(nanoseconds: 5_000_000_000)
-                    if self.connected {
-                        if (try? await self.login()) != nil { self.openSocket() }
-                    }
+                    self.socketFailures += 1
+                    let wait = min(300, 5 * pow(2, Double(min(self.socketFailures - 1, 6))))
+                    try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
+                    guard self.connected, self.socket == nil else { return }
+                    if self.socketFailures % 3 == 0 || self.token.isEmpty { _ = try? await self.login() }
+                    if !self.token.isEmpty { self.openSocket() }
                 }
             }
         }
@@ -261,7 +267,7 @@ final class Dreo {
         Task {
             if socket == nil { if token.isEmpty { try? await login() }; openSocket(); try? await Task.sleep(nanoseconds: 800_000_000) }
             guard let ws = socket,
-                  let data = try? JSONSerialization.data(withJSONObject: ["deviceSn": sn, "method": "control", "params": params, "timestamp": Int(Date().timeIntervalSince1970 * 1000)]),
+                  let data = try? JSONSerialization.data(withJSONObject: ["devicesn": sn, "method": "control", "params": params, "timestamp": Int(Date().timeIntervalSince1970 * 1000)]),
                   let text = String(data: data, encoding: .utf8) else { error = "Couldn’t reach Dreo."; return }
             do { try await ws.send(.string(text)) } catch { self.error = "Couldn’t reach Dreo." }
         }
