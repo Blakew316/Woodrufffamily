@@ -396,7 +396,67 @@ public enum Govee {
     }
     #endif
 
-    // MARK: Cloud
+    // MARK: Cloud (Govee's current Open API: every model, including the newest lamps)
+
+    static let openBase = "https://openapi.api.govee.com/router/api/v1"
+
+    static func open(_ path: String, key: String, body: [String: Any]? = nil) async throws -> [String: Any] {
+        var r = URLRequest(url: URL(string: openBase + path)!, timeoutInterval: 12)
+        r.setValue(key, forHTTPHeaderField: "Govee-API-Key")
+        r.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if let body {
+            r.httpMethod = "POST"
+            r.httpBody = try JSONSerialization.data(withJSONObject: body)
+        }
+        let (d, resp) = try await URLSession.shared.data(for: r)
+        let json = (try? JSONSerialization.jsonObject(with: d) as? [String: Any]) ?? [:]
+        let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+        guard code == 200, (json["code"] as? Int).map({ $0 == 200 }) ?? true else {
+            if code == 401 || code == 403 { throw TVError.badAnswer("Govee didn’t accept the API key.") }
+            if code == 429 { throw TVError.badAnswer("Govee says too many requests; trying again shortly.") }
+            throw TVError.badAnswer((json["msg"] as? String ?? json["message"] as? String).map { "Govee: \($0)" } ?? "Govee answered \(code).")
+        }
+        return json
+    }
+
+    /// Every device on the Govee account (lights, lamps, strips…).
+    public static func openDevices(key: String) async throws -> [GoveeLight] {
+        let j = try await open("/user/devices", key: key)
+        return (j["data"] as? [[String: Any]] ?? []).compactMap { d in
+            guard let id = d["device"] as? String, let sku = d["sku"] as? String else { return nil }
+            let caps = (d["capabilities"] as? [[String: Any]] ?? []).compactMap { $0["type"] as? String }
+            guard caps.contains("devices.capabilities.on_off") else { return nil }
+            let name = (d["deviceName"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? product(sku)
+            return GoveeLight(id: id, sku: sku, name: name, ip: nil, cloud: true)
+        }
+    }
+
+    public static func openState(_ l: GoveeLight, key: String) async -> GoveeLight {
+        var l = l
+        guard let j = try? await open("/device/state", key: key, body: ["requestId": UUID().uuidString, "payload": ["sku": l.sku, "device": l.id]]),
+              let caps = (j["payload"] as? [String: Any])?["capabilities"] as? [[String: Any]] else { return l }
+        for c in caps {
+            let v = (c["state"] as? [String: Any])?["value"]
+            switch c["instance"] as? String {
+            case "powerSwitch": if let n = v as? NSNumber { l.on = n.intValue == 1 }
+            case "brightness": if let n = v as? NSNumber { l.brightness = max(1, min(100, n.intValue)) }
+            case "colorRgb":
+                if let n = (v as? NSNumber)?.intValue, n > 0 { l.color = LightColor(r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255) }
+            case "colorTemperatureK": if let n = (v as? NSNumber)?.intValue, n > 0 { l.kelvin = n }
+            default: break
+            }
+        }
+        return l
+    }
+
+    static func openControl(_ l: GoveeLight, key: String, type: String, instance: String, value: Int) async throws {
+        _ = try await open("/device/control", key: key, body: [
+            "requestId": UUID().uuidString,
+            "payload": ["sku": l.sku, "device": l.id, "capability": ["type": type, "instance": instance, "value": value]],
+        ])
+    }
+
+    // MARK: Cloud (the original API, for older keys)
 
     public static func cloudDevices(key: String) async throws -> [GoveeLight] {
         var r = URLRequest(url: URL(string: "\(cloudBase)/devices")!, timeoutInterval: 10)
@@ -671,7 +731,8 @@ public final class SmartHome {
             var tick = 0
             while !Task.isCancelled {
                 guard let self else { return }
-                if tick % 60 == 0 { await self.findSonos(); await self.refreshCloud() }
+                if tick % 60 == 0 { await self.findSonos() }
+                if tick % 24 == 0 { await self.refreshCloud() }
                 // Ask for lights a few times early on (UDP answers can get lost), then every five minutes.
                 if [0, 1, 3, 6, 12].contains(tick) || tick % 60 == 0 { self.scanLights() }
                 await self.refreshSpeakers()
@@ -692,6 +753,7 @@ public final class SmartHome {
             try? await Task.sleep(nanoseconds: 400_000_000)
             pollLights()
             await refreshSpeakers()
+            await refreshCloud()
         }
     }
 
@@ -901,17 +963,25 @@ public final class SmartHome {
     public func refreshCloud() async {
         guard let key = goveeKey, !key.isEmpty else { goveeError = nil; return }
         do {
-            let devs = try await Govee.cloudDevices(key: key)
+            // Govee's current API lists every model; the original one only older ones.
+            var devs = (try? await Govee.openDevices(key: key)) ?? []
+            var open = !devs.isEmpty
+            if devs.isEmpty { devs = try await Govee.cloudDevices(key: key); open = false }
             goveeError = nil
             for d in devs {
                 if let i = lights.firstIndex(where: { $0.id == d.id }) {
                     lights[i].cloud = true
+                    lights[i].sku = d.sku
                     if names[d.id] == nil { lights[i].name = d.name }
                 } else {
                     var l = d
                     if let n = names[d.id] { l.name = n }
-                    lights.append(await Govee.cloudState(l, key: key))
+                    lights.append(l)
                 }
+            }
+            // Lights not answering on the Wi‑Fi: their state comes from Govee.
+            for i in lights.indices where lights[i].cloud && lights[i].ip == nil {
+                lights[i] = open ? await Govee.openState(lights[i], key: key) : await Govee.cloudState(lights[i], key: key)
             }
             lights.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
             persist()
@@ -969,9 +1039,25 @@ public final class SmartHome {
 
     private func cloud(_ l: GoveeLight, _ name: String, _ value: Any) {
         guard let key = goveeKey, !key.isEmpty, l.cloud else { goveeError = "Turn on LAN Control for \(l.name) in the Govee app, or add a Govee API key."; return }
+        // Govee's current API first; the original one if this key only works there.
+        let open: (String, String, Int)?
+        switch name {
+        case "turn": open = ("devices.capabilities.on_off", "powerSwitch", (value as? String) == "on" ? 1 : 0)
+        case "brightness": open = ("devices.capabilities.range", "brightness", value as? Int ?? 100)
+        case "color":
+            let c = value as? [String: Int] ?? [:]
+            open = ("devices.capabilities.color_setting", "colorRgb", ((c["r"] ?? 0) << 16) | ((c["g"] ?? 0) << 8) | (c["b"] ?? 0))
+        case "colorTem": open = ("devices.capabilities.color_setting", "colorTemperatureK", value as? Int ?? 4000)
+        default: open = nil
+        }
         let body = Govee.cloudBody(l, name: name, value: value)
         Task {
-            do { try await Govee.cloudControl(key: key, body: body) } catch { goveeError = error.localizedDescription }
+            do {
+                if let o = open {
+                    do { try await Govee.openControl(l, key: key, type: o.0, instance: o.1, value: o.2); return } catch {}
+                }
+                try await Govee.cloudControl(key: key, body: body)
+            } catch { goveeError = error.localizedDescription }
         }
     }
 }
