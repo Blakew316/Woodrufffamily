@@ -66,6 +66,7 @@ targets:
         NSHomeKitUsageDescription: Show and control your Apple Home lights, like Cync, next to your TVs.
         WoodruffHomeKit: $(WOODRUFF_HOMEKIT)
         UIBackgroundModes: [fetch]
+        BGTaskSchedulerPermittedIdentifiers: [com.woodruff.family.alerts]
         NSSupportsLiveActivities: true
         NSUserActivityTypes: [com.woodruff.family.remote]
         CFBundleURLTypes:

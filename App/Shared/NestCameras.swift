@@ -44,7 +44,8 @@ final class NestCameras {
                     URLQueryItem(name: "redirect_uri", value: OAuthRelay.redirect), URLQueryItem(name: "access_type", value: "offline"),
                     URLQueryItem(name: "prompt", value: "consent"), URLQueryItem(name: "client_id", value: clientID),
                     URLQueryItem(name: "response_type", value: "code"),
-                    URLQueryItem(name: "scope", value: "https://www.googleapis.com/auth/sdm.service"),
+                    // Pub/Sub too, for doorbell, person and motion alerts (as the TVs do).
+                    URLQueryItem(name: "scope", value: "https://www.googleapis.com/auth/sdm.service https://www.googleapis.com/auth/pubsub"),
                     URLQueryItem(name: "state", value: state),
                 ]
                 return c.url!
@@ -66,12 +67,18 @@ final class NestCameras {
         cameras = []
     }
 
+    /// Whether this sign-in included Pub/Sub (alerts). Older ones didn't; connecting again adds it.
+    var canAlert: Bool { (Keychain.get("nest.scopes") ?? "").contains("pubsub") }
+
     private func store(_ t: [String: Any]) {
+        if let sc = t["scope"] as? String { Keychain.set(sc, for: "nest.scopes") }
         if let a = t["access_token"] as? String { Keychain.set(a, for: "nest.access") }
         if let r = t["refresh_token"] as? String { Keychain.set(r, for: "nest.refresh") }
         let exp = (t["expires_in"] as? Double) ?? Double((t["expires_in"] as? Int) ?? 3600)
         Keychain.set(String(Date().addingTimeInterval(exp - 120).timeIntervalSince1970), for: "nest.expires")
     }
+
+    func accessToken() async throws -> String { try await token() }
 
     private func token() async throws -> String {
         if let a = Keychain.get("nest.access"), let e = Keychain.get("nest.expires").flatMap(Double.init), e > Date().timeIntervalSince1970 { return a }
@@ -516,6 +523,7 @@ struct CamerasPhoneView: View {
                         .disabled(!cam.webRTC)
                     }
                 } footer: { Text("Tap a camera to watch it live. They also sit on Home.") }
+                AlertsSection()
                 Section {
                     Button("Refresh") { Task { await nest.load() } }
                     Button("Disconnect", role: .destructive) { nest.signOut() }

@@ -1,5 +1,18 @@
 import SwiftUI
 import WoodruffKit
+#if os(iOS)
+import BackgroundTasks
+
+/// The next background check for camera alerts.
+enum AlertsRefresh {
+    static let id = "com.woodruff.family.alerts"
+    @MainActor static func schedule() {
+        let r = BGAppRefreshTaskRequest(identifier: id)
+        r.earliestBeginDate = Date(timeIntervalSinceNow: 15 * 60)
+        try? BGTaskScheduler.shared.submit(r)
+    }
+}
+#endif
 
 @main
 struct WoodruffApp: App {
@@ -20,6 +33,7 @@ struct WoodruffApp: App {
                     SmartHome.shared.start()
                     SmartThings.shared.start()
                     NestCameras.shared.start()
+                    NestAlerts.shared.start(fleet)
                     SettingsSync.shared.start(fleet)
                     #if os(iOS)
                     HomeKitLights.shared.start()
@@ -48,7 +62,12 @@ struct WoodruffApp: App {
         }
         .onChange(of: scenePhase) { _, phase in
             fleet.setActive(phase == .active)
-            if phase == .background { CameraStreams.shared.background() }
+            if phase == .background {
+                CameraStreams.shared.background()
+                #if os(iOS)
+                AlertsRefresh.schedule()
+                #endif
+            }
             if phase == .active {
                 CameraStreams.shared.foreground()
                 SmartHome.shared.wake()
@@ -59,6 +78,13 @@ struct WoodruffApp: App {
             }
             if phase == .active && !Demo.isOn && !fleet.hubs.isEmpty { LocationWeather.shared.start(fleet) }
         }
+        #if os(iOS)
+        // Closed a while: iOS wakes the app now and then to check for doorbell and camera alerts.
+        .backgroundTask(.appRefresh(AlertsRefresh.id)) {
+            await NestAlerts.shared.pullOnce(timeout: 15)
+            await AlertsRefresh.schedule()
+        }
+        #endif
         #if os(macOS)
         .defaultSize(width: 1180, height: 800)
         .windowToolbarStyle(.unified)

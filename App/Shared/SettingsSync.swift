@@ -16,7 +16,7 @@ final class SettingsSync {
     static let keychainKeys = [
         "govee.key",
         "st.client", "st.secret", "st.access", "st.refresh", "st.expires", "st.token",
-        "nest.project", "nest.client", "nest.secret", "nest.access", "nest.refresh", "nest.expires",
+        "nest.project", "nest.client", "nest.secret", "nest.access", "nest.refresh", "nest.expires", "nest.scopes", "nest.subscription",
         "github.token",
     ]
     static let defaultsKeys = ["smartNames", "smartRooms", "smartExtraRooms", "goveeManualIPs"]
