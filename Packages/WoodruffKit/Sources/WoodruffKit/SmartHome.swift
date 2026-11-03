@@ -27,8 +27,61 @@ public struct SonosRoom: Identifiable, Hashable, Sendable, Codable {
     public var art: URL?
     public var volume: Int = 0
     public var muted = false
+    public var coordinatorID = ""
+    /// The speakers that make up the room: a soundbar with its Sub and rear surrounds, or a stereo pair.
+    public var parts: [SonosPart] = []
+    /// Playing the TV's sound (a soundbar's TV input) rather than music.
+    public var isTV = false
+    /// The product, e.g. "Arc", once asked.
+    public var model: String?
     public var isPlaying: Bool { state == "PLAYING" || state == "TRANSITIONING" }
     public var isCoordinator: Bool { host == coordinatorHost }
+    /// A soundbar with surrounds or a Sub.
+    public var isHomeTheater: Bool { parts.contains { $0.role != .front } }
+    /// "Arc · Sub · 2 Surrounds".
+    public var setupSummary: String? {
+        guard parts.count > 1 else { return nil }
+        var bits = [model ?? "Soundbar"]
+        if parts.contains(where: { $0.role == .sub }) { bits.append("Sub") }
+        let rears = parts.filter { $0.role == .leftRear || $0.role == .rightRear }.count
+        if rears > 0 { bits.append(rears == 1 ? "Surround" : "\(rears) Surrounds") }
+        return bits.joined(separator: " · ")
+    }
+}
+
+/// One speaker inside a Sonos room, and the job it does there.
+public struct SonosPart: Identifiable, Hashable, Sendable, Codable {
+    public enum Role: String, Codable, Sendable { case front, sub, leftRear, rightRear, left, right }
+    public var id: String
+    public var host: String?
+    public var role: Role
+    public var model: String?
+    public var roleName: String {
+        switch role {
+        case .front: return "Front"
+        case .sub: return "Sub"
+        case .leftRear: return "Left Surround"
+        case .rightRear: return "Right Surround"
+        case .left: return "Left"
+        case .right: return "Right"
+        }
+    }
+}
+
+/// A soundbar's home theater settings, as in the Sonos app's Sound settings.
+public struct SonosSound: Hashable, Sendable {
+    public var nightSound: Bool?
+    public var speech: Bool?
+    public var loudness: Bool?
+    public var bass: Int?          // -10…10
+    public var treble: Int?        // -10…10
+    public var subOn: Bool?
+    public var subLevel: Int?      // -15…15
+    public var surroundOn: Bool?
+    public var surroundLevel: Int? // -15…15 (TV)
+    public var musicSurroundLevel: Int?
+    public var heightLevel: Int?   // -10…10 (Atmos height, Arc)
+    public init() {}
 }
 
 /// Talks to Sonos speakers over their own local SOAP API (port 1400).
@@ -67,17 +120,134 @@ public enum Sonos {
         let xml = unescape(tag("ZoneGroupState", in: try await soap(host, "/ZoneGroupTopology/Control", "ZoneGroupTopology", "GetZoneGroupState")) ?? "")
         var out: [SonosRoom] = []
         for group in matches(#"<ZoneGroup [^>]*>.*?</ZoneGroup>"#, in: xml) {
-            let coord = attr("Coordinator", in: group) ?? ""
-            let members = matches(#"<ZoneGroupMember [^>]*?/?>"#, in: group).filter { attr("Invisible", in: $0) != "1" }
-            func hostOf(_ m: String) -> String? { attr("Location", in: m).flatMap { URL(string: $0)?.host } }
-            guard let coordMember = members.first(where: { attr("UUID", in: $0) == coord }), let ch = hostOf(coordMember) else { continue }
-            let names = members.compactMap { attr("ZoneName", in: $0) }
+            let coord = attr("Coordinator", in: openTag(group)) ?? ""
+            // A member is a room; its Satellites (Sub, surrounds) sit inside it.
+            let all = matches(#"<ZoneGroupMember [^>]*?(/>|>.*?</ZoneGroupMember>)"#, in: group)
+            let members = all.filter { attr("Invisible", in: openTag($0)) != "1" }
+            func hostOf(_ tag: String) -> String? { attr("Location", in: tag).flatMap { URL(string: $0)?.host } }
+            guard let coordMember = members.first(where: { attr("UUID", in: openTag($0)) == coord }), let ch = hostOf(openTag(coordMember)) else { continue }
+            let names = members.compactMap { attr("ZoneName", in: openTag($0)) }
             for m in members {
-                guard let id = attr("UUID", in: m), let h = hostOf(m), let name = attr("ZoneName", in: m) else { continue }
-                out.append(SonosRoom(id: id, name: name, zone: name, host: h, coordinatorHost: ch, groupNames: names))
+                let head = openTag(m)
+                guard let id = attr("UUID", in: head), let h = hostOf(head), let name = attr("ZoneName", in: head) else { continue }
+                var room = SonosRoom(id: id, name: name, zone: name, host: h, coordinatorHost: ch, groupNames: names)
+                room.coordinatorID = coord
+                room.parts = parts(member: m, id: id, host: h)
+                out.append(room)
             }
         }
         return out.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
+
+    /// The speakers in one room, from its channel map ("RINCON_A:LF,RF;RINCON_B:SW;RINCON_C:LR;RINCON_D:RR").
+    static func parts(member m: String, id: String, host: String) -> [SonosPart] {
+        let head = openTag(m)
+        var hosts: [String: String] = [id: host]
+        for sat in matches(#"<Satellite [^>]*?/?>"#, in: m) {
+            if let sid = attr("UUID", in: sat), let h = attr("Location", in: sat).flatMap({ URL(string: $0)?.host }) { hosts[sid] = h }
+        }
+        let map = attr("HTSatChanMapSet", in: head) ?? attr("ChannelMapSet", in: head)
+        guard let map, !map.isEmpty else { return [SonosPart(id: id, host: host, role: .front)] }
+        var out: [SonosPart] = []
+        for entry in map.split(separator: ";") {
+            let bits = entry.split(separator: ":", maxSplits: 1)
+            guard bits.count == 2 else { continue }
+            let sid = String(bits[0]), ch = String(bits[1])
+            let role: SonosPart.Role
+            switch ch {
+            case "SW": role = .sub
+            case "LR": role = .leftRear
+            case "RR": role = .rightRear
+            case "LF,LF": role = .left
+            case "RF,RF": role = .right
+            default: role = .front
+            }
+            if !out.contains(where: { $0.id == sid }) { out.append(SonosPart(id: sid, host: hosts[sid], role: role)) }
+        }
+        let order: [SonosPart.Role] = [.front, .left, .right, .sub, .leftRear, .rightRear]
+        return out.sorted { (order.firstIndex(of: $0.role) ?? 9) < (order.firstIndex(of: $1.role) ?? 9) }
+    }
+
+    static func openTag(_ s: String) -> String {
+        guard let end = s.firstIndex(of: ">") else { return s }
+        return String(s[...end])
+    }
+
+    /// A speaker's product name ("Arc", "Sub", "One SL").
+    public static func model(_ host: String) async -> String? {
+        var r = URLRequest(url: URL(string: "http://\(host):1400/xml/device_description.xml")!, timeoutInterval: 4)
+        r.httpMethod = "GET"
+        guard let (d, _) = try? await URLSession.shared.data(for: r) else { return nil }
+        let xml = String(decoding: d, as: UTF8.self)
+        return tag("displayName", in: xml) ?? tag("modelName", in: xml).map { $0.replacingOccurrences(of: "Sonos ", with: "") }
+    }
+
+    // MARK: Home theater
+
+    static func rc(_ host: String, _ action: String, _ args: [(String, String)] = []) async throws -> String {
+        try await soap(host, "/MediaRenderer/RenderingControl/Control", "RenderingControl", action, [("InstanceID", "0")] + args)
+    }
+
+    static func eq(_ host: String, _ type: String) async -> Int? {
+        guard let x = try? await rc(host, "GetEQ", [("EQType", type)]) else { return nil }
+        return Int(tag("CurrentValue", in: x) ?? "")
+    }
+
+    public static func setEQ(_ r: SonosRoom, _ type: String, _ value: Int) async throws {
+        _ = try await rc(r.host, "SetEQ", [("EQType", type), ("DesiredValue", String(value))])
+    }
+
+    /// The soundbar's sound settings (those it has).
+    public static func sound(_ r: SonosRoom) async -> SonosSound {
+        var s = SonosSound()
+        let h = r.host
+        async let night = eq(h, "NightMode")
+        async let speech = eq(h, "DialogLevel")
+        async let subOn = eq(h, "SubEnable")
+        async let subLevel = eq(h, "SubGain")
+        async let surOn = eq(h, "SurroundEnable")
+        async let surLevel = eq(h, "SurroundLevel")
+        async let musicLevel = eq(h, "MusicSurroundLevel")
+        async let height = eq(h, "HeightChannelLevel")
+        async let bass = try? rc(h, "GetBass")
+        async let treble = try? rc(h, "GetTreble")
+        async let loud = try? rc(h, "GetLoudness", [("Channel", "Master")])
+        s.nightSound = await night.map { $0 == 1 }
+        s.speech = await speech.map { $0 == 1 }
+        s.subOn = await subOn.map { $0 == 1 }
+        s.subLevel = await subLevel
+        s.surroundOn = await surOn.map { $0 == 1 }
+        s.surroundLevel = await surLevel
+        s.musicSurroundLevel = await musicLevel
+        s.heightLevel = await height
+        s.bass = await bass.flatMap { Int(tag("CurrentBass", in: $0) ?? "") }
+        s.treble = await treble.flatMap { Int(tag("CurrentTreble", in: $0) ?? "") }
+        s.loudness = await loud.flatMap { tag("CurrentLoudness", in: $0) }.map { $0 == "1" }
+        return s
+    }
+
+    public static func setBass(_ r: SonosRoom, _ v: Int) async throws { _ = try await rc(r.host, "SetBass", [("DesiredBass", String(v))]) }
+    public static func setTreble(_ r: SonosRoom, _ v: Int) async throws { _ = try await rc(r.host, "SetTreble", [("DesiredTreble", String(v))]) }
+    public static func setLoudness(_ r: SonosRoom, _ on: Bool) async throws {
+        _ = try await rc(r.host, "SetLoudness", [("Channel", "Master"), ("DesiredLoudness", on ? "1" : "0")])
+    }
+
+    /// Switches the soundbar to the TV's sound.
+    public static func playTV(_ r: SonosRoom) async throws {
+        _ = try await transport(r.host, "SetAVTransportURI", [("CurrentURI", "x-sonos-htastream:\(r.id):spdif"), ("CurrentURIMetaData", "")])
+        _ = try await transport(r.host, "Play", [("Speed", "1")])
+    }
+
+    // MARK: Groups
+
+    /// Has [room] play along with [leader]'s group.
+    public static func join(_ room: SonosRoom, to leader: SonosRoom) async throws {
+        _ = try await transport(room.host, "SetAVTransportURI", [("CurrentURI", "x-rincon:\(leader.coordinatorID.isEmpty ? leader.id : leader.coordinatorID)"), ("CurrentURIMetaData", "")])
+    }
+
+    /// Takes [room] out of its group.
+    public static func leave(_ room: SonosRoom) async throws {
+        _ = try await transport(room.host, "BecomeCoordinatorOfStandaloneGroup")
     }
 
     /// What a room is playing, its state and volume.
@@ -86,6 +256,7 @@ public enum Sonos {
         if let t = try? await transport(r.coordinatorHost, "GetTransportInfo") { r.state = tag("CurrentTransportState", in: t) ?? r.state }
         if let p = try? await transport(r.coordinatorHost, "GetPositionInfo") {
             let meta = unescape(tag("TrackMetaData", in: p) ?? "")
+            r.isTV = (tag("TrackURI", in: p) ?? "").hasPrefix("x-sonos-htastream")
             r.title = tag("dc:title", in: meta).map(unescape)
             r.artist = tag("dc:creator", in: meta).map(unescape)
             r.album = tag("upnp:album", in: meta).map(unescape)
@@ -94,6 +265,7 @@ public enum Sonos {
             } else { r.art = nil }
             // Radio streams put the station in the title and the song in streamContent.
             if let stream = tag("r:streamContent", in: meta).map(unescape), !stream.isEmpty { r.artist = r.title; r.title = stream }
+            if r.isTV { r.title = "TV"; r.artist = nil; r.album = nil; r.art = nil }
         }
         if let v = try? await rendering(r.host, "GetVolume") { r.volume = Int(tag("CurrentVolume", in: v) ?? "") ?? r.volume }
         if let m = try? await rendering(r.host, "GetMute") { r.muted = tag("CurrentMute", in: m) == "1" }
@@ -341,13 +513,13 @@ public final class SmartHome {
 
     init() {
         // What was found last time, so Home, Siri and Control Center work straight away.
-        speakers = Saved.load("smartSpeakers", as: [SonosRoom].self) ?? []
+        speakers = Saved.load("smartSpeakers2", as: [SonosRoom].self) ?? []
         lights = Saved.load("smartLights", as: [GoveeLight].self) ?? []
         applyNames()
     }
 
     private func persist() {
-        Saved.save("smartSpeakers", speakers)
+        Saved.save("smartSpeakers2", speakers)
         Saved.save("smartLights", lights)
         onChange?()
     }
@@ -485,11 +657,33 @@ public final class SmartHome {
             r.groupNames = r.groupNames.map { g in rooms.first { $0.zone == g }.flatMap { names[$0.id] } ?? g }
             if let old = speakers.first(where: { $0.id == r.id }) {
                 r.state = old.state; r.title = old.title; r.artist = old.artist; r.album = old.album; r.art = old.art
-                r.volume = old.volume; r.muted = old.muted
+                r.volume = old.volume; r.muted = old.muted; r.isTV = old.isTV; r.model = old.model
+                for i in r.parts.indices { r.parts[i].model = old.parts.first { $0.id == r.parts[i].id }?.model }
             }
             return r
         }
         persist()
+        Task { await fillModels() }
+    }
+
+    /// Asks each speaker once what it is ("Arc", "Sub", "Era 100").
+    private func fillModels() async {
+        for (i, r) in speakers.enumerated() {
+            if r.model == nil, let m = await Sonos.model(r.host), i < speakers.count, speakers[i].id == r.id { speakers[i].model = m }
+            for (j, p) in r.parts.enumerated() where p.model == nil {
+                guard let h = p.host, let m = await Sonos.model(h), i < speakers.count, j < speakers[i].parts.count else { continue }
+                speakers[i].parts[j].model = m
+            }
+        }
+        persist()
+    }
+
+    /// Rebuilds the rooms after grouping changes.
+    public func regroup(_ op: @escaping @Sendable () async throws -> Void) async {
+        do { try await op() } catch {}
+        try? await Task.sleep(nanoseconds: 600_000_000)
+        await findSonos()
+        await refreshSpeakers()
     }
 
     public func refreshSpeakers() async {
@@ -501,7 +695,14 @@ public final class SmartHome {
             for await r in g { out.append(r) }
             return out
         }
-        let next = current.map { r in fresh.first { $0.id == r.id } ?? r }
+        // Only the playing state comes from the refresh; names, models and parts may have changed meanwhile.
+        let next = speakers.map { cur -> SonosRoom in
+            guard let f = fresh.first(where: { $0.id == cur.id }) else { return cur }
+            var r = cur
+            r.state = f.state; r.title = f.title; r.artist = f.artist; r.album = f.album; r.art = f.art
+            r.volume = f.volume; r.muted = f.muted; r.isTV = f.isTV
+            return r
+        }
         if next != speakers { speakers = next; onChange?() }
     }
 

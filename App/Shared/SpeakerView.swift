@@ -1,0 +1,447 @@
+import SwiftUI
+import WoodruffKit
+
+/// One Sonos room, Apple style: what's playing over its own artwork, then the room's speakers laid out as they
+/// sit (soundbar, Sub, surrounds), the sound settings the Sonos app has, grouping, and its name and room.
+struct SpeakerDetailView: View {
+    var speakerID: String
+    var inSheet = false
+    var home = SmartHome.shared
+    @Environment(\.dismiss) private var dismiss
+    @State private var sound = SonosSound()
+    @State private var loaded = false
+    @State private var volume: Double = 0
+    @State private var dragging = false
+
+    private var room: SonosRoom? { home.speaker(speakerID) }
+
+    var body: some View {
+        if let r = room {
+            ScrollView {
+                VStack(spacing: 16) {
+                    nowPlaying(r)
+                    if r.isHomeTheater { SurroundCard(room: r, sound: $sound) }
+                    if loaded { SoundCard(room: r, sound: $sound) }
+                    GroupCard(room: r)
+                    NameRoomCard(id: r.id, current: r.name, original: r.zone)
+                }
+                .padding(16)
+                .frame(maxWidth: 640)
+                .frame(maxWidth: .infinity)
+            }
+            .scrollBounceBehavior(.basedOnSize)
+            .background { ArtBackdrop(url: r.art) }
+            .environment(\.colorScheme, .dark)
+            .navigationTitle(r.name)
+            .inlineTitle()
+            .toolbar {
+                if inSheet {
+                    ToolbarItem(placement: .cancellationAction) { Button(role: .close) { dismiss() } }
+                }
+            }
+            .task(id: r.id) {
+                sound = await Sonos.sound(r)
+                withAnimation(.smooth) { loaded = true }
+            }
+            .onAppear { volume = Double(r.volume) }
+            .onChange(of: r.volume) { _, v in if !dragging { volume = Double(v) } }
+            .refreshable { await home.refreshSpeakers(); sound = await Sonos.sound(r) }
+        } else {
+            ContentUnavailableView("Speaker Not Found", systemImage: "hifispeaker")
+        }
+    }
+
+    // MARK: Now playing
+
+    private func nowPlaying(_ r: SonosRoom) -> some View {
+        VStack(spacing: 18) {
+            Group {
+                if r.isTV {
+                    RoundedRectangle(cornerRadius: 22, style: .continuous).fill(.white.opacity(0.08))
+                        .overlay { Image(systemName: "tv").font(.system(size: 54, weight: .light)).foregroundStyle(.secondary) }
+                } else {
+                    SpeakerArt(url: r.art, size: 220)
+                }
+            }
+            .frame(width: 220, height: 220)
+            .shadow(color: .black.opacity(0.4), radius: 26, y: 14)
+            .scaleEffect(r.isPlaying ? 1 : 0.92)
+            .animation(.spring(response: 0.45, dampingFraction: 0.75), value: r.isPlaying)
+
+            VStack(spacing: 4) {
+                Text(r.isTV ? "TV Sound" : (r.title ?? "Not Playing")).font(.title3.weight(.semibold)).lineLimit(1)
+                Text(subtitle(r)).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+            }
+
+            HStack(spacing: 30) {
+                GlassCircle(symbol: "backward.fill", size: 52) { act(r) { try await Sonos.previous($0) } }
+                    .disabled(r.isTV).opacity(r.isTV ? 0.35 : 1)
+                GlassCircle(symbol: r.isPlaying ? "pause.fill" : "play.fill", size: 70) {
+                    let playing = r.isPlaying
+                    act(r) { playing ? try await Sonos.pause($0) : try await Sonos.play($0) }
+                }
+                GlassCircle(symbol: "forward.fill", size: 52) { act(r) { try await Sonos.next($0) } }
+                    .disabled(r.isTV).opacity(r.isTV ? 0.35 : 1)
+            }
+            .glassGroup(spacing: 26)
+
+            HStack(spacing: 12) {
+                Button { act(r) { try await Sonos.setMute($0, !r.muted) } } label: {
+                    Image(systemName: r.muted ? "speaker.slash.fill" : "speaker.fill").frame(width: 22)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(r.muted ? Palette.attention : .secondary)
+                Slider(value: $volume, in: 0...100) { e in dragging = e; if !e { home.setVolume(r, Int(volume)) } }
+                    .tint(.white)
+                    .onChange(of: volume) { _, v in if dragging { home.setVolume(r, Int(v)) } }
+                Text("\(Int(volume))").font(.subheadline.monospacedDigit()).foregroundStyle(.secondary).frame(width: 28, alignment: .trailing)
+            }
+
+            if r.isHomeTheater && !r.isTV {
+                Button("Switch to TV Sound") { act(r) { try await Sonos.playTV($0) } }
+                    .buttonStyle(.glass)
+            }
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity)
+        .glass(RoundedRectangle(cornerRadius: 28, style: .continuous), interactive: false)
+    }
+
+    private func subtitle(_ r: SonosRoom) -> String {
+        if r.isTV { return r.setupSummary ?? r.name }
+        let s = [r.artist, r.album].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " — ")
+        return s.isEmpty ? (r.setupSummary ?? r.name) : s
+    }
+
+    private func act(_ r: SonosRoom, _ op: @escaping @Sendable (SonosRoom) async throws -> Void) {
+        #if os(iOS)
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        #endif
+        Task { await home.sonos(r, op) }
+    }
+}
+
+// MARK: - Pieces
+
+/// The room's art, large and blurred behind everything.
+struct ArtBackdrop: View {
+    var url: URL?
+    var body: some View {
+        ZStack {
+            Color.black
+            if let url {
+                AsyncImage(url: url) { $0.resizable().scaledToFill() } placeholder: { Color.clear }
+                    .blur(radius: 60).opacity(0.65).scaleEffect(1.3)
+            } else {
+                LinearGradient(colors: [Color(red: 0.12, green: 0.14, blue: 0.2), .black], startPoint: .top, endPoint: .bottom)
+            }
+            LinearGradient(colors: [.clear, .black.opacity(0.6)], startPoint: .top, endPoint: .bottom)
+        }
+        .ignoresSafeArea()
+    }
+}
+
+/// A rounded glass card with a title.
+struct GlassCard<Content: View>: View {
+    var title: String
+    var footer: String? = nil
+    @ViewBuilder var content: Content
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text(title).font(.headline)
+            content
+            if let footer { Text(footer).font(.footnote).foregroundStyle(.secondary) }
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .glass(RoundedRectangle(cornerRadius: 24, style: .continuous), interactive: false)
+    }
+}
+
+/// A −15…+15 style level with its value.
+struct LevelRow: View {
+    var title: String
+    var range: ClosedRange<Double>
+    var value: Int?
+    var set: (Int) -> Void
+    @State private var v: Double = 0
+    @State private var editing = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(title)
+                Spacer()
+                Text(v > 0 ? "+\(Int(v))" : "\(Int(v))").monospacedDigit().foregroundStyle(.secondary)
+            }
+            Slider(value: $v, in: range, step: 1) { e in editing = e; if !e { set(Int(v)) } }
+                .tint(.white)
+        }
+        .onAppear { v = Double(value ?? 0) }
+        .onChange(of: value) { _, n in if !editing { v = Double(n ?? 0) } }
+    }
+}
+
+// MARK: Surround
+
+/// The speakers as they sit in the room: the soundbar at the front by the TV, the Sub, and the rear surrounds
+/// either side of the sofa. Tap one for what it is; the levels sit underneath.
+struct SurroundCard: View {
+    var room: SonosRoom
+    @Binding var sound: SonosSound
+    @State private var picked: SonosPart?
+
+    var body: some View {
+        GlassCard(title: "Speakers", footer: "Sonos plays these together as one room. Surround and Sub levels apply to the pair.") {
+            layout
+                .frame(height: 230)
+            ForEach(room.parts) { p in
+                Button { picked = p } label: {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(p.roleName).font(.subheadline.weight(.semibold))
+                            Text(p.model ?? "Sonos").font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Text(p.host ?? "").font(.caption.monospaced()).foregroundStyle(.secondary)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                if p.id != room.parts.last?.id { Divider() }
+            }
+            if room.parts.contains(where: { $0.role == .leftRear || $0.role == .rightRear }) {
+                Divider()
+                Toggle("Surrounds", isOn: Binding(get: { sound.surroundOn ?? true }, set: { on in
+                    sound.surroundOn = on
+                    Task { try? await Sonos.setEQ(room, "SurroundEnable", on ? 1 : 0) }
+                }))
+                if sound.surroundOn ?? true {
+                    LevelRow(title: "TV Surround Level", range: -15...15, value: sound.surroundLevel) { v in
+                        sound.surroundLevel = v; Task { try? await Sonos.setEQ(room, "SurroundLevel", v) }
+                    }
+                    LevelRow(title: "Music Surround Level", range: -15...15, value: sound.musicSurroundLevel) { v in
+                        sound.musicSurroundLevel = v; Task { try? await Sonos.setEQ(room, "MusicSurroundLevel", v) }
+                    }
+                }
+            }
+            if room.parts.contains(where: { $0.role == .sub }) {
+                Divider()
+                Toggle("Sub", isOn: Binding(get: { sound.subOn ?? true }, set: { on in
+                    sound.subOn = on
+                    Task { try? await Sonos.setEQ(room, "SubEnable", on ? 1 : 0) }
+                }))
+                if sound.subOn ?? true {
+                    LevelRow(title: "Sub Level", range: -15...15, value: sound.subLevel) { v in
+                        sound.subLevel = v; Task { try? await Sonos.setEQ(room, "SubGain", v) }
+                    }
+                }
+            }
+            if sound.heightLevel != nil {
+                Divider()
+                LevelRow(title: "Height Level", range: -10...10, value: sound.heightLevel) { v in
+                    sound.heightLevel = v; Task { try? await Sonos.setEQ(room, "HeightChannelLevel", v) }
+                }
+            }
+        }
+        .animation(.smooth, value: sound)
+        .sheet(item: $picked) { p in
+            VStack(spacing: 14) {
+                Text(p.roleName).font(.title3.bold())
+                Text(p.model.map { "Sonos \($0)" } ?? "Sonos").foregroundStyle(.secondary)
+                if let h = p.host { LabeledContent("Address", value: h) }
+                LabeledContent("ID", value: p.id).font(.footnote.monospaced())
+            }
+            .padding(24)
+            .presentationDetents([.height(220)])
+        }
+    }
+
+    private var layout: some View {
+        GeometryReader { g in
+            let w = g.size.width, h = g.size.height
+            ZStack {
+                // The room.
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .strokeBorder(.white.opacity(0.12), style: StrokeStyle(lineWidth: 1, dash: [5, 5]))
+                // The TV and the sofa, for scale.
+                Capsule().fill(.white.opacity(0.18)).frame(width: w * 0.42, height: 4).position(x: w / 2, y: 14)
+                RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.white.opacity(0.07))
+                    .frame(width: w * 0.36, height: 34).position(x: w / 2, y: h * 0.72)
+                Text("You").font(.caption2).foregroundStyle(.tertiary).position(x: w / 2, y: h * 0.72)
+                ForEach(room.parts) { p in
+                    piece(p)
+                        .position(spot(p.role, w: w, h: h))
+                        .onTapGesture { picked = p }
+                }
+            }
+        }
+    }
+
+    private func spot(_ role: SonosPart.Role, w: CGFloat, h: CGFloat) -> CGPoint {
+        switch role {
+        case .front: return CGPoint(x: w / 2, y: 38)
+        case .left: return CGPoint(x: w * 0.25, y: 38)
+        case .right: return CGPoint(x: w * 0.75, y: 38)
+        case .sub: return CGPoint(x: w * 0.84, y: h * 0.36)
+        case .leftRear: return CGPoint(x: w * 0.12, y: h * 0.72)
+        case .rightRear: return CGPoint(x: w * 0.88, y: h * 0.72)
+        }
+    }
+
+    @ViewBuilder private func piece(_ p: SonosPart) -> some View {
+        let lit = room.isPlaying && (p.role == .front || p.role == .left || p.role == .right
+            || (p.role == .sub && sound.subOn != false) || ((p.role == .leftRear || p.role == .rightRear) && sound.surroundOn != false))
+        VStack(spacing: 5) {
+            Group {
+                switch p.role {
+                case .front: Capsule().frame(width: 120, height: 16)
+                case .sub: RoundedRectangle(cornerRadius: 8, style: .continuous).frame(width: 34, height: 34)
+                default: RoundedRectangle(cornerRadius: 9, style: .continuous).frame(width: 22, height: 34)
+                }
+            }
+            .foregroundStyle(lit ? Color.white : Color.white.opacity(0.35))
+            .shadow(color: lit ? .white.opacity(0.6) : .clear, radius: 10)
+            Text(p.role == .front ? (p.model ?? room.model ?? "Soundbar") : (p.model ?? p.roleName))
+                .font(.caption2.weight(.semibold)).foregroundStyle(.secondary).lineLimit(1)
+        }
+        .animation(.smooth, value: lit)
+    }
+}
+
+// MARK: Sound
+
+struct SoundCard: View {
+    var room: SonosRoom
+    @Binding var sound: SonosSound
+
+    var body: some View {
+        GlassCard(title: "Sound") {
+            if let n = sound.nightSound {
+                toggle("Night Sound", "Quieter loud parts, clearer quiet ones, for late at night.", n) { on in
+                    sound.nightSound = on; Task { try? await Sonos.setEQ(room, "NightMode", on ? 1 : 0) }
+                }
+            }
+            if let s = sound.speech {
+                toggle("Speech Enhancement", "Makes dialogue easier to hear.", s) { on in
+                    sound.speech = on; Task { try? await Sonos.setEQ(room, "DialogLevel", on ? 1 : 0) }
+                }
+            }
+            if let l = sound.loudness {
+                toggle("Loudness", "Fuller bass at low volume.", l) { on in
+                    sound.loudness = on; Task { try? await Sonos.setLoudness(room, on) }
+                }
+            }
+            if sound.bass != nil {
+                Divider()
+                LevelRow(title: "Bass", range: -10...10, value: sound.bass) { v in sound.bass = v; Task { try? await Sonos.setBass(room, v) } }
+            }
+            if sound.treble != nil {
+                LevelRow(title: "Treble", range: -10...10, value: sound.treble) { v in sound.treble = v; Task { try? await Sonos.setTreble(room, v) } }
+            }
+        }
+    }
+
+    private func toggle(_ title: String, _ detail: String, _ on: Bool, _ set: @escaping (Bool) -> Void) -> some View {
+        Toggle(isOn: Binding(get: { on }, set: set)) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                Text(detail).font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
+// MARK: Group
+
+/// Other rooms to play the same thing, as in the Sonos app's Group button.
+struct GroupCard: View {
+    var room: SonosRoom
+    var home = SmartHome.shared
+
+    private var others: [SonosRoom] { home.speakers.filter { $0.id != room.id } }
+
+    var body: some View {
+        if !others.isEmpty {
+            GlassCard(title: "Play Together", footer: "Rooms you tick play what \(room.name) is playing.") {
+                ForEach(others) { o in
+                    let together = o.coordinatorHost == room.coordinatorHost
+                    Button {
+                        Task {
+                            await home.regroup {
+                                if together { try await Sonos.leave(o) } else { try await Sonos.join(o, to: room) }
+                            }
+                        }
+                    } label: {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(o.name)
+                                if let s = o.isTV ? "TV" : o.title { Text(s).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
+                            }
+                            Spacer()
+                            Image(systemName: together ? "checkmark.circle.fill" : "circle")
+                                .font(.title3)
+                                .foregroundStyle(together ? Color.accentColor : .secondary)
+                                .contentTransition(.symbolEffect(.replace))
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+    }
+}
+
+// MARK: Name and room
+
+struct NameRoomCard: View {
+    @Environment(Fleet.self) private var fleet
+    var id: String
+    var current: String
+    var original: String?
+    var home = SmartHome.shared
+    @State private var name = ""
+    @State private var addingRoom = false
+    @State private var newRoom = ""
+
+    var body: some View {
+        GlassCard(title: "Name and Room") {
+            HStack(spacing: 10) {
+                TextField("Name", text: $name)
+                    .textFieldStyle(.plain)
+                    .padding(.horizontal, 14).padding(.vertical, 10)
+                    .glass(Capsule(), interactive: false)
+                    .onSubmit { home.rename(id, name) }
+                if name.trimmingCharacters(in: .whitespaces) != current && !name.isEmpty {
+                    Button("Save") { home.rename(id, name) }.buttonStyle(.glassProminent)
+                }
+            }
+            if let original, original != current {
+                Button("Use Sonos Name “\(original)”") { name = original; home.rename(id, "") }
+                    .font(.subheadline)
+            }
+            HStack {
+                Text("Room")
+                Spacer()
+                Menu {
+                    Button("No Room") { home.setRoom(id, nil) }
+                    ForEach(allRooms(fleet), id: \.self) { r in Button(r) { home.setRoom(id, r) } }
+                    Divider()
+                    Button("New Room…") { addingRoom = true }
+                } label: {
+                    Text(home.room(of: id) ?? "No Room").padding(.horizontal, 14).padding(.vertical, 8)
+                }
+                .menuStyle(.button)
+                .buttonStyle(.glass)
+                .fixedSize()
+            }
+        }
+        .onAppear { name = current }
+        .alert("New Room", isPresented: $addingRoom) {
+            TextField("Room Name", text: $newRoom)
+            Button("Add") { home.setRoom(id, newRoom); newRoom = "" }
+            Button("Cancel", role: .cancel) { newRoom = "" }
+        }
+    }
+}

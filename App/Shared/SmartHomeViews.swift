@@ -22,7 +22,10 @@ struct SpeakersSection: View {
                     }
                 }
             }
-            .sheet(item: $open) { r in SpeakerSheet(roomID: r.id) }
+            .sheet(item: $open) { r in
+                NavigationStack { SpeakerDetailView(speakerID: r.id, inSheet: true) }
+                    .presentationBackground(.clear)
+            }
         }
     }
 }
@@ -67,7 +70,8 @@ struct SpeakerTile: View {
     }
 
     private var detail: String {
-        guard let t = room.title, !t.isEmpty else { return "Not Playing" }
+        if room.isTV { return room.isPlaying ? "TV" : "TV · Paused" }
+        guard let t = room.title, !t.isEmpty else { return room.setupSummary ?? "Not Playing" }
         let what = [t, room.artist].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
         return room.isPlaying ? what : "Paused · " + what
     }
@@ -88,72 +92,6 @@ struct SpeakerArt: View {
             }
             .frame(width: size, height: size)
             .clipShape(RoundedRectangle(cornerRadius: size * 0.18, style: .continuous))
-    }
-}
-
-/// Everything for one room: what's playing, the transport, and its volume.
-struct SpeakerSheet: View {
-    var roomID: String
-    var home = SmartHome.shared
-    @Environment(\.dismiss) private var dismiss
-    @State private var volume: Double = 0
-    @State private var dragging = false
-
-    private var room: SonosRoom? { home.speakers.first { $0.id == roomID } }
-
-    var body: some View {
-        if let room {
-            ScrollView {
-            VStack(spacing: 22) {
-                HStack {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(room.name).font(.title3.bold())
-                        if room.groupNames.count > 1 {
-                            Text("With " + room.groupNames.filter { $0 != room.name }.joined(separator: ", "))
-                                .font(.subheadline).foregroundStyle(.secondary)
-                        }
-                    }
-                    Spacer()
-                    GlassCircle(symbol: "xmark", size: 34) { dismiss() }
-                }
-                SpeakerArt(url: room.art, size: 240)
-                    .shadow(color: .black.opacity(0.35), radius: 24, y: 12)
-                VStack(spacing: 4) {
-                    Text(room.title ?? "Not Playing").font(.title3.weight(.semibold)).lineLimit(1)
-                    Text([room.artist, room.album].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " — "))
-                        .font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
-                }
-                HStack(spacing: 34) {
-                    GlassCircle(symbol: "backward.fill", size: 56) { Task { await home.sonos(room) { try await Sonos.previous($0) } } }
-                    GlassCircle(symbol: room.isPlaying ? "pause.fill" : "play.fill", size: 72) {
-                        Task { await home.sonos(room) { room.isPlaying ? try await Sonos.pause($0) : try await Sonos.play($0) } }
-                    }
-                    GlassCircle(symbol: "forward.fill", size: 56) { Task { await home.sonos(room) { try await Sonos.next($0) } } }
-                }
-                .glassGroup(spacing: 30)
-                HStack(spacing: 12) {
-                    Button { Task { await home.sonos(room) { try await Sonos.setMute($0, !room.muted) } } } label: {
-                        Image(systemName: room.muted ? "speaker.slash.fill" : "speaker.fill").frame(width: 24)
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(room.muted ? Palette.attention : .secondary)
-                    Slider(value: $volume, in: 0...100) { editing in
-                        dragging = editing
-                        if !editing { home.setVolume(room, Int(volume)) }
-                    }
-                    .onChange(of: volume) { _, v in if dragging { home.setVolume(room, Int(v)) } }
-                    Image(systemName: "speaker.wave.3.fill").foregroundStyle(.secondary).frame(width: 28)
-                }
-            }
-            .padding(24)
-            }
-            .scrollBounceBehavior(.basedOnSize)
-            .frame(minWidth: 340, idealWidth: 380)
-            .onAppear { volume = Double(room.volume) }
-            .onChange(of: room.volume) { _, v in if !dragging { volume = Double(v) } }
-            .presentationDetents([.large])
-            .presentationBackground(.ultraThinMaterial)
-        }
     }
 }
 
@@ -497,62 +435,6 @@ struct NameAndRoom: View {
             TextField("Room Name", text: $newRoom)
             Button("Add") { home.setRoom(id, newRoom); newRoom = "" }
             Button("Cancel", role: .cancel) { newRoom = "" }
-        }
-    }
-}
-
-struct SpeakerDetailView: View {
-    var speakerID: String
-    var home = SmartHome.shared
-    @State private var volume: Double = 0
-    @State private var dragging = false
-
-    var body: some View {
-        if let r = home.speaker(speakerID) {
-            Form {
-                Section {
-                    VStack(spacing: 16) {
-                        SpeakerArt(url: r.art, size: 180).shadow(color: .black.opacity(0.3), radius: 18, y: 10)
-                        VStack(spacing: 3) {
-                            Text(r.title ?? "Not Playing").font(.headline).lineLimit(1)
-                            Text([r.artist, r.album].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " — "))
-                                .font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
-                        }
-                        HStack(spacing: 28) {
-                            GlassCircle(symbol: "backward.fill", size: 50) { Task { await home.sonos(r) { try await Sonos.previous($0) } } }
-                            GlassCircle(symbol: r.isPlaying ? "pause.fill" : "play.fill", size: 64) {
-                                Task { await home.sonos(r) { r.isPlaying ? try await Sonos.pause($0) : try await Sonos.play($0) } }
-                            }
-                            GlassCircle(symbol: "forward.fill", size: 50) { Task { await home.sonos(r) { try await Sonos.next($0) } } }
-                        }
-                        .glassGroup(spacing: 24)
-                        HStack(spacing: 12) {
-                            Button { Task { await home.sonos(r) { try await Sonos.setMute($0, !r.muted) } } } label: {
-                                Image(systemName: r.muted ? "speaker.slash.fill" : "speaker.fill").frame(width: 24)
-                            }
-                            .buttonStyle(.plain).foregroundStyle(r.muted ? Palette.attention : .secondary)
-                            Slider(value: $volume, in: 0...100) { e in dragging = e; if !e { home.setVolume(r, Int(volume)) } }
-                                .onChange(of: volume) { _, v in if dragging { home.setVolume(r, Int(v)) } }
-                            Text("\(Int(volume))").monospacedDigit().foregroundStyle(.secondary).frame(width: 30, alignment: .trailing)
-                        }
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 10)
-                }
-                NameAndRoom(id: r.id, current: r.name, original: r.zone)
-                Section("Sonos") {
-                    LabeledContent("Sonos Room", value: r.zone)
-                    if r.groupNames.count > 1 { LabeledContent("Playing With", value: r.groupNames.filter { $0 != r.name }.joined(separator: ", ")) }
-                    LabeledContent("Address", value: r.host)
-                }
-            }
-            .formStyle(.grouped)
-            .navigationTitle(r.name)
-            .inlineTitle()
-            .onAppear { volume = Double(r.volume) }
-            .onChange(of: r.volume) { _, v in if !dragging { volume = Double(v) } }
-        } else {
-            ContentUnavailableView("Speaker Not Found", systemImage: "hifispeaker")
         }
     }
 }
