@@ -33,6 +33,7 @@ struct WoodruffApp: App {
                     SmartHome.shared.start()
                     SmartThings.shared.start()
                     Dreo.shared.start()
+                    DecoWifi.shared.start()
                     NestCameras.shared.start()
                     NestAlerts.shared.start(fleet)
                     SettingsSync.shared.start(fleet)

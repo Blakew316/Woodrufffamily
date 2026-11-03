@@ -38,6 +38,7 @@ struct HomeView: View {
                     if layout.groupByRoom {
                         // Like the Home app: each room with everything in it.
                         ForEach(roomGroups, id: \.self) { r in roomGroup(r) }
+                        if room.isEmpty && !layout.hiddenSections.contains("wifi") { WifiSection() }
                     } else {
                         ForEach(layout.visibleSections.filter { $0 != "status" && $0 != "rooms" }, id: \.self) { key in
                             section(key)
@@ -114,6 +115,7 @@ struct HomeView: View {
         case "lights": LightsSection(room: room.isEmpty ? nil : room)
         case "cameras": CamerasSection(room: room.isEmpty ? nil : room)
         case "devices": DevicesSection(room: room.isEmpty ? nil : room)
+        case "wifi": if room.isEmpty { WifiSection() }
         default: EmptyView()
         }
     }

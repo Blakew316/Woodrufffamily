@@ -24,7 +24,7 @@ final class SettingsSync {
         "govee.key",
         "st.client", "st.secret", "st.access", "st.refresh", "st.expires", "st.token",
         "nest.project", "nest.client", "nest.secret", "nest.access", "nest.refresh", "nest.expires", "nest.scopes", "nest.subscription",
-        "github.token", "dreo.email", "dreo.password",
+        "github.token", "dreo.email", "dreo.password", "deco.host", "deco.password",
     ]
     /// Saved settings that travel (JSON in UserDefaults).
     static let dataKeys = ["smartNames", "smartRooms", "smartExtraRooms", "goveeManualIPs", "homeLayout", "extras", "hiddenAlerts"]
@@ -188,6 +188,8 @@ final class SettingsSync {
             await NestCameras.shared.load()
             Dreo.shared.start()
             await Dreo.shared.refresh(full: true)
+            DecoWifi.shared.start()
+            await DecoWifi.shared.refresh()
         }
     }
 

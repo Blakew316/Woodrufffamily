@@ -38,6 +38,9 @@ struct SettingsView: View {
                 NavigationLink { CamerasPhoneView() } label: {
                     IconRow(symbol: "", color: .clear, title: "Cameras", value: NestCameras.shared.connected ? "\(NestCameras.shared.cameras.count)" : "Not Connected")
                 }
+                NavigationLink { WifiView() } label: {
+                    IconRow(symbol: "", color: .clear, title: "Wi‑Fi", value: DecoWifi.shared.connected ? (DecoWifi.shared.internetUp == false ? "Internet Down" : "\(DecoWifi.shared.nodes.count) Decos") : "Not Connected")
+                }
                 NavigationLink { DevicesListView() } label: {
                     IconRow(symbol: "", color: .clear, title: "Devices", value: AccessoryStore.shared.all.isEmpty ? "None" : "\(AccessoryStore.shared.all.count)")
                 }
