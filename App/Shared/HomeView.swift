@@ -236,28 +236,56 @@ struct HomeView: View {
         layout.arrange(room.isEmpty ? fleet.tvs : fleet.tvs.filter { $0.name == room }, in: "tvs")
     }
 
-    @ViewBuilder private var roomBar: some View {
-        do {
-            ScrollView(.horizontal) {
-                HStack(spacing: 8) {
-                    ForEach([favoritesKey, ""] + rooms, id: \.self) { r in
-                        Button {
-                            withAnimation(.smooth) { room = r }
-                        } label: {
-                            Text(r == favoritesKey ? "Favorites" : r.isEmpty ? "All Rooms" : r)
-                                .font(.subheadline.weight(.semibold))
-                                .padding(.horizontal, 14).padding(.vertical, 8)
-                                .foregroundStyle(room == r ? Color.black : .primary)
-                                .background { if room == r { Capsule().fill(.white) } }
-                        }
-                        .buttonStyle(.plain)
-                        .glass(Capsule())
+    /// The room bar: Favorites, the few rooms chosen for it (Kitchen, Front Yard, Living Room, Backyard), and
+    /// More for All Rooms and every other room.
+    private var roomBar: some View {
+        let pinned = layout.pinned(in: rooms)
+        let others = rooms.filter { !pinned.contains($0) }
+        let inMore = room.isEmpty || others.contains(room)
+        return ScrollView(.horizontal) {
+            HStack(spacing: 8) {
+                ForEach([favoritesKey] + pinned, id: \.self) { r in
+                    Button { withAnimation(.smooth) { room = r } } label: {
+                        chip(r == favoritesKey ? "Favorites" : r, selected: room == r)
                     }
+                    .buttonStyle(.plain)
+                    .glass(Capsule())
                 }
+                Menu {
+                    Button { withAnimation(.smooth) { room = "" } } label: {
+                        if room.isEmpty { Label("All Rooms", systemImage: "checkmark") } else { Text("All Rooms") }
+                    }
+                    if !others.isEmpty {
+                        Section("Rooms") {
+                            ForEach(others, id: \.self) { r in
+                                Button { withAnimation(.smooth) { room = r } } label: {
+                                    if room == r { Label(r, systemImage: "checkmark") } else { Text(r) }
+                                }
+                            }
+                        }
+                    }
+                    Divider()
+                    Button("Choose Rooms for This Bar…") { editing = true }
+                } label: {
+                    // Shows the room picked from here, so it's clear where you are.
+                    chip(inMore ? (room.isEmpty ? "All Rooms" : room) + " ▾" : "More ▾", selected: inMore)
+                }
+                .menuStyle(.button)
+                .buttonStyle(.plain)
+                .glass(Capsule())
+                .fixedSize()
             }
-            .scrollIndicators(.hidden)
-            .onAppear { if !room.isEmpty && room != favoritesKey && !rooms.contains(room) { room = "" } }
         }
+        .scrollIndicators(.hidden)
+        .onAppear { if !room.isEmpty && room != favoritesKey && !rooms.contains(room) { room = "" } }
+    }
+
+    private func chip(_ title: String, selected: Bool) -> some View {
+        Text(title)
+            .font(.subheadline.weight(.semibold))
+            .padding(.horizontal, 14).padding(.vertical, 8)
+            .foregroundStyle(selected ? Color.black : .primary)
+            .background { if selected { Capsule().fill(.white) } }
     }
 
     /// "4 TVs · 2 playing" under the title.

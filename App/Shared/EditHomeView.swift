@@ -27,6 +27,19 @@ final class HomeLayout {
     var hiddenItems: Set<String> { didSet { save() } }
     /// Home split up by room, like the Home app (otherwise by kind: Cameras, TVs, Speakers…).
     var groupByRoom: Bool { didSet { save() } }
+    /// The rooms that get their own button in Home's room bar (the rest are under More).
+    var pinnedRooms: [String] { didSet { save() } }
+
+    /// The pinned rooms that exist, by their real names, in the pinned order.
+    func pinned(in rooms: [String]) -> [String] {
+        pinnedRooms.compactMap { p in rooms.first { $0.caseInsensitiveCompare(p) == .orderedSame } }
+    }
+
+    func togglePinned(_ room: String) {
+        if let i = pinnedRooms.firstIndex(where: { $0.caseInsensitiveCompare(room) == .orderedSame }) { pinnedRooms.remove(at: i) }
+        else { pinnedRooms.append(room) }
+    }
+
     /// Starred things (any kind), in the order shown under Favorites.
     var favorites: [String] { didSet { save() } }
 
@@ -47,6 +60,7 @@ final class HomeLayout {
         var version: Int?
         var groupByRoom: Bool?
         var favorites: [String]?
+        var pinnedRooms: [String]?
     }
 
     init() {
@@ -65,11 +79,12 @@ final class HomeLayout {
         hiddenItems = Set(s?.hiddenItems ?? [])
         groupByRoom = s?.groupByRoom ?? true
         favorites = s?.favorites ?? []
+        pinnedRooms = s?.pinnedRooms ?? ["Kitchen", "Front Yard", "Living Room", "Backyard"]
         if (s?.version ?? 1) < 2 { save() }
     }
 
     private func save() {
-        Saved.save("homeLayout", Stored(sections: sections, hiddenSections: Array(hiddenSections), order: order, hiddenItems: Array(hiddenItems), version: 2, groupByRoom: groupByRoom, favorites: favorites))
+        Saved.save("homeLayout", Stored(sections: sections, hiddenSections: Array(hiddenSections), order: order, hiddenItems: Array(hiddenItems), version: 2, groupByRoom: groupByRoom, favorites: favorites, pinnedRooms: pinnedRooms))
     }
 
     var visibleSections: [String] { sections.filter { !hiddenSections.contains($0) } }
@@ -173,6 +188,14 @@ struct EditHomeView: View {
                         .onDelete { layout.favorites.remove(atOffsets: $0) }
                 } header: { Text("Favorites") } footer: {
                     Text("Favorites come first on Home. Drag to reorder; swipe to remove.")
+                }
+
+                Section {
+                    ForEach(homeRooms(fleet), id: \.self) { r in
+                        Toggle(r, isOn: Binding(get: { layout.pinned(in: [r]).count == 1 }, set: { _ in layout.togglePinned(r) }))
+                    }
+                } header: { Text("Room Bar") } footer: {
+                    Text("The rooms with their own button on Home, after Favorites. Every other room is under More.")
                 }
 
                 Section {
