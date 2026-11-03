@@ -391,6 +391,8 @@ struct SpeakersListView: View {
 struct LightsListView: View {
     var home = SmartHome.shared
     @State private var key = SmartHome.shared.goveeKey ?? ""
+    @State private var adding = false
+    @State private var address = ""
 
     var body: some View {
         Form {
@@ -409,6 +411,12 @@ struct LightsListView: View {
                 }
             } footer: {
                 Text("Govee lights answer on your Wi‑Fi once LAN Control is on for each one in the Govee app (the light’s settings). Tap a light to rename it or choose its room.")
+            }
+            Section {
+                Button("Search Again") { home.searchLights() }
+                Button("Add a Light by Address…") { adding = true }
+            } footer: {
+                Text("Missing a light? Check LAN Control is on for it in the Govee app, then Search Again. Or add it by its address, shown in your router’s device list.")
             }
             if home.lights.contains(where: \.on) || home.lights.count > 1 {
                 Section {
@@ -437,7 +445,17 @@ struct LightsListView: View {
         .formStyle(.grouped)
         .navigationTitle("Lights")
         .inlineTitle()
-        .refreshable { await home.refreshCloud() }
+        .refreshable { home.searchLights(); await home.refreshCloud() }
+        .alert("Add a Light", isPresented: $adding) {
+            TextField("192.168.1.42", text: $address)
+                #if os(iOS)
+                .keyboardType(.decimalPad)
+                #endif
+            Button("Add") { home.addLight(ip: address); address = "" }
+            Button("Cancel", role: .cancel) { address = "" }
+        } message: {
+            Text("The light’s address on your Wi‑Fi.")
+        }
     }
 }
 
@@ -572,6 +590,7 @@ struct LightDetailView: View {
                 NameAndRoom(id: l.id, current: l.name, original: nil)
                 Section("Govee") {
                     LabeledContent("Model", value: l.sku)
+                    LabeledContent("Device ID", value: l.id).font(.footnote.monospaced())
                     LabeledContent("Connection", value: l.ip != nil ? "Wi‑Fi (\(l.ip!))" : (l.cloud ? "Govee Account" : "Not reachable"))
                 }
             }

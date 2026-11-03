@@ -265,14 +265,25 @@ final class GoveeLAN {
     }
 
     /// Asks every address on the home network (and, on the Mac, Govee's multicast group) who's a Govee light.
-    func scan() {
+    func scan(extra: [String] = []) {
         let msg = Govee.json("scan", ["account_topic": "reserve"])
-        var targets: [String] = []
+        var targets: [String] = extra
         #if os(macOS)
         targets.append("239.255.255.250")
         #endif
         for p in LANScan.prefixes() { for n in 1...254 { targets.append(p + String(n)) } }
-        for t in targets { send(msg, to: t, port: 4001) }
+        // A few at a time, so a burst of 254 doesn't get dropped and a lamp's answer lost.
+        for (i, chunk) in stride(from: 0, to: targets.count, by: 16).map({ Array(targets[$0..<min($0 + 16, targets.count)]) }).enumerated() {
+            DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(60 * i)) { [weak self] in
+                for t in chunk { self?.send(msg, to: t, port: 4001) }
+            }
+        }
+    }
+
+    /// Asks one address directly (a light added by hand).
+    func probe(_ ip: String) {
+        send(Govee.json("scan", ["account_topic": "reserve"]), to: ip, port: 4001)
+        send(Govee.json("devStatus", [:]), to: ip, port: 4003)
     }
 
     func status(_ ip: String) { send(Govee.json("devStatus", [:]), to: ip, port: 4003) }
@@ -397,7 +408,9 @@ public final class SmartHome {
             var tick = 0
             while !Task.isCancelled {
                 guard let self else { return }
-                if tick % 60 == 0 { await self.findSonos(); self.scanLights(); await self.refreshCloud() }
+                if tick % 60 == 0 { await self.findSonos(); await self.refreshCloud() }
+                // Ask for lights a few times early on (UDP answers can get lost), then every five minutes.
+                if [0, 1, 3, 6, 12].contains(tick) || tick % 60 == 0 { self.scanLights() }
                 await self.refreshSpeakers()
                 if tick % 2 == 0 { self.pollLights() }
                 tick += 1
@@ -507,9 +520,25 @@ public final class SmartHome {
 
     // MARK: Govee
 
+    /// Addresses of lights added by hand, asked directly on every search.
+    public private(set) var manualIPs: [String] = Saved.load("goveeManualIPs", as: [String].self) ?? []
+
     private func scanLights() {
         #if canImport(Network)
-        lan.scan()
+        lan.scan(extra: manualIPs)
+        #endif
+    }
+
+    /// Searches the Wi‑Fi for lights again now.
+    public func searchLights() { scanLights() }
+
+    /// Adds a light by its address (from your router or the Govee app), for one that doesn't answer the search.
+    public func addLight(ip: String) {
+        let ip = ip.trimmingCharacters(in: .whitespaces)
+        guard ip.split(separator: ".").count == 4 else { goveeError = "That doesn’t look like an address (like 192.168.1.42)."; return }
+        if !manualIPs.contains(ip) { manualIPs.append(ip); Saved.save("goveeManualIPs", manualIPs) }
+        #if canImport(Network)
+        lan.probe(ip)
         #endif
     }
 
@@ -520,6 +549,8 @@ public final class SmartHome {
     }
 
     private func found(ip: String, id: String, sku: String) {
+        // Addresses move; a light that used to have this one no longer does.
+        for i in lights.indices where lights[i].ip == ip && lights[i].id != id { lights[i].ip = nil }
         if let i = lights.firstIndex(where: { $0.id == id }) { lights[i].ip = ip }
         else { lights.append(GoveeLight(id: id, sku: sku, name: names[id] ?? "Govee \(sku)", ip: ip, cloud: false)) }
         lights.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
