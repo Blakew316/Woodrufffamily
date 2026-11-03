@@ -30,6 +30,8 @@ struct HomeDevice: Identifiable, Hashable {
     var endsAt: Date?
     var remoteControl = false     // the appliance allows starting / pausing from the phone
     var mode: String?             // vacuum movement, AC mode…
+    var speed: Int?               // fan 0…100
+    var swing: Bool?              // fan oscillating
 
     /// Busy right now (for the running animations).
     var isRunning: Bool {
@@ -51,6 +53,8 @@ enum DeviceCommand {
     case position(Int)
     case door(open: Bool)
     case machine(String)
+    case speed(Int)
+    case swing(Bool)
 }
 
 @Observable @MainActor
@@ -291,7 +295,13 @@ struct DeviceDetailView: View {
 
     @ViewBuilder private func controls(_ d: HomeDevice) -> some View {
         switch d.kind {
-        case .outlet, .toggle, .fan:
+        case .fan:
+            if let on = d.isOn {
+                Toggle(on ? "On" : "Off", isOn: Binding(get: { on }, set: { store.send(d, .power($0)) }))
+                    .toggleStyle(.switch).frame(maxWidth: 220)
+            }
+            FanControls(device: d)
+        case .outlet, .toggle:
             if let on = d.isOn {
                 Toggle(on ? "On" : "Off", isOn: Binding(get: { on }, set: { store.send(d, .power($0)) }))
                     .toggleStyle(.switch).frame(maxWidth: 220)
@@ -372,5 +382,47 @@ struct DevicesListView: View {
         .navigationTitle("Devices")
         .inlineTitle()
         .refreshable { await SmartThings.shared.refresh(full: true) }
+    }
+}
+
+/// A fan's speed (a slider, with quick Low / Medium / High) and oscillation, and the blades turning while it runs.
+struct FanControls: View {
+    var device: HomeDevice
+    @State private var speed: Double = 0
+    @State private var editing = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        VStack(spacing: 14) {
+            TimelineView(.animation(paused: device.isOn != true || reduceMotion)) { tl in
+                let rate = device.isOn == true ? 0.5 + Double(device.speed ?? 50) / 25 : 0
+                Image(systemName: "fan.fill")
+                    .font(.system(size: 54))
+                    .rotationEffect(.degrees(reduceMotion ? 0 : tl.date.timeIntervalSinceReferenceDate * 360 * rate))
+                    .foregroundStyle(device.isOn == true ? Color.cyan : .secondary)
+            }
+            .frame(height: 64)
+            if device.speed != nil {
+                VStack(spacing: 6) {
+                    Slider(value: $speed, in: 0...100, step: 1) { e in
+                        editing = e
+                        if !e { AccessoryStore.shared.send(device, .speed(Int(speed))) }
+                    }
+                    Text(speed == 0 ? "Off" : "Speed \(Int(speed))%").font(.subheadline).foregroundStyle(.secondary).monospacedDigit()
+                }
+                HStack(spacing: 10) {
+                    ForEach([("Low", 25), ("Medium", 60), ("High", 100)], id: \.0) { p in
+                        Button(p.0) { speed = Double(p.1); AccessoryStore.shared.send(device, .speed(p.1)) }
+                            .buttonStyle(.glass)
+                    }
+                }
+            }
+            if let sw = device.swing {
+                Toggle("Oscillate", isOn: Binding(get: { sw }, set: { AccessoryStore.shared.send(device, .swing($0)) }))
+                    .frame(maxWidth: 220)
+            }
+        }
+        .onAppear { speed = Double(device.speed ?? 0) }
+        .onChange(of: device.speed) { _, v in if !editing { speed = Double(v ?? 0) } }
     }
 }

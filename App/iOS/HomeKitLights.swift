@@ -175,7 +175,9 @@ final class HomeKitLights: NSObject, HMHomeManagerDelegate, HMAccessoryDelegate 
             d.kind = .fan
             d.isOn = power ?? false
             let speed = num(a, HMCharacteristicTypeRotationSpeed)
-            d.status = d.isOn == true ? (speed.map { "On · \(Int($0))%" } ?? "On") : "Off"
+            d.speed = speed.map { Int($0) }
+            d.swing = num(a, HMCharacteristicTypeSwingMode).map { $0 != 0 }
+            d.status = d.isOn == true ? (speed.map { "On · \(Int($0))%" } ?? "On") + (d.swing == true ? " · Oscillating" : "") : "Off"
         case HMServiceTypeOutlet:
             d.kind = .outlet
             d.isOn = power ?? false
@@ -221,6 +223,10 @@ final class HomeKitLights: NSObject, HMHomeManagerDelegate, HMAccessoryDelegate 
         case .door(let open): write(HMCharacteristicTypeTargetDoorState, open ? 0 : 1)
         case .position(let p): write(HMCharacteristicTypeTargetPosition, max(0, min(100, p)))
         case .target(let t): write(HMCharacteristicTypeTargetTemperature, t)
+        case .speed(let v):
+            if v > 0 { send(d, .power(true)) }
+            write(HMCharacteristicTypeRotationSpeed, Double(max(0, min(100, v))))
+        case .swing(let on): write(HMCharacteristicTypeSwingMode, on ? 1 : 0)
         case .machine: break
         }
     }
