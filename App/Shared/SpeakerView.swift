@@ -194,7 +194,7 @@ struct SurroundCard: View {
     var body: some View {
         GlassCard(title: "Speakers", footer: "Sonos plays these together as one room. Surround and Sub levels apply to the pair.") {
             layout
-                .frame(height: 230)
+                .frame(height: 260)
             ForEach(room.parts) { p in
                 Button { picked = p } label: {
                     HStack {
@@ -264,13 +264,19 @@ struct SurroundCard: View {
                 // The room.
                 RoundedRectangle(cornerRadius: 22, style: .continuous)
                     .strokeBorder(.white.opacity(0.12), style: StrokeStyle(lineWidth: 1, dash: [5, 5]))
-                // The TV and the sofa, for scale.
-                Capsule().fill(.white.opacity(0.18)).frame(width: w * 0.42, height: 4).position(x: w / 2, y: 14)
-                RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.white.opacity(0.07))
-                    .frame(width: w * 0.36, height: 34).position(x: w / 2, y: h * 0.72)
-                Text("You").font(.caption2).foregroundStyle(.tertiary).position(x: w / 2, y: h * 0.72)
+                // The TV on the front wall, and where you sit.
+                VStack(spacing: 3) {
+                    Capsule().fill(.white.opacity(0.22)).frame(width: w * 0.46, height: 4)
+                    Text("TV").font(.caption2.weight(.semibold)).foregroundStyle(.tertiary)
+                }
+                .position(x: w / 2, y: 16)
+                RoundedRectangle(cornerRadius: 12, style: .continuous).fill(.white.opacity(0.07))
+                    .frame(width: w * 0.34, height: 40)
+                    .overlay { Text("You").font(.caption.weight(.medium)).foregroundStyle(.tertiary) }
+                    .position(x: w / 2, y: h * 0.74)
                 ForEach(room.parts) { p in
                     piece(p)
+                        .frame(width: p.role == .front ? w * 0.5 : 86)
                         .position(spot(p.role, w: w, h: h))
                         .onTapGesture { picked = p }
                 }
@@ -280,12 +286,12 @@ struct SurroundCard: View {
 
     private func spot(_ role: SonosPart.Role, w: CGFloat, h: CGFloat) -> CGPoint {
         switch role {
-        case .front: return CGPoint(x: w / 2, y: 38)
-        case .left: return CGPoint(x: w * 0.25, y: 38)
-        case .right: return CGPoint(x: w * 0.75, y: 38)
-        case .sub: return CGPoint(x: w * 0.84, y: h * 0.36)
-        case .leftRear: return CGPoint(x: w * 0.12, y: h * 0.72)
-        case .rightRear: return CGPoint(x: w * 0.88, y: h * 0.72)
+        case .front: return CGPoint(x: w / 2, y: 62)
+        case .left: return CGPoint(x: w * 0.2, y: 62)
+        case .right: return CGPoint(x: w * 0.8, y: 62)
+        case .sub: return CGPoint(x: w * 0.84, y: h * 0.42)
+        case .leftRear: return CGPoint(x: w * 0.14, y: h * 0.74)
+        case .rightRear: return CGPoint(x: w * 0.86, y: h * 0.74)
         }
     }
 
@@ -295,7 +301,7 @@ struct SurroundCard: View {
         VStack(spacing: 5) {
             Group {
                 switch p.role {
-                case .front: Capsule().frame(width: 120, height: 16)
+                case .front: Capsule().frame(width: 130, height: 14)
                 case .sub: RoundedRectangle(cornerRadius: 8, style: .continuous).frame(width: 34, height: 34)
                 default: RoundedRectangle(cornerRadius: 9, style: .continuous).frame(width: 22, height: 34)
                 }
@@ -303,7 +309,7 @@ struct SurroundCard: View {
             .foregroundStyle(lit ? Color.white : Color.white.opacity(0.35))
             .shadow(color: lit ? .white.opacity(0.6) : .clear, radius: 10)
             Text(p.role == .front ? (p.model ?? room.model ?? "Soundbar") : (p.model ?? p.roleName))
-                .font(.caption2.weight(.semibold)).foregroundStyle(.secondary).lineLimit(1)
+                .font(.caption2.weight(.semibold)).foregroundStyle(.secondary).lineLimit(1).minimumScaleFactor(0.8)
         }
         .animation(.smooth, value: lit)
     }

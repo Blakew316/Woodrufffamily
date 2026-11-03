@@ -153,16 +153,24 @@ public enum Sonos {
             let bits = entry.split(separator: ":", maxSplits: 1)
             guard bits.count == 2 else { continue }
             let sid = String(bits[0]), ch = String(bits[1])
+            // Channel codes vary by speaker ("LR", "LR,LR", "RR", "SW", "SW,SW", "LF,RF"…): read what they contain.
+            let chans = Set(ch.split(separator: ",").map(String.init))
             let role: SonosPart.Role
-            switch ch {
-            case "SW": role = .sub
-            case "LR": role = .leftRear
-            case "RR": role = .rightRear
-            case "LF,LF": role = .left
-            case "RF,RF": role = .right
-            default: role = .front
-            }
+            if chans.contains("SW") { role = .sub }
+            else if chans.contains("LR") || chans.contains("LS") { role = .leftRear }
+            else if chans.contains("RR") || chans.contains("RS") { role = .rightRear }
+            else if chans == ["LF"] && !map.contains("SW") && !map.contains("LR") { role = .left }
+            else if chans == ["RF"] && !map.contains("SW") && !map.contains("LR") { role = .right }
+            else { role = .front }
             if !out.contains(where: { $0.id == sid }) { out.append(SonosPart(id: sid, host: hosts[sid], role: role)) }
+        }
+        // A soundbar room has one front (the bar itself); any other speaker read as "front" is a surround.
+        if out.count > 1, out.contains(where: { $0.id == id }) {
+            var leftNext = !out.contains { $0.role == .leftRear }
+            for i in out.indices where out[i].role == .front && out[i].id != id {
+                if leftNext { out[i].role = .leftRear } else { out[i].role = .rightRear }
+                leftNext.toggle()
+            }
         }
         let order: [SonosPart.Role] = [.front, .left, .right, .sub, .leftRear, .rightRear]
         return out.sorted { (order.firstIndex(of: $0.role) ?? 9) < (order.firstIndex(of: $1.role) ?? 9) }
