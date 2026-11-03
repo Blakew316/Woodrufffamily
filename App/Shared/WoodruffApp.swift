@@ -48,7 +48,9 @@ struct WoodruffApp: App {
         }
         .onChange(of: scenePhase) { _, phase in
             fleet.setActive(phase == .active)
+            if phase == .background { CameraStreams.shared.background() }
             if phase == .active {
+                CameraStreams.shared.foreground()
                 SmartHome.shared.wake()
                 SettingsSync.shared.wake()
                 #if os(iOS)

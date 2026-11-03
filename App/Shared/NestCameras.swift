@@ -95,6 +95,7 @@ final class NestCameras {
         let json = (try? JSONSerialization.jsonObject(with: d) as? [String: Any]) ?? [:]
         guard (200..<300).contains(code) else {
             if code == 401 { Keychain.set(nil, for: "nest.access") }
+            if code == 429 { throw RateLimited() }
             let msg = ((json["error"] as? [String: Any])?["message"] as? String) ?? "Google answered \(code)."
             throw OAuthRelay.Failure.refused(code == 403 ? "Google refused access: \(msg)" : msg)
         }
@@ -123,26 +124,54 @@ final class NestCameras {
 
     // MARK: Live
 
+    struct RateLimited: Error {}
+
+    /// Google allows only so many camera commands a minute. Commands wait their turn: a few seconds apart
+    /// overall, longer for the same camera, and a refusal just means waiting longer and trying again,
+    /// never an error on screen.
+    private var nextAny = Date.distantPast
+    private var nextFor: [String: Date] = [:]
+    private var backoff: [String: Double] = [:]
+
+    private func paced<T>(_ cam: String, _ op: () async throws -> T) async throws -> T {
+        while true {
+            try Task.checkCancellation()
+            let wait = max(nextAny, nextFor[cam] ?? .distantPast).timeIntervalSinceNow
+            if wait > 0 { try await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000)) ; continue }
+            nextAny = Date().addingTimeInterval(4)
+            nextFor[cam] = Date().addingTimeInterval(12)
+            do {
+                let r = try await op()
+                backoff[cam] = nil
+                return r
+            } catch is RateLimited {
+                let b = min(300, (backoff[cam] ?? 20) * 2)
+                backoff[cam] = b
+                nextFor[cam] = Date().addingTimeInterval(b)
+                nextAny = Date().addingTimeInterval(15)
+            }
+        }
+    }
+
     func startStream(_ cam: Camera, offer: String) async throws -> (answer: String, session: String) {
-        let r = try await call("POST", "\(cam.id):executeCommand", [
-            "command": "sdm.devices.commands.CameraLiveStream.GenerateWebRtcStream", "params": ["offerSdp": offer],
-        ])
+        let r = try await paced(cam.id) {
+            try await call("POST", "\(cam.id):executeCommand", [
+                "command": "sdm.devices.commands.CameraLiveStream.GenerateWebRtcStream", "params": ["offerSdp": offer],
+            ])
+        }
         let res = r["results"] as? [String: Any] ?? [:]
         guard let a = res["answerSdp"] as? String, let s = res["mediaSessionId"] as? String else { throw OAuthRelay.Failure.refused("The camera didn’t answer.") }
         return (a, s)
     }
 
-    func extend(_ cam: Camera, session: String) async -> String {
-        let r = try? await call("POST", "\(cam.id):executeCommand", [
-            "command": "sdm.devices.commands.CameraLiveStream.ExtendWebRtcStream", "params": ["mediaSessionId": session],
-        ])
-        return ((r?["results"] as? [String: Any])?["mediaSessionId"] as? String) ?? session
-    }
-
-    func stop(_ cam: Camera, session: String) async {
-        _ = try? await call("POST", "\(cam.id):executeCommand", [
-            "command": "sdm.devices.commands.CameraLiveStream.StopWebRtcStream", "params": ["mediaSessionId": session],
-        ])
+    func extend(_ cam: Camera, session: String) async -> String? {
+        let r = try? await paced(cam.id) {
+            try await call("POST", "\(cam.id):executeCommand", [
+                "command": "sdm.devices.commands.CameraLiveStream.ExtendWebRtcStream", "params": ["mediaSessionId": session],
+            ])
+        }
+        guard let r else { return nil }
+        return ((r["results"] as? [String: Any])?["mediaSessionId"] as? String) ?? session
     }
 }
 
@@ -173,27 +202,80 @@ struct CamerasSection: View {
     }
 }
 
-/// A camera on Home: its live picture playing right in the tile (muted), its name over it. It streams only
-/// while it's on screen and the app is open; tap it for the big view with sound.
+/// One live stream per camera, kept for the whole time the app is open: the Home tile and the big view
+/// show the same stream, scrolling doesn't restart it, and it's only let go a while after nobody is
+/// looking (the app in the background, or Home out of view for a couple of minutes). That keeps the
+/// camera commands to one start and a renewal every four minutes per camera.
+@Observable @MainActor
+final class CameraStreams {
+    static let shared = CameraStreams()
+
+    private(set) var status: [String: String] = [:]
+    /// The camera open in the big view (its tile shows a still while it's there).
+    var expanded: String?
+    @ObservationIgnored private var players: [String: LivePlayer] = [:]
+    @ObservationIgnored private var watching = 0
+    @ObservationIgnored private var idle: Task<Void, Never>?
+
+    func player(_ cam: NestCameras.Camera) -> LivePlayer {
+        if let p = players[cam.id] { return p }
+        let p = LivePlayer(camera: cam)
+        p.onStatus = { [weak self] s in withAnimation(.smooth) { self?.status[cam.id] = s } }
+        players[cam.id] = p
+        return p
+    }
+
+    /// A tile or the big view came on screen.
+    func show(_ cam: NestCameras.Camera) {
+        watching += 1
+        idle?.cancel(); idle = nil
+        player(cam).start()
+    }
+
+    /// One went off screen; if nothing is watched for two minutes, the streams are let go.
+    func hide() {
+        watching = max(0, watching - 1)
+        guard watching == 0 else { return }
+        letGoSoon(after: 120)
+    }
+
+    /// The app went to the background: keep the streams a minute, in case it's a quick switch.
+    func background() { letGoSoon(after: 60) }
+
+    func foreground() {
+        idle?.cancel(); idle = nil
+        if watching > 0 { for p in players.values { p.start() } }
+    }
+
+    private func letGoSoon(after seconds: Double) {
+        idle?.cancel()
+        idle = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            guard !Task.isCancelled, let self else { return }
+            for p in self.players.values { p.pause() }
+            for k in self.status.keys { self.status[k] = "Paused" }
+        }
+    }
+}
+
+/// A camera on Home: its live picture right in the tile (muted), its name over it. Tap for the big view.
 struct LiveCameraTile: View {
     var camera: NestCameras.Camera
     var open: () -> Void
-    @Environment(\.scenePhase) private var phase
-    @State private var player = LivePlayer()
-    @State private var status = "Connecting…"
-    @State private var visible = false
+    private let streams = CameraStreams.shared
 
     var body: some View {
+        let status = streams.status[camera.id] ?? "Starting…"
         ZStack(alignment: .bottomLeading) {
             Color.black
-            if camera.webRTC {
-                LiveWebView(player: player).allowsHitTesting(false)
+            if camera.webRTC && streams.expanded != camera.id {
+                LiveWebView(player: streams.player(camera)).allowsHitTesting(false)
             }
-            if status != "Live" {
+            if status != "Live" || streams.expanded == camera.id {
                 VStack(spacing: 8) {
-                    if camera.webRTC && status.hasSuffix("…") { ProgressView().tint(.white) }
-                    Text(camera.webRTC ? status : "Live view not supported").font(.caption).foregroundStyle(.white.opacity(0.75))
-                        .multilineTextAlignment(.center).padding(.horizontal)
+                    if camera.webRTC && status.hasSuffix("…") && streams.expanded != camera.id { ProgressView().tint(.white) }
+                    Text(!camera.webRTC ? "Live view not supported" : streams.expanded == camera.id ? "Open in the big view" : status)
+                        .font(.caption).foregroundStyle(.white.opacity(0.75)).multilineTextAlignment(.center).padding(.horizontal)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
@@ -217,36 +299,28 @@ struct LiveCameraTile: View {
         .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).strokeBorder(.white.opacity(0.08)))
         .contentShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-        .onTapGesture { if camera.webRTC { open() } }
-        .onAppear { visible = true; begin() }
-        .onDisappear { visible = false; player.end() }
-        .onChange(of: phase) { _, p in
-            if p == .active { if visible { begin() } } else { player.end(); status = "Connecting…" }
-        }
-    }
-
-    private func begin() {
-        guard camera.webRTC else { return }
-        player.onStatus = { s in withAnimation(.smooth) { status = s } }
-        Task { await player.run(camera) }
+        .onTapGesture { if camera.webRTC { streams.expanded = camera.id; open() } }
+        .onAppear { if camera.webRTC { streams.show(camera) } }
+        .onDisappear { if camera.webRTC { streams.hide() } }
     }
 }
 
 // MARK: - Live view
 
+/// The big view: the same stream as the tile (no new one), with sound.
 struct CameraLiveView: View {
     var camera: NestCameras.Camera
     @Environment(\.dismiss) private var dismiss
     @State private var muted = true
-    @State private var status = "Connecting…"
-    @State private var player = LivePlayer()
+    private let streams = CameraStreams.shared
 
     var body: some View {
+        let player = streams.player(camera)
         VStack(spacing: 14) {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(camera.name).font(.title3.bold())
-                    Text(status).font(.subheadline).foregroundStyle(.secondary)
+                    Text(streams.status[camera.id] ?? "Starting…").font(.subheadline).foregroundStyle(.secondary)
                 }
                 Spacer()
                 GlassCircle(symbol: muted ? "speaker.slash.fill" : "speaker.wave.2.fill", size: 40) {
@@ -263,25 +337,29 @@ struct CameraLiveView: View {
         .padding(20)
         .frame(minWidth: 420, minHeight: 340)
         .presentationDetents([.medium, .large])
-        .task {
-            player.onStatus = { status = $0 }
-            await player.run(camera)
+        .onAppear { streams.expanded = camera.id; streams.show(camera) }
+        .onDisappear {
+            player.setMuted(true)
+            if streams.expanded == camera.id { streams.expanded = nil }
+            streams.hide()
         }
-        .onDisappear { player.end() }
     }
 }
 
-/// The WebRTC session: the web view makes the offer, Google answers through Device Access, and the stream is
-/// renewed every four minutes (Google ends it after five).
+/// One camera's WebRTC session: the web view makes the offer, Google answers through Device Access, and
+/// it's renewed every four minutes (Google ends it after five). If it drops, it reconnects by itself.
 @MainActor
 final class LivePlayer: NSObject, WKScriptMessageHandler {
     let web: WKWebView
+    let camera: NestCameras.Camera
     var onStatus: ((String) -> Void)?
-    private var camera: NestCameras.Camera?
     private var session: String?
+    private var running = false
+    private var work: Task<Void, Never>?
     private var renew: Task<Void, Never>?
 
-    override init() {
+    init(camera: NestCameras.Camera) {
+        self.camera = camera
         let config = WKWebViewConfiguration()
         #if os(iOS)
         config.allowsInlineMediaPlayback = true
@@ -298,46 +376,82 @@ final class LivePlayer: NSObject, WKScriptMessageHandler {
         #endif
     }
 
-    func run(_ cam: NestCameras.Camera) async {
-        if session != nil { end() }
-        camera = cam
+    /// Starts the stream unless it's already running.
+    func start() {
+        guard !running else { return }
+        running = true
+        onStatus?("Starting…")
         web.loadHTMLString(Self.page, baseURL: URL(string: "https://localhost/"))
+    }
+
+    /// Lets the stream go without a command to Google (it ends by itself within five minutes).
+    func pause() {
+        guard running else { return }
+        running = false
+        work?.cancel(); renew?.cancel()
+        session = nil
+        web.evaluateJavaScript("stop()")
     }
 
     func setMuted(_ m: Bool) { web.evaluateJavaScript("setMuted(\(m))") }
 
-    func end() {
-        renew?.cancel()
-        web.evaluateJavaScript("stop()")
-        if let cam = camera, let s = session { Task { await NestCameras.shared.stop(cam, session: s) } }
+    private func reconnect() {
+        guard running else { return }
+        running = false
+        work?.cancel(); renew?.cancel()
         session = nil
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            self?.start()
+        }
     }
 
     nonisolated func userContentController(_ c: WKUserContentController, didReceive message: WKScriptMessage) {
         let name = message.name
         let body = message.body as? String ?? ""
         Task { @MainActor in
-            if name == "state" { self.onStatus?(body); return }
-            guard let cam = self.camera else { return }
-            do {
-                let (answer, s) = try await NestCameras.shared.startStream(cam, offer: body)
-                self.session = s
-                let js = (try? String(data: JSONSerialization.data(withJSONObject: [answer]), encoding: .utf8)) ?? "[\"\"]"
-                try? await self.web.evaluateJavaScript("answer(\(js)[0])")
-                self.renew = Task { [weak self] in
-                    while !Task.isCancelled {
-                        try? await Task.sleep(nanoseconds: 240_000_000_000)
-                        guard let self, let cam = self.camera, let s = self.session, !Task.isCancelled else { return }
-                        self.session = await NestCameras.shared.extend(cam, session: s)
-                    }
+            if name == "state" {
+                if body == "failed" { self.onStatus?("Reconnecting…"); self.reconnect() }
+                else { self.onStatus?(body) }
+                return
+            }
+            self.work?.cancel()
+            self.work = Task { [weak self] in
+                guard let self else { return }
+                do {
+                    self.onStatus?("Starting…")
+                    let (answer, s) = try await NestCameras.shared.startStream(self.camera, offer: body)
+                    guard self.running, !Task.isCancelled else { return }
+                    self.session = s
+                    let js = (try? String(data: JSONSerialization.data(withJSONObject: [answer]), encoding: .utf8)) ?? "[\"\"]"
+                    _ = try? await self.web.evaluateJavaScript("answer(\(js)[0])")
+                    self.keepAlive()
+                } catch is CancellationError {
+                } catch {
+                    self.onStatus?(error.localizedDescription)
+                    // Anything else (no internet, Google busy): try again shortly.
+                    try? await Task.sleep(nanoseconds: 20_000_000_000)
+                    if self.running && !Task.isCancelled { self.running = false; self.start() }
                 }
-            } catch { self.onStatus?(error.localizedDescription) }
+            }
+        }
+    }
+
+    private func keepAlive() {
+        renew?.cancel()
+        renew = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 210_000_000_000)   // 3½ minutes, inside Google's five
+                guard let self, self.running, let s = self.session, !Task.isCancelled else { return }
+                if let next = await NestCameras.shared.extend(self.camera, session: s) { self.session = next }
+                else { self.reconnect(); return }
+            }
         }
     }
 
     static let page = """
     <!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
-    <style>html,body{margin:0;height:100%;background:#000}video{width:100%;height:100%;object-fit:contain;background:#000}</style></head>
+    <style>html,body{margin:0;height:100%;background:#000}video{width:100%;height:100%;object-fit:cover;background:#000}</style></head>
     <body><video id="v" autoplay playsinline muted></video><script>
     const v = document.getElementById('v');
     const say = s => window.webkit.messageHandlers.state.postMessage(s);
@@ -349,7 +463,7 @@ final class LivePlayer: NSObject, WKScriptMessageHandler {
     pc.ontrack = e => { stream.addTrack(e.track); v.srcObject = stream; v.play().catch(() => {}); };
     pc.onconnectionstatechange = () => {
       const s = pc.connectionState;
-      say(s === 'connected' ? 'Live' : s === 'failed' ? 'Couldn’t connect. Close and try again.' : s === 'disconnected' ? 'Reconnecting…' : 'Connecting…');
+      say(s === 'connected' ? 'Live' : s === 'failed' ? 'failed' : s === 'disconnected' ? 'Reconnecting…' : 'Starting…');
     };
     async function start() {
       const offer = await pc.createOffer();
