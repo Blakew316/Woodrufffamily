@@ -154,19 +154,48 @@ public enum Demo {
         return t
     }
 
+    static func episode(_ name: String, _ about: String, _ n: Int, _ watched: Bool) -> [String: Any] {
+        var e: [String: Any] = [:]
+        e["key"] = "drive:ep\(n)"
+        e["playTitle"] = "S2 E\(n)"
+        e["code"] = "S2 E\(n)"
+        e["number"] = n
+        e["special"] = false
+        e["name"] = name
+        e["overview"] = about
+        let still: String = "bd_mem_" + String(format: "%02d", n * 2)
+        e["still"] = "/api/poster?id=" + still + "&kind=still&v=1"
+        e["runtime"] = 24
+        e["position"] = n == 4 ? 390_000.0 : 0.0
+        e["duration"] = 1_440_000.0
+        e["watched"] = watched
+        e["upNext"] = n == 4
+        e["new"] = n == 5
+        return e
+    }
+
     static let episodes: [[String: Any]] = [
-        ("Magnets", "The fridge door becomes a laboratory.", 1, true), ("Ice", "How long a block of ice lasts in the sun, measured every hour.", 2, true),
-        ("Wind", "Kites, paper and the neighbour’s washing line.", 3, true), ("The Volcano", "A trip to the island turns into a lesson about what is under our feet.", 4, false),
-        ("Rain", "Where the water goes after it hits the roof.", 5, false),
-    ].map { name, about, n, watched in
-        ["key": "drive:ep\(n)", "playTitle": "S2 E\(n)", "code": "S2 E\(n)", "number": n, "special": false, "name": name, "overview": about,
-         "still": "/api/poster?id=bd_mem_\(String(format: "%02d", n * 2))&kind=still&v=1", "runtime": 24, "position": n == 4 ? 390_000 : 0,
-         "duration": 1_440_000, "watched": watched, "upNext": n == 4, "new": n == 5] as [String: Any]
+        episode("Magnets", "The fridge door becomes a laboratory.", 1, true),
+        episode("Ice", "How long a block of ice lasts in the sun, measured every hour.", 2, true),
+        episode("Wind", "Kites, paper and the neighbour’s washing line.", 3, true),
+        episode("The Volcano", "A trip to the island turns into a lesson about what is under our feet.", 4, false),
+        episode("Rain", "Where the water goes after it hits the roof.", 5, false),
+    ]
+
+    static func memory(_ n: Int) -> [String: Any] {
+        let name: String = "mem_" + String(format: "%02d", n)
+        var m: [String: Any] = [:]
+        m["path"] = "/storage/emulated/0/Pictures/Family Memories/" + name + ".jpg"
+        m["name"] = name + ".jpg"
+        m["video"] = n == 4 || n == 11
+        m["taken"] = now - Double(n) * 259_200_000
+        m["size"] = 420_000
+        m["v"] = 1
+        return m
     }
 
     static let memories: [String: Any] = [
-        "items": (0..<18).map { n in ["path": "/storage/emulated/0/Pictures/Family Memories/mem_\(String(format: "%02d", n)).jpg", "name": "mem_\(n).jpg",
-                                      "video": n == 4 || n == 11, "taken": now - Double(n) * 86_400_000 * 3, "size": 420_000, "v": 1] as [String: Any] },
+        "items": (0..<18).map(memory),
         "folder": "/storage/emulated/0/Pictures/Family Memories", "fit": [1920, 1080], "free": 9.2e9, "slideshow": true,
     ]
 
@@ -181,11 +210,20 @@ public enum Demo {
                       ["id": "CUSTOM", "label": "Other", "help": "", "custom": true]],
     ]
 
+    static func file(_ n: String, _ dir: Bool, _ size: Double) -> [String: Any] {
+        var f: [String: Any] = [:]
+        f["name"] = n
+        f["path"] = "/storage/emulated/0/" + n
+        f["dir"] = dir
+        f["size"] = size
+        f["modified"] = now
+        return f
+    }
+
     static let files: [String: Any] = [
         "path": "/storage/emulated/0", "parent": NSNull(), "free": 18e9,
-        "files": [("DCIM", true, 0.0), ("Movies", true, 0), ("Pictures", true, 0), ("Music", true, 0), ("Download", true, 0), ("Documents", true, 0),
-                  ("Family vacation.mp4", false, 2.2e9), ("Beach sunset.jpg", false, 4e6), ("Playlist.mp3", false, 8e6)]
-            .map { n, d, s in ["name": n, "path": "/storage/emulated/0/\(n)", "dir": d, "size": s, "modified": now] as [String: Any] },
+        "files": [file("DCIM", true, 0), file("Movies", true, 0), file("Pictures", true, 0), file("Music", true, 0), file("Download", true, 0),
+                  file("Documents", true, 0), file("Family vacation.mp4", false, 2.2e9), file("Beach sunset.jpg", false, 4e6), file("Playlist.mp3", false, 8e6)],
     ]
 
     public static var releases: [TVPlatform: Release] {

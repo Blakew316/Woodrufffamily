@@ -142,7 +142,7 @@ struct CapsuleButton: View {
 
 struct SecondaryGlass: ViewModifier {
     var on: Bool
-    func body(content: Content) -> some View {
+    @ViewBuilder func body(content: Content) -> some View {
         if on { content.glass(Capsule()).environment(\.colorScheme, .dark) } else { content }
     }
 }

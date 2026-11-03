@@ -10,18 +10,19 @@ It talks to the TVs exactly as the phone page does, through the `/api` routes of
 
 ## What it does
 
+It looks and works like the Woodruff phone page, rebuilt natively with Liquid Glass (iOS 26 and macOS 26 Tahoe):
+the same five sections, as tabs on iPhone and a sidebar on the Mac.
+
 | | |
 |---|---|
-| **TVs** | Every TV at a glance: on/off, what's playing (with a live progress bar), Woodruff on screen, version, health, updates waiting. Actions for all TVs at once: Play/Pause, Mute, Home, Update All. Each TV's page has its live picture (Android), now-playing controls, its whole health report with a fix for each problem (sign in, check for updates, open Woodruff to install, copy the crash report), Link Again, the Smoothness Report and Wake-on-LAN. |
-| **Remote** | Siri-Remote layout: clickpad (tap, swipe, hold to repeat, hold OK for Menu), Back, Home, Play/Pause, Mute, volume that repeats while held, Netflix and YouTube. Type into the TV's text box from the keyboard. Pick any TV, or **Every TV at Once**. On the Mac the keyboard is a remote too (arrows, Return, Esc, Space, H, M, +/−). |
-| **LG direct control** | Optional, per LG TV: the app connects to the TV's own LG remote service, so the remote works in **every app** (Netflix included), not just Woodruff. It also types into any on-screen keyboard, switches apps and inputs, changes channels, turns the screen or TV off, and turns it on with Wake-on-LAN. The TV asks once to allow it. |
-| **Send** | An announcement to TV screens (every TV or chosen ones) and phones, or pinned on every TV's Home. Photos & Files on the TV's storage: browse, play, set as background, use for the slideshow, save, upload, new folder, delete. Open a link on the TV. Start the slideshow. |
-| **Memories** | Family Memories in a grid. Add from Photos: each photo is shrunk to the TV's size, keeps when it was taken, and uploads one at a time. Full-screen viewer with zoom; **Show on TV** follows as you swipe. Share, delete, set as background, slideshow. |
-| **Watch** | Movies and TV Shows from the TV's Google Drive: Continue Watching, Recently Added, grids with sort, genre, unwatched and search, title pages with seasons and episodes. **Play On** any TV, **Watch Together on All TVs**, mark watched, remove from Continue Watching. |
-| **Updates** | The newest release of each TV app (from GitHub) next to each TV's version. Android TVs: **Update** asks a TV to check now; it installs once nobody's watching. LG TVs: the **Mac** app downloads the newest `.ipk` and installs it over SSH (Developer Mode or rooted), the same steps as `tools/install.sh --ssh`. |
-| **Settings** | This device's name and lock-screen alerts, recent messages, paired TVs, and each TV's connections: Google Drive keys and sign-in, TMDB posters, Nest cameras and doorbell alerts, mail accounts, weather, the Away From Home (Tailscale) link, Shortcuts links and the last crash. |
-| **Mac extras** | A menu-bar icon showing every TV's state with Play/Pause and Mute, a TVs menu with keyboard shortcuts, and notifications. |
-| **Alerts** | Announcements sent to this device, and a TV going offline or needing attention, arrive as notifications. |
+| **Remote** | One remote for every TV. The TV name at the top switches TVs, or **All TVs** sends each key to every TV that's on. Round clickpad (tap, swipe, hold to repeat, hold OK for Menu), Back, Home, Play/Pause, Mute, a volume rocker that repeats while held, Netflix and YouTube, and typing into the TV's text box. On LG TVs connected directly it reaches every app, not just Woodruff. On the Mac, the keyboard is the remote. |
+| **Watch** | Movies and TV Shows from the TV's Google Drive, like the Apple TV app: a featured billboard, Continue Watching, Recently Added, grids with sort/genre/unwatched, search, title sheets with seasons and episodes. Play on the remote's TV, **Play On** any TV, or **Watch Together on All TVs**. What's playing rides above the tab bar with ↺10, Play/Pause and 30↻. |
+| **Send** | A message to TV screens and phones, or kept on every TV's Home; Photos & Files on the TV; Open a Link; Start Photo Slideshow. |
+| **Memories** | Family Memories edge to edge. Add from Photos (shrunk to the TV's size, keeping when each was taken). Full-screen viewer; **Show on TV** follows as you swipe. |
+| **Settings** | This phone, **TVs** (every TV's state, what's playing, health; each TV's page has its screen, controls, every problem with its fix, sign-ins, updates, Link Again, LG direct control), **Software Update** (every TV's version against the newest release, Update All; the Mac installs LG updates over SSH), Connections, Weather, Away From Home, Shortcuts. |
+
+Try it without a TV: run with the launch argument `-demo YES` (sample TVs, library and photos). Every CI run
+screenshots each screen this way, light and dark, on the `screenshots` branch.
 
 ## Pairing
 
