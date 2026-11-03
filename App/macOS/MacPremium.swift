@@ -196,9 +196,12 @@ enum WidgetSync {
         let hubs = fleet.hubs.isEmpty ? (SharedStore.load()?.hubs ?? [])
             : fleet.hubs.map { SharedStore.HubLink(id: $0.id, name: $0.name, base: $0.connection.base, key: $0.connection.key) }
         let home = SmartHome.shared
-        SharedStore.save(.init(hubs: hubs, selectedID: fleet.selectedID, names: names, speakers: home.speakers, lights: home.lights))
+        let tvs = fleet.tvs.filter { !$0.isUnpaired }.map {
+            SharedStore.TVInfo(id: $0.id, name: $0.name, online: $0.online, playing: $0.playing, hubID: $0.hubID, routeID: $0.routeID)
+        }
+        SharedStore.save(.init(hubs: hubs, selectedID: fleet.selectedID, names: names, speakers: home.speakers, lights: home.lights, tvs: tvs))
         // Reload only when what a widget shows changes (titles, play state, on/off), not every refresh.
-        let key = fleet.tvs.map { "\($0.id)|\($0.online)|\($0.playing?.title ?? "")|\($0.playing?.isPlaying ?? false)" }.joined(separator: ";") + "#\(fleet.selectedID ?? "")"
+        let key = fleet.tvs.map { "\($0.id)|\($0.name)|\($0.link)|\($0.online)|\($0.playing?.title ?? "")|\($0.playing?.isPlaying ?? false)" }.joined(separator: ";") + "#\(fleet.selectedID ?? "")"
             + home.speakers.map { "\($0.name)|\($0.title ?? "")|\($0.isPlaying)" }.joined() + home.lights.map { "\($0.name)|\($0.on)" }.joined()
         if key != lastKey {
             lastKey = key

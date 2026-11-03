@@ -19,6 +19,18 @@ enum SharedStore {
         /// Sonos rooms and Govee lights, for the Speakers & Lights widget.
         var speakers: [SonosRoom]? = nil
         var lights: [GoveeLight]? = nil
+        /// Every TV the app knows (so the widgets list the same TVs, not only what each hub reports).
+        var tvs: [TVInfo]? = nil
+    }
+
+    /// One TV as the app last saw it.
+    struct TVInfo: Codable, Hashable {
+        var id: String
+        var name: String
+        var online: Bool
+        var playing: NowPlaying?
+        var hubID: String
+        var routeID: String
     }
 
     static var groupID: String? {

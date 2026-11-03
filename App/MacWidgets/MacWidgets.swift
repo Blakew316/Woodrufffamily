@@ -59,6 +59,12 @@ struct TVsProvider: TimelineProvider {
                 tvs[id] = WidgetTV(id: id, name: snap.names[id] ?? e.name, online: e.online, playing: e.playing, hub: hub, routeID: e.id)
             }
         }
+        // Every TV the app knows is listed, even one no hub reports (an LG paired directly, a TV just added);
+        // what the hubs said just now wins where they did.
+        for t in snap.tvs ?? [] where tvs[t.id] == nil {
+            guard let hub = snap.hubs.first(where: { $0.id == t.hubID }) ?? snap.hubs.first else { continue }
+            tvs[t.id] = WidgetTV(id: t.id, name: snap.names[t.id] ?? t.name, online: t.online, playing: t.playing, hub: hub, routeID: t.routeID)
+        }
         let list = tvs.values.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
         let selected = list.first { $0.id == snap.selectedID } ?? list.first { $0.playing != nil } ?? list.first
         var art: Data?
