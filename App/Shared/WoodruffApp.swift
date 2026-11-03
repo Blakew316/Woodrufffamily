@@ -172,7 +172,7 @@ struct MacRoot: View {
     @Binding var selection: AppSection
     @SceneStorage("mac.tv") private var tvSelection: String?
     @State private var deviceSelection: String?
-    private var home = SmartHome.shared
+    private let home = SmartHome.shared
     @State private var palette = false
     @State private var query = ""
     @State private var keyMonitor: Any?
