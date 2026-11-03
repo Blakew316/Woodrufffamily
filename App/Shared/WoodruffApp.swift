@@ -10,7 +10,7 @@ struct WoodruffApp: App {
         WindowGroup {
             RootView()
                 .environment(fleet)
-                .task { await fleet.start() }
+                .task { Notifier.attach(to: fleet); await fleet.start() }
                 .onOpenURL { url in fleet.handle(url: url) }
         }
         .onChange(of: scenePhase) { _, phase in

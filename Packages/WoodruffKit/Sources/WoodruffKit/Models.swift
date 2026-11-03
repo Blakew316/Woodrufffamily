@@ -321,6 +321,11 @@ public struct PlayAction: Codable, Hashable, Sendable {
     public var resume: Bool?
     public var latest: Bool?
     public var isDrive: Bool { key.hasPrefix("drive:") }
+
+    public init(key: String, title: String, position: Double?, label: String?, duration: Double?, resume: Bool?, latest: Bool?) {
+        self.key = key; self.title = title; self.position = position; self.label = label
+        self.duration = duration; self.resume = resume; self.latest = latest
+    }
 }
 
 public struct Title: Codable, Hashable, Sendable, Identifiable {
