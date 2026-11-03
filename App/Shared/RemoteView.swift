@@ -55,6 +55,16 @@ struct RemoteView: View {
                 if hasTop { status.frame(height: topH, alignment: .top) }
                 Spacer(minLength: 16)
                 Clickpad(size: pad) { send($0) } onRepeat: { send($0, repeat: $1) }
+                    // Home and the keyboard sit in the clickpad's top corners, matched.
+                    .overlay(alignment: .topLeading) {
+                        CornerKey(symbol: "house.fill", label: "Home", size: key * 0.8) { send("home") }
+                            .offset(x: -(geo.size.width - pad) / 2 + 22 > -8 ? -8 : -(geo.size.width - pad) / 2 + 22, y: -6)
+                    }
+                    .overlay(alignment: .topTrailing) {
+                        CornerKey(symbol: "keyboard", label: "Keyboard", size: key * 0.8, tint: field?.field != nil && !all ? Color.accentColor : nil) { typing = true }
+                            .disabled(all)
+                            .offset(x: (geo.size.width - pad) / 2 - 22 < 8 ? 8 : (geo.size.width - pad) / 2 - 22, y: -6)
+                    }
                 Spacer(minLength: 16)
                 keys(key, gap)
                 Spacer(minLength: 16).frame(maxHeight: 22)
@@ -72,17 +82,6 @@ struct RemoteView: View {
             if !embedded {
             ToolbarItem(placement: .principal) { TVPicker(allowAll: true) }
                 .sharedBackgroundVisibility(.hidden)
-            ToolbarItem(placement: .primaryAction) {
-                Button { send("home") } label: { Image(systemName: "house") }
-                    .accessibilityLabel("Home")
-            }
-            ToolbarItem(placement: .primaryAction) {
-                Button { typing = true } label: {
-                    Image(systemName: "keyboard")
-                }
-                .disabled(all)
-                .tint(field?.field != nil ? Color.accentColor : nil)
-            }
             if let tv, !all, fleet.lg(for: tv) != nil {
                 ToolbarItem(placement: .primaryAction) { LGMenu(tv: tv) }
             }
@@ -328,6 +327,27 @@ struct Clickpad: View {
         case "left": return CGSize(width: -r, height: 0)
         default: return CGSize(width: r, height: 0)
         }
+    }
+}
+
+/// A smaller round glass key for the clickpad's corners (Home, Keyboard).
+struct CornerKey: View {
+    var symbol: String
+    var label: String
+    var size: CGFloat = 46
+    var tint: Color? = nil
+    var action: () -> Void
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: size * 0.38, weight: .semibold))
+                .foregroundStyle(tint == nil ? Color.primary : .white)
+                .frame(width: size, height: size)
+                .contentShape(Circle())
+                .glass(Circle(), tint: tint)
+        }
+        .buttonStyle(PressScale())
+        .accessibilityLabel(label)
     }
 }
 
