@@ -34,7 +34,7 @@ enum Notifier {
             case .message(let m, let from):
                 post(m.title, m.body?.isEmpty == false ? m.body! : "From \(m.from ?? from)", id: m.id, category: "message", tv: nil)
             case .wentOffline(let tv) where fleetAlerts:
-                post("\(tv.name) Is Off", "It hasn’t answered for 2 minutes.", id: "off-\(tv.id)", category: "tv.state", tv: tv.id)
+                post("Can’t Reach \(tv.name)", "It’s on the network, but Woodruff on it isn’t answering.", id: "off-\(tv.id)", category: "tv.state", tv: tv.id)
             case .needsAttention(let tv) where fleetAlerts:
                 post("\(tv.name) Needs Attention", tv.health?.first ?? (tv.link == "refused" ? "Its link stopped working." : ""),
                      id: "att-\(tv.id)", category: "tv.alert", tv: tv.id)

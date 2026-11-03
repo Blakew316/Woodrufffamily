@@ -200,3 +200,47 @@ public enum LANScan {
     }
 }
 #endif
+
+#if canImport(Network)
+import Network
+
+/// Is something at this address? Answers (port open), refused (the device is there, the port shut), or nothing
+/// (switched off, or not on the network).
+public enum NetProbe {
+    public enum Result: Sendable { case answers, refused, nothing }
+
+    private final class Once: @unchecked Sendable {
+        let lock = NSLock()
+        var done = false
+        let conn: NWConnection
+        let c: CheckedContinuation<Result, Never>
+        init(_ conn: NWConnection, _ c: CheckedContinuation<Result, Never>) { self.conn = conn; self.c = c }
+        func finish(_ r: Result) {
+            lock.lock(); defer { lock.unlock() }
+            guard !done else { return }
+            done = true
+            conn.cancel()
+            c.resume(returning: r)
+        }
+    }
+
+    public static func check(host: String, port: UInt16, timeout: Double = 3) async -> Result {
+        await withCheckedContinuation { (c: CheckedContinuation<Result, Never>) in
+            let conn = NWConnection(host: NWEndpoint.Host(host), port: NWEndpoint.Port(rawValue: port) ?? 8090, using: .tcp)
+            let once = Once(conn, c)
+            conn.stateUpdateHandler = { s in
+                switch s {
+                case .ready: once.finish(.answers)
+                case .waiting(let e):
+                    if case let .posix(code) = e, code == .ECONNREFUSED { once.finish(.refused) }
+                case .failed(let e):
+                    if case let .posix(code) = e, code == .ECONNREFUSED { once.finish(.refused) } else { once.finish(.nothing) }
+                default: break
+                }
+            }
+            conn.start(queue: .global())
+            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { once.finish(.nothing) }
+        }
+    }
+}
+#endif

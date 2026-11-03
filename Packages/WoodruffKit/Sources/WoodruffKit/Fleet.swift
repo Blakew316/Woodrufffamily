@@ -118,6 +118,32 @@ public final class Fleet {
     private var notifiedAlerts: [String: String] = Saved.load("notifiedAlerts", as: [String: String].self) ?? [:]
     private var offlineSince: [String: Date] = [:]
     private var offlineNotified: Set<String> = []
+    /// TVs whose "can't reach" notification actually went out (so "back" only follows one of those).
+    private var offlineAnnounced: Set<String> = []
+
+    /// Whether a TV that stopped answering is really unreachable, rather than just switched off: its
+    /// address still answers on the network (or, for an LG, it says it's awake) but Woodruff on it doesn't.
+    func cantTalkToIt(_ tv: FleetTV) async -> Bool {
+        if let lg = lg(for: tv) {
+            if let state = try? await lg.call("ssap://com.webos.service.tvpower/power/getPowerState"),
+               let s = state["state"]?.string {
+                return s == "Active"   // awake, yet not answering Woodruff
+            }
+        }
+        var hosts: [(String, UInt16)] = []
+        if let h = hub(tv.id), let host = h.connection.base.host { hosts.append((host, UInt16(h.connection.base.port ?? 8090))) }
+        if let host = extras[tv.id]?.lastHost { hosts.append((host, 8090)) }
+        if let f = tv.foundAt, let host = f.host { hosts.append((host, UInt16(f.port ?? 8090))) }
+        if let host = extras[tv.id]?.lgHost, !host.isEmpty { hosts.append((host, 3000)) }
+        // Nowhere to look: say nothing (most likely it's just off).
+        for (host, port) in hosts {
+            switch await NetProbe.check(host: host, port: port) {
+            case .answers, .refused: return true   // the TV is on the network
+            case .nothing: continue
+            }
+        }
+        return false
+    }
 
     private var active = true
     private var loop: Task<Void, Never>?
@@ -354,14 +380,21 @@ public final class Fleet {
         }
         if tv.online {
             offlineSince[tv.id] = nil
-            if offlineNotified.remove(tv.id) != nil { onChange?(.cameOnline(tv)) }
+            offlineNotified.remove(tv.id)
+            if offlineAnnounced.remove(tv.id) != nil { onChange?(.cameOnline(tv)) }
         } else if !tv.isUnpaired {
             let since = offlineSince[tv.id] ?? Date()
             offlineSince[tv.id] = since
             if old?.online == true || old == nil { return }
             if Date().timeIntervalSince(since) >= 120 && !offlineNotified.contains(tv.id) {
                 offlineNotified.insert(tv.id)
-                onChange?(.wentOffline(tv))
+                // Switched off is normal and says nothing. Only a TV still on the Wi‑Fi that won't talk to us
+                // (or an LG awake but not answering) is worth a notification.
+                Task { [weak self] in
+                    guard let self, await self.cantTalkToIt(tv) else { return }
+                    self.offlineAnnounced.insert(tv.id)
+                    self.onChange?(.wentOffline(tv))
+                }
             }
         }
     }
