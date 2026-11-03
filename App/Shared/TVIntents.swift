@@ -117,22 +117,22 @@ struct WoodruffShortcuts: AppShortcutsProvider {
             "Open the \(.applicationName) remote",
             "Open the \(.applicationName) remote for \(\.$tv)",
         ], shortTitle: "Remote", systemImageName: "appletvremote.gen4.fill")
-        AppShortcut(intent: SetLightPowerIntent(), phrases: [
-            "Turn \(\.$power) \(\.$light) with \(.applicationName)",
-            "Turn \(\.$light) \(\.$power) in \(.applicationName)",
-        ], shortTitle: "Light On/Off", systemImageName: "lightbulb.fill")
+        AppShortcut(intent: LightOnIntent(), phrases: [
+            "Turn on \(\.$light) with \(.applicationName)",
+            "Turn \(\.$light) on in \(.applicationName)",
+        ], shortTitle: "Turn On Light", systemImageName: "lightbulb.fill")
+        AppShortcut(intent: LightOffIntent(), phrases: [
+            "Turn off \(\.$light) with \(.applicationName)",
+            "Turn \(\.$light) off in \(.applicationName)",
+        ], shortTitle: "Turn Off Light", systemImageName: "lightbulb")
         AppShortcut(intent: SetRoomLightsIntent(), phrases: [
-            "Turn \(\.$power) the \(\.$room) lights with \(.applicationName)",
-            "Turn the \(\.$room) lights \(\.$power) in \(.applicationName)",
-        ], shortTitle: "Room Lights", systemImageName: "lightbulb.2.fill")
+            "Turn off the \(\.$room) lights with \(.applicationName)",
+            "Turn the \(\.$room) lights off in \(.applicationName)",
+        ], shortTitle: "Room Lights Off", systemImageName: "lightbulb.2")
         AppShortcut(intent: AllLightsIntent(), phrases: [
             "Turn \(\.$power) all the lights with \(.applicationName)",
             "Turn all the lights \(\.$power) in \(.applicationName)",
         ], shortTitle: "All Lights", systemImageName: "lightbulb.slash")
-        AppShortcut(intent: SetLightColorIntent(), phrases: [
-            "Make \(\.$light) \(\.$color) with \(.applicationName)",
-            "Set \(\.$light) to \(\.$color) in \(.applicationName)",
-        ], shortTitle: "Light Colour", systemImageName: "paintpalette.fill")
         AppShortcut(intent: SonosPlayPauseIntent(), phrases: [
             "Pause \(\.$speaker) on Sonos with \(.applicationName)",
             "Play or pause Sonos with \(.applicationName)",

@@ -112,6 +112,28 @@ struct SetLightPowerIntent: AppIntent {
     }
 }
 
+struct LightOnIntent: AppIntent {
+    static let title: LocalizedStringResource = "Turn On a Light"
+    @Parameter(title: "Light") var light: LightEntity
+    @MainActor func perform() async throws -> some IntentResult & ProvidesDialog {
+        guard let l = findLight(light) else { return .result(dialog: "I can’t find that light.") }
+        SmartHome.shared.setOn(l, true)
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        return .result(dialog: "Turned on \(l.name).")
+    }
+}
+
+struct LightOffIntent: AppIntent {
+    static let title: LocalizedStringResource = "Turn Off a Light"
+    @Parameter(title: "Light") var light: LightEntity
+    @MainActor func perform() async throws -> some IntentResult & ProvidesDialog {
+        guard let l = findLight(light) else { return .result(dialog: "I can’t find that light.") }
+        SmartHome.shared.setOn(l, false)
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        return .result(dialog: "Turned off \(l.name).")
+    }
+}
+
 struct SetRoomLightsIntent: AppIntent {
     static let title: LocalizedStringResource = "Turn a Room’s Lights On or Off"
     static let description = IntentDescription("Turns every light in a room on or off.")
