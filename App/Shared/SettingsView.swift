@@ -43,6 +43,13 @@ struct SettingsView: View {
                 }
             }
 
+            #if os(iOS)
+            Section {
+                // Messages, links and files to the TVs and phones (the Mac has Send in its sidebar).
+                NavigationLink { SendView() } label: { IconRow(symbol: "", color: .clear, title: "Send") }
+            }
+            #endif
+
             Section {
                 NavigationLink { ConnectionsView(hub: hub) } label: {
                     IconRow(symbol: "cloud.fill", color: .blue, title: "Connections", value: connectionsSummary)

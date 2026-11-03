@@ -72,7 +72,7 @@ struct WoodruffApp: App {
 enum AppSection: String, CaseIterable, Identifiable, Hashable {
     case home, remote, watch, send, memories, settings
     var id: String { rawValue }
-    /// iPhone tabs (Send is a button on Home); the Mac has no Remote tab (the remote slides out on the right).
+    /// iPhone tabs (Send is in Settings); the Mac has no Remote tab (the remote slides out on the right).
     static let phone: [AppSection] = [.home, .remote, .watch, .memories, .settings]
     static let mac: [AppSection] = [.home, .watch, .send, .memories, .settings]
     var title: String {

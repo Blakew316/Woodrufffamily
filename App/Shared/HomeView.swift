@@ -80,15 +80,6 @@ struct HomeView: View {
         .navigationTitle(openTV.flatMap { fleet.tv($0)?.name } ?? "Home")
         .navigationSubtitle(statusLine)
         .refreshable { await fleet.refresh(); await fleet.loadAllHealth(); await SmartHome.shared.refreshSpeakers() }
-        #if os(iOS)
-        .toolbar {
-            // Send lives here on iPhone, so Home can take its place in the tab bar.
-            ToolbarItem(placement: .primaryAction) {
-                NavigationLink { SendView() } label: { Image(systemName: "paperplane") }
-                    .accessibilityLabel("Send")
-            }
-        }
-        #endif
     }
 
     /// The Home app's status line: small capsules for what needs a look.
