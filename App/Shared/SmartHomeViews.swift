@@ -410,16 +410,22 @@ struct LightsListView: View {
                     Button("Turn All On") { home.allLights(true) }
                 }
             }
-            Section {
-                SecureField("Govee API Key", text: $key)
-                Button("Save Key") { home.goveeKey = key.trimmingCharacters(in: .whitespacesAndNewlines) }
-                    .disabled(key == (home.goveeKey ?? ""))
+            Section("Govee Account") {
+                TextField("Paste your Govee API key", text: $key)
+                    #if os(iOS)
+                    .textInputAutocapitalization(.never)
+                    #endif
+                    .autocorrectionDisabled()
+                    .font(.body.monospaced())
+                Button(home.goveeKey?.isEmpty == false ? "Update Key" : "Save Key") { home.goveeKey = key.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .disabled(key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || key == (home.goveeKey ?? ""))
                 if let e = home.goveeError { Text(e).foregroundStyle(Palette.attention) }
-            } header: { Text("Govee Account") } footer: {
                 Text("Optional. Brings in your lights’ names from the Govee app and reaches lights without LAN Control. Get a key in the Govee app: Profile → Settings → Apply for API Key.")
+                    .font(.footnote).foregroundStyle(.secondary)
             }
-            Section {} header: { Text("Cync") } footer: {
+            Section("Cync") {
                 Text("Cync lights only take commands through Cync’s own account, not over Wi‑Fi. They’ll appear here once that’s added.")
+                    .font(.footnote).foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)

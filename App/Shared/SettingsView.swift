@@ -68,9 +68,10 @@ struct SettingsView: View {
                 }
             }
 
-            Section {} footer: {
+            Section {
                 Text("Woodruff Family \(hub.s?.version ?? "")")
-                    .frame(maxWidth: .infinity).font(.footnote).padding(.top, 4)
+                    .frame(maxWidth: .infinity).font(.footnote).foregroundStyle(.secondary)
+                    .listRowBackground(Color.clear)
             }
         }
         .formStyle(.grouped)
