@@ -38,17 +38,8 @@ struct SettingsView: View {
             }
 
             Section {
-                NavigationLink { PhoneSettingsView() } label: {
-                    IconRow(symbol: "bell.badge.fill", color: .red, title: "Notifications", value: fleet.phone.alerts ? "On" : nil)
-                }
-            }
-
-            Section {
                 NavigationLink { ConnectionsView(hub: hub) } label: {
                     IconRow(symbol: "cloud.fill", color: .blue, title: "Connections", value: connectionsSummary)
-                }
-                NavigationLink { WeatherView(hub: hub) } label: {
-                    IconRow(symbol: "sun.max.fill", color: .cyan, title: "Weather on Home", value: hub.s?.weather?.isEmpty == false ? hub.s!.weather! : "Off")
                 }
             }
 

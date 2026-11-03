@@ -14,7 +14,9 @@ struct WoodruffApp: App {
                     #if os(macOS)
                     if !Demo.isOn { MacPairingBackup.attach(fleet) }
                     #endif
+                    // Apple's own prompts on first launch: notifications, then location while using (for weather).
                     if !Demo.isOn { Notifier.attach(to: fleet) }
+                    if !Demo.isOn && !fleet.hubs.isEmpty { LocationWeather.shared.start(fleet) }
                     await fleet.start()
                 }
                 .onOpenURL { url in
@@ -36,7 +38,10 @@ struct WoodruffApp: App {
                     #endif
                 }
         }
-        .onChange(of: scenePhase) { _, phase in fleet.setActive(phase == .active) }
+        .onChange(of: scenePhase) { _, phase in
+            fleet.setActive(phase == .active)
+            if phase == .active && !Demo.isOn && !fleet.hubs.isEmpty { LocationWeather.shared.start(fleet) }
+        }
         #if os(macOS)
         .defaultSize(width: 1180, height: 800)
         .windowToolbarStyle(.unified)

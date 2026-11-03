@@ -57,6 +57,7 @@ targets:
         NSPhotoLibraryUsageDescription: Add photos and videos to Family Memories on the TVs.
         NSPhotoLibraryAddUsageDescription: Save photos from the TV to your library.
         NSUserNotificationsUsageDescription: Alerts when a TV needs attention or a family announcement arrives.
+        NSLocationWhenInUseUsageDescription: Your city sets the weather shown on your TVs' Home screens.
         UIBackgroundModes: [fetch]
         NSSupportsLiveActivities: true
         NSUserActivityTypes: [com.woodruff.family.remote]
@@ -122,6 +123,8 @@ targets:
         NSBonjourServices: [_woodruff._tcp]
         NSPhotoLibraryUsageDescription: Add photos and videos to Family Memories on the TVs.
         NSUserActivityTypes: [com.woodruff.family.remote]
+        NSLocationUsageDescription: Your city sets the weather shown on your TVs' Home screens.
+        NSLocationWhenInUseUsageDescription: Your city sets the weather shown on your TVs' Home screens.
         WoodruffAppGroup: $(TeamIdentifierPrefix)com.woodruff.family
         CFBundleURLTypes:
           - CFBundleURLName: com.woodruff.family
