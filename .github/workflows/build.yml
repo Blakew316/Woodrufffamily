@@ -81,6 +81,26 @@ jobs:
             sleep 7
             xcrun simctl io "$DEV" screenshot "shots/ios-$sec-${route:-main}.png"
           done
+          SMALL=$(xcrun simctl list devices available -j | python3 -c "
+          import json,sys
+          d=json.load(sys.stdin)['devices']
+          for rt in sorted(d, reverse=True):
+              if 'iOS' not in rt: continue
+              for x in d[rt]:
+                  if x['name'] in ('iPhone 16e','iPhone SE (3rd generation)','iPhone 17e'): print(x['udid']); sys.exit()
+          ")
+          if [ -n "$SMALL" ]; then
+            xcrun simctl boot "$SMALL" || true
+            xcrun simctl bootstatus "$SMALL" -b
+            xcrun simctl ui "$SMALL" appearance dark
+            xcrun simctl install "$SMALL" "build-sim/Build/Products/Debug-iphonesimulator/Woodruff Family.app"
+            for r in none nowplaying; do
+              xcrun simctl terminate "$SMALL" com.woodruff.family.remote 2>/dev/null || true
+              xcrun simctl launch "$SMALL" com.woodruff.family.remote -demo YES -section remote -route $r
+              sleep 7
+              xcrun simctl io "$SMALL" screenshot "shots/ios-small-remote-$r.png"
+            done
+          fi
           xcrun simctl ui "$DEV" appearance light
           for sec in remote watch settings; do
             xcrun simctl terminate "$DEV" com.woodruff.family.remote 2>/dev/null || true

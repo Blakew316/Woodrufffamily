@@ -121,10 +121,10 @@ struct Transport: View {
 
     var body: some View {
         let isPlaying = flipped ?? playing.isPlaying
-        HStack(spacing: compact ? 4 : 30) {
-            if playing.can("back10") { button("gobackward.10", "back10", size: compact ? 17 : 28) }
-            button(isPlaying ? "pause.fill" : "play.fill", "playpause", size: compact ? 19 : 44)
-            if playing.can("fwd30") { button("goforward.30", "fwd30", size: compact ? 17 : 28) }
+        HStack(spacing: compact ? 4 : 36) {
+            if playing.can("back10") { button("gobackward.10", "back10", size: compact ? 17 : 30) }
+            button(isPlaying ? "pause.fill" : "play.fill", "playpause", size: compact ? 19 : 46)
+            if playing.can("fwd30") { button("goforward.30", "fwd30", size: compact ? 17 : 30) }
             if !compact && playing.can("next") { button("forward.end.fill", "next", size: 26) }
         }
         .onChange(of: playing.isPlaying) { _, _ in flipped = nil }
@@ -145,7 +145,7 @@ struct Transport: View {
             Image(systemName: symbol)
                 .font(.system(size: size, weight: .semibold))
                 .contentTransition(.symbolEffect(.replace))
-                .frame(width: compact ? 34 : size * 1.6, height: compact ? 34 : size * 1.6)
+                .frame(width: compact ? 34 : size * 1.5, height: compact ? 34 : size * 1.5)
                 .contentShape(Rectangle())
         }
         .buttonStyle(PressScale(scale: 0.85))
@@ -186,8 +186,9 @@ struct NowPlayingCard: View {
     }
 }
 
-/// Now Playing, full screen: the title's art over a blurred backdrop, live progress, transport and volume,
-/// and (Android) the TV's own screen.
+/// Now Playing, full screen, like Apple Music's player: the poster large and centred over a field blurred from
+/// it, the title, a scrubber that moves every second, big transport controls and the volume.
+/// (Android) the corner button swaps the poster for the TV's own screen.
 struct NowPlayingSheet: View {
     @Environment(Fleet.self) private var fleet
     @Environment(\.dismiss) private var dismiss
@@ -201,27 +202,47 @@ struct NowPlayingSheet: View {
         let tv = tvID.flatMap { fleet.tv($0) } ?? fleet.selected
         let p = tv?.playing
         NavigationStack {
-            ZStack {
-                background(p)
-                VStack(spacing: 22) {
+            GeometryReader { geo in
+                let width = min(geo.size.width, 520) - 56
+                VStack(spacing: 0) {
                     Spacer(minLength: 8)
-                    hero(tv, p)
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(p?.title ?? "Nothing Playing").font(.title2.bold()).lineLimit(2)
-                        Text(subtitle(tv, p)).font(.body).foregroundStyle(.secondary).lineLimit(1)
+                    hero(p, width: width, height: geo.size.height * 0.46)
+                    Spacer(minLength: 20)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(p?.title ?? "Nothing Playing").font(.title3.bold()).lineLimit(1)
+                        Text(subtitle(p)).font(.body).foregroundStyle(.white.opacity(0.6)).lineLimit(1)
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    if let p { LiveProgress(playing: p) }
-                    if let tv, let p { Transport(tv: tv, playing: p) }
-                    if let tv { volume(tv) }
-                    Spacer(minLength: 8)
+                    .frame(width: width, alignment: .leading)
+                    if let p {
+                        LiveProgress(playing: p, tint: .white)
+                            .frame(width: width)
+                            .padding(.top, 22)
+                    }
+                    if let tv, let p {
+                        Transport(tv: tv, playing: p)
+                            .foregroundStyle(.white)
+                            .padding(.top, 18)
+                    }
+                    Spacer(minLength: 16)
+                    if let tv { volume(tv).frame(width: width) }
+                    if let tv {
+                        Label("Playing on \(tv.name)", systemImage: "tv")
+                            .font(.footnote.weight(.semibold))
+                            .foregroundStyle(.white.opacity(0.55))
+                            .padding(.top, 16)
+                    }
+                    Spacer(minLength: 12)
                 }
-                .padding(.horizontal, 28)
-                .frame(maxWidth: 560)
+                .frame(width: geo.size.width, height: geo.size.height)
             }
+            .foregroundStyle(.white)
+            .background { backdrop(p) }
             .environment(\.colorScheme, .dark)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button(role: .close) { dismiss() } }
+                ToolbarItem(placement: .cancellationAction) {
+                    Button { dismiss() } label: { Image(systemName: "chevron.down") }
+                        .accessibilityLabel("Close")
+                }
                 if tvID == nil { ToolbarItem(placement: .principal) { TVPicker() }.sharedBackgroundVisibility(.hidden) }
                 if tv.map({ fleet.platform(of: $0) != .webOS }) ?? false {
                     ToolbarItem(placement: .primaryAction) {
@@ -232,82 +253,77 @@ struct NowPlayingSheet: View {
                     }
                 }
             }
-            .task(id: "\(fleet.selectedID ?? "")-\(showScreen)") { await screenLoop() }
+            .task(id: "\(tv?.id ?? "")-\(showScreen)") { await screenLoop(tv) }
         }
         .presentationDragIndicator(.visible)
         #if os(macOS)
-        .frame(minWidth: 520, minHeight: 720)
+        .frame(minWidth: 480, minHeight: 760)
         #endif
     }
 
-    @ViewBuilder private func background(_ p: NowPlaying?) -> some View {
-        ZStack {
-            Color.black
-            NowPlayingArt(playing: p, backdrop: true)
-                .blur(radius: 60)
-                .scaleEffect(1.4)
-                .opacity(0.75)
-            LinearGradient(colors: [.black.opacity(0.15), .black.opacity(0.75)], startPoint: .top, endPoint: .bottom)
+    /// A deep field of the artwork's own colours, held to the screen's size.
+    private func backdrop(_ p: NowPlaying?) -> some View {
+        GeometryReader { g in
+            NowPlayingArt(playing: p)
+                .frame(width: g.size.width, height: g.size.height)
+                .blur(radius: 70, opaque: true)
+                .saturation(1.4)
+                .clipped()
+                .overlay(LinearGradient(colors: [.black.opacity(0.25), .black.opacity(0.55), .black.opacity(0.8)], startPoint: .top, endPoint: .bottom))
         }
         .ignoresSafeArea()
     }
 
-    @ViewBuilder private func hero(_ tv: FleetTV?, _ p: NowPlaying?) -> some View {
-        Group {
+    /// The poster (2:3) when the title has one, else its backdrop (16:9), or the TV's screen.
+    @ViewBuilder private func hero(_ p: NowPlaying?, width: CGFloat, height: CGFloat) -> some View {
+        let poster = fleet.artwork(for: p)?.poster != nil
+        let size: CGSize = {
+            if showScreen || !poster { return CGSize(width: width, height: width * 9 / 16) }
+            let h = min(height, width * 1.5)
+            return CGSize(width: h / 1.5, height: h)
+        }()
+        ZStack {
             if showScreen {
-                ZStack {
-                    Rectangle().fill(.black)
-                    if let screen { Image(platformImage: screen).resizable().aspectRatio(contentMode: .fit) }
-                    else { Text(screenNote ?? "Loading the TV’s screen…").font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center).padding() }
-                }
-                .aspectRatio(16 / 9, contentMode: .fit)
+                Rectangle().fill(.black)
+                if let screen { Image(platformImage: screen).resizable().aspectRatio(contentMode: .fit) }
+                else { Text(screenNote ?? "Loading the TV’s screen…").font(.subheadline).foregroundStyle(.white.opacity(0.6)).multilineTextAlignment(.center).padding() }
             } else {
-                NowPlayingArt(playing: p, backdrop: true)
-                    .aspectRatio(16 / 9, contentMode: .fill)
-                    .overlay(alignment: .bottomLeading) {
-                        if fleet.artwork(for: p)?.poster != nil {
-                            NowPlayingArt(playing: p)
-                                .frame(width: 74, height: 111)
-                                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                                .shadow(color: .black.opacity(0.5), radius: 12, y: 6)
-                                .padding(14)
-                        }
-                    }
+                NowPlayingArt(playing: p, backdrop: !poster)
             }
         }
-        .frame(maxWidth: .infinity)
-        .aspectRatio(16 / 9, contentMode: .fit)
-        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-        .shadow(color: .black.opacity(0.5), radius: 24, y: 12)
-        .scaleEffect(p?.isPlaying == false ? 0.94 : 1)
-        .animation(.spring(response: 0.45, dampingFraction: 0.8), value: p?.isPlaying)
+        .frame(width: size.width, height: size.height)
+        .clipShape(RoundedRectangle(cornerRadius: poster && !showScreen ? 14 : 18, style: .continuous))
+        .shadow(color: .black.opacity(0.45), radius: 30, y: 18)
+        .scaleEffect(p?.isPlaying == false ? 0.86 : 1)
+        .animation(.spring(response: 0.5, dampingFraction: 0.75), value: p?.isPlaying)
     }
 
-    private func subtitle(_ tv: FleetTV?, _ p: NowPlaying?) -> String {
+    private func subtitle(_ p: NowPlaying?) -> String {
         var parts: [String] = []
         if let s = p?.subtitle, !s.isEmpty { parts.append(s) }
         if let a = p?.app, !a.isEmpty { parts.append(a) }
-        if let n = tv?.name { parts.append(n) }
-        return parts.joined(separator: " · ")
+        return parts.isEmpty ? " " : parts.joined(separator: " · ")
     }
 
     private func volume(_ tv: FleetTV) -> some View {
-        HStack(spacing: 14) {
-            Image(systemName: "speaker.fill").foregroundStyle(.secondary)
-            HStack(spacing: 0) {
-                RepeatPress(onPress: { n in key(tv, "voldown", n) }) {
-                    Image(systemName: "minus").font(.headline).frame(maxWidth: .infinity, minHeight: 44)
-                }
-                Rectangle().fill(.separator).frame(width: 0.5, height: 22)
-                RepeatPress(onPress: { n in key(tv, "volup", n) }) {
-                    Image(systemName: "plus").font(.headline).frame(maxWidth: .infinity, minHeight: 44)
-                }
-            }
-            .glass(Capsule())
+        HStack(spacing: 12) {
             Button { key(tv, "mute", 0) } label: {
-                Image(systemName: "speaker.slash.fill").font(.headline).frame(width: 44, height: 44).glass(Circle())
+                Image(systemName: "speaker.slash.fill").font(.subheadline).frame(width: 44, height: 44)
             }
             .buttonStyle(PressScale())
+            .accessibilityLabel("Mute")
+            HStack(spacing: 0) {
+                RepeatPress(onPress: { n in key(tv, "voldown", n) }) {
+                    Image(systemName: "speaker.minus.fill").font(.body).frame(maxWidth: .infinity, minHeight: 46)
+                }
+                .accessibilityLabel("Volume down")
+                Rectangle().fill(.white.opacity(0.2)).frame(width: 0.5, height: 22)
+                RepeatPress(onPress: { n in key(tv, "volup", n) }) {
+                    Image(systemName: "speaker.plus.fill").font(.body).frame(maxWidth: .infinity, minHeight: 46)
+                }
+                .accessibilityLabel("Volume up")
+            }
+            .glass(Capsule())
         }
     }
 
@@ -320,11 +336,11 @@ struct NowPlayingSheet: View {
         }
     }
 
-    private func screenLoop() async {
-        guard showScreen else { return }
+    private func screenLoop(_ tv: FleetTV?) async {
+        guard showScreen, let tv else { return }
         while !Task.isCancelled {
             var wait: UInt64 = 800_000_000
-            if let tv = tvID.flatMap({ fleet.tv($0) }) ?? fleet.selected, let c = fleet.client(for: tv) {
+            if let c = fleet.client(for: tv) {
                 do { screen = PlatformImage(data: try await c.screen()); screenNote = nil } catch {
                     screenNote = error.localizedDescription
                     wait = 3_000_000_000

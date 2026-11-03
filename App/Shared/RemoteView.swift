@@ -15,25 +15,31 @@ struct RemoteView: View {
 
     var body: some View {
         GeometryReader { geo in
-            // Everything fits on one screen, between the top bar and the tab bar: nothing scrolls under them.
+            // Everything fits between the top bar and the tab bar: the clickpad takes whatever height is left
+            // after the fixed rows, so nothing ever runs under the tab bar.
             let h = geo.size.height
-            let key = min(64, max(48, h * 0.088))
-            let gap = key * 0.27
-            let top: CGFloat = hasTop ? 70 : 0
-            let pad = max(180, min(geo.size.width - 64, 310, h - (key * 3 + gap * 2) - top - key * 0.8 - 3 * 18 - 24))
-            VStack(spacing: 18) {
-                if hasTop { status.frame(height: top) }
-                Spacer(minLength: 0)
+            let key = min(62, max(46, h * 0.085))
+            let gap = key * 0.26
+            let keysH = key * 3 + gap * 2
+            let appsH = key * 0.78
+            let topH: CGFloat = hasTop ? 66 : 0
+            let rows: CGFloat = 4 // gaps between status, clickpad, keys, apps
+            let fixed = topH + keysH + appsH + rows * 16 + 8 + 10
+            let pad = max(150, min(geo.size.width - 72, 300, h - fixed))
+            VStack(spacing: 0) {
+                if hasTop { status.frame(height: topH) }
+                Spacer(minLength: 16)
                 Clickpad(size: pad) { send($0) } onRepeat: { send($0, repeat: $1) }
-                Spacer(minLength: 0)
+                Spacer(minLength: 16)
                 keys(key, gap)
-                apps(key * 0.8)
+                Spacer(minLength: 16).frame(maxHeight: 22)
+                apps(appsH)
             }
             .padding(.horizontal, 24)
-            .padding(.top, 6)
-            .padding(.bottom, 14)
+            .padding(.top, 8)
+            .padding(.bottom, 10)
             .frame(maxWidth: 440)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .frame(width: geo.size.width, height: h)
         }
         .haptic(presses)
         .toolbar {
