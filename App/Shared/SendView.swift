@@ -235,27 +235,55 @@ struct FilesView: View {
     private var client: TVClient? { fleet.hubClient() }
     private var root: StorageRoot? { roots.first { path?.hasPrefix($0.path) == true } ?? roots.first }
 
-    var body: some View {
-        List {
-            if let progress {
-                Section { HStack(spacing: 12) { ProgressView(); Text(progress).font(.subheadline) } }
-            }
-            if let l = listing {
-                Section {
-                    if let parent = l.parent, l.path != root?.path {
-                        Button { open(parent) } label: { IconRow(symbol: "arrow.turn.left.up", color: .gray, title: "Back to \((parent as NSString).lastPathComponent)") }
-                            .buttonStyle(.plain)
-                    }
-                    ForEach(l.files.filter { filter.isEmpty || $0.name.localizedCaseInsensitiveContains(filter) }) { f in row(f) }
-                }
-            } else {
-                HStack { Spacer(); ProgressView(); Spacer() }.listRowBackground(Color.clear)
+    enum Layout: String { case list, grid }
+    enum Sort: String { case name, date, size, kind }
+    enum Show: String { case all, folders, photos, videos, music, documents }
+    @AppStorage("files.layout") private var layout: Layout = .list
+    @AppStorage("files.sort") private var sort: Sort = .name
+    @AppStorage("files.show") private var show: Show = .all
+    @AppStorage("files.hidden") private var showHidden = false
+
+    /// What's shown: search, the Show filter, hidden files, then the sort (folders first, like Files).
+    private var shown: [FileEntry] {
+        guard let l = listing else { return [] }
+        let list = l.files.filter { f in
+            if !showHidden && f.name.hasPrefix(".") { return false }
+            if !filter.isEmpty && !f.name.localizedCaseInsensitiveContains(filter) { return false }
+            switch show {
+            case .all: return true
+            case .folders: return f.dir
+            case .photos: return f.isImage
+            case .videos: return f.isVideo
+            case .music: return f.isAudio
+            case .documents: return !f.dir && !f.isMedia
             }
         }
-        .safeAreaInset(edge: .top, spacing: 0) { storagePicker }
+        return list.sorted { x, y in
+            if x.dir != y.dir { return x.dir }
+            switch sort {
+            case .name: return x.name.localizedStandardCompare(y.name) == .orderedAscending
+            case .date: return (x.modified ?? 0) > (y.modified ?? 0)
+            case .size: return (x.size ?? 0) > (y.size ?? 0)
+            case .kind: return x.ext == y.ext ? x.name.localizedStandardCompare(y.name) == .orderedAscending : x.ext < y.ext
+            }
+        }
+    }
+
+    var body: some View {
+        Group {
+            if listing == nil {
+                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if layout == .grid {
+                gridView
+            } else {
+                listView
+            }
+        }
         .searchable(text: $filter, prompt: "Search")
-        .navigationTitle(listing.map { $0.path == root?.path ? "Photos & Files" : ($0.path as NSString).lastPathComponent } ?? "Photos & Files")
+        .navigationTitle(listing.map { $0.path == root?.path ? (root?.name ?? "Photos & Files") : ($0.path as NSString).lastPathComponent } ?? "Photos & Files")
+        .inlineTitle()
         .toolbar {
+            ToolbarItem(placement: .primaryAction) { optionsMenu }
             ToolbarItem(placement: .primaryAction) {
                 Menu {
                     Button { importing = true } label: { Label("Upload", systemImage: "square.and.arrow.up") }
@@ -281,32 +309,112 @@ struct FilesView: View {
         #endif
     }
 
-    @ViewBuilder private var storagePicker: some View {
-        if roots.count > 0 {
-            HStack {
-                Menu {
-                    ForEach(roots) { r in
-                        Button { open(r.path) } label: { Text(r.name); if let f = r.free { Text("\(formatBytes(f)) free") } }
-                    }
-                } label: {
-                    HStack(spacing: 4) {
-                        Text(root?.name ?? "Storage").font(.subheadline.weight(.semibold))
-                        Image(systemName: "chevron.down").font(.caption.weight(.bold))
-                    }
-                    .foregroundStyle(Color.accentColor)
-                }
-                .menuStyle(.button).buttonStyle(.plain)
-                Spacer()
-                if let f = listing?.free ?? root?.free { Text("\(formatBytes(f)) free").font(.footnote).foregroundStyle(.secondary) }
+    /// View, sort, filter, hidden files and the storage, in one menu (as the Files app does it).
+    private var optionsMenu: some View {
+        Menu {
+            Picker("View", selection: $layout) {
+                Label("Icons", systemImage: "square.grid.2x2").tag(Layout.grid)
+                Label("List", systemImage: "list.bullet").tag(Layout.list)
             }
-            .padding(.horizontal, 20).padding(.vertical, 6)
+            .pickerStyle(.inline)
+            Picker("Sort By", selection: $sort) {
+                Text("Name").tag(Sort.name); Text("Date").tag(Sort.date); Text("Size").tag(Sort.size); Text("Kind").tag(Sort.kind)
+            }
+            .pickerStyle(.menu)
+            Picker("Show", selection: $show) {
+                Text("All Items").tag(Show.all); Text("Folders").tag(Show.folders); Text("Photos").tag(Show.photos)
+                Text("Videos").tag(Show.videos); Text("Music").tag(Show.music); Text("Documents").tag(Show.documents)
+            }
+            .pickerStyle(.menu)
+            Toggle("Show Hidden Files", isOn: $showHidden)
+            if roots.count > 1 {
+                Picker("Storage", selection: Binding(get: { root?.path ?? "" }, set: { open($0) })) {
+                    ForEach(roots) { r in Text(r.name + (r.free.map { " · \(formatBytes($0)) free" } ?? "")).tag(r.path) }
+                }
+                .pickerStyle(.menu)
+            }
+        } label: { Image(systemName: "ellipsis") }
+    }
+
+    private var header: String {
+        var parts: [String] = []
+        let n = shown.count
+        parts.append(n == 1 ? "1 item" : "\(n) items")
+        if let f = listing?.free ?? root?.free { parts.append("\(formatBytes(f)) free") }
+        return parts.joined(separator: " · ")
+    }
+
+    private var listView: some View {
+        List {
+            if let progress { Section { HStack(spacing: 12) { ProgressView(); Text(progress).font(.subheadline) } } }
+            Section {
+                if let l = listing, let parent = l.parent, l.path != root?.path {
+                    Button { open(parent) } label: { IconRow(symbol: "", color: .clear, title: "Back to \((parent as NSString).lastPathComponent)") }
+                        .buttonStyle(.plain)
+                }
+                ForEach(shown) { f in row(f) }
+            } header: { Text(header) }
+        }
+        #if os(iOS)
+        .listStyle(.insetGrouped)
+        #endif
+    }
+
+    private var gridView: some View {
+        ScrollView {
+            if let progress { HStack(spacing: 12) { ProgressView(); Text(progress).font(.subheadline) }.padding() }
+            Text(header).font(.footnote).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 20).padding(.top, 8)
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 100, maximum: 150), spacing: 14, alignment: .top)], spacing: 18) {
+                if let l = listing, let parent = l.parent, l.path != root?.path {
+                    Button { open(parent) } label: { tileLabel(icon: "arrow.turn.left.up", title: "Back", sub: (parent as NSString).lastPathComponent, url: nil, tint: .gray) }
+                        .buttonStyle(PressScale(scale: 0.95))
+                }
+                ForEach(shown) { f in tile(f) }
+            }
+            .padding(.horizontal, 16).padding(.vertical, 12)
         }
     }
 
-    @ViewBuilder private func row(_ f: FileEntry) -> some View {
-        let label = IconRow(symbol: icon(f), color: color(f), title: f.name, subtitle: f.dir ? "Folder" : "\(kind(f)) · \(formatBytes(f.size))")
+    @ViewBuilder private func tile(_ f: FileEntry) -> some View {
+        let label = tileLabel(icon: icon(f), title: f.name, sub: f.dir ? "Folder" : formatBytes(f.size),
+                              url: f.isImage ? client?.downloadURL(f.path) : nil, tint: color(f))
         Group {
-            if f.dir { Button { open(f.path) } label: { HStack { label; Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary) } }.buttonStyle(.plain) }
+            if f.dir { Button { open(f.path) } label: { label }.buttonStyle(PressScale(scale: 0.95)) }
+            else { Menu { menu(f) } label: { label }.menuStyle(.button).buttonStyle(.plain) }
+        }
+        .contextMenu { menu(f) }
+    }
+
+    /// A Files-style icon: a photo's own picture, else the kind of file.
+    private func tileLabel(icon: String, title: String, sub: String, url: URL?, tint: Color) -> some View {
+        VStack(spacing: 6) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Palette.cardFill)
+                if let url {
+                    Artwork(url: url).clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                } else {
+                    Image(systemName: icon).font(.system(size: 34, weight: .regular)).foregroundStyle(tint)
+                }
+            }
+            .frame(height: 92)
+            Text(title).font(.caption.weight(.medium)).lineLimit(2).truncationMode(.middle).multilineTextAlignment(.center)
+            Text(sub).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+        }
+        .contentShape(Rectangle())
+    }
+
+    @ViewBuilder private func row(_ f: FileEntry) -> some View {
+        let label = HStack(spacing: 14) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(f.name).lineLimit(1).truncationMode(.middle)
+                Text(f.dir ? "Folder" : "\(kind(f)) · \(formatBytes(f.size))").font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+            }
+            Spacer(minLength: 8)
+            if f.dir { Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary) }
+        }
+        .contentShape(Rectangle())
+        Group {
+            if f.dir { Button { open(f.path) } label: { label }.buttonStyle(.plain) }
             else { Menu { menu(f) } label: { label }.menuStyle(.button).buttonStyle(.plain) }
         }
         .contextMenu { menu(f) }
