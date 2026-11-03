@@ -248,6 +248,9 @@ struct PosterTile: View {
             }
         }
         .buttonStyle(PressScale(scale: 0.96))
+        #if os(macOS)
+        .hoverTilt(cornerRadius: 12)
+        #endif
         .contextMenu { TitleMenu(title: title) }
     }
 }

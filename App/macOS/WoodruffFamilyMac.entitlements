@@ -9,5 +9,10 @@
 	<true/>
 	<key>com.apple.security.network.server</key>
 	<true/>
+	<!-- Shared with the desktop widgets: the paired TVs (team-prefixed groups need no provisioning on macOS). -->
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>$(TeamIdentifierPrefix)com.woodruff.family</string>
+	</array>
 </dict>
 </plist>

@@ -11,7 +11,24 @@ struct WoodruffApp: App {
             RootView()
                 .environment(fleet)
                 .task { if !Demo.isOn { Notifier.attach(to: fleet) }; await fleet.start() }
-                .onOpenURL { url in fleet.handle(url: url) }
+                .onOpenURL { url in
+                    // woodruff://remote (widgets, Control Center): open the remote; anything else is a pairing link.
+                    if url.scheme == "woodruff" && url.host == "remote" {
+                        #if os(macOS)
+                        fleet.remotePanel = true
+                        #else
+                        UserDefaults.standard.set("remote", forKey: "section")
+                        #endif
+                    } else { fleet.handle(url: url) }
+                }
+                .onContinueUserActivity("com.woodruff.family.remote") { a in
+                    if let id = a.userInfo?["tv"] as? String, fleet.tv(id) != nil { fleet.remoteAll = false; fleet.selectedID = id }
+                    #if os(macOS)
+                    fleet.remotePanel = true
+                    #else
+                    UserDefaults.standard.set("remote", forKey: "section")
+                    #endif
+                }
         }
         .onChange(of: scenePhase) { _, phase in fleet.setActive(phase == .active) }
         #if os(macOS)
@@ -21,6 +38,14 @@ struct WoodruffApp: App {
         #endif
 
         #if os(macOS)
+        Window("Mini Player", id: "mini") {
+            MiniPlayerView().environment(fleet)
+        }
+        .windowResizability(.contentSize)
+        .windowStyle(.hiddenTitleBar)
+        .windowLevel(.floating)
+        .defaultPosition(.topTrailing)
+
         MenuBarExtra {
             MenuBarFleetView().environment(fleet)
         } label: {
@@ -129,6 +154,7 @@ struct MacRoot: View {
     @State private var tvSelection: String?
     @State private var query = ""
     @State private var keyMonitor: Any?
+    @AppStorage("macWelcomeShown") private var welcomeShown = false
 
     private var section: AppSection { selection == .remote ? .home : selection }
 
@@ -164,6 +190,7 @@ struct MacRoot: View {
                 if !query.isEmpty { LibrarySearchResults(query: query) }
                 else if let id = tvSelection { TVDetailView(tvID: id) } else { section.view }
             }
+            .background { AmbientArtwork() }
             .safeAreaInset(edge: .bottom) {
                 if tvSelection == nil && section != .home && !fleet.remotePanel {
                     NowPlayingBar().frame(maxWidth: 600).padding(.bottom, 8)
@@ -171,6 +198,14 @@ struct MacRoot: View {
             }
         }
         .searchable(text: $query, placement: .toolbar, prompt: "Movies and TV Shows")
+        .onChange(of: fleet.tvs) { _, _ in NowPlayingBridge.shared.update(fleet); WidgetSync.update(fleet) }
+        .onChange(of: fleet.selectedID) { _, _ in NowPlayingBridge.shared.update(fleet); WidgetSync.update(fleet) }
+        .sheet(isPresented: Binding(get: { !welcomeShown && !Demo.isOn }, set: { if !$0 { welcomeShown = true } })) { MacWelcome() }
+        .userActivity("com.woodruff.family.remote", isActive: fleet.remotePanel) { a in
+            a.title = "Woodruff Remote"
+            a.isEligibleForHandoff = true
+            if let id = fleet.selectedID { a.addUserInfoEntries(from: ["tv": id]) }
+        }
         .onAppear { installSpaceKey() }
         .onDisappear { if let m = keyMonitor { NSEvent.removeMonitor(m) } }
         .inspector(isPresented: $fleet.remotePanel) {

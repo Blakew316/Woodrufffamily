@@ -6,6 +6,7 @@ import WoodruffKit
 struct HomeView: View {
     @Environment(Fleet.self) private var fleet
     @State private var openTV: String?
+    @Namespace private var zoom
 
     private let columns = [GridItem(.adaptive(minimum: 320, maximum: 520), spacing: 18)]
 
@@ -17,7 +18,9 @@ struct HomeView: View {
                     Text("TVs").font(.title2.bold())
                     LazyVGrid(columns: columns, spacing: 18) {
                         ForEach(fleet.tvs) { tv in
-                            HomeTVTile(tv: tv) { openTV = tv.id }
+                            HomeTVTile(tv: tv) { open(tv.id) }
+                                .matchedGeometryEffect(id: tv.id, in: zoom, isSource: openTV != tv.id)
+                                .opacity(openTV == tv.id ? 0 : 1)
                         }
                     }
                 }
@@ -38,8 +41,28 @@ struct HomeView: View {
             .frame(maxWidth: 1180, alignment: .leading)
             .frame(maxWidth: .infinity)
         }
-        .navigationTitle("Home")
-        .navigationDestination(item: $openTV) { TVDetailView(tvID: $0) }
+        .blur(radius: openTV == nil ? 0 : 8)
+        .overlay { if openTV != nil { Color.black.opacity(0.25).ignoresSafeArea().onTapGesture { close() } } }
+        .overlay {
+            // The tile grows into the TV's page (and shrinks back into its tile).
+            if let id = openTV {
+                TVDetailView(tvID: id)
+                    .overlay(alignment: .topTrailing) {
+                        GlassCircle(symbol: "xmark", size: 34) { close() }.padding(14)
+                    }
+                    .background(Palette.groupedBackground)
+                    .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+                    .matchedGeometryEffect(id: id, in: zoom, isSource: true)
+                    .shadow(color: .black.opacity(0.35), radius: 40, y: 20)
+                    .padding(28)
+                    .frame(maxWidth: 820)
+                    #if os(macOS)
+                    .onExitCommand { close() }
+                    #endif
+                    .transition(.asymmetric(insertion: .identity, removal: .opacity))
+            }
+        }
+        .navigationTitle(openTV.flatMap { fleet.tv($0)?.name } ?? "Home")
         .refreshable { await fleet.refresh(); await fleet.loadAllHealth() }
     }
 
@@ -66,6 +89,17 @@ struct HomeView: View {
             }
         }
         .scrollIndicators(.hidden)
+    }
+
+    private func open(_ id: String) {
+        #if os(macOS)
+        MacFeedback.snap()
+        #endif
+        withAnimation(.spring(response: 0.5, dampingFraction: 0.86)) { openTV = id }
+    }
+
+    private func close() {
+        withAnimation(.spring(response: 0.45, dampingFraction: 0.9)) { openTV = nil }
     }
 
     private func all(_ key: String, onlyPlaying: Bool = false) async {
@@ -165,6 +199,9 @@ struct HomeTVTile: View {
         .scaleEffect(hovering ? 1.01 : 1)
         .animation(.spring(response: 0.3, dampingFraction: 0.8), value: hovering)
         .contentShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+        #if os(macOS)
+        .hoverTilt()
+        #endif
         .onTapGesture(perform: open)
         .onHover { hovering = $0 }
         .alert("Rename TV", isPresented: $renaming) {

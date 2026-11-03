@@ -59,6 +59,10 @@ targets:
         NSUserNotificationsUsageDescription: Alerts when a TV needs attention or a family announcement arrives.
         UIBackgroundModes: [fetch]
         NSSupportsLiveActivities: true
+        NSUserActivityTypes: [com.woodruff.family.remote]
+        CFBundleURLTypes:
+          - CFBundleURLName: com.woodruff.family
+            CFBundleURLSchemes: [woodruff]
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
           NSAllowsLocalNetworking: true
@@ -96,14 +100,16 @@ targets:
     sources:
       - App/Shared
       - App/macOS
+      - App/MacCommon
       - App/Resources
     dependencies:
       - package: WoodruffKit
+      - target: WoodruffMacWidgets
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.woodruff.family.mac
         PRODUCT_NAME: Woodruff Family
-        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIconMac
         ENABLE_HARDENED_RUNTIME: NO
         CODE_SIGN_ENTITLEMENTS: App/macOS/WoodruffFamilyMac.entitlements
     info:
@@ -115,6 +121,38 @@ targets:
         NSLocalNetworkUsageDescription: Woodruff finds and controls the family's TVs on your network.
         NSBonjourServices: [_woodruff._tcp]
         NSPhotoLibraryUsageDescription: Add photos and videos to Family Memories on the TVs.
+        NSUserActivityTypes: [com.woodruff.family.remote]
+        WoodruffAppGroup: $(TeamIdentifierPrefix)com.woodruff.family
+        CFBundleURLTypes:
+          - CFBundleURLName: com.woodruff.family
+            CFBundleURLSchemes: [woodruff]
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
+          NSAllowsLocalNetworking: true
+
+  # Desktop and Notification Center widgets for the Mac.
+  WoodruffMacWidgets:
+    type: app-extension
+    platform: macOS
+    sources:
+      - App/MacWidgets
+      - App/MacCommon
+      - path: App/Resources/Assets.xcassets
+    dependencies:
+      - package: WoodruffKit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.woodruff.family.mac.widgets
+        PRODUCT_NAME: WoodruffMacWidgets
+        SKIP_INSTALL: YES
+        CODE_SIGN_ENTITLEMENTS: App/MacWidgets/WoodruffMacWidgets.entitlements
+    info:
+      path: App/MacWidgets/Info.plist
+      properties:
+        CFBundleDisplayName: Woodruff
+        WoodruffAppGroup: $(TeamIdentifierPrefix)com.woodruff.family
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
           NSAllowsLocalNetworking: true

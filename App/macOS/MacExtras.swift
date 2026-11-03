@@ -5,6 +5,7 @@ import WoodruffKit
 /// and transport, a TV switcher, and every TV's state underneath.
 struct MenuBarFleetView: View {
     @Environment(Fleet.self) private var fleet
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         let tv = fleet.selected
@@ -60,6 +61,7 @@ struct MenuBarFleetView: View {
             }
             Divider()
             HStack {
+                Button("Mini Player") { openWindow(id: "mini") }
                 Button("Open Woodruff") {
                     NSApp.activate(ignoringOtherApps: true)
                     NSApp.windows.first { $0.canBecomeMain }?.makeKeyAndOrderFront(nil)
@@ -83,7 +85,11 @@ struct MenuBarFleetView: View {
 /// Menu commands: refresh, the remote's keys, and ⌘1–⌘4 to pick a TV.
 struct WoodruffCommands: Commands {
     var fleet: Fleet
+    @Environment(\.openWindow) private var openWindow
     var body: some Commands {
+        CommandGroup(after: .windowArrangement) {
+            Button("Mini Player") { openWindow(id: "mini") }.keyboardShortcut("m", modifiers: [.command, .shift])
+        }
         CommandMenu("TVs") {
             Button("Refresh All") { Task { await fleet.refresh(); await fleet.loadAllHealth() } }
                 .keyboardShortcut("r", modifiers: [.command, .shift])

@@ -107,6 +107,12 @@ struct RemoteView: View {
         .sheet(isPresented: $typing) { if let tv { KeyboardSheet(tv: tv) } }
         .task(id: "\(fleet.selectedID ?? "")-\(all)") { await fieldLoop() }
         .sheet(isPresented: $nowPlaying) { NowPlayingSheet() }
+        // Handoff: the Mac offers to open the remote on the same TV.
+        .userActivity("com.woodruff.family.remote") { a in
+            a.title = "Woodruff Remote"
+            a.isEligibleForHandoff = true
+            if let id = fleet.selectedID { a.addUserInfoEntries(from: ["tv": id]) }
+        }
         .onAppear {
             let r = UserDefaults.standard.string(forKey: "route")
             if r == "keyboard" { typing = true }
@@ -211,6 +217,9 @@ struct RemoteView: View {
     // MARK: Sending
 
     private func send(_ key: String, repeat n: Int = 0) {
+        #if os(macOS)
+        if n == 0 { MacFeedback.key() }
+        #endif
         switch key {
         case "up", "down", "left", "right": arrowTicks += 1
         case "ok", "menu": okTicks += 1

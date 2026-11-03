@@ -119,6 +119,11 @@ struct PhoneSettingsView: View {
                     LabeledContent("ntfy topic", value: topic)
                     Button("Copy Topic") { copyToClipboard(topic) }
                 }
+                #if os(macOS)
+                Toggle("Click Sound on Remote Keys", isOn: Binding(
+                    get: { UserDefaults.standard.object(forKey: "remoteClick") as? Bool ?? true },
+                    set: { UserDefaults.standard.set($0, forKey: "remoteClick") }))
+                #endif
                 #if os(iOS)
                 Toggle("Now Playing on Lock Screen", isOn: Binding(
                     get: { UserDefaults.standard.object(forKey: "liveActivity") as? Bool ?? true },
