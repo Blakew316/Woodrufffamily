@@ -41,6 +41,7 @@ struct WoodruffApp: App {
         }
         .onChange(of: scenePhase) { _, phase in
             fleet.setActive(phase == .active)
+            if phase == .active { SmartHome.shared.wake() }
             if phase == .active && !Demo.isOn && !fleet.hubs.isEmpty { LocationWeather.shared.start(fleet) }
         }
         #if os(macOS)

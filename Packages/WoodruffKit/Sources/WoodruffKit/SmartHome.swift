@@ -417,13 +417,37 @@ final class GoveeLAN {
     var onStatus: ((String, Bool, Int, LightColor?, Int?) -> Void)? // ip, on, brightness, color, kelvin
 
     func start() {
-        guard listener == nil, let port = NWEndpoint.Port(rawValue: 4002), let l = try? NWListener(using: .udp, on: port) else { return }
+        guard listener == nil, let port = NWEndpoint.Port(rawValue: 4002) else { return }
+        let params = NWParameters.udp
+        params.allowLocalEndpointReuse = true
+        guard let l = try? NWListener(using: params, on: port) else { return }
         l.newConnectionHandler = { [weak self] c in
             c.start(queue: .main)
             self?.receive(c)
         }
+        // iOS closes it while the app is in the background; open a new one when that happens.
+        l.stateUpdateHandler = { [weak self] state in
+            switch state {
+            case .failed, .cancelled:
+                Task { @MainActor in
+                    guard let self, self.listener === l else { return }
+                    self.listener = nil
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                    self.start()
+                }
+            default: break
+            }
+        }
         l.start(queue: .main)
         listener = l
+    }
+
+    /// Opens a fresh listener (after the app comes back to the front).
+    func restart() {
+        let old = listener
+        listener = nil
+        old?.cancel()
+        start()
     }
 
     nonisolated private func receive(_ c: NWConnection) {
@@ -601,10 +625,23 @@ public final class SmartHome {
                 // Ask for lights a few times early on (UDP answers can get lost), then every five minutes.
                 if [0, 1, 3, 6, 12].contains(tick) || tick % 60 == 0 { self.scanLights() }
                 await self.refreshSpeakers()
-                if tick % 2 == 0 { self.pollLights() }
+                self.pollLights()
                 tick += 1
                 try? await Task.sleep(nanoseconds: 5_000_000_000)
             }
+        }
+    }
+
+    /// The app came back to the front: listen afresh and ask everything for its state straight away.
+    public func wake() {
+        guard loop != nil else { return }
+        #if canImport(Network)
+        lan.restart()
+        #endif
+        Task {
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            pollLights()
+            await refreshSpeakers()
         }
     }
 
