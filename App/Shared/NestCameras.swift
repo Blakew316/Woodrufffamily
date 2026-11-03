@@ -162,28 +162,73 @@ struct CamerasSection: View {
         if !shown.isEmpty {
             VStack(alignment: .leading, spacing: 14) {
                 Text("Cameras").font(.title2.bold())
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 170), spacing: 14)], spacing: 14) {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 320), spacing: 14)], spacing: 14) {
                     ForEach(shown) { cam in
-                        Button { open = cam } label: {
-                            VStack(alignment: .leading, spacing: 8) {
-                                Image(systemName: cam.doorbell ? "video.doorbell.fill" : "video.fill")
-                                    .font(.system(size: 20, weight: .semibold)).foregroundStyle(.secondary)
-                                Spacer(minLength: 0)
-                                Text(cam.name).font(.subheadline.weight(.semibold)).lineLimit(2)
-                                Text(cam.webRTC ? "Tap for Live" : "Live view not supported").font(.caption).foregroundStyle(.secondary)
-                            }
-                            .padding(14)
-                            .frame(maxWidth: .infinity, minHeight: 110, alignment: .topLeading)
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .glass(RoundedRectangle(cornerRadius: 20, style: .continuous))
-                        .disabled(!cam.webRTC)
+                        LiveCameraTile(camera: cam) { open = cam }
                     }
                 }
             }
             .sheet(item: $open) { cam in CameraLiveView(camera: cam) }
         }
+    }
+}
+
+/// A camera on Home: its live picture playing right in the tile (muted), its name over it. It streams only
+/// while it's on screen and the app is open; tap it for the big view with sound.
+struct LiveCameraTile: View {
+    var camera: NestCameras.Camera
+    var open: () -> Void
+    @Environment(\.scenePhase) private var phase
+    @State private var player = LivePlayer()
+    @State private var status = "Connecting…"
+    @State private var visible = false
+
+    var body: some View {
+        ZStack(alignment: .bottomLeading) {
+            Color.black
+            if camera.webRTC {
+                LiveWebView(player: player).allowsHitTesting(false)
+            }
+            if status != "Live" {
+                VStack(spacing: 8) {
+                    if camera.webRTC && status.hasSuffix("…") { ProgressView().tint(.white) }
+                    Text(camera.webRTC ? status : "Live view not supported").font(.caption).foregroundStyle(.white.opacity(0.75))
+                        .multilineTextAlignment(.center).padding(.horizontal)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            LinearGradient(colors: [.clear, .black.opacity(0.65)], startPoint: .center, endPoint: .bottom)
+                .allowsHitTesting(false)
+            HStack(alignment: .bottom) {
+                Text(camera.name).font(.subheadline.weight(.semibold)).foregroundStyle(.white).lineLimit(1)
+                Spacer()
+                if status == "Live" {
+                    HStack(spacing: 5) {
+                        Circle().fill(.red).frame(width: 7, height: 7)
+                        Text("LIVE").font(.caption2.weight(.heavy)).foregroundStyle(.white)
+                    }
+                    .padding(.horizontal, 8).padding(.vertical, 4)
+                    .background(Capsule().fill(.black.opacity(0.45)))
+                }
+            }
+            .padding(12)
+        }
+        .aspectRatio(16 / 9, contentMode: .fit)
+        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).strokeBorder(.white.opacity(0.08)))
+        .contentShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .onTapGesture { if camera.webRTC { open() } }
+        .onAppear { visible = true; begin() }
+        .onDisappear { visible = false; player.end() }
+        .onChange(of: phase) { _, p in
+            if p == .active { if visible { begin() } } else { player.end(); status = "Connecting…" }
+        }
+    }
+
+    private func begin() {
+        guard camera.webRTC else { return }
+        player.onStatus = { s in withAnimation(.smooth) { status = s } }
+        Task { await player.run(camera) }
     }
 }
 
@@ -254,6 +299,7 @@ final class LivePlayer: NSObject, WKScriptMessageHandler {
     }
 
     func run(_ cam: NestCameras.Camera) async {
+        if session != nil { end() }
         camera = cam
         web.loadHTMLString(Self.page, baseURL: URL(string: "https://localhost/"))
     }
