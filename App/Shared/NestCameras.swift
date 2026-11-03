@@ -194,6 +194,12 @@ final class NestCameras {
 // MARK: - Home section
 
 struct CamerasSection: View {
+    /// Two across on iPhone; on the Mac, as many as fit at a comfortable size.
+    #if os(macOS)
+    static let compactWidth: CGFloat = 260
+    #else
+    static let compactWidth: CGFloat = 160
+    #endif
     var room: String? = nil
     /// Only the favourites (Home's Favorites).
     var favorites = false
@@ -213,7 +219,7 @@ struct CamerasSection: View {
         if !shown.isEmpty {
             VStack(alignment: .leading, spacing: 14) {
                 if titled { Text("Cameras").font(.title2.bold()) }
-                LazyVGrid(columns: compact ? [GridItem(.adaptive(minimum: 160), spacing: 10)] : [GridItem(.adaptive(minimum: 320), spacing: 14)], spacing: compact ? 10 : 14) {
+                LazyVGrid(columns: compact ? [GridItem(.adaptive(minimum: Self.compactWidth), spacing: 10)] : [GridItem(.adaptive(minimum: 320), spacing: 14)], spacing: compact ? 10 : 14) {
                     ForEach(shown) { cam in
                         LiveCameraTile(camera: cam, compact: compact) { open = cam }
                     }

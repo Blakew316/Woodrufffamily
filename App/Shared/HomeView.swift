@@ -12,7 +12,7 @@ struct HomeView: View {
     @Namespace private var zoom
     private let layout = HomeLayout.shared
 
-    private let columns = [GridItem(.adaptive(minimum: 320, maximum: 520), spacing: 18)]
+    private let columns = [GridItem(.adaptive(minimum: 320), spacing: 18)]
 
     var body: some View {
         ScrollView {
@@ -51,7 +51,8 @@ struct HomeView: View {
             #else
             .padding(28)
             #endif
-            .frame(maxWidth: 1180, alignment: .leading)
+            // Fills the window: tiles reflow as it's resized (no fixed width on the Mac).
+            .frame(maxWidth: .infinity, alignment: .leading)
             .frame(maxWidth: .infinity)
         }
         .blur(radius: openTV == nil ? 0 : 8)
