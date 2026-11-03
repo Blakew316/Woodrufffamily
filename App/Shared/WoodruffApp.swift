@@ -234,12 +234,8 @@ struct MacRoot: View {
                 if !home.lights.isEmpty {
                     Section("Lights") {
                         ForEach(home.lights) { l in
-                            HStack {
-                                Text(l.name)
-                                Spacer()
-                                Circle().fill(l.on ? l.shade : Color.secondary.opacity(0.3)).frame(width: 7, height: 7)
-                            }
-                            .tag("light:\(l.id)")
+                            Text(l.name)
+                                .tag("light:\(l.id)")
                         }
                     }
                 }
