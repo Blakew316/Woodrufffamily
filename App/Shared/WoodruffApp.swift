@@ -162,7 +162,8 @@ struct RootView: View {
 struct MacRoot: View {
     @Environment(Fleet.self) private var fleet
     @Binding var selection: AppSection
-    @State private var tvSelection: String?
+    @SceneStorage("mac.tv") private var tvSelection: String?
+    @State private var palette = false
     @State private var query = ""
     @State private var keyMonitor: Any?
     @AppStorage("macWelcomeShown") private var welcomeShown = false
@@ -208,6 +209,11 @@ struct MacRoot: View {
             }
         }
         .searchable(text: $query, placement: .toolbar, prompt: "Movies and TV Shows")
+        .background(WindowMemory())
+        .sheet(isPresented: $palette) { CommandPalette() }
+        .background {
+            Button("Command Palette") { palette = true }.keyboardShortcut("k", modifiers: .command).opacity(0).frame(width: 0, height: 0)
+        }
         .onChange(of: fleet.tvs) { _, _ in NowPlayingBridge.shared.update(fleet); WidgetSync.update(fleet) }
         .onChange(of: fleet.selectedID) { _, _ in NowPlayingBridge.shared.update(fleet); WidgetSync.update(fleet) }
         .sheet(isPresented: Binding(get: { !welcomeShown && !Demo.isOn }, set: { if !$0 { welcomeShown = true } })) { MacWelcome() }

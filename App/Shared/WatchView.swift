@@ -5,6 +5,7 @@ import WoodruffKit
 /// Continue Watching, Recently Added, Movies and TV Shows. Plays on the remote's TV, any TV, or all of them.
 struct WatchView: View {
     @Environment(Fleet.self) private var fleet
+    @Namespace private var zoom
     @State private var home: WatchHome?
     @State private var error: String?
     @State private var page = 0
@@ -20,7 +21,7 @@ struct WatchView: View {
                 } else if let error {
                     EmptyState(symbol: "wifi.exclamationmark", title: "Can’t Load the Library", message: error).padding(.top, 80)
                 } else {
-                    ProgressView().frame(maxWidth: .infinity).padding(.top, 120)
+                    WatchPlaceholder()
                 }
             }
             .padding(.bottom, 30)
@@ -42,9 +43,10 @@ struct WatchView: View {
         #endif
         .navigationDestination(for: LibraryRef.self) { LibraryGrid(place: $0.place) }
         .sheet(item: Binding(get: { openTitle.map { TitleRef(id: $0) } }, set: { openTitle = $0?.id })) { ref in
-            TitleSheet(id: ref.id)
+            TitleSheet(id: ref.id).zoomDestination(ref.id, zoom)
         }
         .environment(\.openTitle, OpenTitleAction { openTitle = $0 })
+        .environment(\.zoomNamespace, zoom)
         .refreshable { await load() }
         .task { await loop() }
         .onAppear { if UserDefaults.standard.string(forKey: "route") == "title" { openTitle = "t_backyard_science" } }
@@ -224,6 +226,7 @@ struct ShelfRow<Content: View>: View {
 struct PosterTile: View {
     @Environment(Fleet.self) private var fleet
     @Environment(\.openTitle) private var openTitle
+    @Environment(\.zoomNamespace) private var zoom
     var title: Title
     var width: CGFloat = 112
 
@@ -233,6 +236,7 @@ struct PosterTile: View {
                 Color.clear.frame(width: width, height: width * 1.5)
                     .overlay { Artwork(url: fleet.hubClient()?.art(title.poster)) }
                     .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .zoomSource(title.id, zoom)
                     .overlay(alignment: .topTrailing) {
                         if title.watched == true {
                             Image(systemName: "checkmark.circle.fill").symbolRenderingMode(.palette).foregroundStyle(.white, .black.opacity(0.5)).padding(6)
@@ -670,4 +674,22 @@ struct SearchPage: View {
 
 extension Array {
     subscript(safe i: Int) -> Element? { indices.contains(i) ? self[i] : nil }
+}
+
+/// Watch while the library loads: the billboard and two shelves as soft shimmering shapes.
+struct WatchPlaceholder: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 26) {
+            Placeholder(corner: 0).aspectRatio(0.82, contentMode: .fit).frame(maxWidth: .infinity)
+            ForEach(0..<2, id: \.self) { _ in
+                VStack(alignment: .leading, spacing: 10) {
+                    Placeholder(corner: 6).frame(width: 170, height: 22)
+                    HStack(spacing: 10) { ForEach(0..<4, id: \.self) { _ in Placeholder().frame(width: 112, height: 168) } }
+                }
+                .padding(.horizontal, 20)
+            }
+        }
+        .shimmer()
+        .accessibilityLabel("Loading")
+    }
 }

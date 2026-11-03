@@ -36,12 +36,13 @@ struct AmbientArtwork: View {
 /// Tilts a tile a little toward the pointer, with a moving highlight, like Apple TV's focus.
 struct HoverTilt: ViewModifier {
     var cornerRadius: CGFloat = 24
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var point: CGPoint?
     @State private var size: CGSize = .zero
 
     func body(content: Content) -> some View {
-        let dx = point.map { ($0.x / max(size.width, 1)) - 0.5 } ?? 0
-        let dy = point.map { ($0.y / max(size.height, 1)) - 0.5 } ?? 0
+        let dx = reduceMotion ? 0 : point.map { ($0.x / max(size.width, 1)) - 0.5 } ?? 0
+        let dy = reduceMotion ? 0 : point.map { ($0.y / max(size.height, 1)) - 0.5 } ?? 0
         content
             .overlay {
                 if let point {

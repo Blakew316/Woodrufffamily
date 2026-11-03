@@ -20,6 +20,29 @@ struct MemoriesView: View {
     private let columns = [GridItem(.adaptive(minimum: 150, maximum: 220), spacing: 2)]
     #endif
     private var client: TVClient? { fleet.hubClient() }
+    @Namespace private var zoom
+    @AppStorage("memories.columns") private var columnCount = 3
+    @State private var pinchBase: Int?
+
+    /// Photos grouped by the month they were taken, newest first.
+    private func months(_ items: [MemoryItem]) -> [(String, [MemoryItem])] {
+        var order: [String] = []
+        var groups: [String: [MemoryItem]] = [:]
+        for i in items {
+            let key = i.takenDate.map { $0.formatted(.dateTime.month(.wide).year()) } ?? "Undated"
+            if groups[key] == nil { order.append(key) }
+            groups[key, default: []].append(i)
+        }
+        return order.map { ($0, groups[$0]!) }
+    }
+
+    private var gridColumns: [GridItem] {
+        #if os(iOS)
+        Array(repeating: GridItem(.flexible(), spacing: 2), count: max(2, min(6, columnCount)))
+        #else
+        columns
+        #endif
+    }
 
     var body: some View {
         ScrollView {
@@ -28,13 +51,36 @@ struct MemoriesView: View {
                     ProgressView("Adding \(u.done + 1) of \(u.of)…", value: Double(u.done), total: Double(u.of))
                         .padding(.horizontal, 20).padding(.bottom, 10)
                 }
-                LazyVGrid(columns: columns, spacing: 2) {
-                    ForEach(m.items) { item in
-                        Button { viewing = item } label: { tile(item) }
-                            .buttonStyle(.plain)
-                            .contextMenu { itemMenu(item) }
+                // Like Photos: a glass header for each month that stays pinned while its photos scroll by.
+                LazyVGrid(columns: gridColumns, spacing: 2, pinnedViews: [.sectionHeaders]) {
+                    ForEach(months(m.items), id: \.0) { month, items in
+                        Section {
+                            ForEach(items) { item in
+                                Button { viewing = item } label: { tile(item).zoomSource(item.path, zoom) }
+                                    .buttonStyle(.plain)
+                                    .contextMenu { itemMenu(item) }
+                            }
+                        } header: {
+                            HStack {
+                                Text(month).font(.headline)
+                                Spacer()
+                            }
+                            .padding(.horizontal, 16).padding(.vertical, 8)
+                            .background(.ultraThinMaterial)
+                        }
                     }
                 }
+                #if os(iOS)
+                // Pinch to see more or fewer photos across, like Photos.
+                .simultaneousGesture(MagnifyGesture()
+                    .onChanged { v in
+                        let base = pinchBase ?? columnCount
+                        pinchBase = base
+                        let next = max(2, min(6, Int((Double(base) / v.magnification).rounded())))
+                        if next != columnCount { withAnimation(.snappy) { columnCount = next } }
+                    }
+                    .onEnded { _ in pinchBase = nil })
+                #endif
                 if m.items.isEmpty {
                     EmptyState(symbol: "photo.on.rectangle", title: "No Memories Yet", message: "Add photos and videos from this device. Every TV’s slideshow can show them.")
                         .padding(.top, 60)
@@ -47,10 +93,16 @@ struct MemoriesView: View {
             } else if let error {
                 EmptyState(symbol: "wifi.exclamationmark", title: "Can't Load Memories", message: error)
             } else {
-                ProgressView().padding(40)
+                LazyVGrid(columns: gridColumns, spacing: 2) {
+                    ForEach(0..<18, id: \.self) { _ in Placeholder(corner: 0).aspectRatio(1, contentMode: .fit) }
+                }
+                .shimmer()
             }
         }
         .screenTitle("Family Memories")
+        #if os(macOS)
+        .dropDestination(for: URL.self) { urls, _ in Task { await addFiles(urls) }; return true }
+        #endif
         .refreshable { await load() }
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
@@ -74,7 +126,9 @@ struct MemoriesView: View {
         }
         .task { await load() }
         #if os(iOS)
-        .fullScreenCover(item: $viewing) { item in MemoryViewer(items: memories?.items ?? [], start: item, onChange: { memories = $0 }) }
+        .fullScreenCover(item: $viewing) { item in
+            MemoryViewer(items: memories?.items ?? [], start: item, onChange: { memories = $0 }).zoomDestination(item.path, zoom)
+        }
         #else
         .sheet(item: $viewing) { item in MemoryViewer(items: memories?.items ?? [], start: item, onChange: { memories = $0 }).frame(minWidth: 800, minHeight: 600) }
         #endif

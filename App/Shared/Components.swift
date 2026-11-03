@@ -244,6 +244,69 @@ struct Artwork: View {
 
 typealias TVImage = Artwork
 
+// MARK: - Loading placeholders
+
+/// A soft light that sweeps across placeholder shapes while content loads (calm under Reduce Motion).
+struct Shimmer: ViewModifier {
+    @Environment(\.accessibilityReduceMotion) private var reduce
+    @State private var phase: CGFloat = -1
+    func body(content: Content) -> some View {
+        content
+            .overlay {
+                if !reduce {
+                    GeometryReader { g in
+                        LinearGradient(colors: [.clear, .white.opacity(0.12), .clear], startPoint: .leading, endPoint: .trailing)
+                            .frame(width: g.size.width * 0.6)
+                            .offset(x: phase * g.size.width * 1.6)
+                    }
+                    .mask(content)
+                }
+            }
+            .onAppear { withAnimation(.linear(duration: 1.3).repeatForever(autoreverses: false)) { phase = 1 } }
+    }
+}
+
+extension View {
+    func shimmer() -> some View { modifier(Shimmer()) }
+}
+
+/// A rounded placeholder block.
+struct Placeholder: View {
+    var corner: CGFloat = 12
+    var body: some View { RoundedRectangle(cornerRadius: corner, style: .continuous).fill(.quaternary) }
+}
+
+// MARK: - Zoom transitions
+
+private struct ZoomNamespaceKey: EnvironmentKey { static let defaultValue: Namespace.ID? = nil }
+extension EnvironmentValues {
+    /// Where tiles register as the source of the zoom into what they open (iOS).
+    var zoomNamespace: Namespace.ID? {
+        get { self[ZoomNamespaceKey.self] }
+        set { self[ZoomNamespaceKey.self] = newValue }
+    }
+}
+
+extension View {
+    /// Marks this tile as where a zoom transition starts (iOS 18+), when a namespace is set.
+    @ViewBuilder func zoomSource(_ id: String, _ ns: Namespace.ID?) -> some View {
+        #if os(iOS)
+        if let ns { self.matchedTransitionSource(id: id, in: ns) } else { self }
+        #else
+        self
+        #endif
+    }
+
+    /// Opens with a zoom out of the tile marked [id].
+    @ViewBuilder func zoomDestination(_ id: String, _ ns: Namespace.ID?) -> some View {
+        #if os(iOS)
+        if let ns { self.navigationTransition(.zoom(sourceID: id, in: ns)) } else { self }
+        #else
+        self
+        #endif
+    }
+}
+
 // MARK: - Formatting
 
 func relative(_ ms: Double?) -> String {

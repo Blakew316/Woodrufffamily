@@ -66,6 +66,7 @@ struct HomeView: View {
         // Home is always the dark, cinematic room: its glass and text read over the backdrop.
         .environment(\.colorScheme, .dark)
         .navigationTitle(openTV.flatMap { fleet.tv($0)?.name } ?? "Home")
+        .navigationSubtitle(statusLine)
         .refreshable { await fleet.refresh(); await fleet.loadAllHealth() }
     }
 
@@ -92,6 +93,13 @@ struct HomeView: View {
             }
         }
         .scrollIndicators(.hidden)
+    }
+
+    /// "4 TVs · 2 playing" under the title.
+    private var statusLine: String {
+        let paired = fleet.tvs.filter { !$0.isUnpaired }
+        let playing = paired.filter { $0.playing?.isPlaying == true }.count
+        return "\(paired.count) TV\(paired.count == 1 ? "" : "s")" + (playing > 0 ? " · \(playing) playing" : "")
     }
 
     /// The TV the banner shows: the remote's, if it's playing, else any that is.
@@ -142,6 +150,23 @@ struct HomeTVTile: View {
     var tv: FleetTV
     var open: () -> Void
     @State private var hovering = false
+    @State private var dropTarget = false
+
+    /// Photos and videos dropped on a tile go into Family Memories and show on that TV.
+    private func dropped(_ urls: [URL]) {
+        guard let hub = fleet.hub(tv.id) ?? fleet.hub(tv.hubID) else { return }
+        let c = TVClient(hub: hub, routeID: "this")
+        Task {
+            var last: MemoryItem?
+            for url in urls {
+                let access = url.startAccessingSecurityScopedResource()
+                defer { if access { url.stopAccessingSecurityScopedResource() } }
+                do { last = try await c.addMemory(file: url, name: url.lastPathComponent, taken: nil) } catch { fleet.show(error) }
+            }
+            if let last, fleet.hub(tv.id) != nil { try? await c.showMemory(last) }
+            fleet.say("Added to Family Memories", fleet.hub(tv.id) != nil ? "Showing on \(tv.name)." : "Open Memories to show them on \(tv.name).")
+        }
+    }
     @State private var renaming = false
     @State private var newName = ""
 
@@ -213,6 +238,16 @@ struct HomeTVTile: View {
         .contentShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
         #if os(macOS)
         .hoverTilt()
+        .dropDestination(for: URL.self) { urls, _ in
+            dropped(urls)
+            return true
+        } isTargeted: { dropTarget = $0 }
+        .overlay {
+            if dropTarget {
+                RoundedRectangle(cornerRadius: 24, style: .continuous).strokeBorder(Color.accentColor, lineWidth: 3)
+                    .overlay(Text("Show on \(tv.name)").font(.headline).padding(10).glass(Capsule(), interactive: false))
+            }
+        }
         #endif
         .onTapGesture(perform: open)
         .onHover { hovering = $0 }
@@ -320,13 +355,15 @@ struct LibrarySearchResults: View {
 /// soft blur of whatever's playing.
 struct HomeBackdrop: View {
     @Environment(Fleet.self) private var fleet
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var playing: NowPlaying?
 
     var body: some View {
         ZStack {
             Color(red: 0.03, green: 0.05, blue: 0.09)
             TimelineView(.animation(minimumInterval: 1 / 15)) { ctx in
-                let t = ctx.date.timeIntervalSinceReferenceDate / 30
+                // Still under Reduce Motion.
+                let t = reduceMotion ? 0 : ctx.date.timeIntervalSinceReferenceDate / 30
                 let w = Float(sin(t) * 0.12), v = Float(cos(t * 0.8) * 0.12)
                 MeshGradient(width: 3, height: 3, points: [
                     [0, 0], [0.5 + w, 0], [1, 0],

@@ -1,4 +1,5 @@
 import SwiftUI
+import QuickLook
 import UniformTypeIdentifiers
 import WoodruffKit
 
@@ -231,6 +232,8 @@ struct FilesView: View {
     @State private var askFolder = false
     @State private var progress: String?
     @State private var saving: URL?
+    @State private var previewing: URL?
+    @State private var hovered: FileEntry?
 
     private var client: TVClient? { fleet.hubClient() }
     private var root: StorageRoot? { roots.first { path?.hasPrefix($0.path) == true } ?? roots.first }
@@ -272,7 +275,15 @@ struct FilesView: View {
     var body: some View {
         Group {
             if listing == nil {
-                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+                ScrollView {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 108, maximum: 150), spacing: 10)], spacing: 28) {
+                        ForEach(0..<12, id: \.self) { _ in
+                            VStack(spacing: 8) { Placeholder(corner: 10).frame(width: 84, height: 70); Placeholder(corner: 4).frame(width: 70, height: 12) }
+                        }
+                    }
+                    .padding(16)
+                    .shimmer()
+                }
             } else if layout == .grid {
                 gridView
             } else {
@@ -304,9 +315,32 @@ struct FilesView: View {
             Button("Cancel", role: .cancel) {}
         }
         .task { await loadRoots() }
+        .quickLookPreview($previewing)
+        .dropDestination(for: URL.self) { urls, _ in upload(urls); return true }
+        #if os(macOS)
+        .focusable()
+        .focusEffectDisabled()
+        .onKeyPress(.space) { if let f = hovered, !f.dir { quickLook(f); return .handled }; return .ignored }
+        #endif
         #if os(iOS)
         .sheet(item: Binding(get: { saving.map { ShareItem(url: $0) } }, set: { saving = $0?.url })) { ShareSheet(items: [$0.url]) }
         #endif
+    }
+
+    /// Quick Look: downloads the file and previews it (Space on the Mac over a file, or Quick Look in its menu).
+    private func quickLook(_ f: FileEntry) {
+        guard let c = client else { return }
+        progress = "Opening \(f.name)…"
+        Task {
+            defer { progress = nil }
+            do {
+                let (tmp, _) = try await URLSession.woodruff.download(from: c.downloadURL(f.path))
+                let dest = FileManager.default.temporaryDirectory.appendingPathComponent(f.name)
+                try? FileManager.default.removeItem(at: dest)
+                try FileManager.default.moveItem(at: tmp, to: dest)
+                previewing = dest
+            } catch { fleet.show(error) }
+        }
     }
 
     /// View, sort, filter, hidden files and the storage, in one menu (as the Files app does it).
@@ -408,6 +442,7 @@ struct FilesView: View {
 
     @ViewBuilder private func tile(_ f: FileEntry) -> some View {
         let label = tileLabel(kind: kindOf(f), title: f.name, lines: [shortDate(f), f.dir ? nil : formatBytes(f.size)].compactMap { $0 })
+            .onHover { inside in if inside { hovered = f } else if hovered?.id == f.id { hovered = nil } }
         Group {
             if f.dir { Button { open(f.path) } label: { label }.buttonStyle(PressScale(scale: 0.95)) }
             else { Menu { menu(f) } label: { label }.menuStyle(.button).buttonStyle(.plain) }
@@ -460,6 +495,7 @@ struct FilesView: View {
             Button { act { try await client?.background(f.path); fleet.say("Background Set", "\(f.name) is the TV’s background.") } } label: { Label("Set as TV Background", systemImage: "photo.on.rectangle") }
         }
         if !f.dir {
+            Button { quickLook(f) } label: { Label("Quick Look", systemImage: "eye") }
             Button { save(f) } label: { Label("Save to This Device", systemImage: "square.and.arrow.down") }
         }
         Divider()

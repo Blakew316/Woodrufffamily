@@ -14,6 +14,7 @@ struct RemoteView: View {
     @State private var okTicks = 0
     @State private var nowPlaying = false
     @State private var showPlaying = false
+    @State private var lastFieldKey: String?
 
     private var tv: FleetTV? { fleet.selected }
     private var all: Bool { fleet.remoteAll }
@@ -247,6 +248,10 @@ struct RemoteView: View {
         while !Task.isCancelled {
             if !all, let t = tv, t.online, let c = fleet.client(for: t), let s = try? await c.typeField() {
                 withAnimation(.snappy) { field = s }
+                // A text box just opened on the TV: bring the keyboard up (once per text box).
+                let key = s.field.map { "\(t.id)-\($0.id)" }
+                if let key, key != lastFieldKey, !typing { typing = true; okTicks += 1 }
+                lastFieldKey = key
             }
             try? await Task.sleep(nanoseconds: 2_000_000_000)
         }
@@ -286,6 +291,7 @@ struct Clickpad: View {
     @State private var hold: Task<Void, Never>?
     @State private var held = false
     @State private var began = false
+    @State private var touch: CGPoint?
     @State private var swiped = false
     @State private var bumps = 0
 
@@ -298,6 +304,15 @@ struct Clickpad: View {
                 .frame(width: size * 0.42, height: size * 0.42)
                 .overlay(Text("OK").font(.title3.weight(.semibold)).foregroundStyle(.secondary))
                 .scaleEffect(pressed == "ok" ? 0.96 : 1)
+            // A soft ring where the finger is, like touching the Siri Remote's surface.
+            if let touch {
+                Circle().fill(.white.opacity(0.07))
+                    .overlay(Circle().strokeBorder(.white.opacity(0.18), lineWidth: 1))
+                    .frame(width: size * 0.22, height: size * 0.22)
+                    .position(touch)
+                    .transition(.opacity)
+                    .allowsHitTesting(false)
+            }
             ForEach(["up", "down", "left", "right"], id: \.self) { d in
                 Image(systemName: "chevron.\(d == "up" ? "up" : d == "down" ? "down" : d == "left" ? "left" : "right")")
                     .font(.system(size: size * 0.055, weight: .semibold))
@@ -315,6 +330,7 @@ struct Clickpad: View {
         .gesture(
             DragGesture(minimumDistance: 0)
                 .onChanged { v in
+                    withAnimation(.interactiveSpring(response: 0.18)) { touch = v.location }
                     if !began {
                         began = true
                         let zone = zoneAt(v.startLocation)
@@ -328,11 +344,24 @@ struct Clickpad: View {
                 }
                 .onEnded { v in
                     hold?.cancel()
+                    withAnimation(.easeOut(duration: 0.25)) { touch = nil }
                     defer { pressed = nil; began = false; held = false; swiped = false }
                     if held { return }
                     let dx = v.translation.width, dy = v.translation.height
                     if max(abs(dx), abs(dy)) >= 26 {
-                        onKey(abs(dx) > abs(dy) ? (dx > 0 ? "right" : "left") : (dy > 0 ? "down" : "up"))
+                        let dir = abs(dx) > abs(dy) ? (dx > 0 ? "right" : "left") : (dy > 0 ? "down" : "up")
+                        onKey(dir)
+                        // Momentum: a fast flick keeps going a few more steps, slowing down, like the Siri Remote.
+                        let fling = abs(dx) > abs(dy) ? abs(v.predictedEndTranslation.width - dx) : abs(v.predictedEndTranslation.height - dy)
+                        let extra = min(5, Int(fling / 90))
+                        if extra > 0 {
+                            Task {
+                                for i in 1...extra {
+                                    try? await Task.sleep(nanoseconds: UInt64(70_000_000 + i * 35_000_000))
+                                    onRepeat(dir, i)
+                                }
+                            }
+                        }
                     } else {
                         onKey(zoneAt(v.startLocation))
                     }
