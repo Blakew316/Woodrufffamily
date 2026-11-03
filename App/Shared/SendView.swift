@@ -371,9 +371,9 @@ struct FilesView: View {
     private var gridView: some View {
         ScrollView {
             if let progress { HStack(spacing: 12) { ProgressView(); Text(progress).font(.subheadline) }.padding() }
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 104, maximum: 140), spacing: 12, alignment: .top)], spacing: 22) {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 108, maximum: 150), spacing: 10, alignment: .top)], spacing: 28) {
                 if let up = upButton {
-                    Button { open(up.0) } label: { tileLabel(kind: .up, title: up.1, sub: "Back") }
+                    Button { open(up.0) } label: { tileLabel(kind: .up, title: up.1, lines: ["Back"]) }
                         .buttonStyle(PressScale(scale: 0.95))
                 }
                 ForEach(shown) { f in tile(f) }
@@ -386,19 +386,28 @@ struct FilesView: View {
     private func kindOf(_ f: FileEntry) -> FileGlyph.Kind {
         if f.dir { return .folder }
         if f.isImage, let u = client?.downloadURL(f.path) { return .image(u) }
-        if f.isVideo { return .video }
-        if f.isAudio { return .audio }
-        return .document(f.ext.uppercased())
+        if f.isVideo { return .document(f.ext.uppercased(), .video) }
+        if f.isAudio { return .document(f.ext.uppercased(), .audio) }
+        if ["zip", "rar", "7z", "gz", "tar"].contains(f.ext) { return .document(f.ext.uppercased(), .zip) }
+        if ["pem", "cer", "crt", "p12", "key", "csr"].contains(f.ext) { return .document(f.ext.uppercased(), .badge) }
+        return .document(f.ext.uppercased(), .plain)
+    }
+
+    /// Files' dates: the time for today, else a short date (11/1/26).
+    private func shortDate(_ f: FileEntry) -> String? {
+        guard let ms = f.modified else { return nil }
+        let d = Date(timeIntervalSince1970: ms / 1000)
+        if Calendar.current.isDateInToday(d) { return d.formatted(date: .omitted, time: .shortened) }
+        return d.formatted(.dateTime.month(.defaultDigits).day(.defaultDigits).year(.twoDigits))
     }
 
     private func detail(_ f: FileEntry) -> String {
-        let date = f.modified.map { Date(timeIntervalSince1970: $0 / 1000).formatted(date: .numeric, time: .omitted) }
-        if f.dir { return date ?? "Folder" }
-        return [date, formatBytes(f.size)].compactMap { $0 }.joined(separator: " – ")
+        if f.dir { return shortDate(f) ?? "" }
+        return [shortDate(f), formatBytes(f.size)].compactMap { $0 }.joined(separator: " – ")
     }
 
     @ViewBuilder private func tile(_ f: FileEntry) -> some View {
-        let label = tileLabel(kind: kindOf(f), title: f.name, sub: detail(f))
+        let label = tileLabel(kind: kindOf(f), title: f.name, lines: [shortDate(f), f.dir ? nil : formatBytes(f.size)].compactMap { $0 })
         Group {
             if f.dir { Button { open(f.path) } label: { label }.buttonStyle(PressScale(scale: 0.95)) }
             else { Menu { menu(f) } label: { label }.menuStyle(.button).buttonStyle(.plain) }
@@ -406,14 +415,19 @@ struct FilesView: View {
         .contextMenu { menu(f) }
     }
 
-    /// A Files icon: the glyph or photo, the name (two lines, cut in the middle) and the date / size.
-    private func tileLabel(kind: FileGlyph.Kind, title: String, sub: String) -> some View {
-        VStack(spacing: 6) {
-            FileGlyph(kind: kind, size: 78).frame(height: 84)
-            Text(title).font(.caption).lineLimit(2).truncationMode(.middle).multilineTextAlignment(.center)
-            Text(sub).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+    /// As Files lays out an icon: the picture, the name (two lines, cut in the middle), then the date and the size.
+    private func tileLabel(kind: FileGlyph.Kind, title: String, lines: [String]) -> some View {
+        VStack(spacing: 3) {
+            FileGlyph(kind: kind, size: 92).frame(height: 96, alignment: .bottom).padding(.bottom, 6)
+            Text(title)
+                .font(.subheadline)
+                .foregroundStyle(.primary)
+                .lineLimit(2)
+                .truncationMode(.middle)
+                .multilineTextAlignment(.center)
+            ForEach(lines, id: \.self) { Text($0).font(.footnote).foregroundStyle(.secondary).lineLimit(1) }
         }
-        .frame(maxWidth: .infinity)
+        .frame(maxWidth: .infinity, alignment: .top)
         .contentShape(Rectangle())
     }
 
@@ -522,46 +536,123 @@ struct FilesView: View {
     }
 }
 
-/// File icons in the style of Apple's Files app: the blue folder, a photo's own picture, or a page with its kind.
+/// File icons drawn the way Apple's Files app draws them: the two-tone blue folder, a photo's own picture
+/// with a thin border, and a white page with a folded corner, a grey glyph and the file's type underneath.
 struct FileGlyph: View {
-    enum Kind { case folder, up, image(URL), video, audio, document(String) }
+    enum Glyph { case plain, zip, badge, video, audio }
+    enum Kind { case folder, up, image(URL), document(String, Glyph) }
     var kind: Kind
     var size: CGFloat
 
     var body: some View {
         switch kind {
-        case .folder:
-            Image(systemName: "folder.fill")
-                .resizable().aspectRatio(contentMode: .fit)
-                .foregroundStyle(LinearGradient(colors: [Color(red: 0.45, green: 0.75, blue: 1), Color(red: 0.27, green: 0.6, blue: 0.97)], startPoint: .top, endPoint: .bottom))
-                .frame(width: size, height: size * 0.82)
+        case .folder: FolderIcon().frame(width: size, height: size * 0.8)
         case .up:
             Image(systemName: "arrow.turn.left.up")
-                .font(.system(size: size * 0.4, weight: .semibold))
+                .font(.system(size: size * 0.36, weight: .semibold))
                 .foregroundStyle(.secondary)
-                .frame(width: size, height: size * 0.82)
+                .frame(width: size, height: size * 0.8)
         case .image(let url):
-            Artwork(url: url)
-                .frame(width: size * 0.92, height: size * 0.72)
-                .clipShape(RoundedRectangle(cornerRadius: max(3, size * 0.06), style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: max(3, size * 0.06), style: .continuous).strokeBorder(.white.opacity(0.15), lineWidth: 0.5))
-                .shadow(color: .black.opacity(0.25), radius: 2, y: 1)
-        case .video: page(symbol: "play.fill", tint: .purple)
-        case .audio: page(symbol: "music.note", tint: .pink)
-        case .document(let ext): page(text: ext.isEmpty ? "DOC" : String(ext.prefix(4)), tint: .gray)
+            Artwork(url: url, contentMode: .fit)
+                .frame(maxWidth: size * 0.86, maxHeight: size * 0.86)
+                .background(Color.white)
+                .overlay(Rectangle().strokeBorder(.black.opacity(0.18), lineWidth: 0.5))
+                .shadow(color: .black.opacity(0.3), radius: 1.5, y: 1)
+        case .document(let ext, let glyph):
+            PageIcon(ext: ext, glyph: glyph).frame(width: size * 0.62, height: size * 0.82)
+        }
+    }
+}
+
+/// The Files folder: a darker back panel with its tab, and a lighter front panel.
+struct FolderIcon: View {
+    var body: some View {
+        GeometryReader { g in
+            let w = g.size.width, h = g.size.height, r = w * 0.07
+            ZStack(alignment: .topLeading) {
+                // Back panel and tab
+                UnevenRoundedRectangle(topLeadingRadius: r, bottomLeadingRadius: r, bottomTrailingRadius: r, topTrailingRadius: r * 0.6, style: .continuous)
+                    .fill(Color(red: 0.36, green: 0.62, blue: 0.93))
+                    .frame(width: w * 0.42, height: h * 0.3)
+                RoundedRectangle(cornerRadius: r, style: .continuous)
+                    .fill(Color(red: 0.36, green: 0.62, blue: 0.93))
+                    .frame(width: w, height: h * 0.86)
+                    .offset(y: h * 0.1)
+                // Front panel
+                RoundedRectangle(cornerRadius: r, style: .continuous)
+                    .fill(LinearGradient(colors: [Color(red: 0.55, green: 0.78, blue: 1), Color(red: 0.43, green: 0.69, blue: 0.98)], startPoint: .top, endPoint: .bottom))
+                    .frame(width: w, height: h * 0.76)
+                    .offset(y: h * 0.24)
+            }
+        }
+    }
+}
+
+/// A white page with a folded top-right corner, a grey glyph and the type (ZIP, PDF…) at the bottom.
+struct PageIcon: View {
+    var ext: String
+    var glyph: FileGlyph.Glyph
+
+    var body: some View {
+        GeometryReader { g in
+            let w = g.size.width, h = g.size.height, fold = w * 0.3
+            ZStack {
+                PageShape(fold: fold).fill(Color(white: 0.96))
+                PageShape(fold: fold).stroke(.black.opacity(0.1), lineWidth: 0.5)
+                // The folded corner.
+                Path { p in
+                    p.move(to: CGPoint(x: w - fold, y: 0))
+                    p.addLine(to: CGPoint(x: w - fold, y: fold))
+                    p.addLine(to: CGPoint(x: w, y: fold))
+                    p.closeSubpath()
+                }
+                .fill(Color(white: 0.84))
+                glyphView(w: w)
+                    .foregroundStyle(Color(white: 0.6))
+                    .position(x: w / 2, y: glyph == .zip ? h * 0.36 : h * 0.44)
+                Text(ext.isEmpty ? "" : String(ext.prefix(4)))
+                    .font(.system(size: w * 0.15, weight: .medium))
+                    .foregroundStyle(Color(white: 0.6))
+                    .position(x: w / 2, y: h * 0.86)
+            }
+            .shadow(color: .black.opacity(0.25), radius: 1.2, y: 0.8)
         }
     }
 
-    /// A white page with a folded corner and the file's kind.
-    private func page(symbol: String? = nil, text: String? = nil, tint: Color) -> some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: size * 0.08, style: .continuous)
-                .fill(Color(white: 0.96))
-                .overlay(RoundedRectangle(cornerRadius: size * 0.08, style: .continuous).strokeBorder(.black.opacity(0.08), lineWidth: 0.5))
-            if let symbol { Image(systemName: symbol).font(.system(size: size * 0.3, weight: .semibold)).foregroundStyle(tint) }
-            if let text { Text(text).font(.system(size: size * 0.16, weight: .bold, design: .rounded)).foregroundStyle(tint) }
+    @ViewBuilder private func glyphView(w: CGFloat) -> some View {
+        switch glyph {
+        case .zip:
+            // A zipper down the page.
+            VStack(spacing: w * 0.03) {
+                Capsule().frame(width: w * 0.12, height: w * 0.2)
+                ForEach(0..<4, id: \.self) { i in
+                    Capsule().frame(width: w * 0.14, height: w * 0.05).offset(x: i % 2 == 0 ? -w * 0.04 : w * 0.04)
+                }
+            }
+        case .badge: Image(systemName: "seal.fill").font(.system(size: w * 0.38))
+        case .video: Image(systemName: "play.fill").font(.system(size: w * 0.3))
+        case .audio: Image(systemName: "music.note").font(.system(size: w * 0.32, weight: .semibold))
+        case .plain: EmptyView()
         }
-        .frame(width: size * 0.66, height: size * 0.84)
-        .shadow(color: .black.opacity(0.18), radius: 1.5, y: 1)
+    }
+}
+
+/// A page outline with its top-right corner cut for the fold.
+struct PageShape: Shape {
+    var fold: CGFloat
+    func path(in r: CGRect) -> Path {
+        var p = Path()
+        let c: CGFloat = min(r.width, r.height) * 0.05
+        p.move(to: CGPoint(x: r.minX + c, y: r.minY))
+        p.addLine(to: CGPoint(x: r.maxX - fold, y: r.minY))
+        p.addLine(to: CGPoint(x: r.maxX, y: r.minY + fold))
+        p.addLine(to: CGPoint(x: r.maxX, y: r.maxY - c))
+        p.addQuadCurve(to: CGPoint(x: r.maxX - c, y: r.maxY), control: CGPoint(x: r.maxX, y: r.maxY))
+        p.addLine(to: CGPoint(x: r.minX + c, y: r.maxY))
+        p.addQuadCurve(to: CGPoint(x: r.minX, y: r.maxY - c), control: CGPoint(x: r.minX, y: r.maxY))
+        p.addLine(to: CGPoint(x: r.minX, y: r.minY + c))
+        p.addQuadCurve(to: CGPoint(x: r.minX + c, y: r.minY), control: CGPoint(x: r.minX, y: r.minY))
+        p.closeSubpath()
+        return p
     }
 }
