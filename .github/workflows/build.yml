@@ -92,14 +92,16 @@ jobs:
         continue-on-error: true
         run: |
           mkdir -p shots
-          APP="build/Build/Products/Release/Woodruff Family.app/Contents/MacOS/Woodruff Family"
+          APP="build/Build/Products/Release/Woodruff Family.app"
+          defaults write com.woodruff.family.mac NSQuitAlwaysKeepsWindows -bool false
           for sec in remote watch memories settings; do
-            "$APP" -demo YES -section "$sec" -route none &
-            PID=$!
-            sleep 8
-            screencapture -x "shots/mac-$sec.png" || true
-            kill $PID || true
+            open -n -F "$APP" --args -demo YES -section "$sec" -route none
+            sleep 9
+            osascript -e 'tell application "System Events" to set frontmost of (first process whose name contains "Woodruff") to true' || true
             sleep 1
+            screencapture -x "shots/mac-$sec.png" || true
+            pkill -f "Woodruff Family.app" || true
+            sleep 2
           done
       - name: Publish screenshots
         if: github.event_name == 'push'
