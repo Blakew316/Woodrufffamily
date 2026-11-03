@@ -18,6 +18,9 @@ struct WoodruffApp: App {
                     if !Demo.isOn { Notifier.attach(to: fleet) }
                     if !Demo.isOn && !fleet.hubs.isEmpty { LocationWeather.shared.start(fleet) }
                     SmartHome.shared.start()
+                    #if os(iOS)
+                    HomeKitLights.shared.start()
+                    #endif
                     await fleet.start()
                 }
                 .onOpenURL { url in
@@ -41,7 +44,12 @@ struct WoodruffApp: App {
         }
         .onChange(of: scenePhase) { _, phase in
             fleet.setActive(phase == .active)
-            if phase == .active { SmartHome.shared.wake() }
+            if phase == .active {
+                SmartHome.shared.wake()
+                #if os(iOS)
+                HomeKitLights.shared.refresh()
+                #endif
+            }
             if phase == .active && !Demo.isOn && !fleet.hubs.isEmpty { LocationWeather.shared.start(fleet) }
         }
         #if os(macOS)

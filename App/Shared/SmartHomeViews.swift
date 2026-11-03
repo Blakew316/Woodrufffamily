@@ -395,9 +395,14 @@ struct LightsListView: View {
                 Text("Optional. Brings in your lights’ names from the Govee app and reaches lights without LAN Control. Get a key in the Govee app: Profile → Settings → Apply for API Key.")
                     .font(.footnote).foregroundStyle(.secondary)
             }
-            Section("Cync") {
-                Text("Cync lights only take commands through Cync’s own account, not over Wi‑Fi. They’ll appear here once that’s added.")
+            Section("Cync and Apple Home") {
+                #if os(iOS)
+                Text("Cync lights with the Matter logo show up here once they’re in Apple Home. In the Cync app, open the light’s settings and choose to connect it to Apple Home (Matter) to get its setup code; then in the Home app tap +, Add Accessory, and scan or enter that code. Any light in Apple Home appears here.")
                     .font(.footnote).foregroundStyle(.secondary)
+                #else
+                Text("Cync and other Apple Home lights appear in Woodruff on iPhone. Apple only lets iPhone apps like this one reach Apple Home.")
+                    .font(.footnote).foregroundStyle(.secondary)
+                #endif
             }
         }
         .formStyle(.grouped)
@@ -490,10 +495,18 @@ struct LightDetailView: View {
                     .padding(.vertical, 10)
                 }
                 NameAndRoom(id: l.id, current: l.name, original: nil)
-                Section("Govee") {
-                    LabeledContent("Model", value: l.sku)
-                    LabeledContent("Device ID", value: l.id).font(.footnote.monospaced())
-                    LabeledContent("Connection", value: l.ip != nil ? "Wi‑Fi (\(l.ip!))" : (l.cloud ? "Govee Account" : "Not reachable"))
+                if l.isHome {
+                    Section("Apple Home") {
+                        LabeledContent("Maker", value: l.sku)
+                        if let z = l.zone { LabeledContent("Apple Home Room", value: z) }
+                        LabeledContent("Connection", value: "Apple Home (Matter)")
+                    }
+                } else {
+                    Section("Govee") {
+                        LabeledContent("Model", value: l.sku)
+                        LabeledContent("Device ID", value: l.id).font(.footnote.monospaced())
+                        LabeledContent("Connection", value: l.ip != nil ? "Wi‑Fi (\(l.ip!))" : (l.cloud ? "Govee Account" : "Not reachable"))
+                    }
                 }
             }
             .formStyle(.grouped)

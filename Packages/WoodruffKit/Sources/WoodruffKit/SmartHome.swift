@@ -333,6 +333,25 @@ public struct GoveeLight: Identifiable, Hashable, Sendable, Codable {
     public var brightness = 100    // 1…100
     public var color: LightColor?
     public var kelvin: Int?
+    /// Where it's controlled: "govee", or "home" (an Apple Home light, e.g. Cync over Matter).
+    public var source: String? = nil
+    /// Its room in Apple Home, used until one is chosen here.
+    public var zone: String? = nil
+    public var isHome: Bool { source == "home" }
+
+    public init(id: String, sku: String, name: String, ip: String? = nil, cloud: Bool = false, on: Bool = false,
+                brightness: Int = 100, color: LightColor? = nil, kelvin: Int? = nil, source: String? = nil, zone: String? = nil) {
+        self.id = id; self.sku = sku; self.name = name; self.ip = ip; self.cloud = cloud; self.on = on
+        self.brightness = brightness; self.color = color; self.kelvin = kelvin; self.source = source; self.zone = zone
+    }
+}
+
+/// A change to an Apple Home light, carried out by the app (HomeKit lives in the iPhone app, not here).
+public enum LightCommand: Sendable {
+    case power(Bool)
+    case brightness(Int)
+    case color(LightColor)
+    case kelvin(Int)
 }
 
 /// Govee's LAN API (UDP: scan on 4001, answers on 4002, commands on 4003) and its cloud API.
@@ -565,6 +584,20 @@ public final class SmartHome {
         onChange?()
     }
 
+    /// Carries out a change to an Apple Home light (set by the iPhone app).
+    public var homeControl: ((GoveeLight, LightCommand) -> Void)?
+
+    /// The lights in Apple Home (Cync and other Matter lights), from the iPhone app.
+    public func setHomeLights(_ list: [GoveeLight]) {
+        var next = lights.filter { !$0.isHome }
+        for var l in list {
+            if let n = names[l.id], !n.isEmpty { l.name = n }
+            next.append(l)
+        }
+        next.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        if next != lights { lights = next; persist() }
+    }
+
     /// Called when what's found or its state changes (the Mac shares it with its widgets).
     public var onChange: (() -> Void)?
 
@@ -573,7 +606,7 @@ public final class SmartHome {
     /// The room a speaker or light is in: chosen here, or a speaker's own Sonos room.
     public func room(of id: String) -> String? {
         if let r = rooms[id], !r.isEmpty { return r }
-        return speakers.first { $0.id == id }?.zone
+        return speakers.first { $0.id == id }?.zone ?? lights.first { $0.id == id }?.zone
     }
 
     public func setRoom(_ id: String, _ room: String?) {
@@ -876,6 +909,7 @@ public final class SmartHome {
     /// Turns a light on or off: on the LAN when it's there, else through Govee's cloud.
     public func setOn(_ l: GoveeLight, _ on: Bool) {
         update(l) { $0.on = on }
+        if l.isHome { homeControl?(l, .power(on)); return }
         #if canImport(Network)
         if let ip = l.ip { lan.turn(ip, on); return }
         #endif
@@ -884,6 +918,7 @@ public final class SmartHome {
 
     public func setBrightness(_ l: GoveeLight, _ v: Int) {
         update(l) { $0.brightness = v; $0.on = true }
+        if l.isHome { homeControl?(l, .brightness(v)); return }
         #if canImport(Network)
         if let ip = l.ip { lan.brightness(ip, v); return }
         #endif
@@ -892,6 +927,7 @@ public final class SmartHome {
 
     public func setColor(_ l: GoveeLight, _ c: LightColor) {
         update(l) { $0.color = c; $0.kelvin = nil; $0.on = true }
+        if l.isHome { homeControl?(l, .color(c)); return }
         #if canImport(Network)
         if let ip = l.ip { lan.color(ip, c); return }
         #endif
@@ -900,6 +936,7 @@ public final class SmartHome {
 
     public func setWhite(_ l: GoveeLight, kelvin: Int) {
         update(l) { $0.kelvin = kelvin; $0.color = nil; $0.on = true }
+        if l.isHome { homeControl?(l, .kelvin(kelvin)); return }
         #if canImport(Network)
         if let ip = l.ip { lan.kelvin(ip, kelvin); return }
         #endif
