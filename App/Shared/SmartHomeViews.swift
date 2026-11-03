@@ -103,6 +103,7 @@ struct SpeakerSheet: View {
 
     var body: some View {
         if let room {
+            ScrollView {
             VStack(spacing: 22) {
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
@@ -145,6 +146,8 @@ struct SpeakerSheet: View {
                 }
             }
             .padding(24)
+            }
+            .scrollBounceBehavior(.basedOnSize)
             .frame(minWidth: 340, idealWidth: 380)
             .onAppear { volume = Double(room.volume) }
             .onChange(of: room.volume) { _, v in if !dragging { volume = Double(v) } }
@@ -273,6 +276,7 @@ struct LightSheet: View {
 
     var body: some View {
         if let light {
+            ScrollView {
             VStack(spacing: 22) {
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
@@ -302,6 +306,8 @@ struct LightSheet: View {
                 }
             }
             .padding(24)
+            }
+            .scrollBounceBehavior(.basedOnSize)
             .frame(minWidth: 340, idealWidth: 380)
             .onAppear { level = Double(light.brightness); name = light.name }
             .onChange(of: light.brightness) { _, v in if !dragging { level = Double(v) } }
@@ -319,7 +325,7 @@ struct LightSheet: View {
             }
             .clipShape(RoundedRectangle(cornerRadius: 30, style: .continuous))
             .contentShape(Rectangle())
-            .gesture(DragGesture(minimumDistance: 0)
+            .highPriorityGesture(DragGesture(minimumDistance: 0)
                 .onChanged { v in
                     dragging = true
                     level = max(1, min(100, (1 - v.location.y / g.size.height) * 100)).rounded()
