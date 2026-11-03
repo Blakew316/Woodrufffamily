@@ -42,8 +42,18 @@ public struct FleetTV: Identifiable, Hashable, Sendable {
     public var routeID: String
     public var isHub: Bool { routeID == "this" }
     public var platform: TVPlatform?
+    /// The alerts the family has seen and hidden (they come back if something new goes wrong).
+    public var alertsHidden = false
+    /// A Woodruff TV heard on the Wi‑Fi that isn't paired or linked yet (`link == "unpaired"`): where it answers.
+    public var foundAt: URL?
 
-    public var needsAttention: Bool { link == "refused" || health?.status == "attention" }
+    public var isUnpaired: Bool { link == "unpaired" }
+    /// Something the family should look at (and hasn't hidden).
+    public var needsAttention: Bool { !alertsHidden && hasAlerts }
+    /// Something is wrong, hidden or not.
+    public var hasAlerts: Bool { link == "refused" || health?.status == "attention" }
+    /// What the alerts say right now: hiding is undone when this changes.
+    public var alertSignature: String { "\(link)|\(health?.status ?? "")|\(health?.count ?? 0)|\(health?.first ?? "")" }
 }
 
 public struct Banner: Identifiable, Hashable, Sendable {
@@ -83,6 +93,10 @@ public final class Fleet {
         set { Keychain.set(newValue, for: "github.token"); Task { await checkReleases() } }
     }
 
+    /// TV id → the alerts hidden for it (their signature).
+    public private(set) var hiddenAlerts: [String: String] = Saved.load("hiddenAlerts", as: [String: String].self) ?? [:]
+    private let discovery = TVDiscovery()
+
     private var active = true
     private var loop: Task<Void, Never>?
     private var lgRemotes: [String: LGRemote] = [:]
@@ -121,6 +135,7 @@ public final class Fleet {
 
     public func start() async {
         guard loop == nil else { return }
+        if !Demo.isOn { discovery.start() }
         loop = Task { [weak self] in
             var tick = 0
             while !Task.isCancelled {
@@ -240,13 +255,42 @@ public final class Fleet {
             }
             if extras[tv.id]?.platform == nil, let p = guessPlatform(tv) { extras[tv.id, default: TVExtras()].platform = p }
         }
-        tvs = list
-        if selectedID == nil || !tvs.contains(where: { $0.id == selectedID }) { selectedID = tvs.first?.id }
+        var all = list.map { tv -> FleetTV in
+            var t = tv
+            t.alertsHidden = t.hasAlerts && hiddenAlerts[t.id] == t.alertSignature
+            return t
+        }
+        // TVs heard on the Wi‑Fi that no paired TV knows: listed so they can be paired.
+        for f in discovery.found where !all.contains(where: { $0.id == f.id || $0.name.caseInsensitiveCompare(f.name) == .orderedSame }) {
+            var t = FleetTV(id: f.id, name: f.name, online: true, onScreen: false, playing: nil, version: nil, seen: nil,
+                            link: "unpaired", health: nil, hubID: "", routeID: "", platform: extras[f.id]?.platform)
+            t.foundAt = f.base
+            all.append(t)
+        }
+        tvs = all
+        if selectedID == nil || !tvs.contains(where: { $0.id == selectedID && !$0.isUnpaired }) { selectedID = tvs.first { !$0.isUnpaired }?.id }
     }
 
     private func guessPlatform(_ tv: FleetTV) -> TVPlatform? {
         if let r = healthReports[tv.id] { return r.platform }
         return nil
+    }
+
+    // MARK: Hiding alerts
+
+    /// Hides [tv]'s current alerts until something new goes wrong with it.
+    public func hideAlerts(_ tv: FleetTV) {
+        hiddenAlerts[tv.id] = tv.alertSignature
+        Saved.save("hiddenAlerts", hiddenAlerts)
+        if let i = tvs.firstIndex(where: { $0.id == tv.id }) { tvs[i].alertsHidden = tvs[i].hasAlerts }
+    }
+
+    public func hideAllAlerts() { for tv in tvs where tv.needsAttention { hideAlerts(tv) } }
+
+    public func showAlerts(_ tv: FleetTV) {
+        hiddenAlerts[tv.id] = nil
+        Saved.save("hiddenAlerts", hiddenAlerts)
+        if let i = tvs.firstIndex(where: { $0.id == tv.id }) { tvs[i].alertsHidden = false }
     }
 
     // MARK: Artwork for what's playing
@@ -294,6 +338,7 @@ public final class Fleet {
 
     /// The client for [tv]: straight to it when it's paired here, otherwise through the hub that links it.
     public func client(for tv: FleetTV) -> TVClient? {
+        if tv.isUnpaired { return nil }
         if let direct = hubs.first(where: { $0.id == tv.id }) { return TVClient(hub: direct, routeID: "this") }
         guard let hub = hub(tv.hubID) else { return nil }
         return TVClient(hub: hub, routeID: tv.routeID)
@@ -356,7 +401,7 @@ public final class Fleet {
     }
 
     public var updatesWaiting: Int { tvs.filter(isBehind).count }
-    public var attentionCount: Int { tvs.filter { $0.needsAttention || !$0.online }.count }
+    public var attentionCount: Int { tvs.filter(\.needsAttention).count }
 
     /// Asks one Android TV to update now (it downloads the newest release and installs it once nobody's using it).
     public func pushUpdate(_ tv: FleetTV) async throws {
@@ -368,7 +413,7 @@ public final class Fleet {
     public func pushUpdateToAll() async -> (Int, [String]) {
         var asked = 0
         var failed: [String] = []
-        for tv in tvs where tv.online && platform(of: tv) != .webOS {
+        for tv in tvs where tv.online && !tv.isUnpaired && platform(of: tv) != .webOS {
             do { try await pushUpdate(tv); asked += 1 } catch { failed.append("\(tv.name): \(error.localizedDescription)") }
         }
         return (asked, failed)

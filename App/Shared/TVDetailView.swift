@@ -17,7 +17,9 @@ struct TVDetailView: View {
     private var report: HealthReport? { fleet.healthReports[tvID] }
 
     var body: some View {
-        if let tv {
+        if let tv, tv.isUnpaired {
+            PairFoundTVView(tv: tv)
+        } else if let tv {
             Form {
                 Section { header(tv) }
                     .listRowInsets(EdgeInsets(top: 10, leading: 10, bottom: 10, trailing: 10))
@@ -25,7 +27,7 @@ struct TVDetailView: View {
                     Section { transport(tv, p) }.listRowBackground(Color.clear)
                 }
                 Section { verdict(tv) }
-                if let items = report?.attention, !items.isEmpty {
+                if let items = report?.attention, !items.isEmpty, !tv.alertsHidden {
                     Section {
                         ForEach(items) { a in attentionRow(tv, a) }
                     }
@@ -111,7 +113,7 @@ struct TVDetailView: View {
     // MARK: Health
 
     @ViewBuilder private func verdict(_ tv: FleetTV) -> some View {
-        let attention = report?.attention?.count ?? tv.health?.count ?? 0
+        let attention = tv.alertsHidden ? 0 : (report?.attention?.count ?? tv.health?.count ?? 0)
         HStack(spacing: 14) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(verdictTitle(tv, attention)).font(.title3.weight(.semibold))
@@ -121,6 +123,11 @@ struct TVDetailView: View {
         }
         .padding(.vertical, 4)
         if tv.link == "refused" { Button("Link Again…") { askRelink = true } }
+        if tv.needsAttention {
+            Button("Hide These Alerts") { withAnimation { fleet.hideAlerts(tv) } }
+        } else if tv.alertsHidden {
+            Button("Show Hidden Alerts") { withAnimation { fleet.showAlerts(tv) } }
+        }
     }
 
     private func attentionRow(_ tv: FleetTV, _ a: AttentionItem) -> some View {
@@ -240,7 +247,7 @@ struct TVDetailView: View {
     // MARK: Words
 
     private func verdictTitle(_ tv: FleetTV, _ n: Int) -> String {
-        if tv.link == "refused" { return "Its Link Stopped Working" }
+        if tv.link == "refused" && !tv.alertsHidden { return "Its Link Stopped Working" }
         if !tv.online { return "Off or Asleep" }
         if tv.health?.status == "old" { return "Update for Health Reports" }
         if n == 1 { return "1 Thing Needs Attention" }
@@ -248,6 +255,7 @@ struct TVDetailView: View {
         return report == nil ? "Checking…" : "All Good"
     }
     private func verdictLine(_ tv: FleetTV) -> String {
+        if tv.alertsHidden { return "Alerts you’ve seen are hidden" }
         if let e = fleet.healthErrors[tvID], report == nil || !tv.online { return e }
         if let at = report?.at { return "Checked \(relative(at))" + (report?.via.map { " · via \($0)" } ?? "") }
         return "Asking \(tv.name)…"
@@ -259,7 +267,7 @@ struct TVDetailView: View {
     }
     private func verdictColor(_ tv: FleetTV, _ n: Int) -> Color {
         if !tv.online && tv.link != "refused" { return .gray }
-        if tv.link == "refused" || n > 0 { return .orange }
+        if (tv.link == "refused" && !tv.alertsHidden) || n > 0 { return .orange }
         return .green
     }
 }
@@ -470,3 +478,62 @@ struct SSHSection: View {
     }
 }
 #endif
+
+/// A Woodruff TV heard on the Wi‑Fi that isn't paired yet: pair it with the key from its Phone screen.
+struct PairFoundTVView: View {
+    @Environment(Fleet.self) private var fleet
+    var tv: FleetTV
+    @State private var key = ""
+    @State private var busy = false
+    @State private var scanning = false
+
+    var body: some View {
+        Form {
+            Section {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(tv.name).font(.title2.bold())
+                    Text("Found on your Wi‑Fi\(tv.foundAt.map { " at \($0.host ?? "")" } ?? ""). Pair it once and it joins the others here.")
+                        .font(.subheadline).foregroundStyle(.secondary)
+                }
+                .padding(.vertical, 4)
+            }
+            Section {
+                #if os(iOS)
+                Button("Scan Its QR Code") { scanning = true }
+                #endif
+                TextField("Pairing key", text: $key).autocorrectionDisabled()
+                    #if os(iOS)
+                    .textInputAutocapitalization(.never)
+                    #endif
+                Button(busy ? "Pairing…" : "Pair") { pair(key) }.disabled(key.isEmpty || busy)
+            } footer: {
+                Text("On \(tv.name), open Woodruff → Settings → Phone connection. Scan the QR code, or type the key after “k=” in the link it shows.")
+            }
+        }
+        .formStyle(.grouped)
+        .navigationTitle(tv.name)
+        .inlineTitle()
+        #if os(iOS)
+        .sheet(isPresented: $scanning) {
+            QRScannerView { code in
+                scanning = false
+                if let c = TVConnection.parse(code) { connect(c) }
+            }
+            .ignoresSafeArea()
+        }
+        #endif
+    }
+
+    private func pair(_ k: String) {
+        guard let base = tv.foundAt else { return }
+        connect(TVConnection(base: base, key: k.trimmingCharacters(in: .whitespaces)))
+    }
+
+    private func connect(_ c: TVConnection) {
+        busy = true
+        Task {
+            do { let h = try await fleet.pair(c); fleet.say("Paired", "\(h.name) is connected.") } catch { fleet.show(error) }
+            busy = false
+        }
+    }
+}

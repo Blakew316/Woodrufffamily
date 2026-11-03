@@ -46,13 +46,22 @@ struct HomeView: View {
     /// The Home app's status line: small capsules for what needs a look.
     private var summary: some View {
         let playing = fleet.tvs.filter { $0.playing != nil }.count
-        let on = fleet.tvs.filter(\.online).count
+        let on = fleet.tvs.filter { $0.online && !$0.isUnpaired }.count
         let attention = fleet.tvs.filter(\.needsAttention).count
         return ScrollView(.horizontal) {
             HStack(spacing: 10) {
                 StatusPill(title: "\(on) of \(fleet.tvs.count) On", tint: nil)
+                let found = fleet.tvs.filter(\.isUnpaired).count
+                if found > 0 { StatusPill(title: found == 1 ? "1 TV to Pair" : "\(found) TVs to Pair", tint: .accentColor) }
                 if playing > 0 { StatusPill(title: "\(playing) Playing", tint: nil) }
-                if attention > 0 { StatusPill(title: attention == 1 ? "1 Needs Attention" : "\(attention) Need Attention", tint: Palette.attention) }
+                if attention > 0 {
+                    Menu {
+                        Button("Hide All Alerts") { withAnimation { fleet.hideAllAlerts() } }
+                    } label: {
+                        StatusPill(title: attention == 1 ? "1 Needs Attention" : "\(attention) Need Attention", tint: Palette.attention)
+                    }
+                    .menuStyle(.button).buttonStyle(.plain).fixedSize()
+                }
                 if fleet.updatesWaiting > 0 { StatusPill(title: fleet.updatesWaiting == 1 ? "1 Update" : "\(fleet.updatesWaiting) Updates", tint: .blue) }
             }
         }
@@ -127,7 +136,9 @@ struct HomeTVTile: View {
                         Button("Turn On") { WakeOnLAN.wake(mac: mac, lastHost: fleet.extras[tv.id]?.lastHost) }
                             .buttonStyle(.glass)
                     }
-                    if tv.online {
+                    if tv.isUnpaired {
+                        Button("Pair") { open() }.buttonStyle(.glassProminent)
+                    } else if tv.online {
                         Button("Remote") {
                             fleet.remoteAll = false
                             fleet.selectedID = tv.id
@@ -156,11 +167,14 @@ struct HomeTVTile: View {
             Button("Open") { open() }
             Button("Use for the Remote") { fleet.remoteAll = false; fleet.selectedID = tv.id; fleet.remotePanel = true }
             Button("Check for Updates") { Task { do { try await fleet.pushUpdate(tv) } catch { fleet.show(error) } } }
+            if tv.needsAttention { Button("Hide Alerts") { fleet.hideAlerts(tv) } }
+            if tv.alertsHidden { Button("Show Hidden Alerts") { fleet.showAlerts(tv) } }
         }
     }
 
     private var state: String {
-        if tv.link == "refused" { return "Link Again" }
+        if tv.isUnpaired { return "Not Paired" }
+        if tv.link == "refused" && tv.needsAttention { return "Link Again" }
         if !tv.online { return "Off" }
         if tv.needsAttention { return "Needs Attention" }
         if fleet.isBehind(tv) { return "Update Available" }
@@ -169,7 +183,8 @@ struct HomeTVTile: View {
     }
 
     private var idleLine: String {
-        if tv.link == "refused" { return "Its link stopped working" }
+        if tv.isUnpaired { return "Found on your Wi‑Fi" }
+        if tv.link == "refused" { return tv.alertsHidden ? "Off" : "Its link stopped working" }
         if !tv.online { return "Seen \(relative(tv.seen))" }
         return tv.onScreen ? "Woodruff is on screen" : "Nothing playing"
     }

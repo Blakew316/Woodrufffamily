@@ -155,9 +155,24 @@ struct TVsView: View {
             Section {
                 ForEach(fleet.tvs) { tv in
                     NavigationLink { TVDetailView(tvID: tv.id) } label: { TVRow(tv: tv) }
+                        .swipeActions {
+                            if tv.needsAttention { Button("Hide Alerts") { withAnimation { fleet.hideAlerts(tv) } }.tint(.gray) }
+                            else if tv.alertsHidden { Button("Show Alerts") { withAnimation { fleet.showAlerts(tv) } }.tint(.orange) }
+                        }
+                        .contextMenu {
+                            if tv.needsAttention { Button("Hide Alerts") { fleet.hideAlerts(tv) } }
+                            if tv.alertsHidden { Button("Show Hidden Alerts") { fleet.showAlerts(tv) } }
+                        }
                 }
             } footer: {
-                Text("Tap a TV for its screen, controls and health.")
+                Text("Tap a TV for its screen, controls and health. Swipe left on one to hide alerts you already know about.")
+            }
+            if fleet.attentionCount > 0 {
+                Section {
+                    Button("Hide All Alerts") { withAnimation { fleet.hideAllAlerts() } }
+                } footer: {
+                    Text("They come back if something new goes wrong.")
+                }
             }
             Section {
                 Button("Pair Another TV") { pairing = true }
@@ -192,7 +207,7 @@ struct TVRow: View {
         HStack(spacing: 14) {
             VStack(alignment: .leading, spacing: 3) {
                 Text(tv.name)
-                Text(line).font(.subheadline).foregroundStyle(tv.link == "refused" ? Palette.attention : .secondary).lineLimit(1)
+                Text(line).font(.subheadline).foregroundStyle(tv.needsAttention && tv.link == "refused" ? Palette.attention : tv.isUnpaired ? Color.accentColor : .secondary).lineLimit(1)
                 if let p = tv.playing, let d = p.duration, d > 0 {
                     TimelineView(.periodic(from: .now, by: 1)) { ctx in
                         let pos = min(d, (p.position ?? 0) + (p.isPlaying ? ctx.date.timeIntervalSince(fetchedAt) * 1000 : 0))
@@ -218,7 +233,8 @@ struct TVRow: View {
     }
 
     private var line: String {
-        if tv.link == "refused" { return "Link again" }
+        if tv.isUnpaired { return "Found on Wi‑Fi · Not paired" }
+        if tv.link == "refused" { return tv.alertsHidden ? "Off · link stopped working" : "Link again" }
         if !tv.online { return "Off · seen \(relative(tv.seen))" }
         if let p = tv.playing { return (p.isPlaying ? "Playing " : "Paused · ") + p.title + (p.app.map { " · \($0)" } ?? "") }
         return tv.onScreen ? "Woodruff on screen" : "Nothing playing"

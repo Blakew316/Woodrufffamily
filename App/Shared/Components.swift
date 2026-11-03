@@ -187,7 +187,7 @@ struct TVPicker: View {
                 }
                 Divider()
             }
-            ForEach(fleet.tvs) { t in
+            ForEach(fleet.tvs.filter { !$0.isUnpaired }) { t in
                 Button { fleet.remoteAll = false; fleet.selectedID = t.id } label: {
                     if t.id == fleet.selectedID && !(allowAll && fleet.remoteAll) { Label(t.name, systemImage: "checkmark") }
                     else { Text(t.name) }
