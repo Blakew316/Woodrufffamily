@@ -217,6 +217,10 @@ struct MacRoot: View {
     @SceneStorage("mac.tv") private var tvSelection: String?
     @State private var deviceSelection: String?
     private let home = SmartHome.shared
+    // Each group in the sidebar folds away (click its heading's arrow); remembered between launches.
+    @AppStorage("sidebar.tvs") private var showTVs = true
+    @AppStorage("sidebar.speakers") private var showSpeakers = false
+    @AppStorage("sidebar.lights") private var showLights = false
     @State private var palette = false
     @State private var query = ""
     @State private var keyMonitor: Any?
@@ -238,7 +242,7 @@ struct MacRoot: View {
                 Section {
                     ForEach(AppSection.mac) { s in Label(s.title, systemImage: s.symbol).tag(s.rawValue) }
                 }
-                Section("TVs") {
+                Section("TVs", isExpanded: $showTVs) {
                     ForEach(fleet.tvs) { tv in
                         HStack {
                             Text(tv.name)
@@ -250,7 +254,7 @@ struct MacRoot: View {
                     }
                 }
                 if !home.speakers.isEmpty {
-                    Section("Speakers") {
+                    Section("Speakers", isExpanded: $showSpeakers) {
                         ForEach(home.speakers) { r in
                             HStack {
                                 Text(r.name)
@@ -262,7 +266,7 @@ struct MacRoot: View {
                     }
                 }
                 if !home.lights.isEmpty {
-                    Section("Lights") {
+                    Section("Lights", isExpanded: $showLights) {
                         ForEach(home.lights) { l in
                             Text(l.name)
                                 .tag("light:\(l.id)")
