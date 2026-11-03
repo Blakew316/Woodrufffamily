@@ -80,6 +80,22 @@ struct SkipForwardTVIntent: LiveActivityIntent {
     }
 }
 
+struct VolumeUpTVIntent: LiveActivityIntent {
+    static let title: LocalizedStringResource = "Turn the TV Up"
+    func perform() async throws -> some IntentResult {
+        await TVIntentActions.key("volup")
+        return .result()
+    }
+}
+
+struct VolumeDownTVIntent: LiveActivityIntent {
+    static let title: LocalizedStringResource = "Turn the TV Down"
+    func perform() async throws -> some IntentResult {
+        await TVIntentActions.key("voldown")
+        return .result()
+    }
+}
+
 struct MuteTVIntent: LiveActivityIntent {
     static let title: LocalizedStringResource = "Mute the TV"
     static let description = IntentDescription("Mutes or unmutes the remote’s TV.")
