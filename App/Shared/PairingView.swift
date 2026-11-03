@@ -6,17 +6,22 @@ struct WelcomeView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(spacing: 20) {
-                    Image("Emblem").resizable().frame(width: 96, height: 96)
-                        .padding(.top, 30)
-                    Text("Woodruff Family").font(.largeTitle.bold())
-                    Text("One app for every TV in the house: the remote, what's playing, Family Memories, messages, health and updates.")
-                        .multilineTextAlignment(.center).foregroundStyle(.secondary)
-                        .frame(maxWidth: 460)
-                    PairPanel()
-                        .frame(maxWidth: 520)
+                VStack(spacing: 18) {
+                    Image("Emblem").resizable().frame(width: 108, height: 108)
+                        .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
+                        .shadow(color: Color.accentColor.opacity(0.55), radius: 30)
+                        .padding(.top, 48)
+                    Text("Woodruff Family").font(.system(size: 34, weight: .bold))
+                    Text("Every TV in the house, in one place: the remote, what’s playing, Family Memories, messages, health and updates.")
+                        .font(.body).multilineTextAlignment(.center).foregroundStyle(.secondary)
+                        .frame(maxWidth: 440)
+                        .padding(.bottom, 10)
+                    PairPanel().frame(maxWidth: 520)
                 }
-                .padding()
+                .padding(20)
+            }
+            .background {
+                LinearGradient(colors: [Color.accentColor.opacity(0.35), .clear], startPoint: .top, endPoint: .center).ignoresSafeArea()
             }
         }
     }
@@ -41,7 +46,7 @@ struct PairPanel: View {
             Button { scanning = true } label: {
                 Label("Scan the TV's QR Code", systemImage: "qrcode.viewfinder").frame(maxWidth: .infinity)
             }
-            .buttonStyle(.borderedProminent).controlSize(.large)
+            .buttonStyle(.glassProminent).controlSize(.large)
             #endif
 
             HStack {
@@ -91,8 +96,8 @@ struct PairPanel: View {
             }
             if busy { ProgressView("Pairing…") }
         }
-        .padding()
-        .background(.background.secondary, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .padding(20)
+        .glass(RoundedRectangle(cornerRadius: 28, style: .continuous), interactive: false)
         .onAppear { discovery.start() }
         .onDisappear { discovery.stop() }
         #if os(iOS)

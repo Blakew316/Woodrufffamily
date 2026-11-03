@@ -1,223 +1,248 @@
 import SwiftUI
 import WoodruffKit
 
-/// One TV: its live picture, what's playing with controls, its health report and every fix, updates, linking, LG control.
+/// One TV: its screen and what's playing, the transport, its health with a fix for each problem, sign-ins, updates,
+/// and the extras (LG direct control, installing from the Mac, Wake-on-LAN, Link Again).
 struct TVDetailView: View {
     @Environment(Fleet.self) private var fleet
     var tvID: String
     @State private var screen: PlatformImage?
-    @State private var screenNote: String?
     @State private var showScreen = false
-    @State private var relinkCode = ""
     @State private var askRelink = false
-    @State private var lgHost = ""
+    @State private var relinkCode = ""
     @State private var signIn: String?
+    @State private var fetchedAt = Date()
 
-    var tv: FleetTV? { fleet.tv(tvID) }
-    var report: HealthReport? { fleet.healthReports[tvID] }
+    private var tv: FleetTV? { fleet.tv(tvID) }
+    private var report: HealthReport? { fleet.healthReports[tvID] }
 
     var body: some View {
         if let tv {
             Form {
-                screenSection(tv)
-                if let p = tv.playing { playingSection(tv, p) }
-                verdictSection(tv)
-                if let r = report {
-                    if let items = r.attention, !items.isEmpty { attentionSection(tv, items) }
-                    signInsSection(tv, r)
-                    updatesSection(tv, r)
-                    stabilitySection(r)
-                } else if fleet.healthErrors[tvID] == nil {
-                    Section { HStack { ProgressView(); Text("Asking \(tv.name) how it's doing…").foregroundStyle(.secondary) } }
+                Section { header(tv) }
+                    .listRowInsets(EdgeInsets(top: 10, leading: 10, bottom: 10, trailing: 10))
+                if let p = tv.playing {
+                    Section { transport(tv, p) }.listRowBackground(Color.clear)
                 }
-                actionsSection(tv)
+                Section { verdict(tv) }
+                if let items = report?.attention, !items.isEmpty {
+                    Section {
+                        ForEach(items) { a in attentionRow(tv, a) }
+                    }
+                }
+                if let rows = report?.signIns?.rows, !rows.isEmpty {
+                    Section("Sign-Ins") {
+                        ForEach(rows, id: \.0) { name, row in signInRow(tv, name, row) }
+                    }
+                }
+                updates(tv)
+                if let r = report { more(r) }
                 LGSection(tv: tv)
                 #if os(macOS)
                 SSHSection(tv: tv)
                 #endif
+                actions(tv)
             }
             .formStyle(.grouped)
-            .screenTitle(tv.name)
-            .task(id: tvID) { await healthLoop(tv) }
+            .navigationTitle(tv.name)
+            .inlineTitle()
+            .task(id: tvID) { await healthLoop() }
             .task(id: "screen-\(tvID)") { await screenLoop() }
+            .onChange(of: tv.playing) { _, _ in fetchedAt = Date() }
             .sheet(isPresented: $showScreen) { TVScreenSheet(tvID: tvID) }
-            .sheet(item: Binding(get: { signIn.map { SignInGrant(grant: $0) } }, set: { signIn = $0?.grant })) { g in
-                SignInSheet(grant: g.grant, tv: tv)
-            }
-            .alert("Link \(tv.name) again", isPresented: $askRelink) {
+            .sheet(item: Binding(get: { signIn.map { SignInGrant(grant: $0) } }, set: { signIn = $0?.grant })) { SignInSheet(grant: $0.grant, tv: tv) }
+            .alert("Link \(tv.name) Again", isPresented: $askRelink) {
                 TextField("6-digit code", text: $relinkCode)
-                Button("Link") {
-                    let code = relinkCode
-                    relinkCode = ""
-                    Task {
-                        do {
-                            let r = try await fleet.client(for: tv)?.relink(code: code)
-                            fleet.say("Linked again", "\(r?.name ?? tv.name) is linked.")
-                            await fleet.refresh()
-                        } catch { fleet.show(error) }
-                    }
-                }
+                Button("Link") { relink(tv) }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("On \(tv.name), open Settings → TVs & phones → Other TVs → Link this TV to another, and type the code it shows.")
+                Text("On \(tv.name): Settings → TVs & phones → Other TVs → Link this TV to another. Type the code it shows.")
             }
         } else {
-            EmptyState(symbol: "tv.slash", title: "TV not found", message: "It isn't linked any more.")
+            EmptyState(symbol: "tv.slash", title: "TV Not Found", message: "It isn’t linked any more.")
         }
     }
 
-    // MARK: Sections
+    // MARK: Header and transport
 
-    @ViewBuilder private func screenSection(_ tv: FleetTV) -> some View {
-        Section {
+    private func header(_ tv: FleetTV) -> some View {
+        HStack(alignment: .center, spacing: 14) {
             Button { showScreen = true } label: {
                 ZStack {
                     Rectangle().fill(.black)
-                    if let screen { Image(platformImage: screen).resizable().aspectRatio(16 / 9, contentMode: .fit) }
-                    else {
-                        VStack(spacing: 6) {
-                            Image(systemName: "tv").font(.largeTitle)
-                            Text(screenNote ?? (tv.online ? "Loading the TV's picture…" : "Off")).font(.caption).multilineTextAlignment(.center)
+                    if let screen { Image(platformImage: screen).resizable().aspectRatio(contentMode: .fill) }
+                    else { Image(systemName: tv.online ? "tv" : "moon.zzz.fill").font(.title2).foregroundStyle(.white.opacity(0.5)) }
+                }
+                .frame(width: 136, height: 77)
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(.white.opacity(0.08)))
+            }
+            .buttonStyle(PressScale(scale: 0.96))
+            VStack(alignment: .leading, spacing: 3) {
+                if let p = tv.playing {
+                    Text(p.title).font(.headline).lineLimit(2)
+                    Text(p.app ?? "").font(.subheadline).foregroundStyle(.secondary)
+                    if let d = p.duration, d > 0 {
+                        TimelineView(.periodic(from: .now, by: 1)) { ctx in
+                            let pos = min(d, (p.position ?? 0) + (p.isPlaying ? ctx.date.timeIntervalSince(fetchedAt) * 1000 : 0))
+                            VStack(spacing: 3) {
+                                ProgressView(value: pos, total: d).tint(.primary)
+                                HStack {
+                                    Text(formatTime(ms: pos))
+                                    Spacer()
+                                    Text("−" + formatTime(ms: d - pos))
+                                }
+                                .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                            }
                         }
-                        .foregroundStyle(.white.opacity(0.7)).padding()
+                        .padding(.top, 4)
                     }
-                }
-                .aspectRatio(16 / 9, contentMode: .fit)
-                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-            }
-            .buttonStyle(.plain)
-        } footer: {
-            Text("Woodruff's own screens only (video shows black). LG TVs don't let apps share their screen.")
-        }
-    }
-
-    @ViewBuilder private func playingSection(_ tv: FleetTV, _ p: NowPlaying) -> some View {
-        Section("Now Playing") {
-            NowPlayingRow(playing: p)
-            MediaControls(tv: tv, playing: p)
-        }
-    }
-
-    @ViewBuilder private func verdictSection(_ tv: FleetTV) -> some View {
-        Section {
-            HStack(alignment: .top) {
-                Image(systemName: verdictSymbol(tv)).font(.title2).foregroundStyle(verdictColor(tv))
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(verdictTitle(tv)).font(.headline)
-                    if let s = report?.sentence { Text(s).font(.subheadline).foregroundStyle(.secondary) }
-                    if let e = fleet.healthErrors[tvID] { Text(e).font(.subheadline).foregroundStyle(.secondary) }
-                    if let via = report?.via { Text("Reported through \(via)").font(.caption).foregroundStyle(.tertiary) }
+                } else {
+                    Text(tv.online ? "Nothing Playing" : "Off").font(.headline)
+                    Text(tv.online ? (tv.onScreen ? "Woodruff is on screen" : "Another app is on screen") : "Seen \(relative(tv.seen))")
+                        .font(.subheadline).foregroundStyle(.secondary)
                 }
             }
-            if tv.link == "refused" {
-                Button("Link Again…") { askRelink = true }
-            }
+            Spacer(minLength: 0)
         }
     }
 
-    @ViewBuilder private func attentionSection(_ tv: FleetTV, _ items: [AttentionItem]) -> some View {
-        Section("Needs Attention") {
-            ForEach(items) { a in
-                VStack(alignment: .leading, spacing: 6) {
-                    Label(a.words, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-                    if let d = a.detail { Text(d).font(.caption).foregroundStyle(.secondary) }
-                    fixButton(tv, a)
-                }
-                .padding(.vertical, 2)
-            }
+    private func transport(_ tv: FleetTV, _ p: NowPlaying) -> some View {
+        HStack(spacing: 24) {
+            Spacer()
+            if p.can("back10") { GlassCircle(symbol: "gobackward.10", size: 52) { media(tv, "back10") } }
+            GlassCircle(symbol: p.isPlaying ? "pause.fill" : "play.fill", size: 64) { media(tv, "playpause") }
+            if p.can("fwd30") { GlassCircle(symbol: "goforward.30", size: 52) { media(tv, "fwd30") } }
+            if p.can("next") { GlassCircle(symbol: "forward.end.fill", size: 52) { media(tv, "next") } }
+            Spacer()
         }
+        .glassGroup(spacing: 24)
     }
 
-    @ViewBuilder private func fixButton(_ tv: FleetTV, _ a: AttentionItem) -> some View {
+    // MARK: Health
+
+    @ViewBuilder private func verdict(_ tv: FleetTV) -> some View {
+        let attention = report?.attention?.count ?? tv.health?.count ?? 0
+        HStack(spacing: 14) {
+            Image(systemName: verdictSymbol(tv, attention)).font(.system(size: 30)).symbolRenderingMode(.multicolor)
+                .foregroundStyle(verdictColor(tv, attention))
+            VStack(alignment: .leading, spacing: 2) {
+                Text(verdictTitle(tv, attention)).font(.title3.weight(.semibold))
+                Text(verdictLine(tv)).font(.subheadline).foregroundStyle(.secondary)
+            }
+        }
+        .padding(.vertical, 4)
+        if tv.link == "refused" { Button("Link Again…") { askRelink = true } }
+    }
+
+    private func attentionRow(_ tv: FleetTV, _ a: AttentionItem) -> some View {
+        Menu {
+            if let d = a.detail { Text(d) }
+            fix(tv, a)
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: "exclamationmark.triangle.fill").symbolRenderingMode(.multicolor)
+                Text(a.words).foregroundStyle(.primary)
+                Spacer()
+                Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary)
+            }
+        }
+        .menuStyle(.button).buttonStyle(.plain)
+    }
+
+    @ViewBuilder private func fix(_ tv: FleetTV, _ a: AttentionItem) -> some View {
         switch a.fix {
         case "signin":
-            if fleet.hub(tv.id) != nil, let g = a.grant { Button("Sign In from Here…") { signIn = g } }
-            else { Text("Sign in on \(tv.name) itself (its screen shows a code to scan).").font(.caption) }
-        case "update":
-            ActionButton(action: { try await fleet.pushUpdate(tv); fleet.say("Checking for updates", "\(tv.name) checks now.") }) { Text("Check for Updates") }
-        case "install":
-            ActionButton(action: { try await fleet.client(for: tv)?.key("home"); fleet.say("Opening Woodruff", "Woodruff is opening on \(tv.name). Press Install there.") }) { Text("Open Woodruff on the TV") }
-        case "crash":
-            if let rep = report?.lastCrash?.report { Button("Copy Crash Report") { copyToClipboard(rep) } }
-        case "keys":
-            NavigationLink("Open Google Drive Settings") { ConnectionsView(hubID: tv.hubID) }
+            if fleet.hub(tv.id) != nil, let g = a.grant { Button("Sign In from Here") { signIn = g } }
+            else { Text("Sign in on \(tv.name): its screen shows a code to scan.") }
+        case "update": Button("Check for Updates") { run { try await fleet.pushUpdate(tv); fleet.say("Checking for Updates", "\(tv.name) checks now.") } }
+        case "install": Button("Open Woodruff on \(tv.name)") { run { try await fleet.client(for: tv)?.key("home"); fleet.say("Opening Woodruff", "Press Install on \(tv.name).") } }
+        case "crash": if let rep = report?.lastCrash?.report { Button("Copy Crash Report") { copyToClipboard(rep) } }
         default: EmptyView()
         }
     }
 
-    @ViewBuilder private func signInsSection(_ tv: FleetTV, _ r: HealthReport) -> some View {
-        if let rows = r.signIns?.rows, !rows.isEmpty {
-            Section("Sign-Ins") {
-                ForEach(rows, id: \.0) { name, row in
-                    LabeledContent(name) {
-                        Text(row.text ?? row.state ?? "").foregroundStyle(row.attention == true ? .orange : .secondary)
-                    }
-                }
+    private func signInRow(_ tv: FleetTV, _ name: String, _ row: SignInRow) -> some View {
+        let (symbol, color): (String, Color) = {
+            switch name {
+            case "Google Drive": return ("externaldrive.fill", .blue)
+            case "Google Photos": return ("photo.fill", .blue)
+            case "Google Calendar": return ("calendar", .blue)
+            case "Cameras": return ("video.fill", .green)
+            default: return ("bell.fill", .red)
             }
-        }
+        }()
+        return IconRow(symbol: symbol, color: color, title: name, value: row.text ?? row.state ?? "",
+                       valueColor: row.attention == true ? Palette.attention : .secondary)
     }
 
-    @ViewBuilder private func updatesSection(_ tv: FleetTV, _ r: HealthReport) -> some View {
+    @ViewBuilder private func updates(_ tv: FleetTV) -> some View {
         Section("Updates") {
-            LabeledContent("Version", value: r.version ?? tv.version ?? "?")
-            if let p = fleet.platform(of: tv), let newest = fleet.latest[p] {
-                LabeledContent("Newest release", value: newest.version?.description ?? newest.tag_name)
-            }
-            if let u = r.updates?.text { LabeledContent("Status", value: u) }
-            if let reason = r.updates?.reason { Text(reason).font(.caption).foregroundStyle(.secondary) }
-            if let i = r.installedBy?.summary { LabeledContent("Installed", value: i) }
-            if let l = r.lastUpdateTry?.text { LabeledContent("Last try", value: l) }
-            if let ip = r.installPermission?.text { LabeledContent("Installing updates", value: ip) }
-            if let pu = r.popUps?.text { LabeledContent("Pop-ups", value: pu) }
+            LabeledContent("Version", value: report?.version ?? tv.version ?? "Unknown")
+            if let p = fleet.platform(of: tv), let r = fleet.latest[p] { LabeledContent("Newest", value: r.version?.description ?? r.tag_name) }
+            if let u = report?.updates?.text { LabeledContent("Status", value: u) }
+            if let i = report?.installedBy?.summary { LabeledContent("Installs", value: i) }
+            if let l = report?.lastUpdateTry?.text { LabeledContent("Last Try", value: l) }
             if fleet.platform(of: tv) != .webOS {
-                ActionButton(action: { try await fleet.pushUpdate(tv); fleet.say("Checking for updates", "\(tv.name) checks GitHub now and installs once nobody's using it.") }) {
-                    Label("Check for Updates Now", systemImage: "arrow.down.circle")
+                ActionButton(action: { try await fleet.pushUpdate(tv); fleet.say("Checking for Updates", "\(tv.name) checks GitHub now and installs once nobody’s watching.") }) {
+                    Text("Check for Updates")
                 }
-            } else {
-                Text("LG TVs install updates through Homebrew Channel or the Mac app (Updates → Install on LG TVs).").font(.caption).foregroundStyle(.secondary)
+                .disabled(!tv.online)
             }
         }
     }
 
-    @ViewBuilder private func stabilitySection(_ r: HealthReport) -> some View {
+    @ViewBuilder private func more(_ r: HealthReport) -> some View {
         Section("Stability & Space") {
-            if let c = r.lastCrash {
-                VStack(alignment: .leading) {
-                    LabeledContent("Last crash", value: c.text ?? "")
-                    if let s = c.summary { Text(s).font(.caption.monospaced()).foregroundStyle(.secondary).lineLimit(6) }
-                    if let rep = c.report { Button("Copy Crash Report") { copyToClipboard(rep) } }
-                }
-            }
+            if let c = r.lastCrash { LabeledContent("Last Crash", value: c.text ?? "") }
             if let c = r.closedByAndroid?.text { LabeledContent("Closed by Android", value: c) }
-            if let f = r.freeSpace?.text { LabeledContent("Free space", value: f) }
+            if let f = r.freeSpace?.text { LabeledContent("Free Space", value: f) }
             if let k = r.keys?.text { LabeledContent("Keys", value: k) }
-            if let up = r.uptime { LabeledContent("Running for", value: Duration.seconds(up / 1000).formatted(.units(allowed: [.days, .hours, .minutes], width: .abbreviated))) }
+            if let up = r.uptime { LabeledContent("Running For", value: Duration.seconds(up / 1000).formatted(.units(allowed: [.days, .hours, .minutes], width: .abbreviated, maximumUnitCount: 2))) }
             Button("Copy Health Report") { copyToClipboard(r.asText) }
         }
     }
 
-    @ViewBuilder private func actionsSection(_ tv: FleetTV) -> some View {
-        Section("Actions") {
-            Button { fleet.selectedID = tv.id } label: { Label("Use This TV for the Remote", systemImage: "appletvremote.gen4") }
-            ActionButton(action: { try await fleet.client(for: tv)?.key("home") }) { Label("Open Woodruff Home", systemImage: "house") }
+    @ViewBuilder private func actions(_ tv: FleetTV) -> some View {
+        Section {
+            Button("Use This TV for the Remote") { fleet.remoteAll = false; fleet.selectedID = tv.id }
             if tv.isHub || fleet.hub(tv.id) != nil {
-                NavigationLink { DiagnosticsView(tv: tv) } label: { Label("Smoothness Report", systemImage: "waveform.path.ecg") }
+                NavigationLink("Smoothness Report") { DiagnosticsView(tv: tv) }
             }
             if let mac = fleet.extras[tv.id]?.mac {
-                Button { WakeOnLAN.wake(mac: mac, lastHost: fleet.extras[tv.id]?.lastHost) } label: { Label("Turn On (Wake-on-LAN)", systemImage: "power") }
+                Button("Turn On (Wake-on-LAN)") { WakeOnLAN.wake(mac: mac, lastHost: fleet.extras[tv.id]?.lastHost) }
             }
-            if !tv.isHub && tv.link != "refused" {
-                Button("Link Again…") { askRelink = true }
-            }
+            if !tv.isHub { Button("Link Again…") { askRelink = true } }
             if let hub = fleet.hub(tv.id) {
                 Button("Forget This TV", role: .destructive) { fleet.unpair(hub.id) }
             }
         }
     }
 
-    // MARK: Loops
+    // MARK: Work
 
-    private func healthLoop(_ tv: FleetTV) async {
+    private func media(_ tv: FleetTV, _ action: String) {
+        run {
+            guard let c = fleet.client(for: tv) else { return }
+            if action == "playpause" { try await c.key("playpause") } else { try await c.media(action) }
+            try? await Task.sleep(nanoseconds: 700_000_000)
+            await fleet.refresh()
+        }
+    }
+
+    private func relink(_ tv: FleetTV) {
+        let code = relinkCode
+        relinkCode = ""
+        run {
+            let r = try await fleet.client(for: tv)?.relink(code: code)
+            fleet.say("Linked Again", "\(r?.name ?? tv.name) is linked.")
+            await fleet.refresh()
+        }
+    }
+
+    private func run(_ op: @escaping () async throws -> Void) { Task { do { try await op() } catch { fleet.show(error) } } }
+
+    private func healthLoop() async {
         while !Task.isCancelled {
             if let t = fleet.tv(tvID) { await fleet.loadHealth(t) }
             try? await Task.sleep(nanoseconds: 15_000_000_000)
@@ -226,16 +251,8 @@ struct TVDetailView: View {
 
     private func screenLoop() async {
         while !Task.isCancelled {
-            if !showScreen, let t = fleet.tv(tvID), t.online, let c = fleet.client(for: t) {
-                do {
-                    let d = try await c.screen(width: 640)
-                    screen = PlatformImage(data: d)
-                    screenNote = nil
-                } catch {
-                    screen = nil
-                    screenNote = error.localizedDescription
-                    if fleet.platform(of: t) == .webOS { return }
-                }
+            if !showScreen, let t = fleet.tv(tvID), t.online, fleet.platform(of: t) != .webOS, let c = fleet.client(for: t) {
+                if let d = try? await c.screen(width: 480) { screen = PlatformImage(data: d) }
             }
             try? await Task.sleep(nanoseconds: 3_000_000_000)
         }
@@ -243,63 +260,34 @@ struct TVDetailView: View {
 
     // MARK: Words
 
-    private func verdictTitle(_ tv: FleetTV) -> String {
-        if tv.link == "refused" { return "Its link stopped working" }
-        if !tv.online { return "Off or asleep" }
-        if report?.needsAttention == true || tv.health?.status == "attention" { return "Needs attention" }
-        if tv.health?.status == "old" { return "Health reports start with the next version" }
-        return report == nil ? "Checking…" : "Everything's working"
+    private func verdictTitle(_ tv: FleetTV, _ n: Int) -> String {
+        if tv.link == "refused" { return "Its Link Stopped Working" }
+        if !tv.online { return "Off or Asleep" }
+        if tv.health?.status == "old" { return "Update for Health Reports" }
+        if n == 1 { return "1 Thing Needs Attention" }
+        if n > 1 { return "\(n) Things Need Attention" }
+        return report == nil ? "Checking…" : "All Good"
     }
-    private func verdictSymbol(_ tv: FleetTV) -> String {
-        if !tv.online { return "moon.zzz.fill" }
-        if tv.needsAttention || report?.needsAttention == true { return "exclamationmark.triangle.fill" }
-        return "checkmark.seal.fill"
+    private func verdictLine(_ tv: FleetTV) -> String {
+        if let e = fleet.healthErrors[tvID], report == nil || !tv.online { return e }
+        if let at = report?.at { return "Checked \(relative(at))" + (report?.via.map { " · via \($0)" } ?? "") }
+        return "Asking \(tv.name)…"
     }
-    private func verdictColor(_ tv: FleetTV) -> Color {
-        if !tv.online { return .gray }
-        if tv.needsAttention || report?.needsAttention == true { return .orange }
+    private func verdictSymbol(_ tv: FleetTV, _ n: Int) -> String {
+        if !tv.online && tv.link != "refused" { return "moon.zzz.fill" }
+        if tv.link == "refused" || n > 0 { return "exclamationmark.triangle.fill" }
+        return "checkmark.circle.fill"
+    }
+    private func verdictColor(_ tv: FleetTV, _ n: Int) -> Color {
+        if !tv.online && tv.link != "refused" { return .gray }
+        if tv.link == "refused" || n > 0 { return .orange }
         return .green
     }
 }
 
 struct SignInGrant: Identifiable { var grant: String; var id: String { grant } }
 
-/// ↺10, Play/Pause, 30↻, Next for what a TV plays.
-struct MediaControls: View {
-    @Environment(Fleet.self) private var fleet
-    var tv: FleetTV
-    var playing: NowPlaying
-
-    var body: some View {
-        HStack(spacing: 28) {
-            Spacer()
-            if playing.can("back10") { mediaButton("gobackward.10", "back10") }
-            Button { send("playpause") } label: { Image(systemName: playing.isPlaying ? "pause.fill" : "play.fill").font(.title) }
-            if playing.can("fwd30") { mediaButton("goforward.30", "fwd30") }
-            if playing.can("next") { mediaButton("forward.end.fill", "next") }
-            Spacer()
-        }
-        .buttonStyle(.borderless)
-        .padding(.vertical, 4)
-    }
-
-    private func mediaButton(_ symbol: String, _ action: String) -> some View {
-        Button { send(action) } label: { Image(systemName: symbol).font(.title2) }
-    }
-
-    private func send(_ action: String) {
-        Task {
-            do {
-                guard let c = fleet.client(for: tv) else { return }
-                if action == "playpause" { try await c.key("playpause") } else { try await c.media(action) }
-                try? await Task.sleep(nanoseconds: 700_000_000)
-                await fleet.refresh()
-            } catch { fleet.show(error) }
-        }
-    }
-}
-
-/// The TV's live picture, about once a second, with its controls.
+/// The TV's screen, live, with what's playing (tap the screen on a TV's page).
 struct TVScreenSheet: View {
     @Environment(Fleet.self) private var fleet
     @Environment(\.dismiss) private var dismiss
@@ -309,28 +297,30 @@ struct TVScreenSheet: View {
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 16) {
+            VStack(spacing: 22) {
                 ZStack {
                     Rectangle().fill(.black)
                     if let image { Image(platformImage: image).resizable().aspectRatio(contentMode: .fit) }
-                    else { Text(note ?? "Loading…").foregroundStyle(.white.opacity(0.7)).padding().multilineTextAlignment(.center) }
+                    else { Text(note ?? "Loading…").font(.subheadline).foregroundStyle(.white.opacity(0.7)).padding().multilineTextAlignment(.center) }
                 }
                 .aspectRatio(16 / 9, contentMode: .fit)
-                .clipShape(RoundedRectangle(cornerRadius: 12))
+                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                 if let tv = fleet.tv(tvID), let p = tv.playing {
-                    NowPlayingRow(playing: p)
-                    MediaControls(tv: tv, playing: p)
+                    VStack(spacing: 4) {
+                        Text(p.title).font(.title3.weight(.semibold))
+                        Text(p.app ?? "").font(.subheadline).foregroundStyle(.secondary)
+                    }
                 }
-                if let tv = fleet.tv(tvID) { MiniRemote(tv: tv) }
                 Spacer()
             }
-            .padding()
-            .navigationTitle(fleet.tv(tvID)?.name ?? "TV")
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+            .padding(20)
+            .navigationTitle(fleet.tv(tvID)?.name ?? "TV").inlineTitle()
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button(role: .close) { dismiss() } } }
             .task { await loop() }
         }
+        .presentationDetents([.medium, .large])
         #if os(macOS)
-        .frame(minWidth: 640, minHeight: 600)
+        .frame(minWidth: 640, minHeight: 520)
         #endif
     }
 
@@ -348,28 +338,7 @@ struct TVScreenSheet: View {
     }
 }
 
-/// Arrows, OK and Back, for steering while watching the TV's picture.
-struct MiniRemote: View {
-    @Environment(Fleet.self) private var fleet
-    var tv: FleetTV
-    var body: some View {
-        Grid(horizontalSpacing: 10, verticalSpacing: 10) {
-            GridRow { Color.clear.frame(width: 1, height: 1); key("chevron.up", "up"); Color.clear.frame(width: 1, height: 1) }
-            GridRow { key("chevron.left", "left"); key("circle.fill", "ok"); key("chevron.right", "right") }
-            GridRow { key("arrow.uturn.backward", "back"); key("chevron.down", "down"); key("house", "home") }
-        }
-    }
-    private func key(_ symbol: String, _ k: String) -> some View {
-        Button {
-            Task { do { try await fleet.client(for: tv)?.key(k) } catch { fleet.show(error) } }
-        } label: {
-            Image(systemName: symbol).frame(width: 48, height: 40)
-        }
-        .buttonStyle(.bordered)
-    }
-}
-
-/// The Smoothness Report (frame stats) with Record 3 Minutes.
+/// The Smoothness Report, with Record 3 Minutes.
 struct DiagnosticsView: View {
     @Environment(Fleet.self) private var fleet
     var tv: FleetTV
@@ -381,14 +350,14 @@ struct DiagnosticsView: View {
             Text(text.isEmpty ? "Loading…" : text).font(.caption.monospaced()).textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading).padding()
         }
-        .navigationTitle("Smoothness Report")
+        .navigationTitle("Smoothness Report").inlineTitle()
         .toolbar {
-            ToolbarItemGroup {
-                Button(left > 0 ? "Recording… \(left)s" : "Record 3 Minutes") {
+            ToolbarItemGroup(placement: .primaryAction) {
+                Button(left > 0 ? "Recording · \(left)s" : "Record 3 Min") {
                     Task { do { left = try await fleet.client(for: tv)?.recordDiagnostics() ?? 0 } catch { fleet.show(error) } }
                 }
                 .disabled(left > 0)
-                Button { copyToClipboard(text) } label: { Label("Copy", systemImage: "doc.on.doc") }
+                Button { copyToClipboard(text) } label: { Image(systemName: "doc.on.doc") }
             }
         }
         .task {
@@ -400,7 +369,7 @@ struct DiagnosticsView: View {
     }
 }
 
-/// Signs this TV in to Google (Drive, Photos, Calendar, cameras) from here, on home Wi-Fi.
+/// Signs a TV in to Google (Drive, Photos, Calendar, cameras) from here, on home Wi‑Fi.
 struct SignInSheet: View {
     @Environment(Fleet.self) private var fleet
     @Environment(\.dismiss) private var dismiss
@@ -413,15 +382,18 @@ struct SignInSheet: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 18) {
-                Image(systemName: done ? "checkmark.circle.fill" : "person.badge.key").font(.system(size: 54)).foregroundStyle(done ? .green : .accentColor)
-                Text(status).multilineTextAlignment(.center)
+                Image(systemName: done ? "checkmark.circle.fill" : "person.badge.key.fill")
+                    .font(.system(size: 56)).foregroundStyle(done ? Color.green : Color.accentColor)
+                    .symbolEffect(.bounce, value: done)
+                Text(status).multilineTextAlignment(.center).foregroundStyle(.secondary)
                 if !done { ProgressView() }
             }
             .padding(30)
-            .navigationTitle("Sign In on \(tv.name)")
+            .navigationTitle("Sign In on \(tv.name)").inlineTitle()
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button(done ? "Done" : "Cancel") { dismiss() } } }
             .task { await run() }
         }
+        .presentationDetents([.medium])
     }
 
     private func run() async {
@@ -430,7 +402,7 @@ struct SignInSheet: View {
         do {
             let s = try await c.startSignIn(grant)
             guard let url = URL(string: s.authUrl) else { return }
-            status = "Pick your Google account in the browser and allow access. This page follows along."
+            status = "Pick your Google account and allow access. This follows along."
             openURL(url)
             let until = Date().addingTimeInterval(600)
             while Date() < until && !Task.isCancelled {
@@ -448,3 +420,76 @@ struct SignInSheet: View {
         } catch { status = error.localizedDescription }
     }
 }
+
+/// LG direct control on an LG TV's page: lets the one remote reach every app on it.
+struct LGSection: View {
+    @Environment(Fleet.self) private var fleet
+    var tv: FleetTV
+    @State private var host = ""
+    @State private var busy = false
+
+    var body: some View {
+        if fleet.platform(of: tv) != .android {
+            Section {
+                if let h = fleet.extras[tv.id]?.lgHost {
+                    LabeledContent("Connected", value: h)
+                    if let mac = fleet.extras[tv.id]?.mac { LabeledContent("Wake-on-LAN", value: mac) }
+                    Button("Disconnect", role: .destructive) { fleet.forgetLG(tv) }
+                } else {
+                    TextField("TV’s address, e.g. 192.168.1.40", text: $host).autocorrectionDisabled()
+                    Button(busy ? "Allow it on the TV…" : "Connect") {
+                        busy = true
+                        Task {
+                            do { try await fleet.connectLG(tv, host: host.trimmingCharacters(in: .whitespaces)); fleet.say("Connected", "The remote now works in every app on \(tv.name).") }
+                            catch { fleet.show(error) }
+                            busy = false
+                        }
+                    }
+                    .disabled(host.isEmpty || busy)
+                }
+            } header: { Text("LG Direct Control") } footer: {
+                Text("LG lets Woodruff take keys only while it’s on screen. Connected directly, the remote works in every app, types into any keyboard, switches inputs, and turns \(tv.name) off and on.")
+            }
+            .onAppear { if host.isEmpty { host = fleet.extras[tv.id]?.lastHost ?? "" } }
+        }
+    }
+}
+
+#if os(macOS)
+/// Installing LG updates from this Mac over SSH (Developer Mode or rooted).
+struct SSHSection: View {
+    @Environment(Fleet.self) private var fleet
+    var tv: FleetTV
+    @State private var host = ""
+    @State private var mode: WebOSSSH.Mode = .developerMode
+    @State private var keyPath = ""
+    @State private var result: String?
+
+    var body: some View {
+        if fleet.platform(of: tv) == .webOS {
+            Section {
+                TextField("Address", text: $host)
+                Picker("Access", selection: $mode) { ForEach(WebOSSSH.Mode.allCases, id: \.self) { Text($0.label).tag($0) } }
+                TextField("Private key", text: $keyPath, prompt: Text("~/.ssh/tv_webos"))
+                HStack {
+                    Button("Save") { fleet.extras[tv.id, default: TVExtras()].ssh = WebOSSSH(host: host, mode: mode, keyPath: keyPath); result = "Saved." }
+                    Button("Test") {
+                        let ssh = WebOSSSH(host: host, mode: mode, keyPath: keyPath)
+                        result = "Testing…"
+                        Task { result = await WebOSInstaller.test(ssh).map { "Failed: \($0)" } ?? "SSH works. Updates install from here." }
+                    }
+                }
+                if let result { Text(result).font(.caption).foregroundStyle(.secondary) }
+            } header: { Text("Install Updates from This Mac") } footer: {
+                Text("Developer Mode: get the key once with ares-novacom --getkey (saved as ~/.ssh/tv_webos) and keep Dev Mode Status on.")
+            }
+            .onAppear {
+                let s = fleet.extras[tv.id]?.ssh
+                host = s?.host ?? fleet.extras[tv.id]?.lgHost ?? fleet.extras[tv.id]?.lastHost ?? ""
+                mode = s?.mode ?? .developerMode
+                keyPath = s?.keyPath ?? ""
+            }
+        }
+    }
+}
+#endif

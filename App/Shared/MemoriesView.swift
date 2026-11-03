@@ -14,17 +14,19 @@ struct MemoriesView: View {
     @State private var importing = false
     @State private var error: String?
 
-    private let columns = [GridItem(.adaptive(minimum: 104, maximum: 180), spacing: 2)]
+    #if os(iOS)
+    private let columns = Array(repeating: GridItem(.flexible(), spacing: 2), count: 3)
+    #else
+    private let columns = [GridItem(.adaptive(minimum: 150, maximum: 220), spacing: 2)]
+    #endif
     private var client: TVClient? { fleet.hubClient() }
 
     var body: some View {
         ScrollView {
             if let m = memories {
-                let photos = m.items.filter { !$0.video }.count, videos = m.items.count - photos
-                Text("\(photos) Photos, \(videos) Videos on \(client?.hub.name ?? "the TV")")
-                    .font(.subheadline).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal)
                 if let u = uploading {
-                    ProgressView("Adding \(u.done + 1) of \(u.of)…", value: Double(u.done), total: Double(u.of)).padding(.horizontal)
+                    ProgressView("Adding \(u.done + 1) of \(u.of)…", value: Double(u.done), total: Double(u.of))
+                        .padding(.horizontal, 20).padding(.bottom, 10)
                 }
                 LazyVGrid(columns: columns, spacing: 2) {
                     ForEach(m.items) { item in
@@ -34,7 +36,13 @@ struct MemoriesView: View {
                     }
                 }
                 if m.items.isEmpty {
-                    EmptyState(symbol: "photo.on.rectangle", title: "No Memories Yet", message: "Add photos and videos from this device; every TV's slideshow can show them.")
+                    EmptyState(symbol: "photo.on.rectangle", title: "No Memories Yet", message: "Add photos and videos from this device. Every TV’s slideshow can show them.")
+                        .padding(.top, 60)
+                } else {
+                    let photos = m.items.filter { !$0.video }.count, videos = m.items.count - photos
+                    Text("\(photos) Photos, \(videos) Videos")
+                        .font(.footnote.weight(.semibold)).foregroundStyle(.secondary)
+                        .padding(.vertical, 18)
                 }
             } else if let error {
                 EmptyState(symbol: "wifi.exclamationmark", title: "Can't Load Memories", message: error)
@@ -42,19 +50,21 @@ struct MemoriesView: View {
                 ProgressView().padding(40)
             }
         }
-        .screenTitle("Memories")
+        .screenTitle("Family Memories")
         .refreshable { await load() }
         .toolbar {
-            ToolbarItemGroup {
-                ActionButton(action: {
-                    try await client?.slideshow(folder: memories?.folder, start: true)
-                    fleet.say("Slideshow", "Family Memories is playing on \(client?.hub.name ?? "the TV").")
-                }) { Label("Slideshow on TV", systemImage: "play.rectangle.on.rectangle") }
+            ToolbarItemGroup(placement: .primaryAction) {
+                Button {
+                    Task {
+                        do { try await client?.slideshow(folder: memories?.folder, start: true); fleet.say("Slideshow", "Family Memories is playing on \(client?.hub.name ?? "the TV").") }
+                        catch { fleet.show(error) }
+                    }
+                } label: { Image(systemName: "play.rectangle.on.rectangle") }
                 .disabled(memories?.items.contains { !$0.video } != true)
-                PhotosPicker(selection: $picks, matching: .any(of: [.images, .videos])) { Label("Add Photos", systemImage: "plus") }
+                PhotosPicker(selection: $picks, matching: .any(of: [.images, .videos])) { Image(systemName: "plus") }
                     .disabled(uploading != nil)
                 #if os(macOS)
-                Button { importing = true } label: { Label("Add Files", systemImage: "folder.badge.plus") }
+                Button { importing = true } label: { Image(systemName: "folder.badge.plus") }
                 #endif
             }
         }
@@ -92,7 +102,10 @@ struct MemoriesView: View {
 
     private func load() async {
         guard let c = client else { return }
-        do { memories = try await c.memories(); error = nil } catch { self.error = error.localizedDescription }
+        do {
+            memories = try await c.memories(); error = nil
+            if UserDefaults.standard.string(forKey: "route") == "photo", viewing == nil { viewing = memories?.items.first }
+        } catch { self.error = error.localizedDescription }
     }
 
     // MARK: Adding
@@ -203,7 +216,7 @@ struct MovieFile: Transferable {
     }
 }
 
-/// Full-screen viewer: swipe through, zoom, show on the TV (and keep following as you swipe), share, delete.
+/// Full-screen viewer: swipe through, zoom, show on the TV (following as you swipe), share, delete.
 struct MemoryViewer: View {
     @Environment(Fleet.self) private var fleet
     @Environment(\.dismiss) private var dismiss
@@ -213,55 +226,86 @@ struct MemoryViewer: View {
     @State private var current: String = ""
     @State private var follow = false
     @State private var shareURL: URL?
+    @State private var chrome = true
 
     private var client: TVClient? { fleet.hubClient() }
     private var item: MemoryItem? { items.first { $0.path == current } }
 
     var body: some View {
-        NavigationStack {
+        ZStack {
+            Color.black.ignoresSafeArea()
             TabView(selection: $current) {
                 ForEach(items) { m in
                     ZoomableImage(url: client?.photoURL(m)).tag(m.path)
+                        .onTapGesture { withAnimation(.easeInOut(duration: 0.2)) { chrome.toggle() } }
                 }
             }
             #if os(iOS)
             .tabViewStyle(.page(indexDisplayMode: .never))
             #endif
-            .background(.black)
-            .ignoresSafeArea(edges: .bottom)
-            .navigationTitle(item?.takenDate?.formatted(date: .abbreviated, time: .shortened) ?? item?.name ?? "")
-            #if os(iOS)
-            .navigationBarTitleDisplayMode(.inline)
-            #endif
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } }
-                ToolbarItemGroup(placement: .primaryAction) {
-                    Toggle(isOn: $follow) { Label("Show on TV", systemImage: follow ? "tv.fill" : "tv") }
-                        .toggleStyle(.button)
-                    Menu {
-                        Button { share() } label: { Label("Share", systemImage: "square.and.arrow.up") }
-                        if item?.video == false {
-                            Button { act { try await client?.background(item!.path); fleet.say("Background set", "It's the TV's background now.") } } label: { Label("Set as TV Background", systemImage: "photo.on.rectangle") }
-                        }
-                        Button { act { try await client?.slideshow(folder: nil, start: true) } } label: { Label("Slideshow on TV", systemImage: "play.rectangle") }
-                        Button(role: .destructive) {
-                            guard let it = item else { return }
-                            act { if let m = try await client?.deleteMemory(it) { onChange(m); dismiss() } }
-                        } label: { Label("Delete", systemImage: "trash") }
-                    } label: { Label("More", systemImage: "ellipsis.circle") }
+            .ignoresSafeArea()
+            if chrome { controls.transition(.opacity) }
+        }
+        .environment(\.colorScheme, .dark)
+        .onAppear { current = start.path }
+        .task(id: "\(current)-\(follow)") {
+            guard follow, let it = item else { return }
+            try? await Task.sleep(nanoseconds: 160_000_000)
+            guard !Task.isCancelled else { return }
+            do { try await client?.showMemory(it) } catch { fleet.show(error); follow = false }
+        }
+        #if os(iOS)
+        .sheet(item: Binding(get: { shareURL.map { ShareItem(url: $0) } }, set: { shareURL = $0?.url })) { ShareSheet(items: [$0.url]) }
+        #endif
+    }
+
+    private var controls: some View {
+        VStack {
+            HStack {
+                GlassCircle(symbol: "xmark") { dismiss() }
+                Spacer()
+                if let d = item?.takenDate {
+                    VStack(spacing: 0) {
+                        Text(d.formatted(.dateTime.month(.wide).day().year())).font(.subheadline.weight(.semibold))
+                        Text(d.formatted(date: .omitted, time: .shortened)).font(.caption2).foregroundStyle(.secondary)
+                    }
+                    .padding(.horizontal, 16).padding(.vertical, 6)
+                    .glass(Capsule(), interactive: false)
+                }
+                Spacer()
+                Menu {
+                    if item?.video == false {
+                        Button { act { try await client?.background(item!.path); fleet.say("Background Set", "It’s the TV’s background now.") } } label: { Label("Set as TV Background", systemImage: "photo.on.rectangle") }
+                    }
+                    Button { act { try await client?.slideshow(folder: nil, start: true) } } label: { Label("Slideshow on TV", systemImage: "play.rectangle") }
+                } label: {
+                    Image(systemName: "ellipsis").font(.system(size: 17, weight: .semibold)).frame(width: 44, height: 44).glass(Circle())
+                }
+                .menuStyle(.button).buttonStyle(.plain)
+            }
+            Spacer()
+            HStack {
+                GlassCircle(symbol: "square.and.arrow.up") { share() }
+                Spacer()
+                Button { withAnimation(.snappy) { follow.toggle() } } label: {
+                    Label(follow ? "Showing on TV" : "Show on TV", systemImage: follow ? "tv.fill" : "tv")
+                        .font(.subheadline.weight(.semibold))
+                        .padding(.horizontal, 18).frame(height: 44)
+                        .foregroundStyle(follow ? .white : Color.accentColor)
+                        .contentShape(Capsule())
+                        .glass(Capsule(), tint: follow ? Color.accentColor : nil)
+                }
+                .buttonStyle(PressScale(scale: 0.96))
+                Spacer()
+                GlassCircle(symbol: "trash") {
+                    guard let it = item else { return }
+                    act { if let m = try await client?.deleteMemory(it) { onChange(m); dismiss() } }
                 }
             }
-            .onAppear { current = start.path }
-            .task(id: "\(current)-\(follow)") {
-                guard follow, let it = item else { return }
-                try? await Task.sleep(nanoseconds: 160_000_000)
-                guard !Task.isCancelled else { return }
-                do { try await client?.showMemory(it) } catch { fleet.show(error); follow = false }
-            }
-            #if os(iOS)
-            .sheet(item: Binding(get: { shareURL.map { ShareItem(url: $0) } }, set: { shareURL = $0?.url })) { s in ShareSheet(items: [s.url]) }
-            #endif
         }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 8)
+        .glassGroup()
     }
 
     private func act(_ op: @escaping () async throws -> Void) { Task { do { try await op() } catch { fleet.show(error) } } }

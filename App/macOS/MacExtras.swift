@@ -17,14 +17,10 @@ struct MenuBarFleetView: View {
             ForEach(fleet.tvs) { tv in
                 VStack(alignment: .leading, spacing: 4) {
                     HStack {
-                        StatusDot(color: tv.online ? (tv.needsAttention ? .orange : .green) : .gray)
+                        Circle().fill(tv.online ? (tv.needsAttention ? Color.orange : .green) : .gray).frame(width: 8, height: 8)
                         Text(tv.name).font(.subheadline.weight(.semibold))
                         Spacer()
                         if fleet.isBehind(tv) { Image(systemName: "arrow.down.circle.fill").foregroundStyle(.blue) }
-                        if tv.online, let c = fleet.client(for: tv) {
-                            Button { Task { try? await c.key("playpause") } } label: { Image(systemName: "playpause.fill") }.buttonStyle(.borderless)
-                            Button { Task { try? await c.key("mute") } } label: { Image(systemName: "speaker.slash.fill") }.buttonStyle(.borderless)
-                        }
                     }
                     if let p = tv.playing { Text(p.title).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
                     else if !tv.online { Text("Off · seen \(relative(tv.seen))").font(.caption).foregroundStyle(.secondary) }

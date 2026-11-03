@@ -2,117 +2,194 @@ import SwiftUI
 import UniformTypeIdentifiers
 import WoodruffKit
 
-/// Send: a message to TVs and phones (or pinned on every TV's Home), the TV's photos and files, a link, the slideshow.
+/// Who an announcement goes to (Send → To).
+@Observable final class Recipients {
+    var allTVs = true
+    var tvs: Set<String> = []
+    var phones: Set<String> = []
+    var pin = false
+    var knownPhones: [Phone] = []
+    var loadedPhones = false
+}
+
+/// Send: a message to TVs and phones (or kept on every TV's Home), the TV's photos and files, a link, the slideshow.
 struct SendView: View {
     @Environment(Fleet.self) private var fleet
     @State private var message = ""
-    @State private var toTV = true
-    @State private var pickedTVs: Set<String> = []
-    @State private var everyTV = true
-    @State private var phones: [Phone] = []
-    @State private var pickedPhones: Set<String> = []
-    @State private var pin = false
-    @State private var link = ""
+    @State private var to = Recipients()
     @State private var sending = false
+    @FocusState private var focused: Bool
 
     var body: some View {
         Form {
             Section {
-                TextField("Message", text: $message, axis: .vertical).lineLimit(3...8)
-                Button {
-                    send()
-                } label: {
-                    if sending { ProgressView() } else { Label("Send", systemImage: "paperplane.fill") }
+                TextField("Message", text: $message, axis: .vertical)
+                    .lineLimit(5...12)
+                    .focused($focused)
+                    .padding(.vertical, 4)
+                NavigationLink { SendToView(to: to) } label: {
+                    LabeledContent("To", value: toSummary)
                 }
-                .disabled(message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || sending)
-            } header: { Text("Announcement") }
-
-            Section("To") {
-                Toggle("TV screens", isOn: $toTV)
-                if toTV {
-                    Toggle("Every TV", isOn: $everyTV)
-                    if !everyTV {
-                        ForEach(fleet.tvs) { tv in
-                            Toggle(isOn: Binding(get: { pickedTVs.contains(tv.id) }, set: { on in if on { pickedTVs.insert(tv.id) } else { pickedTVs.remove(tv.id) } })) {
-                                HStack { StatusDot(color: tv.online ? .green : .gray); Text(tv.name) }
-                            }
-                        }
-                    }
-                }
-                ForEach(phones) { p in
-                    Toggle(isOn: Binding(get: { pickedPhones.contains(p.id) }, set: { on in if on { pickedPhones.insert(p.id) } else { pickedPhones.remove(p.id) } })) {
-                        VStack(alignment: .leading) {
-                            Text(p.id == fleet.phone.id ? "\(p.name) (this device)" : p.name)
-                            Text(p.alerts == true ? "Lock screen" : "When Woodruff is open").font(.caption).foregroundStyle(.secondary)
-                        }
-                    }
-                }
-                Toggle("Keep on Every TV's Home", isOn: $pin)
             }
-
-            Section("On the TV") {
-                NavigationLink { FilesView() } label: { Label("Photos & Files", systemImage: "folder") }
-                HStack {
-                    TextField("Open a link (YouTube, Apple Music, a video…)", text: $link)
-                        .autocorrectionDisabled()
-                        #if os(iOS)
-                        .textInputAutocapitalization(.never).keyboardType(.URL)
-                        #endif
-                    ActionButton(action: {
-                        try await fleet.selectedClient?.open(link.trimmingCharacters(in: .whitespaces))
-                        fleet.say("Opened", "It's opening on \(fleet.selected?.name ?? "the TV").")
-                        link = ""
-                    }) { Text("Open") }
-                    .disabled(link.isEmpty)
-                }
-                ActionButton(action: { try await fleet.hubClient()?.slideshow(start: true) }) {
-                    Label("Start Photo Slideshow", systemImage: "play.rectangle.on.rectangle")
-                }
+            Section {
+                NavigationLink { FilesView() } label: { IconRow(symbol: "folder.fill", color: .blue, title: "Photos & Files") }
+                NavigationLink { OpenLinkView() } label: { IconRow(symbol: "link", color: .indigo, title: "Open a Link") }
+                Button {
+                    Task {
+                        do { try await fleet.hubClient()?.slideshow(start: true); fleet.say("Slideshow", "The photo slideshow is starting on \(fleet.hubClient()?.hub.name ?? "the TV").") }
+                        catch { fleet.show(error) }
+                    }
+                } label: { IconRow(symbol: "photo.fill", color: .orange, title: "Start Photo Slideshow") }
+                .buttonStyle(.plain)
             }
         }
         .formStyle(.grouped)
+        .scrollDismissesKeyboard(.interactively)
         .screenTitle("Send")
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button { send() } label: {
+                    if sending { ProgressView() } else { Text("Send") }
+                }
+                .buttonStyle(.glassProminent)
+                .disabled(message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || sending)
+            }
+        }
         .task { await loadPhones() }
     }
 
-    private func loadPhones() async {
-        guard let c = fleet.hubClient() else { return }
-        if let p = try? await c.phones() {
-            phones = p
-            if pickedPhones.isEmpty { pickedPhones = Set(p.filter { $0.id != fleet.phone.id }.map(\.id)) }
-        }
+    private var toSummary: String {
+        let phonesOn = to.knownPhones.filter { to.phones.contains($0.id) }.count
+        if to.allTVs && (to.knownPhones.isEmpty || phonesOn == to.knownPhones.filter { $0.id != fleet.phone.id }.count) { return to.pin ? "Everyone · Pinned" : "Everyone" }
+        var parts: [String] = []
+        if to.allTVs { parts.append("All TVs") } else if !to.tvs.isEmpty { parts.append(to.tvs.count == 1 ? (fleet.tv(to.tvs.first!)?.name ?? "1 TV") : "\(to.tvs.count) TVs") }
+        if phonesOn > 0 { parts.append(phonesOn == 1 ? "1 phone" : "\(phonesOn) phones") }
+        return parts.isEmpty ? "No one" : parts.joined(separator: ", ")
     }
 
-    /// The page's rule: a short first line is the title, the rest the body; otherwise "From <name>".
+    private func loadPhones() async {
+        guard !to.loadedPhones, let c = fleet.hubClient(), let p = try? await c.phones() else { return }
+        to.knownPhones = p
+        to.phones = Set(p.filter { $0.id != fleet.phone.id }.map(\.id))
+        to.loadedPhones = true
+    }
+
+    /// The phone page's rule: a short first line is the title, the rest the body; otherwise "From <name>".
     private func split(_ text: String) -> (String, String) {
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let lines = t.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
-        if let first = lines.first, first.count <= 80 {
-            return (first, lines.count > 1 ? lines[1].trimmingCharacters(in: .whitespacesAndNewlines) : "")
-        }
+        if let first = lines.first, first.count <= 80 { return (first, lines.count > 1 ? lines[1].trimmingCharacters(in: .whitespacesAndNewlines) : "") }
         return ("From \(fleet.phone.name)", t)
     }
 
     private func send() {
         guard let c = fleet.hubClient() else { return }
         let (title, body) = split(message)
+        let anyTV = to.allTVs || !to.tvs.isEmpty
+        let tvList: [String]? = to.allTVs ? nil : to.tvs.map { $0 == c.hub.id ? "this" : $0 }
         sending = true
         Task {
             do {
-                let tvList: [String]? = toTV && !everyTV ? pickedTVs.compactMap { id in fleet.tv(id).map { $0.isHub && $0.hubID == c.hub.id ? "this" : $0.id } } : nil
-                let r = try await c.announce(title: title, body: body, tv: toTV, tvs: tvList, phones: Array(pickedPhones), allPhones: false, from: fleet.phone.name, pin: pin)
+                let r = try await c.announce(title: title, body: body, tv: anyTV, tvs: tvList, phones: Array(to.phones), allPhones: false, from: fleet.phone.name, pin: to.pin)
                 message = ""
+                focused = false
                 var words: [String] = []
                 if let n = r.tvs, n > 0 { words.append(n == 1 ? "the TV" : "\(n) TVs") }
                 if let n = r.phones, n > 0 { words.append(n == 1 ? "1 phone" : "\(n) phones") }
-                fleet.say(pin ? "Pinned on every TV" : "Sent", words.isEmpty ? "Sent." : "Sent to " + words.joined(separator: " and ") + ".")
+                fleet.say(to.pin ? "Pinned on Every TV" : "Sent", words.isEmpty ? "Sent." : "Sent to " + words.joined(separator: " and ") + ".")
             } catch { fleet.show(error) }
             sending = false
         }
     }
 }
 
-/// The TV's storage: browse, play, set as background, use for the slideshow, save, upload, new folder, delete.
+/// Send → To: TVs, phones, and keeping it on every TV's Home.
+struct SendToView: View {
+    @Environment(Fleet.self) private var fleet
+    @Bindable var to: Recipients
+
+    var body: some View {
+        Form {
+            Section {
+                Toggle(isOn: $to.allTVs) { IconRow(symbol: "tv.fill", color: .blue, title: "All TVs") }
+                if !to.allTVs {
+                    ForEach(fleet.tvs) { tv in
+                        Toggle(isOn: Binding(get: { to.tvs.contains(tv.id) }, set: { if $0 { to.tvs.insert(tv.id) } else { to.tvs.remove(tv.id) } })) {
+                            IconRow(symbol: "tv.fill", color: tv.online ? .blue : .gray, title: tv.name, subtitle: tv.online ? nil : "Off")
+                        }
+                    }
+                }
+                ForEach(to.knownPhones) { p in
+                    Toggle(isOn: Binding(get: { to.phones.contains(p.id) }, set: { if $0 { to.phones.insert(p.id) } else { to.phones.remove(p.id) } })) {
+                        IconRow(symbol: p.name.lowercased().contains("ipad") ? "ipad" : "iphone", color: p.alerts == true ? .green : .gray,
+                                title: p.id == fleet.phone.id ? "\(p.name) (this device)" : p.name,
+                                subtitle: p.alerts == true ? "Lock screen" : "When Woodruff is open")
+                    }
+                }
+            }
+            Section {
+                Toggle("Keep on Every TV’s Home", isOn: $to.pin)
+            } footer: {
+                Text("It stays on every TV’s Home until someone dismisses it there, also on TVs that are off right now.")
+            }
+        }
+        .formStyle(.grouped)
+        .navigationTitle("Send To")
+        .inlineTitle()
+    }
+}
+
+/// Opens a YouTube, Apple Music or video link on the remote's TV.
+struct OpenLinkView: View {
+    @Environment(Fleet.self) private var fleet
+    @Environment(\.dismiss) private var dismiss
+    @State private var link = ""
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        Form {
+            Section {
+                TextField("https://", text: $link)
+                    .focused($focused)
+                    .autocorrectionDisabled()
+                    #if os(iOS)
+                    .textInputAutocapitalization(.never).keyboardType(.URL)
+                    #endif
+                    .onSubmit { open() }
+                #if os(iOS)
+                PasteButton(payloadType: String.self) { s in link = s.first ?? "" }
+                #endif
+            } footer: {
+                Text("YouTube links open in YouTube, Apple Music in Apple Music, videos in Woodruff’s player. It opens on \(fleet.selected?.name ?? "the TV").")
+            }
+        }
+        .formStyle(.grouped)
+        .navigationTitle("Open a Link")
+        .inlineTitle()
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button("Open") { open() }.buttonStyle(.glassProminent).disabled(link.isEmpty)
+            }
+        }
+        .onAppear { focused = true }
+    }
+
+    private func open() {
+        let url = link.trimmingCharacters(in: .whitespaces)
+        Task {
+            do {
+                guard let tv = fleet.selected, let hub = fleet.hubClient() else { return }
+                // Links open on a TV paired here; a linked TV goes through its own pairing when there is one.
+                let c = fleet.hub(tv.id).map { TVClient(hub: $0, routeID: "this") } ?? hub
+                try await c.open(url)
+                fleet.say("Opening", "It’s opening on \(c.hub.name).")
+                dismiss()
+            } catch { fleet.show(error) }
+        }
+    }
+}
+
+/// The TV's storage: browse, play, background, slideshow, save, upload, new folder, delete.
 struct FilesView: View {
     @Environment(Fleet.self) private var fleet
     @State private var roots: [StorageRoot] = []
@@ -125,36 +202,35 @@ struct FilesView: View {
     @State private var progress: String?
     @State private var saving: URL?
 
+    private var client: TVClient? { fleet.hubClient() }
+    private var root: StorageRoot? { roots.first { path?.hasPrefix($0.path) == true } ?? roots.first }
+
     var body: some View {
         List {
-            if !roots.isEmpty {
-                Section {
-                    Picker("Storage", selection: Binding(get: { roots.first { path?.hasPrefix($0.path) == true }?.path ?? roots.first?.path ?? "" },
-                                                          set: { open($0) })) {
-                        ForEach(roots) { r in Text(r.name + (r.free.map { " · \(formatBytes($0)) free" } ?? "")).tag(r.path) }
-                    }
-                }
+            if let progress {
+                Section { HStack(spacing: 12) { ProgressView(); Text(progress).font(.subheadline) } }
             }
-            if let progress { Section { HStack { ProgressView(); Text(progress) } } }
             if let l = listing {
-                Section(l.path) {
-                    if let parent = l.parent { Button { open(parent) } label: { Label("Up", systemImage: "arrow.turn.left.up") } }
-                    ForEach(l.files.filter { filter.isEmpty || $0.name.localizedCaseInsensitiveContains(filter) }) { f in
-                        row(f)
+                Section {
+                    if let parent = l.parent, l.path != root?.path {
+                        Button { open(parent) } label: { IconRow(symbol: "arrow.turn.left.up", color: .gray, title: "Back to \((parent as NSString).lastPathComponent)") }
+                            .buttonStyle(.plain)
                     }
+                    ForEach(l.files.filter { filter.isEmpty || $0.name.localizedCaseInsensitiveContains(filter) }) { f in row(f) }
                 }
             } else {
-                ProgressView()
+                HStack { Spacer(); ProgressView(); Spacer() }.listRowBackground(Color.clear)
             }
         }
-        .searchable(text: $filter)
-        .navigationTitle("Photos & Files")
+        .safeAreaInset(edge: .top, spacing: 0) { storagePicker }
+        .searchable(text: $filter, prompt: "Search")
+        .navigationTitle(listing.map { $0.path == root?.path ? "Photos & Files" : ($0.path as NSString).lastPathComponent } ?? "Photos & Files")
         .toolbar {
-            ToolbarItem {
+            ToolbarItem(placement: .primaryAction) {
                 Menu {
                     Button { importing = true } label: { Label("Upload", systemImage: "square.and.arrow.up") }
                     Button { askFolder = true } label: { Label("New Folder", systemImage: "folder.badge.plus") }
-                } label: { Label("Add", systemImage: "plus") }
+                } label: { Image(systemName: "plus") }
                 .disabled(listing == nil)
             }
         }
@@ -165,49 +241,73 @@ struct FilesView: View {
             TextField("Name", text: $newFolder)
             Button("Create") {
                 let name = newFolder; newFolder = ""
-                Task { do { try await client?.mkdir(in: listing?.path ?? "", name: name); reload() } catch { fleet.show(error) } }
+                act { try await client?.mkdir(in: listing?.path ?? "", name: name); reload() }
             }
             Button("Cancel", role: .cancel) {}
         }
         .task { await loadRoots() }
         #if os(iOS)
-        .sheet(item: Binding(get: { saving.map { ShareItem(url: $0) } }, set: { saving = $0?.url })) { item in ShareSheet(items: [item.url]) }
+        .sheet(item: Binding(get: { saving.map { ShareItem(url: $0) } }, set: { saving = $0?.url })) { ShareSheet(items: [$0.url]) }
         #endif
     }
 
-    private var client: TVClient? { fleet.hubClient() }
+    @ViewBuilder private var storagePicker: some View {
+        if roots.count > 0 {
+            HStack {
+                Menu {
+                    ForEach(roots) { r in
+                        Button { open(r.path) } label: { Text(r.name); if let f = r.free { Text("\(formatBytes(f)) free") } }
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Text(root?.name ?? "Storage").font(.subheadline.weight(.semibold))
+                        Image(systemName: "chevron.down").font(.caption.weight(.bold))
+                    }
+                    .foregroundStyle(Color.accentColor)
+                }
+                .menuStyle(.button).buttonStyle(.plain)
+                Spacer()
+                if let f = listing?.free ?? root?.free { Text("\(formatBytes(f)) free").font(.footnote).foregroundStyle(.secondary) }
+            }
+            .padding(.horizontal, 20).padding(.vertical, 6)
+        }
+    }
 
     @ViewBuilder private func row(_ f: FileEntry) -> some View {
-        let label = HStack {
-            Image(systemName: f.dir ? "folder.fill" : f.isImage ? "photo" : f.isVideo ? "film" : f.isAudio ? "music.note" : "doc")
-                .foregroundStyle(f.dir ? Color.accentColor : .secondary).frame(width: 26)
-            VStack(alignment: .leading) {
-                Text(f.name).lineLimit(1)
-                if !f.dir { Text(formatBytes(f.size)).font(.caption).foregroundStyle(.secondary) }
-            }
-        }
+        let label = IconRow(symbol: icon(f), color: color(f), title: f.name, subtitle: f.dir ? "Folder" : "\(kind(f)) · \(formatBytes(f.size))")
         Group {
-            if f.dir { Button { open(f.path) } label: { label }.buttonStyle(.plain) }
-            else { label }
+            if f.dir { Button { open(f.path) } label: { HStack { label; Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary) } }.buttonStyle(.plain) }
+            else { Menu { menu(f) } label: { label }.menuStyle(.button).buttonStyle(.plain) }
         }
         .contextMenu { menu(f) }
-        .swipeActions { Button(role: .destructive) { delete(f) } label: { Label("Delete", systemImage: "trash") } }
+        .swipeActions { Button(role: .destructive) { act { try await client?.delete(f.path); reload() } } label: { Label("Delete", systemImage: "trash") } }
     }
 
     @ViewBuilder private func menu(_ f: FileEntry) -> some View {
         if f.dir {
-            Button { act { try await client?.slideshow(folder: f.path, start: false); fleet.say("Slideshow", "The slideshow uses \(f.name) now.") } } label: { Label("Use for Slideshow", systemImage: "play.rectangle") }
+            Button { act { try await client?.slideshow(folder: f.path, start: false); fleet.say("Slideshow", "The slideshow shows \(f.name) now.") } } label: { Label("Use for Slideshow", systemImage: "play.rectangle") }
         }
         if f.isMedia {
             Button { act { let r = try await client?.play(path: f.path); if let m = r?.message { fleet.say("Ready on the TV", m) } } } label: { Label("Play on TV", systemImage: "play.tv") }
         }
         if f.isImage {
-            Button { act { try await client?.background(f.path); fleet.say("Background set", "\(f.name) is the TV's background.") } } label: { Label("Set as TV Background", systemImage: "photo.on.rectangle") }
+            Button { act { try await client?.background(f.path); fleet.say("Background Set", "\(f.name) is the TV’s background.") } } label: { Label("Set as TV Background", systemImage: "photo.on.rectangle") }
         }
         if !f.dir {
             Button { save(f) } label: { Label("Save to This Device", systemImage: "square.and.arrow.down") }
         }
-        Button(role: .destructive) { delete(f) } label: { Label("Delete", systemImage: "trash") }
+        Divider()
+        Button(role: .destructive) { act { try await client?.delete(f.path); reload() } } label: { Label("Delete", systemImage: "trash") }
+    }
+
+    private func icon(_ f: FileEntry) -> String {
+        f.dir ? "folder.fill" : f.isVideo ? "play.fill" : f.isImage ? "photo.fill" : f.isAudio ? "music.note" : f.ext == "apk" ? "shippingbox.fill" : "doc.fill"
+    }
+    private func color(_ f: FileEntry) -> Color {
+        f.dir ? .blue : f.isVideo ? .purple : f.isImage ? .teal : f.isAudio ? .pink : .gray
+    }
+    private func kind(_ f: FileEntry) -> String {
+        f.isVideo ? "Video" : f.isImage ? "Photo" : f.isAudio ? "Music" : f.ext.uppercased()
     }
 
     private func act(_ op: @escaping () async throws -> Void) { Task { do { try await op() } catch { fleet.show(error) } } }
@@ -223,15 +323,11 @@ struct FilesView: View {
     private func open(_ p: String) {
         path = p
         Task {
-            do { listing = try await client?.list(p) } catch { fleet.show(error) }
+            do { let l = try await client?.list(p); withAnimation(.snappy) { listing = l } } catch { fleet.show(error) }
         }
     }
 
     private func reload() { if let path { open(path) } }
-
-    private func delete(_ f: FileEntry) {
-        act { try await client?.delete(f.path); reload() }
-    }
 
     private func upload(_ urls: [URL]) {
         guard let dir = listing?.path, let c = client else { return }
@@ -242,7 +338,7 @@ struct FilesView: View {
                 progress = "Uploading \(i + 1) of \(urls.count): \(url.lastPathComponent)"
                 do {
                     let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Double.init) ?? 0
-                    if let free = listing?.free, size > free { throw TVError.badAnswer("\(url.lastPathComponent) is \(formatBytes(size)); there's \(formatBytes(free)) free.") }
+                    if let free = listing?.free, size > free { throw TVError.badAnswer("\(url.lastPathComponent) is \(formatBytes(size)); there’s \(formatBytes(free)) free.") }
                     _ = try await c.upload(file: url, to: dir, name: url.lastPathComponent)
                 } catch { fleet.show(error); break }
             }
@@ -273,13 +369,3 @@ struct FilesView: View {
         }
     }
 }
-
-struct ShareItem: Identifiable { var url: URL; var id: URL { url } }
-
-#if os(iOS)
-struct ShareSheet: UIViewControllerRepresentable {
-    var items: [Any]
-    func makeUIViewController(context: Context) -> UIActivityViewController { UIActivityViewController(activityItems: items, applicationActivities: nil) }
-    func updateUIViewController(_ c: UIActivityViewController, context: Context) {}
-}
-#endif

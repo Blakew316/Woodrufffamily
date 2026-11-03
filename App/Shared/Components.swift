@@ -3,34 +3,147 @@ import WoodruffKit
 
 #if os(macOS)
 typealias PlatformImage = NSImage
-extension Image {
-    init(platformImage: NSImage) { self.init(nsImage: platformImage) }
-}
+extension Image { init(platformImage: NSImage) { self.init(nsImage: platformImage) } }
 #else
 typealias PlatformImage = UIImage
-extension Image {
-    init(platformImage: UIImage) { self.init(uiImage: platformImage) }
-}
+extension Image { init(platformImage: UIImage) { self.init(uiImage: platformImage) } }
 #endif
 
-/// A small coloured dot for a TV's state.
-struct StatusDot: View {
-    var color: Color
-    var body: some View {
-        Circle().fill(color).frame(width: 9, height: 9)
-            .overlay(Circle().stroke(color.opacity(0.35), lineWidth: 3).scaleEffect(1.6))
+// MARK: - Palette (the phone page's: iOS system colours, Woodruff's blue tint)
+
+enum Palette {
+    static let attention = Color(light: Color(red: 0.54, green: 0.31, blue: 0), dark: Color(red: 1, green: 0.71, blue: 0.28))
+    static let cardFill = Color(light: .white, dark: Color(red: 0.11, green: 0.11, blue: 0.12))
+    static let groupedBackground = Color(light: Color(red: 0.95, green: 0.95, blue: 0.97), dark: .black)
+    static let keyFill = Color(light: .white, dark: Color(red: 0.17, green: 0.17, blue: 0.18))
+    static let padFill = Color(light: Color(red: 0.90, green: 0.90, blue: 0.92), dark: Color(red: 0.15, green: 0.15, blue: 0.16))
+    static let padCenter = Color(light: Color(red: 0.84, green: 0.84, blue: 0.87), dark: Color(red: 0.22, green: 0.22, blue: 0.23))
+}
+
+extension Color {
+    init(light: Color, dark: Color) {
+        #if os(macOS)
+        self.init(nsColor: NSColor(name: nil) { $0.bestMatch(from: [.darkAqua, .vibrantDark]) != nil ? NSColor(dark) : NSColor(light) })
+        #else
+        self.init(uiColor: UIColor { $0.userInterfaceStyle == .dark ? UIColor(dark) : UIColor(light) })
+        #endif
     }
 }
 
-/// A rounded card used across the dashboard.
-struct Card<Content: View>: View {
-    @ViewBuilder var content: Content
+// MARK: - Liquid Glass
+
+extension View {
+    /// Liquid Glass in [shape] (iOS 26 / macOS 26), a material on older Macs.
+    @ViewBuilder func glass<S: Shape>(_ shape: S, tint: Color? = nil, interactive: Bool = true) -> some View {
+        if #available(iOS 26, macOS 26, *) {
+            self.glassEffect(tint.map { Glass.regular.tint($0).interactive(interactive) } ?? Glass.regular.interactive(interactive), in: shape)
+        } else {
+            self.background { if let tint { shape.fill(tint.gradient) } else { shape.fill(.regularMaterial) } }
+        }
+    }
+
+    /// Groups nearby glass so it blends and morphs together.
+    @ViewBuilder func glassGroup(spacing: CGFloat = 16) -> some View {
+        if #available(iOS 26, macOS 26, *) { GlassEffectContainer(spacing: spacing) { self } } else { self }
+    }
+}
+
+// MARK: - Settings-style rows
+
+/// The coloured rounded square with a white symbol, as in iOS Settings.
+struct IconTile: View {
+    var symbol: String
+    var color: Color
+    var size: CGFloat = 29
     var body: some View {
-        content
-            .padding(14)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.background.secondary, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(.quaternary, lineWidth: 0.5))
+        Image(systemName: symbol)
+            .font(.system(size: size * 0.52, weight: .semibold))
+            .foregroundStyle(.white)
+            .frame(width: size, height: size)
+            .background(color.gradient, in: RoundedRectangle(cornerRadius: size * 0.235, style: .continuous))
+    }
+}
+
+/// A row: icon tile, title (and subtitle), and a trailing value.
+struct IconRow: View {
+    var symbol: String
+    var color: Color
+    var title: String
+    var subtitle: String? = nil
+    var value: String? = nil
+    var valueColor: Color = .secondary
+
+    var body: some View {
+        HStack(spacing: 14) {
+            IconTile(symbol: symbol, color: color)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title).foregroundStyle(.primary)
+                if let subtitle { Text(subtitle).font(.subheadline).foregroundStyle(.secondary).lineLimit(1) }
+            }
+            Spacer(minLength: 8)
+            if let value { Text(value).foregroundStyle(valueColor).lineLimit(1) }
+        }
+        .padding(.vertical, subtitle == nil ? 2 : 0)
+    }
+}
+
+// MARK: - Buttons
+
+/// A round glass button (the phone page's toolbar circles).
+struct GlassCircle: View {
+    var symbol: String
+    var tint: Color? = nil
+    var size: CGFloat = 44
+    var action: () -> Void
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: size * 0.38, weight: .semibold))
+                .foregroundStyle(tint == nil ? Color.primary : .white)
+                .frame(width: size, height: size)
+                .contentShape(Circle())
+                .glass(Circle(), tint: tint)
+        }
+        .buttonStyle(PressScale())
+    }
+}
+
+/// Shrinks a little under the finger, springs back.
+struct PressScale: ButtonStyle {
+    var scale: CGFloat = 0.92
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? scale : 1)
+            .brightness(configuration.isPressed ? -0.04 : 0)
+            .animation(.spring(response: 0.25, dampingFraction: 0.6), value: configuration.isPressed)
+    }
+}
+
+/// A white capsule "Play" button, or a glass capsule for secondary actions.
+struct CapsuleButton: View {
+    var title: String
+    var symbol: String?
+    var prominent = true
+    var action: () -> Void
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                if let symbol { Image(systemName: symbol).font(.subheadline.weight(.bold)) }
+                Text(title).font(.subheadline.weight(.semibold))
+            }
+            .padding(.horizontal, 18).padding(.vertical, 10)
+            .foregroundStyle(prominent ? Color.black : .white)
+            .background { if prominent { Capsule().fill(.white) } }
+            .modifier(SecondaryGlass(on: !prominent))
+        }
+        .buttonStyle(PressScale(scale: 0.95))
+    }
+}
+
+struct SecondaryGlass: ViewModifier {
+    var on: Bool
+    func body(content: Content) -> some View {
+        if on { content.glass(Capsule()).environment(\.colorScheme, .dark) } else { content }
     }
 }
 
@@ -50,28 +163,89 @@ struct ActionButton<Label: View>: View {
                 busy = false
             }
         } label: {
-            if busy { ProgressView().controlSize(.small) } else { label }
+            HStack {
+                label
+                if busy { Spacer(); ProgressView().controlSize(.small) }
+            }
         }
         .disabled(busy)
     }
 }
 
-/// An image from a TV (thumbnails, posters, photos), with the TV's key in its URL.
-struct TVImage: View {
+// MARK: - TV picker (top of Remote and Watch)
+
+/// "● Living Room ⌄": picks the TV the remote, Watch and Send act on, or every TV at once.
+struct TVPicker: View {
+    @Environment(Fleet.self) private var fleet
+    var allowAll = false
+
+    var body: some View {
+        Menu {
+            if allowAll {
+                Button { fleet.remoteAll = true } label: {
+                    Label("All TVs", systemImage: fleet.remoteAll ? "checkmark" : "tv.and.mediabox")
+                }
+                Divider()
+            }
+            ForEach(fleet.tvs) { t in
+                Button { fleet.remoteAll = false; fleet.selectedID = t.id } label: {
+                    if t.id == fleet.selectedID && !(allowAll && fleet.remoteAll) { Label(t.name, systemImage: "checkmark") }
+                    else { Text(t.name) }
+                    Text(statusWord(t))
+                }
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Circle().fill(dotColor).frame(width: 7, height: 7)
+                Text(allowAll && fleet.remoteAll ? "All TVs" : (fleet.selected?.name ?? "TV"))
+                    .font(.headline)
+                Image(systemName: "chevron.down").font(.caption.weight(.bold)).foregroundStyle(.secondary)
+            }
+            .foregroundStyle(.primary)
+            .padding(.horizontal, 14).padding(.vertical, 9)
+            .contentShape(Capsule())
+            .glass(Capsule())
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .fixedSize()
+    }
+
+    private var dotColor: Color {
+        if allowAll && fleet.remoteAll { return fleet.tvs.contains(where: \.online) ? .green : .gray }
+        guard let t = fleet.selected else { return .gray }
+        return t.online ? (t.link == "refused" ? .orange : .green) : .gray
+    }
+}
+
+func statusWord(_ t: FleetTV) -> String {
+    if t.link == "refused" { return "Link again" }
+    if !t.online { return "Off" }
+    if let p = t.playing { return (p.isPlaying ? "Playing " : "Paused · ") + p.title }
+    return "Nothing playing"
+}
+
+// MARK: - Pictures
+
+/// A picture from a TV (posters, thumbnails, photos), fading in.
+struct Artwork: View {
     var url: URL?
     var contentMode: ContentMode = .fill
     var body: some View {
-        AsyncImage(url: url, transaction: Transaction(animation: .easeOut(duration: 0.2))) { phase in
+        AsyncImage(url: url, transaction: Transaction(animation: .easeOut(duration: 0.25))) { phase in
             switch phase {
             case .success(let img): img.resizable().aspectRatio(contentMode: contentMode)
-            case .failure: Rectangle().fill(.quaternary).overlay(Image(systemName: "photo").foregroundStyle(.secondary))
-            default: Rectangle().fill(.quaternary.opacity(0.6))
+            case .failure: Rectangle().fill(.quaternary)
+            default: Rectangle().fill(.quinary)
             }
         }
     }
 }
 
-/// "Last seen 5 min ago".
+typealias TVImage = Artwork
+
+// MARK: - Formatting
+
 func relative(_ ms: Double?) -> String {
     guard let ms, ms > 0 else { return "never" }
     let d = Date(timeIntervalSince1970: ms / 1000)
@@ -92,18 +266,21 @@ func formatTime(ms: Double?) -> String {
     return s >= 3600 ? String(format: "%d:%02d:%02d", s / 3600, (s / 60) % 60, s % 60) : String(format: "%d:%02d", s / 60, s % 60)
 }
 
-/// Empty / not-connected states.
+/// "1h 08m left".
+func timeLeft(position: Double?, duration: Double?) -> String? {
+    guard let d = duration, d > 0 else { return nil }
+    let left = Int(max(0, d - (position ?? 0)) / 60000)
+    return left >= 60 ? String(format: "%dh %02dm left", left / 60, left % 60) : "\(left)m left"
+}
+
 struct EmptyState: View {
     var symbol: String
     var title: String
     var message: String
-    var body: some View {
-        ContentUnavailableView(title, systemImage: symbol, description: Text(message))
-    }
+    var body: some View { ContentUnavailableView(title, systemImage: symbol, description: Text(message)) }
 }
 
 extension View {
-    /// Large title on iOS, plain title on macOS.
     func screenTitle(_ t: String) -> some View {
         #if os(iOS)
         return self.navigationTitle(t).navigationBarTitleDisplayMode(.large)
@@ -112,16 +289,23 @@ extension View {
         #endif
     }
 
+    func inlineTitle() -> some View {
+        #if os(iOS)
+        return self.navigationBarTitleDisplayMode(.inline)
+        #else
+        return self
+        #endif
+    }
+
     @ViewBuilder func haptic<T: Equatable>(_ trigger: T) -> some View {
         #if os(iOS)
-        self.sensoryFeedback(.impact(weight: .light), trigger: trigger)
+        self.sensoryFeedback(.impact(weight: .light, intensity: 0.7), trigger: trigger)
         #else
         self
         #endif
     }
 }
 
-/// Copies text to the clipboard.
 func copyToClipboard(_ s: String) {
     #if os(macOS)
     NSPasteboard.general.clearContents()
@@ -130,3 +314,13 @@ func copyToClipboard(_ s: String) {
     UIPasteboard.general.string = s
     #endif
 }
+
+struct ShareItem: Identifiable { var url: URL; var id: URL { url } }
+
+#if os(iOS)
+struct ShareSheet: UIViewControllerRepresentable {
+    var items: [Any]
+    func makeUIViewController(context: Context) -> UIActivityViewController { UIActivityViewController(activityItems: items, applicationActivities: nil) }
+    func updateUIViewController(_ c: UIActivityViewController, context: Context) {}
+}
+#endif

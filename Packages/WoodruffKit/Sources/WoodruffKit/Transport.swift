@@ -169,6 +169,7 @@ public extension URLSession {
         c.requestCachePolicy = .reloadIgnoringLocalCacheData
         c.waitsForConnectivity = false
         c.httpMaximumConnectionsPerHost = 6
+        if Demo.isOn { c.protocolClasses = [DemoURLProtocol.self] + (c.protocolClasses ?? []) }
         return URLSession(configuration: c)
     }()
 }

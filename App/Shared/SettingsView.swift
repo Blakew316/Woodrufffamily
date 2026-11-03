@@ -1,207 +1,590 @@
 import SwiftUI
 import WoodruffKit
 
-/// Settings: this device, paired TVs, each hub's connections (Drive, posters, cameras, mail), weather,
-/// away from home, shortcuts, the last crash, alerts and the GitHub token for webOS updates.
+/// The hub's settings, loaded once and shared by the Settings pages.
+@Observable @MainActor final class HubSettings {
+    var s: TVSettings?
+    var loading = false
+    func load(_ c: TVClient?) async {
+        guard let c else { return }
+        loading = true
+        defer { loading = false }
+        s = try? await c.settings()
+    }
+}
+
+/// Settings, as iOS Settings: this phone, TVs (status and health of every TV), Software Update, Connections,
+/// Weather, Away From Home, Shortcuts.
 struct SettingsView: View {
     @Environment(Fleet.self) private var fleet
-    @State private var addingTV = false
+    @State private var hub = HubSettings()
+    @State private var route: String? = { let r = UserDefaults.standard.string(forKey: "route"); return r == "tvs" || r == "tv" ? r : nil }()
 
     var body: some View {
-        @Bindable var fleet = fleet
         Form {
-            Section("This Device") {
-                TextField("Name", text: $fleet.phone.name)
-                    .onSubmit { Task { await fleet.sayHelloEverywhere() } }
-                Toggle("Lock-Screen Alerts (ntfy)", isOn: Binding(get: { fleet.phone.alerts }, set: { on in
-                    fleet.phone.alerts = on
-                    Task {
-                        for h in fleet.hubs { _ = try? await TVClient(hub: h, routeID: "this").hello(fleet.phone, alerts: on) }
-                    }
-                }))
-                NavigationLink("Recent Messages") { MessagesView() }
-                Toggle("Notify When a TV Goes Off or Needs Attention", isOn: Binding(
-                    get: { UserDefaults.standard.object(forKey: "notifyFleet") as? Bool ?? true },
-                    set: { UserDefaults.standard.set($0, forKey: "notifyFleet"); if $0 { Notifier.requestPermission() } }))
-            }
-
             Section {
-                ForEach(fleet.hubs) { hub in
-                    NavigationLink { ConnectionsView(hubID: hub.id) } label: {
-                        VStack(alignment: .leading) {
-                            Text(hub.name)
-                            Text(hub.connection.base.absoluteString).font(.caption).foregroundStyle(.secondary)
+                NavigationLink { PhoneSettingsView() } label: {
+                    HStack(spacing: 14) {
+                        Image(systemName: deviceSymbol)
+                            .font(.system(size: 24, weight: .regular))
+                            .foregroundStyle(.white)
+                            .frame(width: 58, height: 58)
+                            .background(Circle().fill(LinearGradient(colors: [Color(white: 0.62), Color(white: 0.42)], startPoint: .top, endPoint: .bottom)))
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(fleet.phone.name).font(.title3.weight(.semibold))
+                            Text(deviceLine).font(.subheadline).foregroundStyle(.secondary)
                         }
                     }
-                    .swipeActions { Button("Forget", role: .destructive) { fleet.unpair(hub.id) } }
-                    .contextMenu { Button("Forget \(hub.name)", role: .destructive) { fleet.unpair(hub.id) } }
+                    .padding(.vertical, 4)
                 }
-                Button { addingTV = true } label: { Label("Pair Another TV", systemImage: "plus") }
-            } header: {
-                Text("Paired TVs")
-            } footer: {
-                Text("Each paired TV also brings the TVs linked to it. Pair more than one so the others stay reachable when one is off.")
             }
 
             Section {
-                SecureField("GitHub token (for LG releases)", text: Binding(get: { fleet.githubToken ?? "" }, set: { fleet.githubToken = $0 }))
-            } header: {
-                Text("Updates")
-            } footer: {
-                Text("The Android app's releases are public. The webOS port's are in a private repository: a fine-grained token with read access to Contents of Blakew316/woodrufffiles-webos lets this app see them.")
+                NavigationLink { TVsView() } label: {
+                    IconRow(symbol: "tv.fill", color: .blue, title: "TVs", value: tvsSummary, valueColor: fleet.tvs.contains(where: \.needsAttention) ? Palette.attention : .secondary)
+                }
+                NavigationLink { SoftwareUpdateView() } label: {
+                    HStack {
+                        IconRow(symbol: "arrow.down.circle.fill", color: .gray, title: "Software Update")
+                        if fleet.updatesWaiting > 0 {
+                            Text("\(fleet.updatesWaiting)").font(.subheadline.weight(.semibold)).foregroundStyle(.white)
+                                .frame(minWidth: 22, minHeight: 22).background(Circle().fill(.red))
+                        }
+                    }
+                }
             }
 
             Section {
-                Text("Woodruff Family \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "")")
-                    .font(.footnote).foregroundStyle(.secondary)
+                NavigationLink { ConnectionsView(hub: hub) } label: {
+                    IconRow(symbol: "cloud.fill", color: .blue, title: "Connections", value: connectionsSummary)
+                }
+                NavigationLink { WeatherView(hub: hub) } label: {
+                    IconRow(symbol: "sun.max.fill", color: .cyan, title: "Weather on Home", value: hub.s?.weather?.isEmpty == false ? hub.s!.weather! : "Off")
+                }
+            }
+
+            Section {
+                NavigationLink { AwayView(hub: hub) } label: {
+                    IconRow(symbol: "globe", color: .green, title: "Away From Home", value: hub.s?.awayUrl?.isEmpty == false ? "On" : "Off")
+                }
+                NavigationLink { ShortcutsView(hub: hub) } label: {
+                    IconRow(symbol: "square.2.layers.3d.fill", color: .purple, title: "Shortcuts")
+                }
+                if let crash = hub.s?.crash, !crash.isEmpty {
+                    NavigationLink { CrashView(hub: hub) } label: { IconRow(symbol: "exclamationmark.triangle.fill", color: .red, title: "Last Crash on This TV") }
+                }
+            }
+
+            Section {} footer: {
+                Text("Woodruff Family \(hub.s?.version ?? "")")
+                    .frame(maxWidth: .infinity).font(.footnote).padding(.top, 4)
             }
         }
         .formStyle(.grouped)
         .screenTitle("Settings")
-        .sheet(isPresented: $addingTV) {
+        .navigationDestination(item: $route) { r in
+            switch r {
+            case "tv": TVDetailView(tvID: "tv-den")
+            default: TVsView()
+            }
+        }
+        .task { await hub.load(fleet.hubClient()) }
+        .refreshable { await hub.load(fleet.hubClient()); await fleet.refresh() }
+    }
+
+    private var deviceSymbol: String {
+        #if os(macOS)
+        return "laptopcomputer"
+        #else
+        return UIDevice.current.userInterfaceIdiom == .pad ? "ipad" : "iphone"
+        #endif
+    }
+
+    private var deviceLine: String {
+        #if os(macOS)
+        let kind = "This Mac"
+        #else
+        let kind = UIDevice.current.userInterfaceIdiom == .pad ? "This iPad" : "This phone"
+        #endif
+        return kind + (fleet.phone.alerts ? " · Lock-screen alerts on" : "")
+    }
+
+    private var tvsSummary: String {
+        let needing = fleet.tvs.filter(\.needsAttention)
+        if needing.count == 1 { return "\(needing[0].name) needs attention" }
+        if needing.count > 1 { return "\(needing.count) TVs need attention" }
+        let playing = fleet.tvs.filter { $0.playing != nil }
+        if playing.count == 1 { return "\(playing[0].name) · Playing" }
+        if playing.count > 1 { return "\(playing.count) Playing" }
+        return fleet.tvs.count == 1 ? fleet.tvs[0].name : "\(fleet.tvs.count) TVs"
+    }
+
+    private var connectionsSummary: String {
+        guard let s = hub.s else { return "" }
+        let on = [s.google?.connected == true, s.tmdb == true, s.nest?.connected == true, !(s.mail ?? []).isEmpty].filter { $0 }.count
+        return "\(on) On"
+    }
+}
+
+// MARK: - This phone
+
+struct PhoneSettingsView: View {
+    @Environment(Fleet.self) private var fleet
+    @State private var topic: String?
+
+    var body: some View {
+        @Bindable var fleet = fleet
+        Form {
+            Section {
+                TextField("Name", text: $fleet.phone.name)
+                    .onSubmit { Task { await fleet.sayHelloEverywhere() } }
+            } footer: { Text("Announcements pick phones by this name.") }
+            Section {
+                Toggle("Lock-Screen Alerts", isOn: Binding(get: { fleet.phone.alerts }, set: { on in
+                    fleet.phone.alerts = on
+                    Task {
+                        for h in fleet.hubs {
+                            if let r = try? await TVClient(hub: h, routeID: "this").hello(fleet.phone, alerts: on) { topic = r.phone.topic }
+                        }
+                    }
+                }))
+                if fleet.phone.alerts, let topic {
+                    LabeledContent("ntfy topic", value: topic)
+                    Button("Copy Topic") { copyToClipboard(topic) }
+                }
+                Toggle("TV Alerts", isOn: Binding(
+                    get: { UserDefaults.standard.object(forKey: "notifyFleet") as? Bool ?? true },
+                    set: { UserDefaults.standard.set($0, forKey: "notifyFleet"); if $0 { Notifier.requestPermission() } }))
+            } footer: {
+                Text("Lock-screen alerts reach this device through the free ntfy app even when Woodruff is closed. TV alerts tell you when a TV goes off or needs attention.")
+            }
+            Section("Recent Messages") {
+                if fleet.recentMessages.isEmpty { Text("No messages in the last week.").foregroundStyle(.secondary) }
+                ForEach(fleet.recentMessages) { m in
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(m.title).font(.subheadline.weight(.semibold))
+                        if let b = m.body, !b.isEmpty { Text(b).font(.subheadline) }
+                        Text([m.from, m.at.map { Date(timeIntervalSince1970: $0 / 1000).formatted(date: .abbreviated, time: .shortened) }].compactMap { $0 }.joined(separator: " · "))
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .navigationTitle(fleet.phone.name)
+        .inlineTitle()
+    }
+}
+
+// MARK: - TVs
+
+/// Every TV: what's playing, off, needs attention, link again. Tap one for its screen, controls and health.
+struct TVsView: View {
+    @Environment(Fleet.self) private var fleet
+    @State private var pairing = false
+
+    var body: some View {
+        Form {
+            Section {
+                ForEach(fleet.tvs) { tv in
+                    NavigationLink { TVDetailView(tvID: tv.id) } label: { TVRow(tv: tv) }
+                }
+            } footer: {
+                Text("Tap a TV for its screen, controls and health.")
+            }
+            Section {
+                Button { pairing = true } label: { Label("Pair Another TV", systemImage: "plus") }
+            } footer: {
+                Text("Pairing one TV brings every TV linked to it. Pair a second so the others stay reachable when one is off.")
+            }
+        }
+        .formStyle(.grouped)
+        .navigationTitle("TVs")
+        .inlineTitle()
+        .refreshable { await fleet.refresh(); await fleet.loadAllHealth() }
+        .sheet(isPresented: $pairing) {
             NavigationStack {
                 ScrollView { PairPanel().padding() }
                     .navigationTitle("Pair a TV")
-                    .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { addingTV = false } } }
+                    .inlineTitle()
+                    .toolbar { ToolbarItem(placement: .confirmationAction) { Button(role: .close) { pairing = false } } }
             }
             #if os(macOS)
-            .frame(minWidth: 520, minHeight: 560)
+            .frame(minWidth: 520, minHeight: 600)
             #endif
         }
     }
 }
 
-/// Messages sent to this device (announcements), kept for a week.
-struct MessagesView: View {
+struct TVRow: View {
     @Environment(Fleet.self) private var fleet
+    var tv: FleetTV
+    @State private var fetchedAt = Date()
+
     var body: some View {
-        List(fleet.recentMessages) { m in
+        HStack(spacing: 14) {
+            IconTile(symbol: "tv.fill", color: tv.online ? .blue : .gray)
             VStack(alignment: .leading, spacing: 3) {
-                Text(m.title).font(.headline)
-                if let b = m.body, !b.isEmpty { Text(b).font(.subheadline) }
-                Text([m.from, m.at.map { Date(timeIntervalSince1970: $0 / 1000).formatted(date: .abbreviated, time: .shortened) }].compactMap { $0 }.joined(separator: " · "))
-                    .font(.caption).foregroundStyle(.secondary)
+                Text(tv.name)
+                Text(line).font(.subheadline).foregroundStyle(tv.link == "refused" ? Palette.attention : .secondary).lineLimit(1)
+                if let p = tv.playing, let d = p.duration, d > 0 {
+                    TimelineView(.periodic(from: .now, by: 1)) { ctx in
+                        let pos = min(d, (p.position ?? 0) + (p.isPlaying ? ctx.date.timeIntervalSince(fetchedAt) * 1000 : 0))
+                        GeometryReader { g in
+                            Capsule().fill(.quaternary)
+                                .overlay(alignment: .leading) { Capsule().fill(Color.accentColor).frame(width: g.size.width * pos / d) }
+                        }
+                        .frame(height: 3)
+                    }
+                    .padding(.top, 2)
+                }
+                if tv.needsAttention && tv.link != "refused" {
+                    Text("Needs attention · \(tv.health?.first ?? "")").font(.caption).foregroundStyle(Palette.attention).lineLimit(1)
+                }
+            }
+            Spacer(minLength: 0)
+            if fleet.isBehind(tv) {
+                Image(systemName: "arrow.down.circle.fill").foregroundStyle(.blue)
             }
         }
-        .overlay { if fleet.recentMessages.isEmpty { EmptyState(symbol: "tray", title: "No Messages", message: "Announcements sent to this device show up here.") } }
-        .navigationTitle("Recent Messages")
+        .padding(.vertical, 2)
+        .onChange(of: tv.playing) { _, _ in fetchedAt = Date() }
+    }
+
+    private var line: String {
+        if tv.link == "refused" { return "Link again" }
+        if !tv.online { return "Off · seen \(relative(tv.seen))" }
+        if let p = tv.playing { return (p.isPlaying ? "Playing " : "Paused · ") + p.title + (p.app.map { " · \($0)" } ?? "") }
+        return tv.onScreen ? "Woodruff on screen" : "Nothing playing"
     }
 }
 
-/// One hub's settings, the same as the phone page's Connections and the rest of its Settings tab.
-struct ConnectionsView: View {
-    @Environment(Fleet.self) private var fleet
-    var hubID: String
-    @State private var s: TVSettings?
-    @State private var clientID = ""
-    @State private var secret = ""
-    @State private var tmdb = ""
-    @State private var project = ""
-    @State private var doorbell = ""
-    @State private var weather = ""
-    @State private var addingMail = false
-    @State private var signIn: String?
+// MARK: - Software Update
 
-    private var client: TVClient? { fleet.hub(hubID).map { TVClient(hub: $0, routeID: "this") } }
+/// Like iOS Software Update: the newest Woodruff, every TV's version, and Update All.
+struct SoftwareUpdateView: View {
+    @Environment(Fleet.self) private var fleet
+    @State private var log: [String] = []
+    @State private var installing: Set<String> = []
 
     var body: some View {
         Form {
-            if let s {
-                Section {
-                    LabeledContent("Status", value: s.google?.statusText ?? "")
-                    if s.google?.connected != true { Button("Sign In…") { signIn = "drive" } }
-                    TextField("Client ID", text: $clientID).autocorrectionDisabled()
-                    SecureField("Client secret", text: $secret)
-                    save { self.s = try await client?.saveGoogle(clientID: clientID, secret: secret); secret = "" }
-                    if let r = s.google?.redirectUri, !r.isEmpty { Button("Copy Redirect URI") { copyToClipboard(r) } }
-                } header: { Text("Google Drive") } footer: { Text("Keys saved on one TV are copied to the TVs linked to it.") }
-
-                Section("Posters (TMDB)") {
-                    LabeledContent("Status", value: s.tmdb == true ? "On" : "Off")
-                    SecureField("TMDB API key or read token", text: $tmdb)
-                    save {
-                        let r = try await client?.saveTMDB(tmdb)
-                        self.s = r; tmdb = ""
-                        fleet.say("Posters", r?.note ?? "Saved. Posters appear as the library refreshes.")
+            Section {
+                VStack(spacing: 12) {
+                    Image("Emblem").resizable().frame(width: 76, height: 76)
+                        .clipShape(RoundedRectangle(cornerRadius: 17, style: .continuous))
+                        .shadow(color: .black.opacity(0.25), radius: 8, y: 4)
+                    Text(headline).font(.title3.weight(.semibold)).multilineTextAlignment(.center)
+                    Text(subline).font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                    if fleet.updatesWaiting > 0 {
+                        ActionButton(action: { await updateAll() }) {
+                            Text("Update All TVs").font(.headline).frame(maxWidth: .infinity).padding(.vertical, 6)
+                        }
+                        .buttonStyle(.glassProminent)
+                        .padding(.top, 4)
                     }
                 }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 12)
+            }
 
-                Section {
-                    LabeledContent("Status", value: s.nest?.statusText ?? "")
-                    if s.nest?.connected != true && !(s.nest?.project ?? "").isEmpty { Button("Connect Cameras…") { signIn = "cameras" } }
-                    TextField("Device Access project ID", text: $project).autocorrectionDisabled()
-                    TextField("Doorbell Pub/Sub subscription", text: $doorbell).autocorrectionDisabled()
-                    save { self.s = try await client?.saveNest(["project": project, "doorbell": doorbell]) }
-                    Toggle("Person alerts", isOn: Binding(get: { s.nest?.person ?? true }, set: { v in Task { self.s = try? await client?.saveNest(["person": v]) } }))
-                    Toggle("Motion alerts", isOn: Binding(get: { s.nest?.motion ?? false }, set: { v in Task { self.s = try? await client?.saveNest(["motion": v]) } }))
-                } header: { Text("Cameras") } footer: { Text(s.nest?.doorbellStatus?.isEmpty == false ? s.nest!.doorbellStatus! : "Doorbell rings and person alerts pop up on every TV.") }
+            Section {
+                ForEach(fleet.tvs) { tv in row(tv) }
+            } header: { Text("TVs") } footer: {
+                Text("Android TVs download the update and install it themselves as soon as nobody’s watching. LG TVs install from the Mac app over SSH.")
+            }
 
-                Section("Mail") {
-                    ForEach(s.mail ?? []) { m in
-                        LabeledContent(m.email, value: m.provider ?? "")
-                            .swipeActions { Button("Remove", role: .destructive) { act { self.s = try await client?.deleteMail(m.id) } } }
-                            .contextMenu { Button("Remove", role: .destructive) { act { self.s = try await client?.deleteMail(m.id) } } }
-                    }
-                    Button("Add Account…") { addingMail = true }
-                }
-
-                Section("Weather on Home") {
-                    TextField("City or ZIP", text: $weather)
-                    save { self.s = try await client?.saveWeather(weather) }
-                }
-
-                Section("Away From Home") {
-                    if let a = s.awayUrl, !a.isEmpty {
-                        Text(a).font(.caption.monospaced()).textSelection(.enabled)
-                        Button("Pair Using This Link") { fleet.handle(url: URL(string: a)!) }
-                        Button("Copy Link") { copyToClipboard(a) }
-                    } else {
-                        Text("Install Tailscale on the TV and this device (same account). The TV then offers a link that works anywhere.").font(.caption)
+            Section {
+                ForEach(TVPlatform.allCases, id: \.self) { p in
+                    LabeledContent(p.label) {
+                        if let r = fleet.latest[p] { Text(r.version?.description ?? r.tag_name) }
+                        else if let e = fleet.releaseErrors[p] { Text(e).font(.caption).foregroundStyle(Palette.attention).multilineTextAlignment(.trailing) }
+                        else { ProgressView().controlSize(.small) }
                     }
                 }
+                Button("Check Now") { Task { await fleet.checkReleases(); await fleet.loadAllHealth() } }
+            } header: { Text("Newest Releases") }
 
-                Section {
-                    if let u = s.shareUrl { Button("Copy “Share to TV” Link") { copyToClipboard(u) } }
-                    if let u = s.notifyUrl { Button("Copy Announcement Link") { copyToClipboard(u) } }
-                } header: { Text("Shortcuts") } footer: { Text("Use these in the Shortcuts app: POST to the link to open what you share on the TV, or to announce on every TV (for automations like “when I get home”).") }
+            Section {
+                SecureField("GitHub token", text: Binding(get: { fleet.githubToken ?? "" }, set: { fleet.githubToken = $0 }))
+            } footer: {
+                Text("Only needed for LG TVs: the webOS releases are in a private repository. A fine-grained token with read access to Contents of Blakew316/woodrufffiles-webos.")
+            }
 
-                if let crash = s.crash, !crash.isEmpty {
-                    Section("Last Crash on This TV") {
-                        Text(crash.split(separator: "\n").prefix(14).joined(separator: "\n")).font(.caption2.monospaced())
-                        Button("Copy") { copyToClipboard(crash) }
-                        save("Clear") { self.s = try await client?.clearCrash() }
-                    }
-                }
-
-                Section { LabeledContent("Woodruff on this TV", value: s.version ?? "") }
-            } else {
-                ProgressView()
+            if !log.isEmpty {
+                Section("Activity") { ForEach(Array(log.enumerated()), id: \.offset) { Text($0.element).font(.caption.monospaced()) } }
             }
         }
         .formStyle(.grouped)
-        .navigationTitle(fleet.hub(hubID)?.name ?? "TV")
-        .task { await load() }
-        .sheet(isPresented: $addingMail) { if let s { AddMailSheet(providers: s.providers ?? []) { self.s = $0 } client: { client } } }
-        .sheet(item: Binding(get: { signIn.map { SignInGrant(grant: $0) } }, set: { signIn = $0?.grant })) { g in
-            if let tv = fleet.tv(hubID) { SignInSheet(grant: g.grant, tv: tv) }
+        .navigationTitle("Software Update")
+        .inlineTitle()
+        .task { if fleet.latest.isEmpty { await fleet.checkReleases() }; await fleet.loadAllHealth() }
+    }
+
+    private var headline: String {
+        if fleet.updatesWaiting == 0 { return "Every TV Is Up to Date" }
+        return fleet.updatesWaiting == 1 ? "1 TV Has an Update" : "\(fleet.updatesWaiting) TVs Have an Update"
+    }
+
+    private var subline: String {
+        guard let r = fleet.latest[.android] else { return "Checking GitHub…" }
+        return "Woodruff Family \(r.version?.description ?? r.tag_name)" + (r.published_at.map { " · \($0.formatted(.relative(presentation: .named)))" } ?? "")
+    }
+
+    @ViewBuilder private func row(_ tv: FleetTV) -> some View {
+        let p = fleet.platform(of: tv)
+        HStack(spacing: 14) {
+            IconTile(symbol: "tv.fill", color: tv.online ? .blue : .gray)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(tv.name)
+                Text([tv.version.map { "Version \($0)" } ?? "Version unknown", fleet.healthReports[tv.id]?.updates?.text].compactMap { $0 }.joined(separator: " · "))
+                    .font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+            }
+            Spacer()
+            if installing.contains(tv.id) { ProgressView().controlSize(.small) }
+            else if fleet.isBehind(tv) {
+                if p == .webOS {
+                    #if os(macOS)
+                    Button("Install") { Task { await installWebOS(tv) } }.buttonStyle(.glass).disabled(fleet.extras[tv.id]?.ssh == nil)
+                    #else
+                    Text("On the Mac").font(.caption).foregroundStyle(.secondary)
+                    #endif
+                } else {
+                    ActionButton(action: { try await fleet.pushUpdate(tv); log.insert("\(tv.name): checking for the update now.", at: 0) }) { Text("Update") }
+                        .buttonStyle(.glass).disabled(!tv.online)
+                }
+            } else if tv.version != nil {
+                Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+            }
         }
     }
 
-    private func load() async {
+    private func updateAll() async {
+        let (n, failed) = await fleet.pushUpdateToAll()
+        log.insert("Asked \(n) Android TV\(n == 1 ? "" : "s") to update." + (failed.isEmpty ? "" : " " + failed.joined(separator: "; ")), at: 0)
+        #if os(macOS)
+        for tv in fleet.tvs where fleet.platform(of: tv) == .webOS && fleet.isBehind(tv) && fleet.extras[tv.id]?.ssh != nil { await installWebOS(tv) }
+        #endif
+        try? await Task.sleep(nanoseconds: 10_000_000_000)
+        await fleet.loadAllHealth()
+    }
+
+    #if os(macOS)
+    private func installWebOS(_ tv: FleetTV) async {
+        guard let ssh = fleet.extras[tv.id]?.ssh, let release = fleet.latest[.webOS] else { return }
+        guard let asset = release.assets.first(where: { $0.name == "woodruff-family.ipk" }) ?? release.assets.first(where: { $0.name.hasSuffix(".ipk") }) else {
+            log.insert("The release has no .ipk package.", at: 0); return
+        }
+        installing.insert(tv.id)
+        defer { installing.remove(tv.id) }
         do {
-            s = try await client?.settings()
-            clientID = s?.google?.clientId ?? ""
-            project = s?.nest?.project ?? ""
-            doorbell = s?.nest?.doorbell ?? ""
-            weather = s?.weather ?? ""
-        } catch { fleet.show(error) }
+            log.insert("Downloading \(asset.name)…", at: 0)
+            let file = try await ReleaseFeed(token: fleet.githubToken).download(asset)
+            try await WebOSInstaller.install(file, on: ssh) { line in Task { @MainActor in log.insert("\(tv.name): \(line)", at: 0) } }
+            try? await Task.sleep(nanoseconds: 8_000_000_000)
+            await fleet.refresh()
+        } catch { log.insert("\(tv.name): \(error.localizedDescription)", at: 0) }
     }
+    #endif
+}
 
-    private func save(_ title: String = "Save", _ op: @escaping () async throws -> Void) -> some View {
-        ActionButton(action: op) { Text(title) }
+// MARK: - Connections and the other pages
+
+struct ConnectionsView: View {
+    @Environment(Fleet.self) private var fleet
+    var hub: HubSettings
+    @State private var signIn: String?
+
+    var body: some View {
+        Form {
+            if let s = hub.s {
+                Section {
+                    NavigationLink { DriveView(hub: hub) } label: { IconRow(symbol: "externaldrive.fill.badge.icloud", color: .blue, title: "Google Drive", value: s.google?.statusText) }
+                    NavigationLink { PostersView(hub: hub) } label: { IconRow(symbol: "film.fill", color: .orange, title: "Posters", value: s.tmdb == true ? "On" : "Off") }
+                    NavigationLink { CamerasView(hub: hub) } label: { IconRow(symbol: "video.fill", color: .green, title: "Cameras", value: s.nest?.statusText) }
+                    NavigationLink { MailView(hub: hub) } label: { IconRow(symbol: "envelope.fill", color: .blue, title: "Mail", value: (s.mail ?? []).isEmpty ? "Off" : "\(s.mail!.count)") }
+                } footer: {
+                    Text("Keys entered here are copied to every TV linked to \(fleet.hubClient()?.hub.name ?? "this TV").")
+                }
+            } else { ProgressView() }
+        }
+        .formStyle(.grouped)
+        .navigationTitle("Connections")
+        .inlineTitle()
     }
+}
 
-    private func act(_ op: @escaping () async throws -> Void) { Task { do { try await op() } catch { fleet.show(error) } } }
+struct DriveView: View {
+    @Environment(Fleet.self) private var fleet
+    var hub: HubSettings
+    @State private var clientID = ""
+    @State private var secret = ""
+    @State private var signIn = false
+
+    var body: some View {
+        Form {
+            Section {
+                LabeledContent("Status", value: hub.s?.google?.statusText ?? "")
+                if hub.s?.google?.connected != true { Button("Sign In…") { signIn = true } }
+            }
+            Section {
+                TextField("Client ID", text: $clientID).autocorrectionDisabled()
+                SecureField("Client secret", text: $secret)
+                ActionButton(action: { hub.s = try await fleet.hubClient()?.saveGoogle(clientID: clientID, secret: secret); secret = "" }) { Text("Save") }
+            } header: { Text("Keys") } footer: {
+                Text("From Google Cloud → Credentials → OAuth client (Web application). Its redirect URI must be the one below.")
+            }
+            if let r = hub.s?.google?.redirectUri, !r.isEmpty {
+                Section { Button("Copy Redirect URI") { copyToClipboard(r) } }
+            }
+        }
+        .formStyle(.grouped)
+        .navigationTitle("Google Drive").inlineTitle()
+        .onAppear { clientID = hub.s?.google?.clientId ?? "" }
+        .sheet(isPresented: $signIn) { if let tv = fleet.hubClient().flatMap({ fleet.tv($0.hub.id) }) { SignInSheet(grant: "drive", tv: tv) } }
+    }
+}
+
+struct PostersView: View {
+    @Environment(Fleet.self) private var fleet
+    var hub: HubSettings
+    @State private var key = ""
+    var body: some View {
+        Form {
+            Section {
+                LabeledContent("Status", value: hub.s?.tmdb == true ? "On" : "Off")
+                SecureField("TMDB API key or read token", text: $key)
+                ActionButton(action: {
+                    let r = try await fleet.hubClient()?.saveTMDB(key)
+                    hub.s = r; key = ""
+                    fleet.say("Posters", r?.note ?? "Saved. Posters appear as the library refreshes.")
+                }) { Text("Save") }
+            } footer: { Text("A free key from themoviedb.org adds official posters, genres and ratings. Your own poster.jpg files always win.") }
+        }
+        .formStyle(.grouped)
+        .navigationTitle("Posters").inlineTitle()
+    }
+}
+
+struct CamerasView: View {
+    @Environment(Fleet.self) private var fleet
+    var hub: HubSettings
+    @State private var project = ""
+    @State private var doorbell = ""
+    @State private var signIn = false
+    var body: some View {
+        Form {
+            Section {
+                LabeledContent("Status", value: hub.s?.nest?.statusText ?? "")
+                if hub.s?.nest?.connected != true && !(hub.s?.nest?.project ?? "").isEmpty { Button("Connect Cameras…") { signIn = true } }
+            }
+            Section {
+                TextField("Device Access project ID", text: $project).autocorrectionDisabled()
+                TextField("Doorbell Pub/Sub subscription", text: $doorbell).autocorrectionDisabled()
+                ActionButton(action: { hub.s = try await fleet.hubClient()?.saveNest(["project": project, "doorbell": doorbell]) }) { Text("Save") }
+            }
+            Section {
+                Toggle("Person Alerts", isOn: Binding(get: { hub.s?.nest?.person ?? true }, set: { v in Task { hub.s = try? await fleet.hubClient()?.saveNest(["person": v]) } }))
+                Toggle("Motion Alerts", isOn: Binding(get: { hub.s?.nest?.motion ?? false }, set: { v in Task { hub.s = try? await fleet.hubClient()?.saveNest(["motion": v]) } }))
+            } footer: { Text(hub.s?.nest?.doorbellStatus?.isEmpty == false ? hub.s!.nest!.doorbellStatus! : "Rings and people seen pop up on every TV.") }
+        }
+        .formStyle(.grouped)
+        .navigationTitle("Cameras").inlineTitle()
+        .onAppear { project = hub.s?.nest?.project ?? ""; doorbell = hub.s?.nest?.doorbell ?? "" }
+        .sheet(isPresented: $signIn) { if let tv = fleet.hubClient().flatMap({ fleet.tv($0.hub.id) }) { SignInSheet(grant: "cameras", tv: tv) } }
+    }
+}
+
+struct MailView: View {
+    @Environment(Fleet.self) private var fleet
+    var hub: HubSettings
+    @State private var adding = false
+    var body: some View {
+        Form {
+            Section {
+                ForEach(hub.s?.mail ?? []) { m in
+                    LabeledContent(m.email, value: m.provider ?? "")
+                        .swipeActions { Button("Remove", role: .destructive) { Task { hub.s = try? await fleet.hubClient()?.deleteMail(m.id) } } }
+                        .contextMenu { Button("Remove", role: .destructive) { Task { hub.s = try? await fleet.hubClient()?.deleteMail(m.id) } } }
+                }
+                Button { adding = true } label: { Label("Add Account", systemImage: "plus") }
+            } footer: { Text("New mail shows up on the TVs. Use an app-specific password.") }
+        }
+        .formStyle(.grouped)
+        .navigationTitle("Mail").inlineTitle()
+        .sheet(isPresented: $adding) { AddMailSheet(providers: hub.s?.providers ?? []) { hub.s = $0 } }
+    }
+}
+
+struct WeatherView: View {
+    @Environment(Fleet.self) private var fleet
+    var hub: HubSettings
+    @State private var place = ""
+    var body: some View {
+        Form {
+            Section {
+                TextField("City or ZIP", text: $place)
+                ActionButton(action: { hub.s = try await fleet.hubClient()?.saveWeather(place) }) { Text("Save") }
+            } footer: { Text("Home’s greeting shows the morning’s weather and the date line the temperature. Leave it empty to turn it off.") }
+        }
+        .formStyle(.grouped)
+        .navigationTitle("Weather on Home").inlineTitle()
+        .onAppear { place = hub.s?.weather ?? "" }
+    }
+}
+
+struct AwayView: View {
+    @Environment(Fleet.self) private var fleet
+    var hub: HubSettings
+    var body: some View {
+        Form {
+            if let a = hub.s?.awayUrl, !a.isEmpty {
+                Section {
+                    Text(a).font(.footnote.monospaced()).textSelection(.enabled)
+                    Button("Use This Link Here") { fleet.handle(url: URL(string: a)!) }
+                    Button("Copy Link") { copyToClipboard(a) }
+                } footer: { Text("Works anywhere through Tailscale, encrypted.") }
+            } else {
+                Section { Text("Install Tailscale on the TV and this device, signed in to the same account. The TV then offers a link that works from anywhere.") }
+            }
+        }
+        .formStyle(.grouped)
+        .navigationTitle("Away From Home").inlineTitle()
+    }
+}
+
+struct ShortcutsView: View {
+    var hub: HubSettings
+    var body: some View {
+        Form {
+            Section {
+                if let u = hub.s?.shareUrl { Button("Copy “Share to TV” Link") { copyToClipboard(u) } }
+                if let u = hub.s?.notifyUrl { Button("Copy Announcement Link") { copyToClipboard(u) } }
+            } footer: {
+                Text("In the Shortcuts app, add “Get Contents of URL” with Method POST and one of these links: share what you send to the TV, or announce on every TV (great for “When I get home”).")
+            }
+        }
+        .formStyle(.grouped)
+        .navigationTitle("Shortcuts").inlineTitle()
+    }
+}
+
+struct CrashView: View {
+    @Environment(Fleet.self) private var fleet
+    var hub: HubSettings
+    var body: some View {
+        Form {
+            Section {
+                Text((hub.s?.crash ?? "").split(separator: "\n").prefix(14).joined(separator: "\n")).font(.caption2.monospaced()).textSelection(.enabled)
+            }
+            Section {
+                Button("Copy Report") { copyToClipboard(hub.s?.crash ?? "") }
+                ActionButton(role: .destructive, action: { hub.s = try await fleet.hubClient()?.clearCrash() }) { Text("Clear") }
+            }
+        }
+        .formStyle(.grouped)
+        .navigationTitle("Last Crash").inlineTitle()
+    }
 }
 
 struct AddMailSheet: View {
@@ -209,7 +592,6 @@ struct AddMailSheet: View {
     @Environment(\.dismiss) private var dismiss
     var providers: [TVSettings.Provider]
     var done: (TVSettings?) -> Void
-    var client: () -> TVClient?
     @State private var provider = "ICLOUD"
     @State private var email = ""
     @State private var password = ""
@@ -220,30 +602,32 @@ struct AddMailSheet: View {
         NavigationStack {
             Form {
                 Picker("Provider", selection: $provider) { ForEach(providers) { Text($0.label).tag($0.id) } }
-                if let help = providers.first(where: { $0.id == provider })?.help { Text(help).font(.caption).foregroundStyle(.secondary) }
                 TextField("Email", text: $email).autocorrectionDisabled()
                 SecureField("App-specific password", text: $password)
                 if providers.first(where: { $0.id == provider })?.custom == true { TextField("IMAP server", text: $host) }
+                if let help = providers.first(where: { $0.id == provider })?.help, !help.isEmpty { Text(help).font(.footnote).foregroundStyle(.secondary) }
             }
             .formStyle(.grouped)
-            .navigationTitle("Add Mail Account")
+            .navigationTitle("Add Account").inlineTitle()
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .cancellationAction) { Button(role: .close) { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button(busy ? "Signing In…" : "Add") {
-                        busy = true
-                        Task {
-                            do { done(try await client()?.addMail(provider: provider, email: email, password: password, host: host.isEmpty ? nil : host, port: nil)); dismiss() }
-                            catch { fleet.show(error) }
-                            busy = false
-                        }
-                    }
-                    .disabled(email.isEmpty || password.isEmpty || busy)
+                    Button { add() } label: { if busy { ProgressView() } else { Text("Add") } }
+                        .buttonStyle(.glassProminent).disabled(email.isEmpty || password.isEmpty || busy)
                 }
             }
         }
         #if os(macOS)
-        .frame(minWidth: 420, minHeight: 320)
+        .frame(minWidth: 440, minHeight: 320)
         #endif
+    }
+
+    private func add() {
+        busy = true
+        Task {
+            do { done(try await fleet.hubClient()?.addMail(provider: provider, email: email, password: password, host: host.isEmpty ? nil : host, port: nil)); dismiss() }
+            catch { fleet.show(error) }
+            busy = false
+        }
     }
 }

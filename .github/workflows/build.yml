@@ -2,18 +2,23 @@ name: Build apps
 
 on:
   push:
+    branches-ignore: [screenshots]
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
-    runs-on: macos-15
-    timeout-minutes: 45
+    runs-on: macos-26
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - name: Xcode
         run: |
-          sudo xcode-select -s "$(ls -d /Applications/Xcode_16*.app | sort -V | tail -1)"
+          ls -d /Applications/Xcode*.app
+          sudo xcode-select -s "$(ls -d /Applications/Xcode_*.app | grep -v -i beta | sort -V | tail -1)"
           xcodebuild -version
       - name: WoodruffKit tests
         working-directory: Packages/WoodruffKit
@@ -27,13 +32,13 @@ jobs:
           set -o pipefail
           xcodebuild -project WoodruffFamily.xcodeproj -scheme WoodruffFamily \
             -destination 'generic/platform=iOS Simulator' -configuration Debug \
-            CODE_SIGNING_ALLOWED=NO build | xcbeautify || exit 1
+            -derivedDataPath build-sim CODE_SIGNING_ALLOWED=NO build | xcbeautify
       - name: Build iOS app (device, unsigned)
         run: |
           set -o pipefail
           xcodebuild -project WoodruffFamily.xcodeproj -scheme WoodruffFamily \
             -destination 'generic/platform=iOS' -configuration Release \
-            -derivedDataPath build CODE_SIGNING_ALLOWED=NO build | xcbeautify || exit 1
+            -derivedDataPath build CODE_SIGNING_ALLOWED=NO build | xcbeautify
           mkdir -p out/Payload && cp -R "build/Build/Products/Release-iphoneos/Woodruff Family.app" out/Payload/
           (cd out && zip -qr WoodruffFamily-unsigned.ipa Payload)
       - name: Build macOS app
@@ -41,7 +46,7 @@ jobs:
           set -o pipefail
           xcodebuild -project WoodruffFamily.xcodeproj -scheme WoodruffFamilyMac \
             -destination 'platform=macOS' -configuration Release \
-            -derivedDataPath build CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=NO build | xcbeautify || exit 1
+            -derivedDataPath build CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=NO build | xcbeautify
           (cd build/Build/Products/Release && ditto -c -k --keepParent "Woodruff Family.app" "$GITHUB_WORKSPACE/out/WoodruffFamily-mac.zip")
       - uses: actions/upload-artifact@v4
         with:
@@ -49,3 +54,61 @@ jobs:
           path: |
             out/WoodruffFamily-unsigned.ipa
             out/WoodruffFamily-mac.zip
+      - name: iPhone screenshots (sample data)
+        continue-on-error: true
+        run: |
+          mkdir -p shots
+          DEV=$(xcrun simctl list devices available -j | python3 -c "
+          import json,sys
+          d=json.load(sys.stdin)['devices']
+          best=None
+          for rt,devs in d.items():
+              if 'iOS' not in rt: continue
+              for x in devs:
+                  if x['name'].startswith('iPhone') and 'Pro' in x['name'] and 'Max' not in x['name']:
+                      best=(rt,x['udid'],x['name']) if best is None or rt>best[0] else best
+          print(best[1])")
+          echo "Simulator $DEV"
+          xcrun simctl boot "$DEV" || true
+          xcrun simctl bootstatus "$DEV" -b
+          xcrun simctl ui "$DEV" appearance dark
+          xcrun simctl status_bar "$DEV" override --time 9:41 --batteryState charged --batteryLevel 100 --cellularBars 4 --wifiBars 3 || true
+          xcrun simctl install "$DEV" "build-sim/Build/Products/Debug-iphonesimulator/Woodruff Family.app"
+          for shot in remote: watch: send: memories: settings: settings:tvs settings:tv watch:title memories:photo remote:keyboard; do
+            sec=${shot%%:*}; route=${shot#*:}
+            xcrun simctl terminate "$DEV" com.woodruff.family.remote 2>/dev/null || true
+            xcrun simctl launch "$DEV" com.woodruff.family.remote -demo YES -section "$sec" -route "${route:-none}"
+            sleep 7
+            xcrun simctl io "$DEV" screenshot "shots/ios-$sec-${route:-main}.png"
+          done
+          xcrun simctl ui "$DEV" appearance light
+          for sec in remote watch settings; do
+            xcrun simctl terminate "$DEV" com.woodruff.family.remote 2>/dev/null || true
+            xcrun simctl launch "$DEV" com.woodruff.family.remote -demo YES -section "$sec" -route none
+            sleep 6
+            xcrun simctl io "$DEV" screenshot "shots/ios-$sec-light.png"
+          done
+      - name: Mac screenshots (sample data)
+        continue-on-error: true
+        run: |
+          mkdir -p shots
+          APP="build/Build/Products/Release/Woodruff Family.app/Contents/MacOS/Woodruff Family"
+          for sec in remote watch memories settings; do
+            "$APP" -demo YES -section "$sec" -route none &
+            PID=$!
+            sleep 8
+            screencapture -x "shots/mac-$sec.png" || true
+            kill $PID || true
+            sleep 1
+          done
+      - name: Publish screenshots
+        if: github.event_name == 'push'
+        continue-on-error: true
+        run: |
+          cd shots
+          for f in *.png; do sips -Z 1400 "$f" >/dev/null; done
+          git init -q
+          git checkout -q -b screenshots
+          git add .
+          git -c user.name=ci -c user.email=ci@example.com commit -qm "Screenshots for ${GITHUB_SHA::7}"
+          git push -qf "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" screenshots

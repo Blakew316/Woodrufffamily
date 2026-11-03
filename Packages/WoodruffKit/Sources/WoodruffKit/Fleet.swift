@@ -64,6 +64,8 @@ public final class Fleet {
     /// The TV the remote, Send and Memories act on.
     public var selectedID: String? { didSet { UserDefaults.standard.set(selectedID, forKey: "selectedTV") } }
     public var banner: Banner?
+    /// The remote sends to every TV that's on.
+    public var remoteAll = false
     public private(set) var refreshedAt: Date?
     public private(set) var refreshing = false
     public private(set) var latest: [TVPlatform: Release] = [:]
@@ -84,6 +86,17 @@ public final class Fleet {
     private var lgRemotes: [String: LGRemote] = [:]
 
     init() {
+        if Demo.isOn {
+            Demo.register()
+            hubs = [Demo.hub]
+            extras = ["tv-kitchen": { var e = TVExtras(); e.platform = .webOS; e.lgHost = nil; return e }(),
+                      "tv-living": { var e = TVExtras(); e.platform = .android; return e }(),
+                      "tv-den": { var e = TVExtras(); e.platform = .android; return e }()]
+            phone = PhoneIdentity(id: "demo-phone-0001", name: "Blake’s iPhone", alerts: true)
+            selectedID = "tv-living"
+            latest = Demo.releases
+            return
+        }
         hubs = Saved.load("hubs", as: [Hub].self) ?? []
         // Pairing keys live in the Keychain, not in UserDefaults.
         for i in hubs.indices { if let k = Keychain.get("hub.\(hubs[i].id)") { hubs[i].connection.key = k } }
@@ -93,6 +106,7 @@ public final class Fleet {
     }
 
     private func saveHubs() {
+        if Demo.isOn { return }
         var plain = hubs
         for i in plain.indices {
             Keychain.set(plain[i].connection.key, for: "hub.\(plain[i].id)")
@@ -281,6 +295,7 @@ public final class Fleet {
     // MARK: Updates
 
     public func checkReleases() async {
+        if Demo.isOn { latest = Demo.releases; return }
         let token = githubToken
         for p in TVPlatform.allCases {
             do {

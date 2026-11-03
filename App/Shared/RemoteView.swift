@@ -1,143 +1,140 @@
 import SwiftUI
 import WoodruffKit
 
-/// The remote, laid out like the Siri Remote: a clickpad (tap or swipe), Back, Home, Play/Pause, volume, Mute,
-/// Netflix and YouTube, typing into the TV's text box, and what's playing. Picks any TV, or every TV at once.
-/// With LG direct control connected, keys reach every app on an LG TV, not only Woodruff.
+/// The one remote, for every TV. The TV name at the top switches TVs (or All TVs). Keys go the best way each TV
+/// allows: LG direct control when it's connected (reaches every app), otherwise Woodruff on the TV.
 struct RemoteView: View {
     @Environment(Fleet.self) private var fleet
-    @State private var everyTV = false
     @State private var field: TypeState?
     @State private var typing = false
-    @State private var pressCount = 0
+    @State private var presses = 0
 
-    var tv: FleetTV? { fleet.selected }
+    private var tv: FleetTV? { fleet.selected }
+    private var all: Bool { fleet.remoteAll }
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 22) {
-                picker
-                if let tv, !tv.online, !everyTV { offlineBanner(tv) }
-                if let f = field?.field, !everyTV {
-                    Button { typing = true } label: {
-                        Label("Type into \(f.label?.isEmpty == false ? f.label! : "the text box")", systemImage: "keyboard")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.borderedProminent)
+        GeometryReader { geo in
+            let pad = min(geo.size.width - 64, 300)
+            ScrollView {
+                VStack(spacing: 26) {
+                    status
+                    Clickpad(size: pad) { send($0) } onRepeat: { send($0, repeat: $1) }
+                    keys
+                    apps
                 }
-                Clickpad { key in send(key) } onHold: { key in send(key) } onRepeat: { key, n in send(key, repeat: n) }
-                    .frame(maxWidth: 320)
-                buttons
-                apps
-                if let tv, let p = tv.playing, !everyTV {
-                    Card { VStack { NowPlayingRow(playing: p); MediaControls(tv: tv, playing: p) } }
-                }
-                if let tv, !everyTV, fleet.lg(for: tv) != nil { LGExtras(tv: tv) }
+                .padding(.horizontal, 28)
+                .padding(.top, 8)
+                .padding(.bottom, 24)
+                .frame(maxWidth: .infinity)
             }
-            .padding()
-            .frame(maxWidth: 520)
-            .frame(maxWidth: .infinity)
+            .scrollBounceBehavior(.basedOnSize)
         }
-        .screenTitle("Remote")
-        .haptic(pressCount)
+        .haptic(presses)
         .toolbar {
-            ToolbarItem {
-                Button { typing = true } label: { Label("Keyboard", systemImage: field?.field != nil ? "keyboard.fill" : "keyboard") }
-                    .disabled(everyTV)
+            ToolbarItem(placement: .principal) { TVPicker(allowAll: true) }
+                .sharedBackgroundVisibility(.hidden)
+            ToolbarItem(placement: .primaryAction) {
+                Button { typing = true } label: {
+                    Image(systemName: "keyboard")
+                }
+                .disabled(all)
+                .tint(field?.field != nil ? Color.accentColor : nil)
+            }
+            if let tv, !all, fleet.lg(for: tv) != nil {
+                ToolbarItem(placement: .primaryAction) { LGMenu(tv: tv) }
             }
         }
+        .inlineTitle()
         .sheet(isPresented: $typing) { if let tv { KeyboardSheet(tv: tv) } }
-        .task(id: fleet.selectedID) { await fieldLoop() }
+        .task(id: "\(fleet.selectedID ?? "")-\(all)") { await fieldLoop() }
+        .onAppear { if UserDefaults.standard.string(forKey: "route") == "keyboard" { typing = true } }
         #if os(macOS)
+        .navigationTitle("Remote")
         .focusable()
+        .focusEffectDisabled()
         .onKeyPress { press in handleKey(press) }
         #endif
     }
 
-    private var picker: some View {
-        Menu {
-            ForEach(fleet.tvs) { t in
-                Button { everyTV = false; fleet.selectedID = t.id } label: {
-                    Label("\(t.name) — \(statusWord(t))", systemImage: t.id == fleet.selectedID && !everyTV ? "checkmark" : "tv")
-                }
-            }
-            Divider()
-            Button { everyTV = true } label: { Label("Every TV at Once", systemImage: everyTV ? "checkmark" : "tv.and.mediabox") }
-        } label: {
-            HStack(spacing: 6) {
-                Text(everyTV ? "Every TV" : (tv?.name ?? "Pick a TV")).font(.title2.bold())
-                Image(systemName: "chevron.down.circle.fill").foregroundStyle(.secondary)
-            }
-            .foregroundStyle(.primary)
-        }
-        .menuStyle(.borderlessButton)
-        .fixedSize()
-    }
+    // MARK: Pieces
 
-    private func offlineBanner(_ tv: FleetTV) -> some View {
-        Card {
-            HStack {
-                Image(systemName: "wifi.exclamationmark").foregroundStyle(.orange)
-                VStack(alignment: .leading) {
-                    Text("Can't reach \(tv.name)").font(.headline)
-                    Text(tv.link == "refused" ? "Its link stopped working. Link it again from its page under TVs." : "Check that it's on and this device is on the same Wi-Fi.")
+    @ViewBuilder private var status: some View {
+        if all {
+            Text("Every key goes to the \(fleet.tvs.filter(\.online).count) TVs that are on.")
+                .font(.footnote).foregroundStyle(.secondary)
+        } else if let tv, !tv.online || tv.link == "refused" {
+            HStack(spacing: 10) {
+                Image(systemName: "wifi.exclamationmark").foregroundStyle(Palette.attention)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Can’t Reach \(tv.name)").font(.subheadline.weight(.semibold))
+                    Text(tv.link == "refused" ? "Its link stopped working. Link it again in Settings → TVs." : "Check that it’s on and this device is on the same Wi‑Fi.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
-                Spacer()
+                Spacer(minLength: 0)
                 if let mac = fleet.extras[tv.id]?.mac {
                     Button("Turn On") { WakeOnLAN.wake(mac: mac, lastHost: fleet.extras[tv.id]?.lastHost) }
+                        .buttonStyle(.glassProminent)
                 }
             }
+            .padding(14)
+            .glass(RoundedRectangle(cornerRadius: 20, style: .continuous), interactive: false)
+        } else if let f = field?.field {
+            Button { typing = true } label: {
+                Label("Type into \(f.label?.isEmpty == false ? f.label! : "the text box")", systemImage: "keyboard")
+                    .font(.subheadline.weight(.semibold))
+                    .padding(.horizontal, 16).padding(.vertical, 10)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(Color.accentColor)
+            .glass(Capsule(), tint: Color.accentColor.opacity(0.18))
+            .transition(.scale.combined(with: .opacity))
+        } else {
+            Color.clear.frame(height: 40)
         }
     }
 
-    private var buttons: some View {
-        Grid(horizontalSpacing: 18, verticalSpacing: 16) {
-            GridRow {
+    private var keys: some View {
+        HStack(alignment: .top, spacing: 0) {
+            VStack(spacing: 18) {
                 RoundKey(symbol: "chevron.backward", label: "Back") { send("back") }
-                RoundKey(symbol: "house.fill", label: "Home") { send("home") }
+                RoundKey(symbol: "playpause.fill", label: "Play/Pause") { send("playpause") }
                 RoundKey(symbol: "speaker.slash.fill", label: "Mute") { send("mute") }
             }
-            GridRow {
-                RoundKey(symbol: "playpause.fill", label: "Play/Pause") { send("playpause") }
-                RepeatKey(symbol: "speaker.minus.fill", label: "Vol −") { n in send("voldown", repeat: n) }
-                RepeatKey(symbol: "speaker.plus.fill", label: "Vol +") { n in send("volup", repeat: n) }
+            .frame(maxWidth: .infinity)
+            VStack(spacing: 18) {
+                RoundKey(symbol: "tv", label: "Home") { send("home") }
+                VolumeRocker { up, n in send(up ? "volup" : "voldown", repeat: n) }
             }
+            .frame(maxWidth: .infinity)
         }
+        .frame(maxWidth: 300)
+        .glassGroup(spacing: 18)
     }
 
     private var apps: some View {
         HStack(spacing: 12) {
-            Button { send("netflix") } label: {
-                Text("NETFLIX").font(.headline.weight(.heavy)).foregroundStyle(.red).frame(maxWidth: .infinity, minHeight: 44)
-            }
-            Button { send("youtube") } label: {
-                Label("YouTube", systemImage: "play.rectangle.fill").font(.headline).foregroundStyle(.red).frame(maxWidth: .infinity, minHeight: 44)
-            }
+            AppKey(title: "Netflix", mark: AnyView(Text("N").font(.system(size: 19, weight: .black)).foregroundStyle(.red))) { send("netflix") }
+            AppKey(title: "YouTube", mark: AnyView(Image(systemName: "play.rectangle.fill").foregroundStyle(.white, .red))) { send("youtube") }
         }
-        .buttonStyle(.bordered)
+        .frame(maxWidth: 320)
     }
 
     // MARK: Sending
 
-    /// Through LG direct control when it's connected (reaches every app), otherwise Woodruff's /api/key.
     private func send(_ key: String, repeat n: Int = 0) {
-        pressCount += 1
-        let targets = everyTV ? fleet.tvs.filter(\.online) : (tv.map { [$0] } ?? [])
+        presses += 1
+        let targets = all ? fleet.tvs.filter(\.online) : (tv.map { [$0] } ?? [])
         for t in targets {
             Task {
                 do {
-                    if let lg = fleet.lg(for: t), let action = LGKeyMap.action(for: key) {
-                        try await action(lg)
-                    } else {
-                        try await fleet.client(for: t)?.key(key, repeat: n)
-                    }
-                    if key == "ok" && !everyTV {
+                    if let lg = fleet.lg(for: t), let action = LGKeyMap.action(for: key) { try await action(lg) }
+                    else { try await fleet.client(for: t)?.key(key, repeat: n) }
+                    if key == "ok" && !all {
                         try? await Task.sleep(nanoseconds: 400_000_000)
-                        field = try? await fleet.client(for: t)?.typeField()
+                        if let s = try? await fleet.client(for: t)?.typeField() { withAnimation(.snappy) { field = s } }
                     }
                 } catch {
-                    if !everyTV && n == 0 { fleet.show(error) }
+                    if !all && n == 0 { fleet.show(error) }
                 }
             }
         }
@@ -146,22 +143,15 @@ struct RemoteView: View {
     private func fieldLoop() async {
         field = nil
         while !Task.isCancelled {
-            if !everyTV, let t = tv, t.online, let c = fleet.client(for: t) {
-                field = try? await c.typeField()
+            if !all, let t = tv, t.online, let c = fleet.client(for: t), let s = try? await c.typeField() {
+                withAnimation(.snappy) { field = s }
             }
             try? await Task.sleep(nanoseconds: 2_000_000_000)
         }
     }
 
-    private func statusWord(_ t: FleetTV) -> String {
-        if t.link == "refused" { return "Link again" }
-        if !t.online { return "Off" }
-        if let p = t.playing { return (p.isPlaying ? "Playing " : "Paused · ") + p.title }
-        return "Nothing playing"
-    }
-
     #if os(macOS)
-    /// The Mac's keyboard is a remote too: arrows, Return = OK, Delete/Esc = Back, Space = Play/Pause, H = Home, M = Mute.
+    /// The Mac's keyboard is the remote: arrows, Return = OK, Esc/Delete = Back, Space = Play/Pause, H, M, + and −.
     private func handleKey(_ press: KeyPress) -> KeyPress.Result {
         switch press.key {
         case .upArrow: send("up")
@@ -185,61 +175,59 @@ struct RemoteView: View {
     #endif
 }
 
-/// The round clickpad: tap the edges for arrows, the middle for OK, swipe for arrows, hold for repeat / menu.
+/// The round clickpad: tap an edge for an arrow, the middle for OK; swipe for arrows; hold to repeat; hold OK for Menu.
 struct Clickpad: View {
+    var size: CGFloat
     var onKey: (String) -> Void
-    var onHold: (String) -> Void
     var onRepeat: (String, Int) -> Void
     @State private var pressed: String?
-    @State private var holdTask: Task<Void, Never>?
+    @State private var hold: Task<Void, Never>?
     @State private var held = false
-    @State private var start: CGPoint?
+    @State private var began = false
 
     var body: some View {
-        GeometryReader { geo in
-            let size = min(geo.size.width, geo.size.height)
-            ZStack {
-                Circle().fill(.background.secondary)
-                    .overlay(Circle().stroke(.quaternary))
-                    .shadow(color: .black.opacity(0.12), radius: 10, y: 4)
-                Circle().fill(pressed == "ok" ? Color.accentColor.opacity(0.25) : Color.primary.opacity(0.05))
-                    .frame(width: size * 0.38, height: size * 0.38)
-                ForEach(["up", "down", "left", "right"], id: \.self) { d in
-                    Image(systemName: "chevron.\(d == "up" ? "up" : d == "down" ? "down" : d == "left" ? "left" : "right")")
-                        .font(.title2.weight(.semibold))
-                        .foregroundStyle(pressed == d ? Color.accentColor : .secondary)
-                        .offset(offset(d, size * 0.36))
-                }
+        ZStack {
+            Circle().fill(Palette.padFill)
+                .overlay(Circle().strokeBorder(.white.opacity(0.06)))
+                .shadow(color: .black.opacity(0.25), radius: 18, y: 8)
+            Circle().fill(pressed == "ok" ? Palette.padCenter.opacity(0.7) : Palette.padCenter)
+                .frame(width: size * 0.42, height: size * 0.42)
+                .overlay(Text("OK").font(.system(size: size * 0.055, weight: .semibold)).foregroundStyle(.secondary))
+                .scaleEffect(pressed == "ok" ? 0.96 : 1)
+            ForEach(["up", "down", "left", "right"], id: \.self) { d in
+                Image(systemName: "chevron.\(d == "up" ? "up" : d == "down" ? "down" : d == "left" ? "left" : "right")")
+                    .font(.system(size: size * 0.055, weight: .semibold))
+                    .foregroundStyle(pressed == d ? Color.primary : .secondary)
+                    .scaleEffect(pressed == d ? 1.25 : 1)
+                    .offset(offset(d, size * 0.38))
             }
-            .frame(width: size, height: size)
-            .contentShape(Circle())
-            .gesture(
-                DragGesture(minimumDistance: 0)
-                    .onChanged { v in
-                        if start == nil {
-                            start = v.startLocation
-                            let zone = zoneAt(v.startLocation, size)
-                            pressed = zone
-                            beginHold(zone)
-                        }
-                        if v.translation.width.magnitude > 26 || v.translation.height.magnitude > 26 {
-                            holdTask?.cancel()
-                        }
-                    }
-                    .onEnded { v in
-                        holdTask?.cancel()
-                        defer { pressed = nil; start = nil; held = false }
-                        if held { return }
-                        let dx = v.translation.width, dy = v.translation.height
-                        if max(dx.magnitude, dy.magnitude) >= 26 {
-                            onKey(dx.magnitude > dy.magnitude ? (dx > 0 ? "right" : "left") : (dy > 0 ? "down" : "up"))
-                        } else {
-                            onKey(zoneAt(v.startLocation, size))
-                        }
-                    }
-            )
         }
-        .aspectRatio(1, contentMode: .fit)
+        .frame(width: size, height: size)
+        .animation(.spring(response: 0.22, dampingFraction: 0.65), value: pressed)
+        .contentShape(Circle())
+        .gesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { v in
+                    if !began {
+                        began = true
+                        let zone = zoneAt(v.startLocation)
+                        pressed = zone
+                        startHold(zone)
+                    }
+                    if max(abs(v.translation.width), abs(v.translation.height)) > 26 { hold?.cancel() }
+                }
+                .onEnded { v in
+                    hold?.cancel()
+                    defer { pressed = nil; began = false; held = false }
+                    if held { return }
+                    let dx = v.translation.width, dy = v.translation.height
+                    if max(abs(dx), abs(dy)) >= 26 {
+                        onKey(abs(dx) > abs(dy) ? (dx > 0 ? "right" : "left") : (dy > 0 ? "down" : "up"))
+                    } else {
+                        onKey(zoneAt(v.startLocation))
+                    }
+                }
+        )
         .accessibilityElement()
         .accessibilityLabel("Clickpad")
         .accessibilityAction(named: "OK") { onKey("ok") }
@@ -249,33 +237,31 @@ struct Clickpad: View {
         .accessibilityAction(named: "Right") { onKey("right") }
     }
 
-    /// Hold an arrow: one press after 450 ms, then one every 140 ms (repeat 1, 2, 3…). Hold OK 500 ms: Menu.
-    private func beginHold(_ zone: String) {
-        holdTask?.cancel()
-        holdTask = Task {
+    /// Hold an arrow: a press after 450 ms, then one every 140 ms. Hold OK for 500 ms: Menu.
+    private func startHold(_ zone: String) {
+        hold?.cancel()
+        hold = Task {
             if zone == "ok" {
                 try? await Task.sleep(nanoseconds: 500_000_000)
                 guard !Task.isCancelled else { return }
                 held = true
-                onHold("menu")
+                onKey("menu")
                 return
             }
             try? await Task.sleep(nanoseconds: 450_000_000)
             guard !Task.isCancelled else { return }
             held = true
-            onRepeat(zone, 0)
-            var n = 1
+            var n = 0
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 140_000_000)
-                if Task.isCancelled { break }
                 onRepeat(zone, n); n += 1
+                try? await Task.sleep(nanoseconds: 140_000_000)
             }
         }
     }
 
-    private func zoneAt(_ p: CGPoint, _ size: CGFloat) -> String {
+    private func zoneAt(_ p: CGPoint) -> String {
         let dx = p.x - size / 2, dy = p.y - size / 2
-        if hypot(dx, dy) < size * 0.19 { return "ok" }
+        if hypot(dx, dy) < size * 0.21 { return "ok" }
         return abs(dx) > abs(dy) ? (dx > 0 ? "right" : "left") : (dy > 0 ? "down" : "up")
     }
 
@@ -289,59 +275,96 @@ struct Clickpad: View {
     }
 }
 
+/// A round glass key.
 struct RoundKey: View {
     var symbol: String
     var label: String
     var action: () -> Void
     var body: some View {
         Button(action: action) {
-            VStack(spacing: 4) {
-                Image(systemName: symbol).font(.title2).frame(width: 64, height: 64)
-                    .background(.background.secondary, in: Circle())
-                    .overlay(Circle().stroke(.quaternary))
-                Text(label).font(.caption2).foregroundStyle(.secondary)
-            }
+            Image(systemName: symbol)
+                .font(.system(size: 21, weight: .semibold))
+                .foregroundStyle(.primary)
+                .frame(width: 64, height: 64)
+                .contentShape(Circle())
+                .glass(Circle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PressScale())
         .accessibilityLabel(label)
     }
 }
 
-/// A key that repeats while held (volume).
-struct RepeatKey: View {
-    var symbol: String
-    var label: String
-    var action: (Int) -> Void
+/// The tall + / − capsule; each half repeats while held.
+struct VolumeRocker: View {
+    var send: (Bool, Int) -> Void
+    var body: some View {
+        VStack(spacing: 0) {
+            half("plus", up: true)
+            Rectangle().fill(.separator).frame(width: 24, height: 0.5)
+            half("minus", up: false)
+        }
+        .frame(width: 64, height: 146)
+        .glass(Capsule())
+    }
+    private func half(_ symbol: String, up: Bool) -> some View {
+        RepeatPress(onPress: { send(up, $0) }) {
+            Image(systemName: symbol).font(.system(size: 21, weight: .semibold)).frame(width: 64, height: 72)
+        }
+        .accessibilityLabel(up ? "Volume up" : "Volume down")
+    }
+}
+
+/// Fires once on touch, then repeats every 140 ms after 450 ms of holding.
+struct RepeatPress<Label: View>: View {
+    var onPress: (Int) -> Void
+    @ViewBuilder var label: Label
     @State private var task: Task<Void, Never>?
     @State private var down = false
 
     var body: some View {
-        VStack(spacing: 4) {
-            Image(systemName: symbol).font(.title2).frame(width: 64, height: 64)
-                .background(down ? AnyShapeStyle(Color.accentColor.opacity(0.25)) : AnyShapeStyle(.background.secondary), in: Circle())
-                .overlay(Circle().stroke(.quaternary))
-            Text(label).font(.caption2).foregroundStyle(.secondary)
-        }
-        .contentShape(Rectangle())
-        .gesture(DragGesture(minimumDistance: 0)
-            .onChanged { _ in
-                guard !down else { return }
-                down = true
-                action(0)
-                task = Task {
-                    try? await Task.sleep(nanoseconds: 450_000_000)
-                    var n = 1
-                    while !Task.isCancelled { action(n); n += 1; try? await Task.sleep(nanoseconds: 140_000_000) }
+        label
+            .contentShape(Rectangle())
+            .opacity(down ? 0.55 : 1)
+            .scaleEffect(down ? 0.9 : 1)
+            .animation(.spring(response: 0.2, dampingFraction: 0.6), value: down)
+            .gesture(DragGesture(minimumDistance: 0)
+                .onChanged { _ in
+                    guard !down else { return }
+                    down = true
+                    onPress(0)
+                    task = Task {
+                        try? await Task.sleep(nanoseconds: 450_000_000)
+                        var n = 1
+                        while !Task.isCancelled { onPress(n); n += 1; try? await Task.sleep(nanoseconds: 140_000_000) }
+                    }
                 }
-            }
-            .onEnded { _ in down = false; task?.cancel() })
-        .accessibilityAddTraits(.isButton)
-        .accessibilityLabel(label)
-        .accessibilityAction { action(0) }
+                .onEnded { _ in down = false; task?.cancel() })
+            .accessibilityAddTraits(.isButton)
+            .accessibilityAction { onPress(0) }
     }
 }
 
-/// Woodruff key names → LG direct-control commands.
+/// Netflix / YouTube capsules.
+struct AppKey: View {
+    var title: String
+    var mark: AnyView
+    var action: () -> Void
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                mark
+                Text(title).font(.headline)
+            }
+            .foregroundStyle(.primary)
+            .frame(maxWidth: .infinity, minHeight: 50)
+            .contentShape(Capsule())
+            .glass(Capsule())
+        }
+        .buttonStyle(PressScale(scale: 0.96))
+    }
+}
+
+/// Woodruff key names → LG direct control.
 enum LGKeyMap {
     static func action(for key: String) -> ((LGRemote) async throws -> Void)? {
         let b: LGRemote.Button?
@@ -367,7 +390,41 @@ enum LGKeyMap {
     }
 }
 
-/// The phone's keyboard on the TV's selected text box: every change sends the whole text; Return presses Done.
+/// LG TVs connected directly: apps, inputs, channels and power, in the remote's toolbar.
+struct LGMenu: View {
+    @Environment(Fleet.self) private var fleet
+    var tv: FleetTV
+    @State private var apps: [LGRemote.App] = []
+    @State private var inputs: [LGRemote.App] = []
+
+    var body: some View {
+        Menu {
+            Section {
+                Button { run { try await $0.press(.channelUp) } } label: { Label("Channel Up", systemImage: "chevron.up") }
+                Button { run { try await $0.press(.channelDown) } } label: { Label("Channel Down", systemImage: "chevron.down") }
+            }
+            Menu { ForEach(apps) { a in Button(a.title) { run { try await $0.launch(a.id) } } } } label: { Label("Apps", systemImage: "square.grid.2x2") }
+            Menu { ForEach(inputs) { i in Button(i.title) { run { try await $0.switchInput(i.id) } } } } label: { Label("Inputs", systemImage: "cable.connector") }
+            Section {
+                Button { run { try await $0.screenOff() } } label: { Label("Turn Screen Off", systemImage: "rectangle.slash") }
+                Button(role: .destructive) { run { try await $0.turnOff() } } label: { Label("Turn Off \(tv.name)", systemImage: "power") }
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+        }
+        .task {
+            guard let lg = fleet.lg(for: tv) else { return }
+            apps = (try? await lg.apps()) ?? []
+            inputs = (try? await lg.inputs()) ?? []
+        }
+    }
+
+    private func run(_ op: @escaping (LGRemote) async throws -> Void) {
+        Task { do { if let lg = fleet.lg(for: tv) { try await op(lg) } } catch { fleet.show(error) } }
+    }
+}
+
+/// The phone's keyboard on the TV's selected text box: each change sends the whole text; Enter presses Done.
 struct KeyboardSheet: View {
     @Environment(Fleet.self) private var fleet
     @Environment(\.dismiss) private var dismiss
@@ -375,48 +432,65 @@ struct KeyboardSheet: View {
     @State private var text = ""
     @State private var state: TypeState?
     @State private var fieldKey: String?
-    @State private var sendTask: Task<Void, Never>?
+    @State private var pending: Task<Void, Never>?
     @FocusState private var focused: Bool
 
     var body: some View {
         NavigationStack {
             Form {
                 Section {
-                    if let f = state?.field {
-                        Label(f.secret == true ? "\(f.label ?? "Text box") (hidden)" : (f.label ?? "Text box"), systemImage: "character.cursor.ibeam")
-                    } else {
-                        Text(state?.note ?? "Select a text box on \(tv.name) first.").foregroundStyle(.secondary)
+                    HStack(spacing: 8) {
+                        Circle().fill(state?.field != nil ? Color.green : .gray).frame(width: 7, height: 7)
+                        Text(fieldTitle).font(.subheadline).foregroundStyle(state?.field != nil ? .primary : .secondary)
+                        Spacer()
+                        Button("Clear") { text = "" }.disabled(text.isEmpty)
                     }
-                }
-                Section {
-                    TextField("Type here", text: $text, axis: state?.field?.multiline == true ? .vertical : .horizontal)
+                    TextField("", text: $text, axis: .vertical)
+                        .font(.title3)
+                        .lineLimit(state?.field?.multiline == true ? 3...10 : 1...4)
                         .focused($focused)
                         .autocorrectionDisabled()
+                        .submitLabel(.done)
                         .onSubmit { submit() }
                         .onChange(of: text) { _, new in queue(new) }
+                        .frame(minHeight: 120, alignment: .top)
+                } footer: {
+                    Text("Letters appear on the TV as you type. Enter presses Done on the TV.")
                 }
-                Section {
-                    Button("Send and Press Done") { submit() }.disabled(state?.field == nil)
-                    Button("Clear", role: .destructive) { text = "" }
-                }
-                if fleet.lg(for: tv) != nil {
-                    Section("LG keyboard (any app)") {
-                        Button("Type into the TV's on-screen keyboard") {
+                if let lg = fleet.lg(for: tv) {
+                    Section {
+                        Button("Type into \(tv.name)’s Own Keyboard") {
                             let t = text
-                            Task { do { try await fleet.lg(for: tv)?.insertText(t); try await fleet.lg(for: tv)?.sendEnter() } catch { fleet.show(error) } }
+                            Task { do { try await lg.insertText(t); try await lg.sendEnter() } catch { fleet.show(error) } }
                         }
-                    }
+                    } footer: { Text("For other apps on this LG TV (Netflix, YouTube, the browser).") }
                 }
             }
             .formStyle(.grouped)
-            .navigationTitle("Type on \(tv.name)")
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+            .navigationTitle("Keyboard")
+            #if os(iOS)
+            .navigationSubtitle(tv.name)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button(role: .close) { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Enter") { submit() }.buttonStyle(.glassProminent).disabled(state?.field == nil)
+                }
+            }
             .task { await loop() }
             .onAppear { focused = true }
         }
+        .presentationDetents([.medium, .large])
         #if os(macOS)
-        .frame(minWidth: 420, minHeight: 360)
+        .frame(minWidth: 440, minHeight: 360)
         #endif
+    }
+
+    private var fieldTitle: String {
+        guard let f = state?.field else { return state?.note ?? "Select a text box on \(tv.name)" }
+        let l = f.label?.isEmpty == false ? f.label! : "Text box"
+        return f.secret == true ? "\(l) (hidden)" : l
     }
 
     private func loop() async {
@@ -433,9 +507,10 @@ struct KeyboardSheet: View {
     private func clean(_ s: String) -> String { state?.field?.multiline == true ? s : s.replacingOccurrences(of: "\n", with: " ") }
 
     private func queue(_ new: String) {
+        if new.contains("\n") && state?.field?.multiline != true { submit(); return }
         guard let f = state?.field else { return }
-        sendTask?.cancel()
-        sendTask = Task {
+        pending?.cancel()
+        pending = Task {
             try? await Task.sleep(nanoseconds: 120_000_000)
             guard !Task.isCancelled else { return }
             try? await fleet.client(for: tv)?.type(clean(new), field: f.id)
@@ -451,94 +526,6 @@ struct KeyboardSheet: View {
                 text = ""
                 dismiss()
             } catch { fleet.show(error) }
-        }
-    }
-}
-
-/// LG direct control extras: apps, inputs, channels, numbers, power and the screen.
-struct LGExtras: View {
-    @Environment(Fleet.self) private var fleet
-    var tv: FleetTV
-    @State private var apps: [LGRemote.App] = []
-    @State private var inputs: [LGRemote.App] = []
-
-    var body: some View {
-        Card {
-            VStack(alignment: .leading, spacing: 12) {
-                Label("LG Direct Control", systemImage: "bolt.horizontal.fill").font(.headline)
-                HStack {
-                    lgButton("Play", "play.fill") { try await $0.press(.play) }
-                    lgButton("Pause", "pause.fill") { try await $0.press(.pause) }
-                    lgButton("Ch +", "chevron.up.square") { try await $0.press(.channelUp) }
-                    lgButton("Ch −", "chevron.down.square") { try await $0.press(.channelDown) }
-                    lgButton("Settings", "gearshape") { try await $0.press(.qmenu) }
-                    lgButton("Screen Off", "rectangle.slash") { try await $0.screenOff() }
-                    lgButton("Power Off", "power") { try await $0.turnOff() }
-                }
-                Menu("Apps") {
-                    ForEach(apps) { a in Button(a.title) { run { try await $0.launch(a.id) } } }
-                }
-                .disabled(apps.isEmpty)
-                Menu("Inputs") {
-                    ForEach(inputs) { i in Button(i.title) { run { try await $0.switchInput(i.id) } } }
-                }
-                .disabled(inputs.isEmpty)
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 5)) {
-                    ForEach(["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"], id: \.self) { n in
-                        Button(n) { run { try await $0.press(LGRemote.Button(rawValue: n)!) } }.buttonStyle(.bordered)
-                    }
-                }
-            }
-        }
-        .task {
-            guard let lg = fleet.lg(for: tv) else { return }
-            apps = (try? await lg.apps()) ?? []
-            inputs = (try? await lg.inputs()) ?? []
-        }
-    }
-
-    private func lgButton(_ title: String, _ symbol: String, _ op: @escaping (LGRemote) async throws -> Void) -> some View {
-        Button { run(op) } label: { VStack { Image(systemName: symbol); Text(title).font(.caption2) }.frame(maxWidth: .infinity) }
-            .buttonStyle(.bordered)
-    }
-
-    private func run(_ op: @escaping (LGRemote) async throws -> Void) {
-        Task { do { if let lg = fleet.lg(for: tv) { try await op(lg) } } catch { fleet.show(error) } }
-    }
-}
-
-/// Setting up LG direct control on a TV's page.
-struct LGSection: View {
-    @Environment(Fleet.self) private var fleet
-    var tv: FleetTV
-    @State private var host = ""
-    @State private var busy = false
-
-    var body: some View {
-        if fleet.platform(of: tv) != .android {
-            Section {
-                if let h = fleet.extras[tv.id]?.lgHost {
-                    LabeledContent("Connected to", value: h)
-                    if let mac = fleet.extras[tv.id]?.mac { LabeledContent("Wake-on-LAN", value: mac) }
-                    Button("Disconnect", role: .destructive) { fleet.forgetLG(tv) }
-                } else {
-                    TextField("TV's address (e.g. 192.168.1.40)", text: $host)
-                        .autocorrectionDisabled()
-                    Button(busy ? "Accept on the TV…" : "Connect") {
-                        busy = true
-                        Task {
-                            do { try await fleet.connectLG(tv, host: host.trimmingCharacters(in: .whitespaces)); fleet.say("LG direct control is on", "The remote now works in every app on \(tv.name).") } catch { fleet.show(error) }
-                            busy = false
-                        }
-                    }
-                    .disabled(host.isEmpty || busy)
-                }
-            } header: {
-                Text("LG Direct Control")
-            } footer: {
-                Text("Optional. LG TVs only let Woodruff take keys while it's on screen. Connected directly, this app is a full remote in every app (Netflix included), types into any keyboard, switches inputs and turns the TV off and on. The TV asks once to allow it.")
-            }
-            .onAppear { if host.isEmpty { host = fleet.extras[tv.id]?.lastHost ?? "" } }
         }
     }
 }
