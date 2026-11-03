@@ -1,0 +1,97 @@
+name: WoodruffFamily
+options:
+  bundleIdPrefix: com.woodruff.family
+  deploymentTarget:
+    iOS: "17.0"
+    macOS: "14.0"
+  createIntermediateGroups: true
+  developmentLanguage: en
+
+settings:
+  base:
+    SWIFT_VERSION: "5.10"
+    MARKETING_VERSION: "1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    DEVELOPMENT_TEAM: ""
+    CODE_SIGN_STYLE: Automatic
+    ENABLE_PREVIEWS: YES
+    ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+
+packages:
+  WoodruffKit:
+    path: Packages/WoodruffKit
+
+targets:
+  WoodruffFamily:
+    type: application
+    platform: iOS
+    sources:
+      - App/Shared
+      - App/iOS
+      - App/Resources
+    dependencies:
+      - package: WoodruffKit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.woodruff.family.remote
+        PRODUCT_NAME: Woodruff Family
+        TARGETED_DEVICE_FAMILY: "1,2"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+    info:
+      path: App/iOS/Info.plist
+      properties:
+        CFBundleDisplayName: Woodruff
+        LSApplicationCategoryType: public.app-category.utilities
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
+        UISupportedInterfaceOrientations~ipad: [UIInterfaceOrientationPortrait, UIInterfaceOrientationPortraitUpsideDown, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
+        NSLocalNetworkUsageDescription: Woodruff finds and controls the family's TVs on your Wi-Fi.
+        NSBonjourServices: [_woodruff._tcp]
+        NSCameraUsageDescription: Scan the pairing QR code shown on a TV.
+        NSPhotoLibraryUsageDescription: Add photos and videos to Family Memories on the TVs.
+        NSPhotoLibraryAddUsageDescription: Save photos from the TV to your library.
+        NSUserNotificationsUsageDescription: Alerts when a TV needs attention or a family announcement arrives.
+        UIBackgroundModes: [fetch]
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
+          NSAllowsLocalNetworking: true
+
+  WoodruffFamilyMac:
+    type: application
+    platform: macOS
+    sources:
+      - App/Shared
+      - App/macOS
+      - App/Resources
+    dependencies:
+      - package: WoodruffKit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.woodruff.family.mac
+        PRODUCT_NAME: Woodruff Family
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ENABLE_HARDENED_RUNTIME: NO
+        CODE_SIGN_ENTITLEMENTS: App/macOS/WoodruffFamilyMac.entitlements
+    info:
+      path: App/macOS/Info.plist
+      properties:
+        CFBundleDisplayName: Woodruff Family
+        LSApplicationCategoryType: public.app-category.utilities
+        LSMinimumSystemVersion: "14.0"
+        NSLocalNetworkUsageDescription: Woodruff finds and controls the family's TVs on your network.
+        NSBonjourServices: [_woodruff._tcp]
+        NSPhotoLibraryUsageDescription: Add photos and videos to Family Memories on the TVs.
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
+          NSAllowsLocalNetworking: true
+
+schemes:
+  WoodruffFamily:
+    build:
+      targets:
+        WoodruffFamily: all
+  WoodruffFamilyMac:
+    build:
+      targets:
+        WoodruffFamilyMac: all

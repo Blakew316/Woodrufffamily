@@ -1,0 +1,51 @@
+name: Build apps
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Xcode
+        run: |
+          sudo xcode-select -s "$(ls -d /Applications/Xcode_16*.app | sort -V | tail -1)"
+          xcodebuild -version
+      - name: WoodruffKit tests
+        working-directory: Packages/WoodruffKit
+        run: swift test
+      - name: Generate project
+        run: |
+          brew install xcodegen
+          xcodegen generate
+      - name: Build iOS app (simulator)
+        run: |
+          set -o pipefail
+          xcodebuild -project WoodruffFamily.xcodeproj -scheme WoodruffFamily \
+            -destination 'generic/platform=iOS Simulator' -configuration Debug \
+            CODE_SIGNING_ALLOWED=NO build | xcbeautify || exit 1
+      - name: Build iOS app (device, unsigned)
+        run: |
+          set -o pipefail
+          xcodebuild -project WoodruffFamily.xcodeproj -scheme WoodruffFamily \
+            -destination 'generic/platform=iOS' -configuration Release \
+            -derivedDataPath build CODE_SIGNING_ALLOWED=NO build | xcbeautify || exit 1
+          mkdir -p out/Payload && cp -R "build/Build/Products/Release-iphoneos/Woodruff Family.app" out/Payload/
+          (cd out && zip -qr WoodruffFamily-unsigned.ipa Payload)
+      - name: Build macOS app
+        run: |
+          set -o pipefail
+          xcodebuild -project WoodruffFamily.xcodeproj -scheme WoodruffFamilyMac \
+            -destination 'platform=macOS' -configuration Release \
+            -derivedDataPath build CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=NO build | xcbeautify || exit 1
+          (cd build/Build/Products/Release && ditto -c -k --keepParent "Woodruff Family.app" "$GITHUB_WORKSPACE/out/WoodruffFamily-mac.zip")
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WoodruffFamily-apps
+          path: |
+            out/WoodruffFamily-unsigned.ipa
+            out/WoodruffFamily-mac.zip
