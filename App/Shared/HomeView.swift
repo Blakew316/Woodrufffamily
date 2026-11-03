@@ -99,6 +99,8 @@ struct HomeTVTile: View {
     var tv: FleetTV
     var open: () -> Void
     @State private var hovering = false
+    @State private var renaming = false
+    @State private var newName = ""
 
     var body: some View {
         let p = tv.playing
@@ -163,8 +165,14 @@ struct HomeTVTile: View {
         .contentShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
         .onTapGesture(perform: open)
         .onHover { hovering = $0 }
+        .alert("Rename TV", isPresented: $renaming) {
+            TextField("Name", text: $newName)
+            Button("Save") { fleet.rename(tv, to: newName) }
+            Button("Cancel", role: .cancel) {}
+        }
         .contextMenu {
             Button("Open") { open() }
+            Button("Rename…") { newName = tv.name; renaming = true }
             Button("Use for the Remote") { fleet.remoteAll = false; fleet.selectedID = tv.id; fleet.remotePanel = true }
             Button("Check for Updates") { Task { do { try await fleet.pushUpdate(tv) } catch { fleet.show(error) } } }
             if tv.needsAttention { Button("Hide Alerts") { fleet.hideAlerts(tv) } }

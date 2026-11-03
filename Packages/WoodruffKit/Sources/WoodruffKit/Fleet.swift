@@ -22,6 +22,8 @@ public struct TVExtras: Codable, Hashable, Sendable {
     public var ssh: WebOSSSH?
     public var mac: String?
     public var lastHost: String?
+    /// The name the family gave this TV here (the TV itself may still call itself something else).
+    public var alias: String?
     public init() {}
 }
 
@@ -257,12 +259,18 @@ public final class Fleet {
         }
         var all = list.map { tv -> FleetTV in
             var t = tv
+            // The webOS app calls itself "LG TV" until it's named on the TV: that's Elliot's Room.
+            if extras[t.id]?.alias == nil && t.name.trimmingCharacters(in: .whitespaces).caseInsensitiveCompare("LG TV") == .orderedSame {
+                extras[t.id, default: TVExtras()].alias = "Elliot’s Room"
+            }
+            if let alias = extras[t.id]?.alias, !alias.isEmpty { t.name = alias }
             t.alertsHidden = t.hasAlerts && hiddenAlerts[t.id] == t.alertSignature
             return t
         }
         // TVs heard on the Wi‑Fi that no paired TV knows: listed so they can be paired.
         for f in discovery.found where !all.contains(where: { $0.id == f.id || $0.name.caseInsensitiveCompare(f.name) == .orderedSame }) {
-            var t = FleetTV(id: f.id, name: f.name, online: true, onScreen: false, playing: nil, version: nil, seen: nil,
+            let heard = f.name.caseInsensitiveCompare("LG TV") == .orderedSame ? "Elliot’s Room" : f.name
+            var t = FleetTV(id: f.id, name: extras[f.id]?.alias ?? heard, online: true, onScreen: false, playing: nil, version: nil, seen: nil,
                             link: "unpaired", health: nil, hubID: "", routeID: "", platform: extras[f.id]?.platform)
             t.foundAt = f.base
             all.append(t)
@@ -274,6 +282,16 @@ public final class Fleet {
     private func guessPlatform(_ tv: FleetTV) -> TVPlatform? {
         if let r = healthReports[tv.id] { return r.platform }
         return nil
+    }
+
+    // MARK: Names
+
+    /// Renames [tv] in this app (blank goes back to the name the TV gives itself).
+    public func rename(_ tv: FleetTV, to name: String) {
+        let clean = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        extras[tv.id, default: TVExtras()].alias = clean.isEmpty ? "" : String(clean.prefix(40))
+        if let i = tvs.firstIndex(where: { $0.id == tv.id }), !clean.isEmpty { tvs[i].name = String(clean.prefix(40)) }
+        Task { await refresh() }
     }
 
     // MARK: Hiding alerts

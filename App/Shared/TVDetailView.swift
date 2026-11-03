@@ -12,6 +12,8 @@ struct TVDetailView: View {
     @State private var relinkCode = ""
     @State private var signIn: String?
     @State private var fetchedAt = Date()
+    @State private var renaming = false
+    @State private var newName = ""
 
     private var tv: FleetTV? { fleet.tv(tvID) }
     private var report: HealthReport? { fleet.healthReports[tvID] }
@@ -55,6 +57,13 @@ struct TVDetailView: View {
                 if tv.playing != nil { NowPlayingSheet(tvID: tvID) } else { TVScreenSheet(tvID: tvID) }
             }
             .sheet(item: Binding(get: { signIn.map { SignInGrant(grant: $0) } }, set: { signIn = $0?.grant })) { SignInSheet(grant: $0.grant, tv: tv) }
+            .alert("Rename TV", isPresented: $renaming) {
+                TextField("Name", text: $newName)
+                Button("Save") { fleet.rename(tv, to: newName) }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This is the name you’ll see in this app.")
+            }
             .alert("Link \(tv.name) Again", isPresented: $askRelink) {
                 TextField("6-digit code", text: $relinkCode)
                 Button("Link") { relink(tv) }
@@ -191,6 +200,7 @@ struct TVDetailView: View {
 
     @ViewBuilder private func actions(_ tv: FleetTV) -> some View {
         Section {
+            Button("Rename…") { newName = tv.name; renaming = true }
             Button("Use This TV for the Remote") { fleet.remoteAll = false; fleet.selectedID = tv.id }
             if tv.isHub || fleet.hub(tv.id) != nil {
                 NavigationLink("Smoothness Report") { DiagnosticsView(tv: tv) }
