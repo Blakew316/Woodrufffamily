@@ -76,7 +76,8 @@ struct NowPlayingArt: View {
         } else {
             ZStack {
                 LinearGradient(colors: [Color(white: 0.2), Color(white: 0.09)], startPoint: .topLeading, endPoint: .bottomTrailing)
-                Text(playing?.app ?? "TV")
+                // No picture found: at least the title, not the app's name.
+                Text(playing?.title ?? playing?.app ?? "TV")
                     .font(.system(.headline, design: .rounded).weight(.semibold))
                     .foregroundStyle(.white.opacity(0.55))
                     .minimumScaleFactor(0.4)

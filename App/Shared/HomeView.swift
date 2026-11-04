@@ -9,6 +9,8 @@ struct HomeView: View {
     /// The room bar's choice: Favorites (first, and where Home opens), All Rooms (""), or a room.
     @AppStorage("home.room2") private var room = favoritesKey
     @State private var editing = false
+    /// The TV whose player is open (iPhone: tapping a TV opens straight into what it's playing).
+    @State private var playerTV: String?
     @Namespace private var zoom
     private let layout = HomeLayout.shared
 
@@ -97,6 +99,7 @@ struct HomeView: View {
         .dynamicTypeSize(.xxLarge)
         #endif
         .sheet(isPresented: $editing) { EditHomeView() }
+        .sheet(item: Binding(get: { playerTV.map { TitleRef(id: $0) } }, set: { playerTV = $0?.id })) { NowPlayingSheet(tvID: $0.id) }
         // With the room bar hidden there's no way to pick a room: show everything.
         .onAppear { if layout.hiddenSections.contains("rooms") && !room.isEmpty { room = "" } }
         .refreshable { await refreshEverything() }
@@ -284,6 +287,9 @@ struct HomeView: View {
     private func open(_ id: String) {
         #if os(macOS)
         MacFeedback.snap()
+        #else
+        // Straight into the player; only a TV that still needs pairing opens its setup page.
+        if let tv = fleet.tv(id), !tv.isUnpaired { playerTV = id; return }
         #endif
         withAnimation(.spring(response: 0.5, dampingFraction: 0.86)) { openTV = id }
     }
@@ -381,7 +387,12 @@ struct HomeTVTile: View {
                         Button("Remote") {
                             fleet.remoteAll = false
                             fleet.selectedID = tv.id
+                            #if os(macOS)
                             withAnimation(.smooth) { fleet.remotePanel = true }
+                            #else
+                            // The iPhone's remote is its own tab.
+                            UserDefaults.standard.set("remote", forKey: "section")
+                            #endif
                         }
                         .buttonStyle(.glass)
                     }
@@ -426,7 +437,14 @@ struct HomeTVTile: View {
         .contextMenu {
             Button("Open") { open() }
             Button("Rename…") { newName = tv.name; renaming = true }
-            Button("Use for the Remote") { fleet.remoteAll = false; fleet.selectedID = tv.id; fleet.remotePanel = true }
+            Button("Use for the Remote") {
+                fleet.remoteAll = false; fleet.selectedID = tv.id
+                #if os(macOS)
+                fleet.remotePanel = true
+                #else
+                UserDefaults.standard.set("remote", forKey: "section")
+                #endif
+            }
             Button("Check for Updates") { Task { do { try await fleet.pushUpdate(tv) } catch { fleet.show(error) } } }
             if tv.needsAttention { Button("Hide Alerts") { fleet.hideAlerts(tv) } }
             if tv.alertsHidden { Button("Show Hidden Alerts") { fleet.showAlerts(tv) } }

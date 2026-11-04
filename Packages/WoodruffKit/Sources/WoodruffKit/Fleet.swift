@@ -479,16 +479,52 @@ public final class Fleet {
     public private(set) var library: WatchHome?
 
     public func refreshLibrary() async {
-        guard let hub = hubs.first else { return }
-        if let h = try? await TVClient(hub: hub, routeID: "this").watchHome() { library = h }
+        // Any TV that answers (the first may be off).
+        for hub in hubs {
+            if let h = try? await TVClient(hub: hub, routeID: "this").watchHome() { library = h; return }
+        }
+    }
+
+    /// Pictures found by searching the whole library for a title Home's short lists don't have.
+    public private(set) var searchedArt: [String: NowPlayingArtwork] = [:]
+    @ObservationIgnored private var artSearches: [String: Date] = [:]
+
+    /// Searches the library on the TVs for [p]'s title and keeps its poster and backdrop.
+    private func searchArt(_ p: NowPlaying, key: String) {
+        if let at = artSearches[key], at.timeIntervalSinceNow > -300 { return }   // at most every 5 minutes per title
+        artSearches[key] = Date()
+        let query = String(p.title.split(separator: "·").first ?? Substring(p.title)).trimmingCharacters(in: .whitespaces)
+        let hubs = self.hubs
+        Task { [weak self] in
+            for hub in hubs {
+                guard let r = try? await TVClient(hub: hub, routeID: "this").search(query) else { continue }
+                let all = r.movies + r.shows
+                let best = all.first { Self.simple($0.title) == key } ?? all.first { key.hasPrefix(Self.simple($0.title)) || Self.simple($0.title).hasPrefix(key) }
+                if let t = best, t.poster != nil || t.backdrop != nil {
+                    self?.searchedArt[key] = NowPlayingArtwork(poster: t.poster, backdrop: t.backdrop, titleID: t.id)
+                }
+                return
+            }
+        }
     }
 
     /// The poster and backdrop (TV-relative paths or TMDB links) of what [p] is: by its Drive key, else by title.
     public func artwork(for p: NowPlaying?) -> NowPlayingArtwork? {
-        guard let p, let lib = library else { return nil }
+        guard let p else { return nil }
         // Only Woodruff's own player plays library titles: never guess a YouTube or Netflix title from the library.
         let ours = p.key?.hasPrefix("drive:") == true || (p.app ?? "").lowercased().contains("woodruff")
         guard ours else { return nil }
+        if let found = libraryArtwork(p) { return found }
+        // Not in Home's short lists: search the whole library once and use what it finds.
+        let key = Self.simple(String(p.title.split(separator: "·").first ?? Substring(p.title)))
+        guard !key.isEmpty else { return nil }
+        if let found = searchedArt[key] { return found }
+        searchArt(p, key: key)
+        return nil
+    }
+
+    private func libraryArtwork(_ p: NowPlaying) -> NowPlayingArtwork? {
+        guard let lib = library else { return nil }
         let titles = (lib.featured ?? []) + (lib.recent ?? []) + (lib.movies?.items ?? []) + (lib.shows?.items ?? [])
         func title(_ id: String?) -> Title? { id.flatMap { id in titles.first { $0.id == id } } }
         let cont = lib.continue ?? []
