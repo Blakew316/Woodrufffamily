@@ -7,7 +7,8 @@
 #   mac      Build the Mac app signed with this Mac's own "Apple Development" identity (it needs no profile),
 #            quit the running Woodruff Family, copy the new one over /Applications/Woodruff Family.app,
 #            check its signature and open it.
-#   share    (with mac) Then put a zip of that build, and a manifest, in iCloud Drive ("Woodruff Family builds"),
+#   share    After mac, the new build; alone, the installed app when it's this commit's build: put a zip of it and a
+#            manifest in iCloud Drive ("Woodruff Family builds"),
 #            replacing the one shared before, for a Mac whose certificate Apple revoked.
 #   mac-shared   Instead of building: wait (up to 20 minutes, or --wait) for the zip another Mac shared for this commit,
 #            check it against its manifest and its signature, check it's signed under the same certificate name
@@ -106,7 +107,7 @@ usage() {
   cat <<'EOF'
 Usage: scripts/deploy.sh [options] [mac] [share] [mac-shared] [iphone]      (no part named: mac)
   mac                 build, sign and install the Mac app in /Applications on this Mac
-  share               with mac: then share that build in iCloud Drive for a Mac that can't sign
+  share               share this Mac's build in iCloud Drive (with mac the new one, alone the installed one)
   mac-shared          install the build another Mac shared for this commit instead of building one here
   iphone              build, sign and install the iPhone app on every iPhone paired with this Mac
   --expect <commit>   stop before building unless the checkout is at that commit (a prefix is enough)
@@ -451,7 +452,7 @@ deploy_mac() {
 
 gone_within() {  # $1 = seconds: 0 once Woodruff Family isn't running any more
   local waited=0
-  while pgrep -x "$APP_NAME" >/dev/null 2>&1; do
+  while pgrep -U "$(id -u)" -x "$APP_NAME" >/dev/null 2>&1; do
     if [ "$waited" -ge "$1" ]; then
       return 1
     fi
@@ -474,7 +475,7 @@ quit_mac_app() {  # $1 = log
   if gone_within 10; then return 0; fi
   if command -v pkill >/dev/null 2>&1; then
     say "    it's still running: sending it SIGTERM"
-    pkill -TERM -x "$APP_NAME" </dev/null >>"$1" 2>&1
+    pkill -TERM -U "$(id -u)" -x "$APP_NAME" </dev/null >>"$1" 2>&1
     if gone_within 10; then return 0; fi
   fi
   return 1
@@ -496,7 +497,8 @@ wait_until_idle() {
 # $2 = the "signed by ..." line for the summary. 0 once it's copied; MAC_OK=1 when it also verifies and runs.
 install_mac() {
   local product=$1 signed=$2 bid ilog="$LOGDIR/mac-install.log" vlog="$LOGDIR/mac-verify-installed.log"
-  local waited verified=1 running=0
+  local waited verified=1 running=0 staged old
+  local -a open_flags
 
   bid=$(signing bundle-id "$product" 2>/dev/null)
   if [ "$bid" != "$MAC_BUNDLE_ID" ]; then
@@ -506,20 +508,37 @@ install_mac() {
 
   # Only now, with a verified new build, is the installed app quit and replaced.
   step "Mac: installing"
-  if pgrep -x "$APP_NAME" >/dev/null 2>&1; then
+  if pgrep -U "$(id -u)" -x "$APP_NAME" >/dev/null 2>&1; then
     wait_until_idle
   fi
-  if pgrep -x "$APP_NAME" >/dev/null 2>&1; then
+  if pgrep -U "$(id -u)" -x "$APP_NAME" >/dev/null 2>&1; then
     if ! quit_mac_app "$ilog"; then
       mac_failed "$APP_NAME didn't quit when asked (notification, AppleScript, then SIGTERM), so it wasn't replaced (the new build is $product)"
       return 1
     fi
   fi
-  if ! ditto "$product" "$MAC_INSTALLED" </dev/null >>"$ilog" 2>&1; then
+  # A fresh copy next to it, then swapped in: copying over the old bundle would keep files the new build doesn't
+  # have (going back to an older build), and the signature check would fail.
+  staged="${MAC_INSTALLED%.app}.new.app"
+  old="${MAC_INSTALLED%.app}.old.app"
+  rm -rf "$staged" "$old"
+  if ! ditto "$product" "$staged" </dev/null >>"$ilog" 2>&1; then
     tail -n 5 "$ilog" | indent
-    mac_failed "copying the new build to $MAC_INSTALLED failed, so it may be incomplete (the new build is $product)"
+    rm -rf "$staged"
+    mac_failed "copying the new build next to $MAC_INSTALLED failed; $MAC_INSTALLED wasn't touched (the new build is $product)"
     return 1
   fi
+  if [ -e "$MAC_INSTALLED" ] && ! mv "$MAC_INSTALLED" "$old" 2>>"$ilog"; then
+    rm -rf "$staged"
+    mac_failed "couldn't move the old $MAC_INSTALLED aside, so it wasn't replaced (the new build is $product)"
+    return 1
+  fi
+  if ! mv "$staged" "$MAC_INSTALLED" 2>>"$ilog"; then
+    if [ -e "$old" ]; then mv "$old" "$MAC_INSTALLED" 2>>"$ilog"; fi
+    mac_failed "couldn't put the new build in place, so the old one is back (the new build is $product)"
+    return 1
+  fi
+  rm -rf "$old"
   if codesign --verify --deep --strict --verbose=2 "$MAC_INSTALLED" </dev/null >"$vlog" 2>&1; then
     say "    $MAC_INSTALLED verifies"
   else
@@ -529,12 +548,18 @@ install_mac() {
     say "    (\"file added\" means files from the old version are still inside it: drag $product"
     say "    into Applications and choose Replace)"
   fi
-  if ! open "$MAC_INSTALLED" </dev/null >>"$ilog" 2>&1; then
+  # From the updater (in the background): opened without coming to the front over whatever someone is doing.
+  if [ -n "${WOODRUFF_DEPLOY_BACKGROUND:-}" ]; then
+    open_flags=(-g)
+  else
+    open_flags=()
+  fi
+  if ! open ${open_flags[@]+"${open_flags[@]}"} "$MAC_INSTALLED" </dev/null >>"$ilog" 2>&1; then
     tail -n 3 "$ilog" | indent
   fi
   waited=0
   while [ "$waited" -lt 20 ]; do
-    if pgrep -x "$APP_NAME" >/dev/null 2>&1; then
+    if pgrep -U "$(id -u)" -x "$APP_NAME" >/dev/null 2>&1; then
       running=1
       break
     fi
@@ -564,6 +589,38 @@ install_mac() {
 
 
 # Shares the Mac app just installed here in iCloud Drive, for a Mac that can't sign (mac-shared there).
+# WoodruffCommit of the installed Mac app (empty for a build from before it was recorded).
+installed_commit() {
+  python3 -I -c 'import plistlib, sys
+try:
+    with open(sys.argv[1], "rb") as handle:
+        print(plistlib.load(handle).get("WoodruffCommit") or "")
+except Exception:
+    print("")' "$MAC_INSTALLED/Contents/Info.plist" 2>/dev/null
+}
+
+# share without mac: shares the Mac app installed here, when it's this commit's build and verifies.
+share_installed() {
+  local head have
+  head=$(git rev-parse HEAD 2>/dev/null)
+  have=$(installed_commit)
+  step "Mac: sharing the installed build"
+  if [ -z "$have" ] || [ "$have" != "$head" ]; then
+    problem "the installed Mac app is ${have:-an older build}, not this commit's ($head), so it wasn't shared"
+    note "Mac: NOT shared in iCloud Drive (the installed app isn't this commit's build)"
+    result share failed "$head" "the installed app isn't this commit's build"
+    return 1
+  fi
+  if ! codesign --verify --deep --strict "$MAC_INSTALLED" </dev/null >/dev/null 2>&1; then
+    problem "$MAC_INSTALLED doesn't verify, so it wasn't shared"
+    note "Mac: NOT shared in iCloud Drive (the installed app doesn't verify)"
+    result share failed "$head" "the installed app doesn't verify"
+    return 1
+  fi
+  MAC_OK=1
+  share_mac
+}
+
 share_mac() {
   local head sha12 subject f zip="$LOGDIR/share.zip" manifest="$LOGDIR/share.json" slog="$LOGDIR/mac-share.log"
   step "Mac: sharing this build in iCloud Drive"
@@ -1093,7 +1150,7 @@ main() {
       --no-launch) LAUNCH_IPHONE=0 ;;
       --xcode-signing) XCODE_SIGNING=1 ;;
       mac) DO_MAC=1 ;;
-      share) DO_MAC=1; DO_SHARE=1 ;;
+      share) DO_SHARE=1 ;;
       mac-shared) DO_MAC_SHARED=1 ;;
       iphone | iphones) DO_IPHONE=1 ;;
       -h | --help) usage; return 0 ;;
@@ -1109,7 +1166,7 @@ main() {
     usage
     return 2
   fi
-  if [ "$DO_MAC" -eq 0 ] && [ "$DO_IPHONE" -eq 0 ] && [ "$DO_MAC_SHARED" -eq 0 ]; then
+  if [ "$DO_MAC" -eq 0 ] && [ "$DO_IPHONE" -eq 0 ] && [ "$DO_MAC_SHARED" -eq 0 ] && [ "$DO_SHARE" -eq 0 ]; then
     DO_MAC=1
   fi
   if [ -n "$EXPECT" ]; then
@@ -1220,13 +1277,21 @@ main() {
       problem "couldn't run the updated scripts/deploy.sh; run it again"
       nothing_built
     elif [ "$DO_MAC" -eq 0 ] && [ "$DO_IPHONE" -eq 0 ]; then
-      deploy_mac_shared   # nothing to build here, so no xcodegen
+      # Nothing to build here, so no xcodegen.
+      if [ "$DO_MAC_SHARED" -eq 1 ]; then
+        deploy_mac_shared
+      fi
+      if [ "$DO_SHARE" -eq 1 ]; then
+        share_installed
+      fi
     elif generate_project; then
       if [ "$DO_MAC" -eq 1 ]; then
         deploy_mac
         if [ "$DO_SHARE" -eq 1 ]; then
           share_mac
         fi
+      elif [ "$DO_SHARE" -eq 1 ]; then
+        share_installed
       fi
       if [ "$DO_MAC_SHARED" -eq 1 ]; then
         deploy_mac_shared

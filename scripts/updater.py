@@ -66,7 +66,9 @@ DEFAULT_INTERVAL = 300
 BACKOFF = (15 * 60, 30 * 60, 60 * 60, 2 * 3600, 4 * 3600, 8 * 3600)   # after the 1st, 2nd, ... failure
 UNREACHABLE_RETRY = 10 * 60
 COURTESY_IDLE = 120          # seconds without input before the app counts as not in use
-COURTESY_CAP = 30 * 60       # never postponed longer than this after first seeing the release
+COURTESY_RUNS = 6             # checks in a row the Mac app is left alone while in use (~30 minutes awake)
+COURTESY_WAIT = 10 * 60       # how long deploy.sh may wait, just before quitting the app, for it to be put down
+REQUEST_FRESH = 15 * 60       # a Check for Updates Now press counts for this long
 FALLBACK_AFTER = 30 * 60     # a follower with --build-fallback builds when no shared build came by then
 LOW_BATTERY = 30             # percent
 GIT_TIMEOUT = 60
@@ -347,6 +349,7 @@ def paths(env):
         "state": os.path.join(support, "state.json"),
         "lock": os.path.join(support, "updater.lock"),
         "results": os.path.join(support, "results.tsv"),
+        "request": os.path.join(support, "check-now"),   # Check for Updates Now (the Mac app): no courtesy wait
         "builds": os.path.join(support, "builds"),
         "log": os.path.join(env.logs, "updater.log"),
         "launchd_log": os.path.join(env.logs, "updater-launchd.log"),
@@ -454,6 +457,13 @@ def agent_loaded(env):
 # ------------------------------------------------------------------------------------------------- state
 
 
+def unusable_share(detail):
+    """A mac-shared failure that waiting can't fix: the build is signed for another team or under another
+    certificate name (anything else, like a copy error, is tried again first)."""
+    text = (detail or "").lower()
+    return "can't be used" in text or "signed for team" in text or "but the installed app by" in text
+
+
 def blank_state():
     return {
         "format": 1,
@@ -467,6 +477,7 @@ def blank_state():
         "iphone_build": {"commit": None, "state": None, "detail": "", "attempts": 0, "next_try": None},
         # [{"udid", "name", "commit", "updated_at", "state", "detail", "next_try", "attempts", "retry"}]
         "iphones": [],
+        "busy_runs": 0,   # checks in a row the Mac app was in use
         "last_check": None,
         "last_error": None,
     }
@@ -511,6 +522,8 @@ class Updater(object):
         self.now = env.now()
         self._battery = None
         self._in_use = None
+        self._requested = None
+        self._waited_enough = False   # in use for COURTESY_RUNS checks in a row: no more waiting this run
 
     # ---------------------------------------------------------------- bookkeeping
 
@@ -705,21 +718,44 @@ class Updater(object):
                 self.log("on battery under %d%%: no builds now" % LOW_BATTERY)
         return self._battery
 
+    def requested_now(self):
+        """Someone pressed Check for Updates Now in the Mac app in the last 15 minutes."""
+        if self._requested is None:
+            try:
+                age = self.now.timestamp() - os.path.getmtime(self.files["request"])
+                self._requested = -60 < age < REQUEST_FRESH
+            except OSError:
+                self._requested = False
+        return self._requested
+
     def courtesy_deadline(self):
-        seen = parse_iso((self.state.get("release") or {}).get("seen_at")) or self.now
-        return seen + timedelta(seconds=COURTESY_CAP)
+        """How long deploy.sh may wait, just before it quits the Mac app, for nobody to be using it."""
+        if self.requested_now() or self._waited_enough:
+            return None
+        return self.now + timedelta(seconds=COURTESY_WAIT)
 
     def postponed_for_use(self):
-        """Someone is using the Mac app, and it's less than 30 minutes since this Mac first saw the release."""
-        deadline = self.courtesy_deadline()
-        if self.now >= deadline:
+        """Someone is using the Mac app: left alone for up to 6 checks in a row (counted while this Mac is awake, so
+        sleep doesn't use them up), and not at all when they pressed Check for Updates Now."""
+        st = self.state
+        if self.requested_now():
+            st["busy_runs"] = 0
             return False
         if self._in_use is None:
             self._in_use = app_in_use(self.env)
-        if self._in_use:
-            self.log("Woodruff Family is in use: not replacing it yet (at the latest at %s)" % iso(deadline))
-            self.set_mac("postponed", "Waiting until Woodruff Family isn't in use (by %s)" % clock(deadline))
-        return self._in_use
+        if not self._in_use:
+            st["busy_runs"] = 0
+            return False
+        runs = int(st.get("busy_runs") or 0) + 1
+        if runs > COURTESY_RUNS:
+            st["busy_runs"] = 0
+            self._waited_enough = True
+            self.log("Woodruff Family has been in use for %d checks in a row: updating anyway" % COURTESY_RUNS)
+            return False
+        st["busy_runs"] = runs
+        self.log("Woodruff Family is in use: not replacing it yet (%d of %d)" % (runs, COURTESY_RUNS))
+        self.set_mac("postponed", "Waiting until Woodruff Family isn't in use")
+        return True
 
     def battery_hold(self):
         if self.battery_low():
@@ -736,7 +772,7 @@ class Updater(object):
         with open(results, "w"):
             pass
         log = self.new_deploy_log()
-        extra = {}
+        extra = {"WOODRUFF_DEPLOY_BACKGROUND": "1"}   # reopen the app without bringing it to the front
         if idle_until is not None and idle_until > self.now:
             extra["WOODRUFF_DEPLOY_IDLE_UNTIL"] = str(int(idle_until.timestamp()))
         argv = [self.deploy_sh] + list(args) + ["--results", results]
@@ -1018,7 +1054,10 @@ class Updater(object):
         if mac_ok:
             self.set_mac("current", "Up to date")
         if not (mac_ok and share_ok):
-            if not (due(mac, now) and due(share, now)):
+            if mac_ok:
+                if due(share, now):
+                    self.hub_share(release)   # only the iCloud copy is missing: no rebuild, the app isn't quit
+            elif not due(mac, now):
                 pass   # its failure detail stays, with the next try
             elif self.battery_hold() or self.postponed_for_use():
                 pass
@@ -1051,6 +1090,15 @@ class Updater(object):
             self.mac_installed(release, mac, row["detail"])
         else:
             self.mac_failed(release, mac, row["detail"] if row else self.stopped(status, log))
+        self.record_share(release, rows, status, log)
+        if with_iphone:
+            self.apply_iphones(release, rows, status, log)
+        self.save(True)
+        return with_iphone
+
+    def record_share(self, release, rows, status, log):
+        """deploy.sh's share result."""
+        share = self.state["share"]
         row = self.row(rows, "share")
         if row and row["status"] == "ok":
             share.update(commit=release, state="ok", detail="Shared in iCloud Drive.", attempts=0, next_try=None)
@@ -1062,10 +1110,13 @@ class Updater(object):
                          next_try=iso(when), detail="%s. Next try at %s." % (sentence(detail).rstrip("."), clock(when)))
             self.log("share: %s (next at %s): %s" % (row["status"] if row else "no result", iso(when),
                                                      one_line(detail, 300)))
-        if with_iphone:
-            self.apply_iphones(release, rows, status, log)
+
+    def hub_share(self, release):
+        """Shares the Mac app installed here (it's this release's) without building it again."""
         self.save(True)
-        return with_iphone
+        status, rows, log = self.deploy(["--branch", self.branch, "--expect", release, "share"])
+        self.record_share(release, rows, status, log)
+        self.save(True)
 
     def follower(self, release):
         st, now = self.state, self.now
@@ -1097,7 +1148,8 @@ class Updater(object):
         if not self.fallback:
             return
         seen = parse_iso((st.get("release") or {}).get("seen_at")) or now
-        if int(shared.get("attempts") or 0) > 0:
+        attempts = int(shared.get("attempts") or 0)
+        if attempts >= 3 or (attempts > 0 and unusable_share(shared.get("detail"))):
             why = "the shared build can't be used"
         elif self.now >= seen + timedelta(seconds=FALLBACK_AFTER):
             why = "no shared build arrived within %d minutes" % (FALLBACK_AFTER // 60)
@@ -1109,7 +1161,8 @@ class Updater(object):
         self.set_mac("updating", "Building %s on this Mac (%s)" % (self.build_words(), why))
         self.log("Mac: building here: %s" % why)
         self.save(True)
-        status, rows, log = self.deploy(["--branch", self.branch, "--expect", release, "mac"],
+        # Shared too, so Mac Studio 2 isn't left waiting when the Mac Studio can't make one.
+        status, rows, log = self.deploy(["--branch", self.branch, "--expect", release, "mac", "share"],
                                         idle_until=self.courtesy_deadline())
         self.refresh_mac()
         row = self.row(rows, "mac")
@@ -1152,6 +1205,11 @@ class Updater(object):
         else:
             self.follower(release)
         self.prune_builds(release)
+        if self.requested_now():
+            try:
+                os.remove(self.files["request"])
+            except OSError:
+                pass
         return self.finish()
 
     def finish(self):

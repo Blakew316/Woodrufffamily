@@ -43,6 +43,8 @@ final class UpdaterStatus {
     private static var home: URL { FileManager.default.homeDirectoryForCurrentUser }
     static var plistURL: URL { home.appendingPathComponent("Library/LaunchAgents/\(label).plist") }
     static var statusURL: URL { home.appendingPathComponent("Library/Application Support/Woodruff Family/Updater/status.json") }
+    /// Touched by Check for Updates Now: the updater then installs at once instead of waiting until the app isn't in use.
+    static var requestURL: URL { home.appendingPathComponent("Library/Application Support/Woodruff Family/Updater/check-now") }
 
     /// Reads status.json, and whether the LaunchAgent is there, again. A missing file means there's nothing to show;
     /// one that can't be read or decoded (it's being written at that moment) keeps what was read last. Only what
@@ -100,6 +102,8 @@ final class UpdaterStatus {
         requestedAt = asked
         startProblem = nil
         if !checking { checking = true }
+        // Someone asked: the updater installs now, even though the app is in use (it's the one asking).
+        try? Data().write(to: Self.requestURL)
         let target = "gui/\(getuid())/\(Self.label)"
         Task.detached(priority: .userInitiated) { [weak self] in
             let problem = UpdaterStatus.kickstart(target)
@@ -186,6 +190,8 @@ final class UpdaterStatus {
         if let startProblem { return startProblem }
         guard isSetUp, let s = snapshot else { return nil }
         if s.mac?.state == "failed" { return nonEmpty(s.mac?.detail) ?? nonEmpty(s.lastError) }
+        // The last check itself failed (no internet, GitHub unreachable): "Up to date" can't be trusted, so say why.
+        if let error = nonEmpty(s.lastError) { return "Couldn’t check for a new version: \(error)" }
         if s.role == "hub", s.share?.state == "failed" {
             return "Couldn’t share this build with the other Macs" + (nonEmpty(s.share?.detail).map { ": \($0)" } ?? ".")
         }
@@ -366,7 +372,7 @@ extension UpdaterStatus {
             switch state {
             case "current"?: return "Up to date"
             case "unreachable"?: return "Waiting for it to be on Wi‑Fi"
-            case "pending"?: return "Installing…"
+            case "pending"?: return (detail ?? "").hasPrefix("Installing") ? "Installing…" : "Waiting to install"
             case "failed"?: return "Couldn’t install"
             case let other?: return spoken(other)
             case nil: return nil

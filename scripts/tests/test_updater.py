@@ -426,8 +426,9 @@ class Hub(UpdaterTest):
         self.assertEqual(call["cwd"], self.env.repo)
         self.assertEqual(call["timeout"], 3 * 3600)
         self.assertRegex(call["output"], re.escape(self.env.logs) + r"/deploy-20261104T120000Z\.log$")
-        # until 30 minutes after it first saw the release, deploy.sh waits while the app is in use before quitting it
-        self.assertEqual(call["env"]["WOODRUFF_DEPLOY_IDLE_UNTIL"], str(int((T0 + timedelta(minutes=30)).timestamp())))
+        # deploy.sh may wait up to 10 minutes, just before quitting the app, for it not to be in use
+        self.assertEqual(call["env"]["WOODRUFF_DEPLOY_IDLE_UNTIL"], str(int((T0 + timedelta(minutes=10)).timestamp())))
+        self.assertEqual(call["env"]["WOODRUFF_DEPLOY_BACKGROUND"], "1")
         self.assertEqual(doc["release"], {"commit": NEW, "build": 1234, "subject": "Pictures load once",
                                           "seen_at": self.at(0)})
         self.assertEqual(doc["mac"]["state"], "current")
@@ -483,12 +484,12 @@ class Hub(UpdaterTest):
         self.assertEqual((p3["state"], p3["name"]), ("failed", "Old iPad"))
         self.assertEqual(p3["detail"], "Not installed, the provisioning profiles don't list it.")
         self.assertIsNone(p3["next_try"])
-        # The share is tried again (with the Mac app) after 15 minutes; until then nothing is built.
+        # Only the share is tried again after 15 minutes, of the app already installed: nothing is rebuilt.
         self.env.deploy = all_ok
         self.run_once(10)
         self.assertEqual(len(self.env.deploys), 1)
         doc = self.run_once(15)
-        self.assertEqual(self.env.deploys[-1], self.hub_args(iphone=False))
+        self.assertEqual(self.env.deploys[-1], self.deploy_args("--branch", "release", "--expect", NEW, "share"))
         self.assertEqual(doc["share"]["state"], "ok")
         # The iPad the profiles don't list isn't tried again for this release.
         self.assertEqual(self.phone(doc, P3)["state"], "failed")
@@ -684,7 +685,7 @@ class Follower(UpdaterTest):
         return self.deploy_args("--branch", "release", "--expect", commit, "mac-shared", "--wait", "0")
 
     def build_args(self, commit=NEW):
-        return self.deploy_args("--branch", "release", "--expect", commit, "mac")
+        return self.deploy_args("--branch", "release", "--expect", commit, "mac", "share")
 
     def test_installs_the_shared_build(self):
         self.configure("follower")
@@ -776,21 +777,45 @@ class Follower(UpdaterTest):
         builds = [d for d in self.env.deploys if d == self.build_args()]
         self.assertEqual(len(builds), 2)
 
-    def test_courtesy_postpones_for_at_most_30_minutes(self):
+    def test_courtesy_postpones_for_at_most_6_checks_in_a_row(self):
         self.configure("follower")
         self.env.install_mac(OLD)
         self.busy(idle_seconds=10)
-        for minute in (0, 15, 29):
+        for minute in (0, 5, 10, 15, 20, 25):
             doc = self.run_once(minute)
             self.assertEqual(doc["mac"]["state"], "postponed")
-            self.assertEqual(doc["mac"]["detail"], "Waiting until Woodruff Family isn't in use (by %s)."
-                             % updater.clock(T0 + timedelta(minutes=30)))
+            self.assertEqual(doc["mac"]["detail"], "Waiting until Woodruff Family isn't in use.")
         self.assertEqual(self.env.deploys, [])
-        doc = self.run_once(30)   # still in use, but it's been 30 minutes
+        doc = self.run_once(30)   # still in use, but that was the 7th check in a row: no more waiting
         self.assertEqual(self.env.deploys, [self.shared_args()])
         call = [c for c in self.env.calls if c["argv"][0] == self.deploy_sh][0]
         self.assertNotIn("WOODRUFF_DEPLOY_IDLE_UNTIL", call["env"])
         self.assertEqual(doc["mac"]["state"], "current")
+
+    def test_courtesy_counts_checks_not_time_asleep(self):
+        self.configure("follower")
+        self.env.install_mac(OLD)
+        self.busy(idle_seconds=10)
+        self.run_once(0)
+        doc = self.run_once(600)   # ten hours later (asleep in between): only its second check while in use
+        self.assertEqual(doc["mac"]["state"], "postponed")
+        self.assertEqual(self.env.deploys, [])
+
+    def test_check_now_skips_the_courtesy_wait(self):
+        self.configure("follower")
+        self.env.install_mac(OLD)
+        self.busy(idle_seconds=10)
+        request = updater.paths(self.env)["request"]
+        os.makedirs(os.path.dirname(request), exist_ok=True)
+        with open(request, "w"):
+            pass
+        os.utime(request, (T0.timestamp(), T0.timestamp()))
+        doc = self.run_once(0)
+        self.assertEqual(self.env.deploys, [self.shared_args()])
+        call = [c for c in self.env.calls if c["argv"][0] == self.deploy_sh][0]
+        self.assertNotIn("WOODRUFF_DEPLOY_IDLE_UNTIL", call["env"])
+        self.assertEqual(doc["mac"]["state"], "current")
+        self.assertFalse(os.path.exists(request))
 
     def test_idle_or_unknown_isnt_in_use(self):
         self.configure("follower")
