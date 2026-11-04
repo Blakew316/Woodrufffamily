@@ -170,7 +170,7 @@ struct SettingsView: View {
         .refreshable { await hub.load(fleet.hubClient()); await fleet.refresh() }
     }
 
-    private var notificationsSummary: String { fleet.phone.alerts || notifyFleet ? "On" : "Off" }
+    private var notificationsSummary: String { notifyFleet ? "On" : "Off" }
 
     /// How many of the TVs' accounts are connected: Google Drive, movie posters, the Nest cameras, mail.
     private var connectionsSummary: String? {
@@ -213,8 +213,6 @@ struct PhoneSettingsView: View {
     @Environment(Fleet.self) private var fleet
     /// The TVs' settings (their side of the cameras' alerts).
     var hub = HubSettings.shared
-    @State private var topic: String?
-    @State private var telling = false
     // Read and written through UserDefaults, so a change synced from another device shows here at once. (The Mac's
     // click sound for the remote's keys is in General.)
     @AppStorage("liveActivity") private var liveActivity = true
@@ -227,23 +225,12 @@ struct PhoneSettingsView: View {
     var body: some View {
         Form {
             Section {
-                Toggle(isOn: Binding(get: { fleet.phone.alerts }, set: { setAlerts($0) })) {
-                    HStack {
-                        Text("Lock-Screen Alerts")
-                        if telling { Spacer(); ProgressView().controlSize(.small) }
-                    }
-                }
-                .disabled(telling)
-                if fleet.phone.alerts, let topic {
-                    LabeledContent("ntfy topic", value: topic)
-                    Button("Copy Topic") { copyToClipboard(topic) }
-                }
                 #if os(iOS)
                 Toggle("Now Playing on Lock Screen", isOn: $liveActivity)
                 #endif
                 Toggle("TV Alerts", isOn: $notifyFleet)
             } footer: {
-                Text("Lock-screen alerts reach this device through the free ntfy app even when Woodruff is closed. TV alerts tell you when a TV goes off or needs attention.")
+                Text("TV alerts tell you when a TV goes off or needs attention.")
             }
             // The cameras' alerts in one place: what pops up on every TV (kept on the TVs: the same switches as
             // Accounts → Nest Cameras), and what this device shows (as in Smart Home → Cameras, where it's connected).
@@ -296,7 +283,7 @@ struct PhoneSettingsView: View {
         .onChange(of: liveActivity) { _, _ in LiveActivitySync.shared.sync(fleet) }
         #endif
         .onChange(of: notifyFleet) { _, on in if on { Notifier.requestPermission() } }
-        .task { await loadTopic() }
+        .task { await retireNtfyAlerts() }
         // Opened before Settings had read the TVs' settings: read them (their camera alerts show once they're in).
         .task { await hub.loadIfNeeded(fleet) }
     }
@@ -317,37 +304,13 @@ struct PhoneSettingsView: View {
         return on.count == alerts.count ? "All" : on.joined(separator: ", ")
     }
 
-    /// The ntfy topic the TVs use for this device (asked again each time the page opens).
-    private func loadTopic() async {
+    /// Alerts through the ntfy app are gone (the device's own notifications cover them): a device that still had
+    /// them on tells the TVs to stop sending them there.
+    private func retireNtfyAlerts() async {
         guard fleet.phone.alerts else { return }
+        fleet.phone.alerts = false
         for h in fleet.hubs {
-            if let r = try? await TVClient(hub: h, routeID: "this").hello(fleet.phone) {
-                if let t = r.phone.topic { topic = t }
-                return
-            }
-        }
-    }
-
-    /// Tells every paired TV; says so when none of them took it (the switch goes back to how it was).
-    private func setAlerts(_ on: Bool) {
-        let was = fleet.phone.alerts
-        fleet.phone.alerts = on
-        telling = true
-        Task {
-            var told = 0
-            var problem: String?
-            for h in fleet.hubs {
-                do {
-                    let r = try await TVClient(hub: h, routeID: "this").hello(fleet.phone, alerts: on)
-                    told += 1
-                    if let t = r.phone.topic { topic = t }
-                } catch { problem = problem ?? "\(h.name): \(error.localizedDescription)" }
-            }
-            telling = false
-            if told == 0 && !fleet.hubs.isEmpty {
-                fleet.phone.alerts = was
-                fleet.say("Couldn’t Change Lock-Screen Alerts", problem ?? "No TV answered.")
-            }
+            _ = try? await TVClient(hub: h, routeID: "this").hello(fleet.phone, alerts: false)
         }
     }
 }
