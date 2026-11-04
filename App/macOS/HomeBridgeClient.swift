@@ -3,8 +3,9 @@ import SwiftUI
 import WoodruffKit
 
 /// Woodruff on the Mac reaching Apple Home through Woodruff Home Helper (see HomeBridge). It starts the helper
-/// (hidden), takes what's in Apple Home every second (a 204 when nothing changed), puts it where the iPhone app's
-/// Apple Home code puts it (so tiles, the thermostat pill and lights work unchanged), and sends changes back.
+/// (hidden), takes what's in Apple Home every second while Woodruff is in use (a 204 when nothing changed; every 5
+/// seconds while its window is hidden), puts it where the iPhone app's Apple Home code puts it (so tiles, the
+/// thermostat pill and lights work unchanged), and sends changes back.
 @Observable @MainActor
 final class HomeBridgeClient {
     static let shared = HomeBridgeClient()
@@ -23,6 +24,12 @@ final class HomeBridgeClient {
     @ObservationIgnored private var hash = ""
     @ObservationIgnored private var misses = 0
     @ObservationIgnored private var launchedAt = Date.distantPast
+    /// The helper's port and secret as last read from its file: kept until it stops answering (it may have started
+    /// again with new ones), instead of read and decoded again every second.
+    @ObservationIgnored private var bridgeInfo: HomeBridge.Info?
+    /// Where the helper was found, and when it was looked for (asking the Mac takes a moment; it's asked after every
+    /// unanswered look while the helper isn't running).
+    @ObservationIgnored private var helperFound: (url: URL?, at: Date)?
     @ObservationIgnored private let session: URLSession = {
         let c = URLSessionConfiguration.ephemeral
         c.timeoutIntervalForRequest = 3
@@ -30,11 +37,22 @@ final class HomeBridgeClient {
         return URLSession(configuration: c)
     }()
 
-    /// The installed helper, if there is one.
+    /// The installed helper, if there is one (one found is looked for again at most once a minute; while there's none,
+    /// it's looked for at every look, so one just installed is started at the next).
     var helperURL: URL? {
-        if let u = NSWorkspace.shared.urlForApplication(withBundleIdentifier: HomeBridge.helperBundleID) { return u }
-        let fixed = URL(fileURLWithPath: "/Applications/\(HomeBridge.helperName).app")
-        return FileManager.default.fileExists(atPath: fixed.path) ? fixed : nil
+        if let found = helperFound, let url = found.url, Date().timeIntervalSince(found.at) < 60 { return url }
+        return lookForHelper()
+    }
+
+    /// Asks the Mac where the helper is now.
+    private func lookForHelper() -> URL? {
+        var url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: HomeBridge.helperBundleID)
+        if url == nil {
+            let fixed = URL(fileURLWithPath: "/Applications/\(HomeBridge.helperName).app")
+            if FileManager.default.fileExists(atPath: fixed.path) { url = fixed }
+        }
+        helperFound = (url, Date())
+        return url
     }
 
     func start() {
@@ -42,14 +60,23 @@ final class HomeBridgeClient {
         loop = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.poll()
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                let wait = self?.pollEvery ?? 1
+                try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
             }
         }
     }
 
+    /// Seconds between looks: every second while Woodruff is in use, every 5 while it isn't (its window hidden), and
+    /// every 30 while the helper isn't installed.
+    private var pollEvery: TimeInterval {
+        if status == .notInstalled { return 30 }
+        return Fleet.shared.isActive ? 1 : 5
+    }
+
     /// Opens the helper's window (to allow Apple Home access when the Mac asks, or to see what it's doing).
     func openHelper() {
-        guard let url = helperURL else { status = .notInstalled; return }
+        // Looked for afresh: it may have been installed a moment ago.
+        guard let url = lookForHelper() else { status = .notInstalled; return }
         let cfg = NSWorkspace.OpenConfiguration()
         cfg.activates = true
         NSWorkspace.shared.openApplication(at: url, configuration: cfg) { _, _ in }
@@ -76,8 +103,15 @@ final class HomeBridgeClient {
         return try? JSONDecoder().decode(HomeBridge.Info.self, from: d)
     }
 
+    /// The helper's details as kept (`bridgeInfo`), read from its file when there are none.
+    private func currentInfo() -> HomeBridge.Info? {
+        if let kept = bridgeInfo { return kept }
+        bridgeInfo = Self.info()
+        return bridgeInfo
+    }
+
     private func poll() async {
-        guard let info = Self.info(), let url = info.url("/state?have=\(hash)") else {
+        guard let info = currentInfo(), let url = info.url("/state?have=\(hash)") else {
             lost()
             launchQuietly()
             return
@@ -89,10 +123,14 @@ final class HomeBridgeClient {
             let code = (response as? HTTPURLResponse)?.statusCode ?? 0
             misses = 0
             if code == 204 { return }
+            // Turned away (a helper started again has a new secret): its file is read again next time.
+            if code != 200 { bridgeInfo = nil }
             guard code == 200, let state = try? JSONDecoder().decode(HomeBridge.State.self, from: data) else { return }
             hash = state.hash
             apply(state)
         } catch {
+            // Its file is read again next time (the helper may have started again elsewhere).
+            bridgeInfo = nil
             // Left-over details from a helper that has quit: start it again.
             misses += 1
             if misses >= 3 {
@@ -119,7 +157,8 @@ final class HomeBridgeClient {
     private func lost() {
         let store = AccessoryStore.shared
         store.homeControl = nil
-        SmartHome.shared.homeControl = nil
+        // Only when set (this runs on every unanswered look, and each write tells everything that shows the lights).
+        if SmartHome.shared.homeControl != nil { SmartHome.shared.homeControl = nil }
         let dimmed = store.fromHome.map { d -> HomeDevice in
             var d = d
             d.reachable = false
@@ -158,7 +197,7 @@ final class HomeBridgeClient {
     }
 
     private func post<T: Encodable>(_ path: String, _ body: T) async -> Bool {
-        guard let info = Self.info(), let url = info.url(path), let data = try? JSONEncoder().encode(body) else { return false }
+        guard let info = currentInfo(), let url = info.url(path), let data = try? JSONEncoder().encode(body) else { return false }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.httpBody = data
@@ -166,8 +205,11 @@ final class HomeBridgeClient {
         req.setValue(info.token, forHTTPHeaderField: HomeBridge.tokenHeader)
         do {
             let (_, response) = try await session.data(for: req)
-            return (response as? HTTPURLResponse)?.statusCode == 200
+            let ok = (response as? HTTPURLResponse)?.statusCode == 200
+            if !ok { bridgeInfo = nil }   // read its file again next time
+            return ok
         } catch {
+            bridgeInfo = nil
             return false
         }
     }

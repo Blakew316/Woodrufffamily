@@ -87,9 +87,11 @@ public struct Banner: Identifiable, Hashable, Sendable {
 public final class Fleet {
     public static let shared = Fleet()
 
-    public private(set) var hubs: [Hub] = []
-    public private(set) var tvs: [FleetTV] = []
-    public var extras: [String: TVExtras] = [:] { didSet { Saved.save("extras", extras) } }
+    public private(set) var hubs: [Hub] = [] { didSet { updateLibraryHub() } }
+    public private(set) var tvs: [FleetTV] = [] { didSet { noteTVs() } }
+    /// Saved only when something in it changed (it's set again with what it already holds now and then: a TV's health
+    /// report saying the same platform, say). Every save is noticed by the settings sync as a change to look at.
+    public var extras: [String: TVExtras] = [:] { didSet { if extras != oldValue { Saved.save("extras", extras) } } }
 
     /// Reads names, TV details and hidden alerts again (after another of the family's devices changed them).
     public func reloadSynced() {
@@ -100,13 +102,20 @@ public final class Fleet {
         Task { await refresh() }
     }
     /// The TV the remote, Send and Memories act on.
-    public var selectedID: String? { didSet { UserDefaults.standard.set(selectedID, forKey: "selectedTV") } }
+    public var selectedID: String? {
+        didSet {
+            UserDefaults.standard.set(selectedID, forKey: "selectedTV")
+            updateLibraryHub()
+        }
+    }
     public var banner: Banner?
     /// The remote sends to every TV that's on.
     public var remoteAll = false
     /// Mac: the remote's sidebar is out.
     public var remotePanel = false
-    public private(set) var refreshedAt: Date?
+    /// When the latest answer arrived. Not observed: it changes with every answer, and what shows it reads it inside a
+    /// `TimelineView` (each tick reads it afresh) or outside any view.
+    @ObservationIgnored public private(set) var refreshedAt: Date?
     public private(set) var refreshing = false
     public private(set) var latest: [TVPlatform: Release] = [:]
     public private(set) var releaseErrors: [TVPlatform: String] = [:]
@@ -190,12 +199,18 @@ public final class Fleet {
     }
 
     private var active = true
+    /// Whether the app is in use (on the Mac: its window can be seen): the house's speakers and lights, the sync and
+    /// Apple Home on the Mac are asked less often while it isn't.
+    public var isActive: Bool { active }
     private var loop: Task<Void, Never>?
     @ObservationIgnored private var inboxLoop: Task<Void, Never>?
     @ObservationIgnored private var slowLoop: Task<Void, Never>?
-    private var lgRemotes: [String: LGRemote] = [:]
+    /// Not observed: `lg(for:)` is asked while pages are drawn, and makes or replaces these as it goes.
+    @ObservationIgnored private var lgRemotes: [String: LGRemote] = [:]
     /// The sign-in each LG connection was made with.
     @ObservationIgnored private var lgKeys: [String: String] = [:]
+    /// The `Keychain.generation` at which each TV's LG sign-in was last read (it's read again only after a write).
+    @ObservationIgnored private var lgKeysRead: [String: Int] = [:]
 
     // Each hub is asked on its own clock and its answer shows the moment it arrives (see `askDue` and `take`).
     /// Each hub's latest answer (none yet: still waiting for its first).
@@ -208,6 +223,8 @@ public final class Fleet {
     @ObservationIgnored private var relaySeen: [String: RelaySeen] = [:]
     /// Each TV's pause clock, by TV id (`FleetMerge.pause`).
     @ObservationIgnored private var pauseMarks: [String: PauseMark] = [:]
+    /// Each TV's `seen` as its hub's latest answer gave it, by TV id (the list keeps an older one while the TV is on).
+    @ObservationIgnored private var lastHeard: [String: Double] = [:]
     /// Until when what the hubs said before still counts as fresh: the app has just woken (back from the background, the
     /// Mac from sleep or a nap) and the hubs get a moment to answer, so a TV that's still playing never blinks off and on
     /// (`staleAfter`).
@@ -246,12 +263,14 @@ public final class Fleet {
             phone = PhoneIdentity(id: "demo-phone-0001", name: "Blake’s iPhone", alerts: true)
             selectedID = "tv-living"
             latest = Demo.releases
+            noteTVs()
             return
         }
         hubs = Fleet.loadPairings()
         extras = Saved.load("extras", as: [String: TVExtras].self) ?? [:]
         selectedID = UserDefaults.standard.string(forKey: "selectedTV")
         tvs = hubs.map { FleetTV(id: $0.id, name: $0.name, online: false, onScreen: false, playing: nil, version: nil, seen: nil, link: "ok", health: nil, hubID: $0.id, routeID: "this", platform: extras[$0.id]?.platform) }
+        noteTVs()
     }
 
     /// Pairings are kept in three places so no update, reinstall or re-signed build ever signs the family out:
@@ -324,15 +343,24 @@ public final class Fleet {
             }
         }
         // The slow things, apart so they never hold up the TVs: the library's pictures (every 2 minutes),
-        // releases (every 10) and looking for TVs across the Wi‑Fi (every 10).
+        // releases (every 10) and looking for TVs across the Wi‑Fi (every 10). At launch only the library: the
+        // releases follow half a minute in, and the Wi‑Fi search (hundreds of addresses) a minute in, and on the
+        // iPhone only while the app is in use, so opening the app asks the TVs first and little else. (The Mac looks
+        // with its windows hidden too: its menu bar, widgets and media keys follow the TVs then, and a TV that moved
+        // to another address without announcing it would stay "off" there until a window is shown.)
         slowLoop = Task { [weak self] in
             var tick = 0
             while !Task.isCancelled {
                 guard let self else { return }
                 if tick % 4 == 0 { await self.refreshLibrary() }
-                if tick % 20 == 0 { await self.checkReleases() }
-                let scanDue = self.lanScannedAt.map({ Date().timeIntervalSince($0) > 600 }) ?? true
-                if !Demo.isOn && scanDue { await self.scanNetwork() }
+                if tick % 20 == 1 { await self.checkReleases() }
+                let scanDue = self.lanScannedAt.map({ Date().timeIntervalSince($0) > 600 }) ?? (tick >= 2)
+                #if os(macOS)
+                let mayScan = true
+                #else
+                let mayScan = self.active
+                #endif
+                if !Demo.isOn && mayScan && scanDue { await self.scanNetwork() }
                 tick += 1
                 try? await Task.sleep(nanoseconds: 30_000_000_000)
             }
@@ -356,11 +384,20 @@ public final class Fleet {
     static let wakeGrace: TimeInterval = 2
 
     /// How old a hub's answer may be before what it says is playing isn't believed any more: a little over the time
-    /// a hub that has stopped answering takes to count as off while the app is in use, longer while it isn't (the
-    /// hubs are asked less often then). Any age just after waking (`wokeUntil`), until the hubs have had a moment.
+    /// a hub that has stopped answering takes to count as off while the app is in use, longer while an iPhone's isn't
+    /// (the hubs are asked only every 25 seconds then). Any age just after waking (`wokeUntil`), until the hubs have
+    /// had a moment.
     private var staleAfter: TimeInterval { Date() < wokeUntil ? .infinity : freshFor }
     /// `staleAfter` waking aside: also how long a hub may keep passing on the same `seen` for a TV (`staleRelays`).
-    private var freshFor: TimeInterval { active ? 20 : 75 }
+    /// Always 20 on the Mac: with its windows hidden it still asks every 4 seconds (`askDue`), and its menu bar, Mini
+    /// Player, Control Center and widgets keep showing what's playing, so a title that has stopped goes as quickly.
+    private var freshFor: TimeInterval {
+        #if os(macOS)
+        return 20
+        #else
+        return active ? 20 : 75
+        #endif
+    }
 
     // MARK: Pairing
 
@@ -635,6 +672,17 @@ public final class Fleet {
         var marks: [String: PauseMark] = [:]
         for i in all.indices {
             let id = all[i].id
+            // When its hub last heard from it, as that hub's latest answer said. A TV whose hub has stopped answering is
+            // listed as it was kept (below: up to `FleetMerge.seenStep` behind), so once it's off it says when it was
+            // really last heard instead.
+            if answers[all[i].hubID]?.isAnswered == true {
+                if let heard = all[i].seen { lastHeard[id] = heard }
+            } else if !all[i].online, let heard = lastHeard[id] {
+                all[i].seen = heard
+            }
+            // What a hub last heard from a TV moves with nearly every answer, and is only shown once the TV is off: kept
+            // while it stays on (`FleetMerge.steadySeen`), so the list isn't redrawn for it every second or two.
+            all[i].seen = FleetMerge.steadySeen(all[i].seen, online: all[i].online, before: before[id])
             if extras[id]?.platform == nil, let p = guessPlatform(all[i]) {
                 extras[id, default: TVExtras()].platform = p
                 all[i].platform = p
@@ -792,12 +840,37 @@ public final class Fleet {
     // MARK: Artwork for what's playing
 
     /// The hub's Watch home, kept to put pictures on what each TV is playing.
-    public private(set) var library: WatchHome?
+    public private(set) var library: WatchHome? {
+        // What was looked up in the one before no longer holds.
+        didSet {
+            artIndex = nil
+            libraryArt = [:]
+        }
+    }
+    /// The library's lists arranged for looking titles up, made the first time they're needed after it changes.
+    @ObservationIgnored private var artIndex: ArtIndex?
+    /// What the library has for each title asked about ("key|title"), until the library changes: `artwork(for:)` runs
+    /// every time anything that shows a picture of what's playing is drawn.
+    @ObservationIgnored private var libraryArt: [String: ArtLookup] = [:]
+
+    /// The hub `library` came from (another TV's library may hold other titles than the remote's).
+    public private(set) var libraryFrom: String?
 
     public func refreshLibrary() async {
-        // Any TV that answers (the first may be off): the ones answering now first.
-        for hub in hubsAnsweringFirst() {
-            if let h = try? await TVClient(hub: hub, routeID: "this").watchHome() { library = h; return }
+        // Any TV that answers (the first may be off): the ones answering now first, and among them the hub
+        // `hubClient()` goes to, so the library kept is the one Watch shows.
+        var order = hubsAnsweringFirst()
+        if let id = libraryHubID, answers[id]?.isAnswered == true, let i = order.firstIndex(where: { $0.id == id }), i > 0 {
+            order.insert(order.remove(at: i), at: 0)
+        }
+        for hub in order {
+            if let h = try? await TVClient(hub: hub, routeID: "this").watchHome() {
+                // Asked again every couple of minutes: taken only when something in it changed, so nothing that shows it
+                // is redrawn (nor every title looked up again) for an answer that's the same.
+                if h != library { library = h }
+                if libraryFrom != hub.id { libraryFrom = hub.id }
+                return
+            }
         }
     }
 
@@ -835,40 +908,35 @@ public final class Fleet {
         // Only Woodruff's own player plays library titles: never guess a YouTube or Netflix title from the library.
         let ours = p.key?.hasPrefix("drive:") == true || (p.app ?? "").lowercased().contains("woodruff")
         guard ours else { return nil }
-        if let found = libraryArtwork(p) { return found }
+        // Both read every time, so whatever shows the picture is redrawn when either changes; the looking up in the
+        // library itself is done once per title (and again after the library changes).
+        let lib = library
+        let searched = searchedArt
+        let lookup = libraryLookup(p, in: lib)
+        if let found = lookup.artwork { return found }
         // Not in Home's short lists: search the whole library once and use what it finds.
-        let key = Self.simple(String(p.title.split(separator: "·").first ?? Substring(p.title)))
+        let key = lookup.searchKey
         guard !key.isEmpty else { return nil }
-        if let found = searchedArt[key] { return found }
+        if let found = searched[key] { return found }
         searchArt(p, key: key)
         return nil
     }
 
-    private func libraryArtwork(_ p: NowPlaying) -> NowPlayingArtwork? {
-        guard let lib = library else { return nil }
-        let titles = (lib.featured ?? []) + (lib.recent ?? []) + (lib.movies?.items ?? []) + (lib.shows?.items ?? [])
-        func title(_ id: String?) -> Title? { id.flatMap { id in titles.first { $0.id == id } } }
-        let cont = lib.continue ?? []
-        if let key = p.key, let c = cont.first(where: { $0.key == key }) {
-            let t = title(c.titleId)
-            return NowPlayingArtwork(poster: c.poster ?? t?.poster, backdrop: t?.backdrop, titleID: c.titleId)
+    /// What [lib] has for [p], remembered per title until the library changes, and the key to search for it by.
+    private func libraryLookup(_ p: NowPlaying, in lib: WatchHome?) -> ArtLookup {
+        let memo = (p.key ?? "") + "|" + p.title
+        if let kept = libraryArt[memo] { return kept }
+        var index = artIndex
+        if index == nil, let lib {
+            index = ArtIndex(lib)
+            artIndex = index
         }
-        if let key = p.key, key.hasPrefix("drive:"), let t = titles.first(where: { "drive:" + $0.id == key }) {
-            return NowPlayingArtwork(poster: t.poster, backdrop: t.backdrop, titleID: t.id)
-        }
-        let want = Self.simple(String(p.title.split(separator: "·").first ?? Substring(p.title)))
-        guard !want.isEmpty else { return nil }
-        if let c = cont.first(where: { Self.simple($0.name) == want || want.hasPrefix(Self.simple($0.name)) }) {
-            let t = title(c.titleId)
-            return NowPlayingArtwork(poster: c.poster ?? t?.poster, backdrop: t?.backdrop, titleID: c.titleId)
-        }
-        if let t = titles.first(where: { Self.simple($0.title) == want || want.hasPrefix(Self.simple($0.title)) }) {
-            return NowPlayingArtwork(poster: t.poster, backdrop: t.backdrop, titleID: t.id)
-        }
-        return nil
+        let found = ArtLookup(artwork: index?.artwork(for: p), searchKey: ArtIndex.wanted(p))
+        libraryArt[memo] = found
+        return found
     }
 
-    static func simple(_ s: String) -> String { s.lowercased().filter { $0.isLetter || $0.isNumber } }
+    nonisolated static func simple(_ s: String) -> String { s.lowercased().filter { $0.isLetter || $0.isNumber } }
 
     // MARK: Lookup
 
@@ -893,29 +961,62 @@ public final class Fleet {
     }
 
     /// A client for the selected TV's hub, for features that live on the hub (Memories, files, library, notes).
+    /// Without a TV it goes by `libraryHubID`, kept as the TVs change rather than worked out from them here, so a page
+    /// that only wants the hub (every picture from the library asks) isn't redrawn whenever any TV's state changes.
     public func hubClient(for tv: FleetTV? = nil) -> TVClient? {
-        let t = tv ?? selected
-        if let t, let direct = hubs.first(where: { $0.id == t.id }) { return TVClient(hub: direct, routeID: "this") }
-        if let t, let hub = hub(t.hubID) { return TVClient(hub: hub, routeID: "this") }
+        guard let t = tv else {
+            if let id = libraryHubID, let h = hub(id) { return TVClient(hub: h, routeID: "this") }
+            return hubs.first.map { TVClient(hub: $0, routeID: "this") }
+        }
+        if let direct = hubs.first(where: { $0.id == t.id }) { return TVClient(hub: direct, routeID: "this") }
+        if let hub = hub(t.hubID) { return TVClient(hub: hub, routeID: "this") }
         return hubs.first.map { TVClient(hub: $0, routeID: "this") }
+    }
+
+    /// The hub `hubClient()` goes to: the remote's TV itself when it's paired here, else the hub that links it, else the
+    /// first paired (the same one whether it's answering or not: Memories, files, Send and Settings act on it).
+    public private(set) var libraryHubID: String?
+
+    /// The paired and linked TVs' names, in the list's order (the Mac's TVs menu): kept apart from `tvs`, and changed
+    /// only when a name does, so the menu isn't rebuilt every time a TV's state changes.
+    public private(set) var pairedNames: [String] = []
+
+    /// Called whenever the TVs change.
+    private func noteTVs() {
+        let names = tvs.filter { !$0.isUnpaired }.map(\.name)
+        if names != pairedNames { pairedNames = names }
+        updateLibraryHub()
+    }
+
+    /// Called whenever the TVs, the remote's TV or the pairings change. Changes `libraryHubID` only when it's another hub.
+    private func updateLibraryHub() {
+        var id: String?
+        if let t = selected {
+            id = hubs.first(where: { $0.id == t.id })?.id ?? hubs.first(where: { $0.id == t.hubID })?.id
+        }
+        if id == nil { id = hubs.first?.id }
+        if id != libraryHubID { libraryHubID = id }
     }
 
     public var selectedClient: TVClient? { selected.flatMap(client(for:)) }
 
     // MARK: Health
 
+    /// Each value is set only when it's different, so a report that's the same as last time redraws nothing (and
+    /// saves nothing).
     public func loadHealth(_ tv: FleetTV) async {
         guard let c = client(for: tv) else { return }
         do {
             let r = try await c.health()
-            healthReports[tv.id] = r
-            healthErrors[tv.id] = nil
-            if let p = r.platform { extras[tv.id, default: TVExtras()].platform = p }
+            if healthReports[tv.id] != r { healthReports[tv.id] = r }
+            if healthErrors[tv.id] != nil { healthErrors[tv.id] = nil }
+            if let p = r.platform, extras[tv.id]?.platform != p { extras[tv.id, default: TVExtras()].platform = p }
         } catch let u as HealthUnavailable {
-            if let last = u.last { healthReports[tv.id] = last }
-            healthErrors[tv.id] = u.message
+            if let last = u.last, healthReports[tv.id] != last { healthReports[tv.id] = last }
+            if healthErrors[tv.id] != u.message { healthErrors[tv.id] = u.message }
         } catch {
-            healthErrors[tv.id] = error.localizedDescription
+            let message = error.localizedDescription
+            if healthErrors[tv.id] != message { healthErrors[tv.id] = message }
         }
     }
 
@@ -971,8 +1072,15 @@ public final class Fleet {
 
     public func lg(for tv: FleetTV) -> LGRemote? {
         guard let host = extras[tv.id]?.lgHost, !host.isEmpty else { return nil }
+        // Asked while pages are drawn: the sign-in is read again only after something was written to the Keychain.
+        let generation = Keychain.generation
+        if let r = lgRemotes[tv.id], r.host == host, lgKeysRead[tv.id] == generation { return r }
+        let read = Keychain.read("lg.\(tv.id)")
+        // Couldn't be read just now (a locked keychain): the connection there stays, not replaced by one without it.
+        if !read.ok, let r = lgRemotes[tv.id], r.host == host { return r }
+        lgKeysRead[tv.id] = read.ok ? generation : nil
         // The saved sign-in may have just arrived from another family device: connect afresh with it.
-        let key = Keychain.get("lg.\(tv.id)")
+        let key = read.value
         if let r = lgRemotes[tv.id], r.host == host, lgKeys[tv.id] == key { return r }
         if let old = lgRemotes[tv.id] { Task { await old.disconnect() } }
         let r = LGRemote(host: host, clientKey: key)
@@ -996,8 +1104,10 @@ public final class Fleet {
     public func forgetLG(_ tv: FleetTV) {
         extras[tv.id]?.lgHost = nil
         Keychain.set(nil, for: "lg.\(tv.id)")
-        Task { await lgRemotes[tv.id]?.disconnect() }
+        // The connection itself, taken now (the task runs after it's been let go of here).
+        if let old = lgRemotes[tv.id] { Task { await old.disconnect() } }
         lgRemotes[tv.id] = nil
+        lgKeysRead[tv.id] = nil
     }
 
     // MARK: Phone identity
@@ -1174,6 +1284,21 @@ enum FleetMerge {
         return a.id < b.id
     }
 
+    // MARK: When a TV was last heard
+
+    /// How much later (ms) a TV that stays on has to have been heard before its `seen` moves on.
+    static let seenStep: Double = 30_000
+
+    /// A TV's `seen` as the list keeps it: [new] (from the answer just merged), except for a TV that was on before
+    /// ([old]) and still is ([online]): then what was kept, until [new] is `seenStep` or more later. A hub passes on a
+    /// new `seen` for each linked TV with nearly every answer, while it only shows once the TV is off ("Seen 2 minutes
+    /// ago"), so following each one redrew everything that lists the TVs every second or two.
+    static func steadySeen(_ new: Double?, online: Bool, before old: FleetTV?) -> Double? {
+        guard online, let old, old.online, let kept = old.seen else { return new }
+        guard let new, new - kept >= seenStep else { return kept }
+        return new
+    }
+
     // MARK: TVs a hub passes on
 
     /// One TV as one hub passes it on ("hub|TV"): the same TV can be passed on by several hubs, each hearing from it
@@ -1275,6 +1400,58 @@ public struct NowPlayingArtwork: Hashable, Sendable {
     public var poster: String?
     public var backdrop: String?
     public var titleID: String?
+}
+
+/// The library's lists (Continue Watching, and Home's featured, recent, movies and shows) arranged for finding what a
+/// TV is playing in them: the same answers as looking through them in order, without doing that on every redraw.
+struct ArtIndex {
+    private var titlesByID: [String: Title] = [:]
+    private var continueByKey: [String: ContinueItem] = [:]
+    private var continueNames: [(name: String, item: ContinueItem)] = []
+    private var titleNames: [(name: String, title: Title)] = []
+
+    init(_ lib: WatchHome) {
+        let titles = (lib.featured ?? []) + (lib.recent ?? []) + (lib.movies?.items ?? []) + (lib.shows?.items ?? [])
+        // The first of each, as looking through the lists in order finds it.
+        for t in titles where titlesByID[t.id] == nil { titlesByID[t.id] = t }
+        let cont = lib.continue ?? []
+        for c in cont where continueByKey[c.key] == nil { continueByKey[c.key] = c }
+        continueNames = cont.map { (name: Fleet.simple($0.name), item: $0) }
+        titleNames = titles.map { (name: Fleet.simple($0.title), title: $0) }
+    }
+
+    /// [p]'s title as it's looked for by name: the part before any "·", only its letters and digits, lowercased.
+    static func wanted(_ p: NowPlaying) -> String {
+        Fleet.simple(String(p.title.split(separator: "·").first ?? Substring(p.title)))
+    }
+
+    /// By its Drive key (Continue Watching, then the lists), else by its name (the same order).
+    func artwork(for p: NowPlaying) -> NowPlayingArtwork? {
+        func title(_ id: String?) -> Title? { id.flatMap { titlesByID[$0] } }
+        if let key = p.key, let c = continueByKey[key] {
+            let t = title(c.titleId)
+            return NowPlayingArtwork(poster: c.poster ?? t?.poster, backdrop: t?.backdrop, titleID: c.titleId)
+        }
+        if let key = p.key, key.hasPrefix("drive:"), let t = titlesByID[String(key.dropFirst("drive:".count))] {
+            return NowPlayingArtwork(poster: t.poster, backdrop: t.backdrop, titleID: t.id)
+        }
+        let want = Self.wanted(p)
+        guard !want.isEmpty else { return nil }
+        if let c = continueNames.first(where: { $0.name == want || want.hasPrefix($0.name) })?.item {
+            let t = title(c.titleId)
+            return NowPlayingArtwork(poster: c.poster ?? t?.poster, backdrop: t?.backdrop, titleID: c.titleId)
+        }
+        if let t = titleNames.first(where: { $0.name == want || want.hasPrefix($0.name) })?.title {
+            return NowPlayingArtwork(poster: t.poster, backdrop: t.backdrop, titleID: t.id)
+        }
+        return nil
+    }
+}
+
+/// What the library has for one title, and the key to search the whole library for it by.
+struct ArtLookup {
+    var artwork: NowPlayingArtwork?
+    var searchKey: String
 }
 
 public enum FleetEvent: Sendable {

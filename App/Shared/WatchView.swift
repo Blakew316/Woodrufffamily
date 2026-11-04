@@ -17,16 +17,19 @@ struct WatchView: View {
 
     private var client: TVClient? { fleet.hubClient() }
 
-    /// What every TV is playing, and whether it plays: when it changes, Continue Watching has changed too.
-    private var playingKey: String {
-        fleet.tvs.map { "\($0.id)|\($0.playing?.key ?? $0.playing?.title ?? "")|\($0.playing?.isPlaying == true)" }.joined(separator: ";")
-    }
-
     var body: some View {
+        // Worked out once for the page: the tiles are handed their pictures' addresses, so none of them looks at the
+        // fleet (which would redraw every one whenever the TVs change).
+        let client = self.client
+        // Until this page's own answer arrives, the library the app already has (it keeps one for the pictures of
+        // what's playing): Watch opens with its shelves instead of placeholders. Only when it came from this page's
+        // TV: another TV's library may hold titles this one doesn't.
+        let kept = client.flatMap { c in fleet.libraryFrom == c.hub.id ? fleet.library : nil }
+        let shown = home ?? (error == nil ? kept : nil)
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 28) {
-                if let h = home {
-                    content(h)
+                if let h = shown {
+                    content(h, client)
                 } else if let error {
                     VStack(spacing: 14) {
                         EmptyState(symbol: "wifi.exclamationmark", title: "Can’t Load the Library", message: error)
@@ -76,33 +79,33 @@ struct WatchView: View {
         // Again from the start when the remote moves to a TV with another library.
         .task(id: client?.hub.id) { await loop() }
         // Something started, paused or stopped on a TV: Continue Watching follows (the TV saves where it got to).
-        .task(id: playingKey) {
-            guard home != nil else { return }
-            try? await Task.sleep(nanoseconds: 1_500_000_000)
-            guard !Task.isCancelled else { return }
-            await load()
+        .background {
+            PlayingWatcher {
+                guard home != nil else { return }
+                await load()
+            }
         }
         .onAppear { if UserDefaults.standard.string(forKey: "route") == "title" { openTitle = "t_backyard_science" } }
     }
 
-    @ViewBuilder private func content(_ h: WatchHome) -> some View {
+    @ViewBuilder private func content(_ h: WatchHome, _ client: TVClient?) -> some View {
         if h.state != "ready" && (h.featured ?? []).isEmpty && (h.continue ?? []).isEmpty {
             EmptyState(symbol: "film.stack", title: stateTitle(h.state), message: stateMessage(h.state, tv: h.tv)).padding(.top, 60)
         }
         if let featured = h.featured, !featured.isEmpty {
-            Billboard(titles: featured, page: $page)
+            Billboard(titles: featured, page: $page, client: client)
         }
         if let c = h.continue?.filter({ !removed.contains($0.key) }), !c.isEmpty {
-            ShelfRow("Continue Watching") { ForEach(c) { ContinueTile(item: $0) } }
+            ShelfRow("Continue Watching") { ForEach(c) { ContinueTile(item: $0, poster: client?.art($0.poster)) } }
         }
         if let r = h.recent, !r.isEmpty {
-            ShelfRow("Recently Added") { ForEach(r) { PosterTile(title: $0) } }
+            ShelfRow("Recently Added") { ForEach(r) { PosterTile(title: $0, poster: client?.art($0.poster)) } }
         }
         if let m = h.movies, m.count > 0 {
-            ShelfRow("Movies", all: LibraryRef(place: "movies")) { ForEach(m.items) { PosterTile(title: $0) } }
+            ShelfRow("Movies", all: LibraryRef(place: "movies")) { ForEach(m.items) { PosterTile(title: $0, poster: client?.art($0.poster)) } }
         }
         if let s = h.shows, s.count > 0 {
-            ShelfRow("TV Shows", all: LibraryRef(place: "shows")) { ForEach(s.items) { PosterTile(title: $0) } }
+            ShelfRow("TV Shows", all: LibraryRef(place: "shows")) { ForEach(s.items) { PosterTile(title: $0, poster: client?.art($0.poster)) } }
         }
     }
 
@@ -113,12 +116,17 @@ struct WatchView: View {
             let h = try await c.watchHome()
             // The remote moved to a TV with another library meanwhile: this answer is for the old one.
             guard client?.hub.id == hubID else { return }
-            withAnimation(.smooth) {
-                home = h
-                removed = []
+            // Asked again every minute and after every play: the page redraws only for an answer that's new (what was
+            // taken off Continue Watching here comes back if the TV still has it, as it always did).
+            let changed = h != home
+            if changed || !removed.isEmpty {
+                withAnimation(.smooth) {
+                    if changed { home = h }
+                    if !removed.isEmpty { removed = [] }
+                }
             }
-            loadedHub = hubID
-            error = nil
+            if loadedHub != hubID { loadedHub = hubID }
+            if error != nil { error = nil }
         } catch {
             if Task.isCancelled { return }
             // A library already shown stays (a blink in the Wi‑Fi isn't worth an empty page); another TV's doesn't.
@@ -157,6 +165,30 @@ struct WatchView: View {
     }
 }
 
+/// Notices when what any TV plays (or whether it plays) changes, and says so a moment later: Continue Watching has
+/// changed then too. A view of its own behind Watch: the TVs report every couple of seconds, and only this redraws.
+private struct PlayingWatcher: View {
+    @Environment(Fleet.self) private var fleet
+    var changed: () async -> Void
+    /// What it last saw (nothing to say the first time: the page reads the library as it opens anyway).
+    @State private var last: String?
+
+    var body: some View {
+        let key = fleet.tvs.map { "\($0.id)|\($0.playing?.key ?? $0.playing?.title ?? "")|\($0.playing?.isPlaying == true)" }.joined(separator: ";")
+        Color.clear
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+            .task(id: key) {
+                guard let before = last else { last = key; return }
+                last = key
+                guard before != key else { return }
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                guard !Task.isCancelled else { return }
+                await changed()
+            }
+    }
+}
+
 struct TitleRef: Hashable, Identifiable { var id: String }
 struct LibraryRef: Hashable { var place: String }
 
@@ -186,6 +218,8 @@ struct Billboard: View {
     @Environment(\.openTitle) private var openTitle
     var titles: [Title]
     @Binding var page: Int
+    /// The TV the library is from (Watch works it out once for every picture on the page).
+    var client: TVClient?
 
     var body: some View {
         pages
@@ -243,7 +277,7 @@ struct Billboard: View {
 
     private func card(_ t: Title) -> some View {
         ZStack(alignment: .bottomLeading) {
-            Color.clear.overlay { Artwork(url: fleet.hubClient()?.art(t.backdrop ?? t.poster)) }.clipped()
+            Color.clear.overlay { Artwork(url: client?.art(t.backdrop ?? t.poster), maxPixel: 1800) }.clipped()
             // Fades into the page, so the billboard has no edge.
             LinearGradient(stops: [.init(color: .black.opacity(0.35), location: 0), .init(color: .clear, location: 0.25),
                                    .init(color: .clear, location: 0.42), .init(color: .black.opacity(0.82), location: 0.9),
@@ -256,7 +290,7 @@ struct Billboard: View {
                     if let p = t.play {
                         CapsuleButton(title: p.label ?? "Play", symbol: "play.fill") { PlayRouter.start(p, fleet: fleet) }
                     }
-                    CapsuleButton(title: "Details", symbol: nil, prominent: false) { openTitle(t.id) }
+                    CapsuleButton(title: "Details", symbol: nil, prominent: false) { open(t) }
                 }
                 .padding(.top, 6)
             }
@@ -264,8 +298,14 @@ struct Billboard: View {
             .padding(.bottom, 24)
         }
         .contentShape(Rectangle())
-        .onTapGesture { openTitle(t.id) }
+        .onTapGesture { open(t) }
         .contextMenu { TitleMenu(title: t) }
+    }
+
+    /// Its sheet, with this card's picture and name at the top while the rest loads.
+    private func open(_ t: Title) {
+        TitleCache.shared.opening(t)
+        openTitle(t.id)
     }
 
     private func meta(_ t: Title) -> String {
@@ -325,13 +365,37 @@ struct PosterTile: View {
     @Environment(\.openTitle) private var openTitle
     @Environment(\.zoomNamespace) private var zoom
     var title: Title
-    var width: CGFloat = 112
+    var width: CGFloat
+    /// The poster's address as the page worked it out (.none: the tile asks the fleet itself).
+    private var given: URL??
+
+    /// A tile whose page has its poster's address already (Watch, Movies and TV Shows, Search): it never looks at the
+    /// fleet, so the TVs reporting doesn't redraw it.
+    init(title: Title, width: CGFloat = 112, poster: URL?) {
+        self.title = title
+        self.width = width
+        self.given = .some(poster)
+    }
+
+    init(title: Title, width: CGFloat = 112) {
+        self.title = title
+        self.width = width
+        self.given = .none
+    }
+
+    private var poster: URL? {
+        if let given { return given }
+        return fleet.hubClient()?.art(title.poster)
+    }
 
     var body: some View {
-        Button { openTitle(title.id) } label: {
+        Button {
+            TitleCache.shared.opening(title)
+            openTitle(title.id)
+        } label: {
             VStack(alignment: .leading, spacing: 6) {
                 Color.clear.frame(width: width, height: width * 1.5)
-                    .overlay { Artwork(url: fleet.hubClient()?.art(title.poster)) }
+                    .overlay { Artwork(url: poster, maxPixel: 512) }
                     .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                     .zoomSource(title.id, zoom)
                     .overlay(alignment: .topTrailing) {
@@ -361,12 +425,14 @@ struct ContinueTile: View {
     @Environment(\.openTitle) private var openTitle
     @Environment(\.watchChanged) private var watchChanged
     var item: ContinueItem
+    /// Its poster's address, as Watch worked it out.
+    var poster: URL?
 
     var body: some View {
         Button { PlayRouter.start(item.play, fleet: fleet) } label: {
             VStack(alignment: .leading, spacing: 6) {
                 Color.clear.frame(width: 112, height: 168)
-                    .overlay { Artwork(url: fleet.hubClient()?.art(item.poster)) }
+                    .overlay { Artwork(url: poster, maxPixel: 512) }
                     .overlay(alignment: .bottom) {
                         VStack(spacing: 8) {
                             Image(systemName: "play.fill").font(.system(size: 13, weight: .bold)).foregroundStyle(.white)
@@ -520,14 +586,18 @@ enum PlayRouter {
     }
 }
 
-/// A film's or show's page, as a sheet: backdrop, Play, the story, seasons and episodes.
+/// A film's or show's page, as a sheet: backdrop, Play, the story, seasons and episodes. Opened again, it shows at once
+/// what it showed last time (and reads the title again behind it); opened from a tile, the tile's picture and name are
+/// at its top while the rest loads.
 struct TitleSheet: View {
     @Environment(Fleet.self) private var fleet
     @Environment(\.dismiss) private var dismiss
     @Environment(\.watchChanged) private var watchChanged
     var id: String
+    /// The title as the TV answered here (until then, what it said the last time this title was opened shows).
     @State private var d: TitleDetails?
-    @State private var season = 0
+    /// The season picked; nil until the title has been read here (the one the TV suggests: the one in progress).
+    @State private var picked: Int?
     @State private var episodes: [Episode] = []
     @State private var loadingEpisodes = false
     /// The season the episodes shown belong to.
@@ -539,12 +609,22 @@ struct TitleSheet: View {
 
     private var client: TVClient? { fleet.hubClient() }
 
+    /// What's shown: the answer read here, else the one kept from the last time this title was opened.
+    private func details(_ c: TVClient?) -> TitleDetails? { d ?? TitleCache.shared.details(hub: c?.hub.id, id: id) }
+
+    /// The season shown: the one picked, else the one the TV suggests.
+    private func season(of d: TitleDetails?) -> Int { picked ?? d?.season ?? 0 }
+
     var body: some View {
+        // Worked out once for the sheet (the episodes' pictures are handed their addresses).
+        let c = client
+        let shown = details(c)
+        let season = self.season(of: shown)
         NavigationStack {
             ScrollView {
-                if let d {
+                if let d = shown {
                     VStack(alignment: .leading, spacing: 0) {
-                        header(d)
+                        header(top(d, c))
                         VStack(alignment: .leading, spacing: 14) {
                             if let o = d.overview { Text(o).font(.body).foregroundStyle(.primary.opacity(0.9)) }
                             if let cast = d.cast, !cast.isEmpty { Text("Starring " + cast.joined(separator: ", ")).font(.footnote).foregroundStyle(.secondary) }
@@ -560,7 +640,7 @@ struct TitleSheet: View {
                             }
                             if let seasons = d.seasons, !seasons.isEmpty {
                                 Menu {
-                                    Picker("Season", selection: $season) {
+                                    Picker("Season", selection: Binding(get: { season }, set: { picked = $0 })) {
                                         ForEach(Array(seasons.enumerated()), id: \.offset) { i, s in Text(s.name).tag(i) }
                                     }
                                 } label: {
@@ -578,14 +658,32 @@ struct TitleSheet: View {
                                         .buttonStyle(.glass)
                                 }
                                 ForEach(episodes) { e in
-                                    EpisodeRow(episode: e, changed: { watchChanged(); Task { await loadEpisodes() } }, played: { dismiss() })
+                                    EpisodeRow(episode: e, still: c?.art(e.still, small: true), changed: { watchChanged(); Task { await loadEpisodes() } }, played: { dismiss() })
                                 }
                             }
                             if let films = d.films, !films.isEmpty {
                                 Text("In This Collection").font(.title3.bold()).padding(.top, 8)
                                 ForEach(films) { e in
-                                    EpisodeRow(episode: e, changed: { watchChanged(); Task { await load() } }, played: { dismiss() })
+                                    EpisodeRow(episode: e, still: c?.art(e.still, small: true), changed: { watchChanged(); Task { await load() } }, played: { dismiss() })
                                 }
+                            }
+                        }
+                        .padding(20)
+                    }
+                } else if let t = TitleCache.shared.tile(id) {
+                    // Opened from a tile: its picture and name at once, the rest as it arrives.
+                    VStack(alignment: .leading, spacing: 0) {
+                        header(top(t, c))
+                        Group {
+                            if let failed {
+                                VStack(alignment: .leading, spacing: 10) {
+                                    Text("Can’t Load This Title").font(.headline)
+                                    Text(failed).font(.subheadline).foregroundStyle(.secondary)
+                                    ActionButton(action: { await load() }) { Text("Try Again") }
+                                        .buttonStyle(.glass)
+                                }
+                            } else {
+                                ProgressView().frame(maxWidth: .infinity).padding(.top, 20)
                             }
                         }
                         .padding(20)
@@ -605,8 +703,8 @@ struct TitleSheet: View {
             .ignoresSafeArea(edges: .top)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button(role: .close) { dismiss() } } }
             .task { await load() }
-            // The episodes of the season picked (and of the first one shown, once the title arrives).
-            .task(id: "\(d?.id ?? "")|\(season)") { await loadEpisodes() }
+            // The episodes of the season picked (and of the first one shown, as soon as the title shows).
+            .task(id: "\(shown?.id ?? "")|\(season)") { await loadEpisodes() }
         }
         // Errors from here (a play that failed, Mark as Watched) show over the sheet, not hidden behind it.
         .sheetBanner()
@@ -615,19 +713,28 @@ struct TitleSheet: View {
         #endif
     }
 
-    private func header(_ d: TitleDetails) -> some View {
+    private func top(_ d: TitleDetails, _ c: TVClient?) -> SheetTop {
+        SheetTop(title: d.title, art: c?.art(d.backdrop ?? d.poster), facts: facts(d), play: d.play, restart: d.restart)
+    }
+
+    /// The top as the tile it was opened from knew it (its year: the rest of the line comes with the details).
+    private func top(_ t: Title, _ c: TVClient?) -> SheetTop {
+        SheetTop(title: t.title, art: c?.art(t.backdrop ?? t.poster), facts: t.year.map(String.init) ?? "", play: t.play, restart: nil)
+    }
+
+    private func header(_ top: SheetTop) -> some View {
         ZStack(alignment: .bottomLeading) {
             Color.clear.aspectRatio(0.95, contentMode: .fit)
-                .overlay { Artwork(url: client?.art(d.backdrop ?? d.poster)) }
+                .overlay { Artwork(url: top.art, maxPixel: 1800) }
                 .clipped()
             LinearGradient(stops: [.init(color: .clear, location: 0.3), .init(color: .black.opacity(0.9), location: 1)], startPoint: .top, endPoint: .bottom)
             VStack(alignment: .leading, spacing: 8) {
-                Text(d.title).font(.largeTitle.bold()).foregroundStyle(.white)
-                Text(facts(d)).font(.footnote.weight(.medium)).foregroundStyle(.white.opacity(0.75))
+                Text(top.title).font(.largeTitle.bold()).foregroundStyle(.white)
+                Text(top.facts).font(.footnote.weight(.medium)).foregroundStyle(.white.opacity(0.75))
                 HStack(spacing: 10) {
                     // Closes once the play has gone out; if there's nowhere to play it, stays open and says why.
-                    if let p = d.play { CapsuleButton(title: p.label ?? "Play", symbol: "play.fill") { if PlayRouter.start(p, fleet: fleet) { dismiss() } } }
-                    if let r = d.restart {
+                    if let p = top.play { CapsuleButton(title: p.label ?? "Play", symbol: "play.fill") { if PlayRouter.start(p, fleet: fleet) { dismiss() } } }
+                    if let r = top.restart {
                         Button { if PlayRouter.start(r, fleet: fleet, fromStart: true) { dismiss() } } label: {
                             Image(systemName: "arrow.counterclockwise").font(.headline).foregroundStyle(.white)
                                 .frame(width: 40, height: 40).glass(Circle()).environment(\.colorScheme, .dark)
@@ -635,13 +742,7 @@ struct TitleSheet: View {
                         .buttonStyle(PressScale())
                         .accessibilityLabel(r.label ?? "Start Over")
                     }
-                    if let p = d.play, fleet.tvs.filter({ !$0.isUnpaired }).count > 1 {
-                        Menu { PlayOnMenu(action: p, then: { dismiss() }) } label: {
-                            Image(systemName: "ellipsis").font(.headline).foregroundStyle(.white).frame(width: 40, height: 40).glass(Circle()).environment(\.colorScheme, .dark)
-                        }
-                        .menuStyle(.button).buttonStyle(.plain)
-                        .accessibilityLabel("Play On…")
-                    }
+                    if let p = top.play { PlayOnButton(action: p, then: { dismiss() }) }
                 }
                 .padding(.top, 4)
             }
@@ -665,14 +766,14 @@ struct TitleSheet: View {
         guard let c = client else { failed = TVError.notPaired.localizedDescription; return }
         do {
             let t = try await c.title(id)
-            let first = d == nil
+            TitleCache.shared.keep(t, hub: c.hub.id, id: id)
             withAnimation(.smooth) { d = t }
             failed = nil
             // The season the TV suggests (the one in progress), the first time only: a reload keeps the one picked.
-            if first { season = t.season ?? 0 }
+            if picked == nil { picked = t.season ?? 0 }
         } catch {
             if Task.isCancelled { return }
-            if d == nil { failed = error.localizedDescription } else { fleet.show(error) }
+            if details(c) == nil { failed = error.localizedDescription } else { fleet.show(error) }
         }
     }
 
@@ -690,15 +791,20 @@ struct TitleSheet: View {
     }
 
     private func loadEpisodes() async {
-        guard let d, let s = d.seasons?[safe: season], let c = client else { return }
-        // Another season: not the last one's episodes while this one's arrive.
-        if episodesSeason != s.id { episodes = [] }
+        guard let c = client, let d = details(c), let s = d.seasons?[safe: season(of: d)] else { return }
+        // Another season: its episodes as they were last time (or none, never the last season's) while they're read.
+        if episodesSeason != s.id {
+            let kept = TitleCache.shared.episodes(hub: c.hub.id, show: d.id, season: s.id)
+            episodes = kept ?? []
+            episodesSeason = kept == nil ? nil : s.id
+        }
         episodesNote = nil
         loadingEpisodes = true
         defer { loadingEpisodes = false }
         do {
             let list = try await c.episodes(show: d.id, season: s.id)
             guard !Task.isCancelled else { return }
+            if !list.episodes.isEmpty { TitleCache.shared.keep(list.episodes, hub: c.hub.id, show: d.id, season: s.id) }
             withAnimation(.smooth) { episodes = list.episodes }
             episodesSeason = s.id
             if list.episodes.isEmpty {
@@ -711,9 +817,75 @@ struct TitleSheet: View {
     }
 }
 
+/// The top of a title's sheet: its picture, its name, a line about it, and Play.
+private struct SheetTop {
+    var title: String
+    var art: URL?
+    var facts: String
+    var play: PlayAction?
+    var restart: PlayAction?
+}
+
+/// "…" beside Play, with Play On, when there's more than one TV. A view of its own: it follows the TVs (they report
+/// every couple of seconds) without the whole sheet redrawing with them.
+private struct PlayOnButton: View {
+    @Environment(Fleet.self) private var fleet
+    var action: PlayAction
+    var then: () -> Void
+
+    var body: some View {
+        if fleet.tvs.filter({ !$0.isUnpaired }).count > 1 {
+            Menu { PlayOnMenu(action: action, then: then) } label: {
+                Image(systemName: "ellipsis").font(.headline).foregroundStyle(.white).frame(width: 40, height: 40).glass(Circle()).environment(\.colorScheme, .dark)
+            }
+            .menuStyle(.button).buttonStyle(.plain)
+            .accessibilityLabel("Play On…")
+        }
+    }
+}
+
+/// Titles as their sheets last showed them, so one opened again shows at once (and is read again behind it), and the
+/// tiles sheets are opened from, for a sheet's top while the rest loads. The last 50 of each.
+@MainActor
+final class TitleCache {
+    static let shared = TitleCache()
+    private var kept = Recent<TitleDetails>(limit: 50)
+    private var keptEpisodes = Recent<[Episode]>(limit: 50)
+    private var tiles = Recent<Title>(limit: 50)
+
+    func details(hub: String?, id: String) -> TitleDetails? { kept["\(hub ?? "")|\(id)"] }
+    func keep(_ d: TitleDetails, hub: String, id: String) { kept.put("\(hub)|\(id)", d) }
+
+    func episodes(hub: String, show: String, season: String) -> [Episode]? { keptEpisodes["\(hub)|\(show)|\(season)"] }
+    func keep(_ e: [Episode], hub: String, show: String, season: String) { keptEpisodes.put("\(hub)|\(show)|\(season)", e) }
+
+    /// A tile is opening its title's sheet.
+    func opening(_ t: Title) { tiles.put(t.id, t) }
+    func tile(_ id: String) -> Title? { tiles[id] }
+}
+
+/// The last [limit] things kept, by key (the oldest goes first).
+private struct Recent<Value> {
+    private var values: [String: Value] = [:]
+    private var order: [String] = []
+    let limit: Int
+
+    init(limit: Int) { self.limit = limit }
+
+    subscript(key: String) -> Value? { values[key] }
+
+    mutating func put(_ key: String, _ value: Value) {
+        if values.updateValue(value, forKey: key) != nil { order.removeAll { $0 == key } }
+        order.append(key)
+        if order.count > limit { values[order.removeFirst()] = nil }
+    }
+}
+
 struct EpisodeRow: View {
     @Environment(Fleet.self) private var fleet
     var episode: Episode
+    /// Its picture's address, as the sheet worked it out.
+    var still: URL? = nil
     var changed: () -> Void
     /// A play went out (the title's sheet closes, so what's playing shows).
     var played: () -> Void = {}
@@ -727,7 +899,7 @@ struct EpisodeRow: View {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(alignment: .center, spacing: 14) {
                     Color.clear.frame(width: 132, height: 74)
-                        .overlay { Artwork(url: fleet.hubClient()?.art(episode.still, small: true)) }
+                        .overlay { Artwork(url: still, maxPixel: 512) }
                         .overlay {
                             Image(systemName: "play.fill").font(.system(size: 11, weight: .bold)).foregroundStyle(.white)
                                 .frame(width: 28, height: 28).glass(Circle(), interactive: false).environment(\.colorScheme, .dark)
@@ -800,11 +972,15 @@ struct LibraryGrid: View {
     @State private var generation = 0
     @State private var loaded = false
     @State private var failed: String?
+    /// The posters of the page just read, being fetched before they're scrolled to.
+    @State private var warming: Task<Void, Never>?
 
     private var heading: String { place == "shows" ? "TV Shows" : "Movies" }
     private var filtered: Bool { unwatched || genre != nil || !query.isEmpty }
 
     var body: some View {
+        // Worked out once for the page: the tiles are handed their posters' addresses.
+        let client = fleet.hubClient()
         ScrollView {
             if items.isEmpty, let failed {
                 VStack(spacing: 14) {
@@ -820,8 +996,8 @@ struct LibraryGrid: View {
             }
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 104, maximum: 150), spacing: 12, alignment: .top)], spacing: 18) {
                 ForEach(items) { t in
-                    PosterTile(title: t, width: 104)
-                        .onAppear { if t.id == items.last?.id && items.count < count { Task { await load(more: true) } } }
+                    PosterTile(title: t, width: 104, poster: client?.art(t.poster))
+                        .onAppear { nearEnd(t) }
                 }
             }
             .padding(16)
@@ -849,6 +1025,13 @@ struct LibraryGrid: View {
             guard !Task.isCancelled else { return }
             await load(more: false)
         }
+        .onDisappear { warming?.cancel() }
+    }
+
+    /// One of the last tiles came into view: the next page is read now, before the bottom is reached.
+    private func nearEnd(_ t: Title) {
+        guard !loading, items.count < count, let i = items.lastIndex(where: { $0.id == t.id }), i >= items.count - 15 else { return }
+        Task { await load(more: true) }
     }
 
     private func load(more: Bool) async {
@@ -857,6 +1040,7 @@ struct LibraryGrid: View {
             guard !loading, items.count < count else { return }
         } else {
             generation += 1
+            warming?.cancel()
         }
         let gen = generation
         loading = true
@@ -870,9 +1054,26 @@ struct LibraryGrid: View {
             rated = p.rated ?? rated
             failed = nil
             loaded = true
+            if more { warm(p.items, c) }
         } catch {
             guard gen == generation, !Task.isCancelled else { return }
             if items.isEmpty { failed = error.localizedDescription } else { fleet.show(error) }
+        }
+    }
+
+    /// The page just read (below what's on screen): its posters are downloaded a few at a time, so they're there by the
+    /// time it's scrolled to.
+    private func warm(_ titles: [Title], _ c: TVClient) {
+        let urls = titles.compactMap { c.art($0.poster) }
+        warming?.cancel()
+        warming = Task(priority: .utility) {
+            await withTaskGroup(of: Void.self) { g in
+                for (i, u) in urls.enumerated() {
+                    if i >= 3 { _ = await g.next() }
+                    if Task.isCancelled { break }
+                    g.addTask(priority: .utility) { await ImageStore.shared.prefetch(u) }
+                }
+            }
         }
     }
 
@@ -920,6 +1121,8 @@ struct SearchPage: View {
     @State private var again = 0
 
     var body: some View {
+        // Worked out once for the page: the tiles are handed their posters' addresses.
+        let client = fleet.hubClient()
         ScrollView {
             VStack(alignment: .leading, spacing: 26) {
                 if !query.isEmpty, let failed {
@@ -927,7 +1130,7 @@ struct SearchPage: View {
                 } else if let r, !query.isEmpty {
                     let sections = r.first == "shows" ? [("TV Shows", r.shows), ("Movies", r.movies)] : [("Movies", r.movies), ("TV Shows", r.shows)]
                     ForEach(sections, id: \.0) { name, list in
-                        if !list.isEmpty { ShelfRow(name) { ForEach(list) { PosterTile(title: $0) } } }
+                        if !list.isEmpty { ShelfRow(name) { ForEach(list) { PosterTile(title: $0, poster: client?.art($0.poster)) } } }
                     }
                     if r.movies.isEmpty && r.shows.isEmpty {
                         EmptyState(symbol: "magnifyingglass", title: "No Results", message: "Nothing in Movies or TV Shows matches “\(query)”.")

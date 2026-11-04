@@ -31,6 +31,8 @@ final class HomeKitLights: NSObject, HMHomeManagerDelegate, HMHomeDelegate, HMAc
         guard manager == nil, !Demo.isOn else { return }
         guard Self.enabled else {
             AccessoryStore.shared.homeProblem = "This copy of Woodruff was built without Apple Home, so the ecobee can only come in through SmartThings (Settings → Smart Home → Devices)."
+            // Nothing from Apple Home here (not even what an earlier copy kept for the next launch).
+            if !AccessoryStore.shared.fromHome.isEmpty { AccessoryStore.shared.fromHome = [] }
             return
         }
         let m = HMHomeManager()
@@ -173,7 +175,8 @@ final class HomeKitLights: NSObject, HMHomeManagerDelegate, HMHomeDelegate, HMAc
                 read(s)
             }
         }
-        publish()
+        // With the values just asked for (shown once, rather than first without them and again as they arrive).
+        publishSoon()
     }
 
     private func read(_ s: HMService) {
@@ -218,7 +221,9 @@ final class HomeKitLights: NSObject, HMHomeManagerDelegate, HMHomeDelegate, HMAc
             return l
         }
         SmartHome.shared.setHomeLights(list)
-        AccessoryStore.shared.fromHome = others.values.compactMap { self.device($0) }
+        // In a steady order (by id), and only when something changed: HomeKit reports often, and mostly nothing new.
+        let devices = others.values.compactMap { self.device($0) }.sorted { $0.id < $1.id }
+        if AccessoryStore.shared.fromHome != devices { AccessoryStore.shared.fromHome = devices }
     }
 
     // MARK: Other accessories

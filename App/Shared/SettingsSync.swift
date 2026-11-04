@@ -79,6 +79,11 @@ final class SettingsSync {
     @ObservationIgnored private var seenGeneration = -1
     @ObservationIgnored private var lastLook = Date.distantPast
     @ObservationIgnored private var lastKeychainLook = Date.distantPast
+    /// When the loop last started a round with the TVs.
+    @ObservationIgnored private var lastTVRound = Date.distantPast
+    /// The stamps as last written to UserDefaults (written again only when they've changed).
+    @ObservationIgnored private var savedStamps: [String: Double]?
+    @ObservationIgnored private var savedEntryStamps: [String: [String: Double]]?
     /// Changes noticed here so far, and whether a TV is still to get the latest of them.
     @ObservationIgnored private var changes = 0
     @ObservationIgnored private var unsaved = false
@@ -88,6 +93,8 @@ final class SettingsSync {
     @ObservationIgnored private var hubsSeen: [String: Hub] = [:]
     /// The app has been in the background since the last wake.
     @ObservationIgnored private var wasAway = false
+    /// The starting point has been taken (`prepare`).
+    @ObservationIgnored private var prepared = false
 
     // Kept on the TVs.
     @ObservationIgnored private var tvRun: Task<Void, Never>?
@@ -112,8 +119,14 @@ final class SettingsSync {
     @ObservationIgnored private var backgroundTasks: [UIBackgroundTaskIdentifier] = []
     #endif
 
-    func start(_ fleet: Fleet) {
-        guard loop == nil, !Demo.isOn else { return }
+    /// Takes what's here as the app opens as the starting point, before anything else at launch can write a setting
+    /// that travels: whatever is written after this (a sign-in renewed as the app opens, a TV paired from a link, a
+    /// TV's first answer) is a change made here, stamped as new and sent on once `start` runs. Taken later, such a
+    /// write would count as old, and could lose to the family's older copy (a renewed sign-in put back to the one
+    /// before it, which no longer works). Safe to call again: the starting point is taken once.
+    func prepare(_ fleet: Fleet) {
+        guard !prepared, !Demo.isOn else { return }
+        prepared = true
         self.fleet = fleet
         seedPairings(fleet)
         last = snapshot(keychain: true)
@@ -129,18 +142,29 @@ final class SettingsSync {
         saveStamps()
         watch()
         watchSignIns()
+    }
+
+    /// Starts syncing: the other devices on the Wi‑Fi, the TVs' copies, and noticing changes here (a couple of seconds
+    /// into launch, so the TVs are asked first). Everything changed since `prepare` is stamped as new on the first look.
+    func start(_ fleet: Fleet) {
+        guard loop == nil, !Demo.isOn else { return }
+        prepare(fleet)
         listen()
         browse()
+        lastTVRound = Date()
         loop = Task { [weak self] in
-            var tick = 0
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 1_500_000_000)
                 guard let self else { return }
                 // Only looks when something was saved (or every 30 s regardless), so it costs nothing at rest.
                 if self.dirty || Keychain.generation != self.seenGeneration || Date().timeIntervalSince(self.lastLook) > 30 { self.check() }
-                tick += 1
-                // Every 12 seconds, apart, so a TV taking its time never holds up noticing changes here.
-                if tick % 8 == 0 { Task { await self.syncTVs() } }
+                // Every 12 seconds while the app is in use, every minute while it isn't (the Mac's window hidden), apart,
+                // so a TV taking its time never holds up noticing changes here. (A change made here goes at once.)
+                let every: TimeInterval = (self.fleet?.isActive ?? true) ? 12 : 60
+                if Date().timeIntervalSince(self.lastTVRound) >= every - 0.1 {
+                    self.lastTVRound = Date()
+                    Task { await self.syncTVs() }
+                }
             }
         }
         Task { await syncTVs() }
@@ -297,7 +321,10 @@ final class SettingsSync {
 
     /// Notices changes made here, stamps them, and sends them on.
     private func check() {
-        let readKeychain = Keychain.generation != seenGeneration || Date().timeIntervalSince(lastKeychainLook) > 30
+        // The Keychain is read again only after a write to it (every write goes through `Keychain`, which bumps its
+        // generation), while an item that travels has never been readable yet (a keychain locked at launch), and every
+        // 10 minutes regardless.
+        let readKeychain = Keychain.generation != seenGeneration || keychainUnread() || Date().timeIntervalSince(lastKeychainLook) > 600
         dirty = false
         seenGeneration = Keychain.generation
         lastLook = Date()
@@ -345,9 +372,22 @@ final class SettingsSync {
         }
     }
 
+    /// An item that travels hasn't been readable yet (it's left out of `last` until it is).
+    private func keychainUnread() -> Bool {
+        allKeys().contains { $0.hasPrefix("kc:") && last[$0] == nil }
+    }
+
+    /// Written only when they changed: this runs after every TV's copy is read, and each write is a change to the
+    /// settings here (which sends `check` looking again).
     private func saveStamps() {
-        UserDefaults.standard.set(stamps, forKey: "sync.stamps")
-        UserDefaults.standard.set(entryStamps, forKey: "sync.entryStamps")
+        if savedStamps != stamps {
+            UserDefaults.standard.set(stamps, forKey: "sync.stamps")
+            savedStamps = stamps
+        }
+        if savedEntryStamps != entryStamps {
+            UserDefaults.standard.set(entryStamps, forKey: "sync.entryStamps")
+            savedEntryStamps = entryStamps
+        }
     }
 
     // MARK: The paired TVs
@@ -777,7 +817,8 @@ final class SettingsSync {
     }
 
     private func broadcast() {
-        guard let data = payload() else { return }
+        // No other device around: nothing to seal (one that appears is handed everything then, in `browse`).
+        guard !peers.isEmpty, let data = payload() else { return }
         for ep in peers.values { send(data, to: ep) }
     }
 

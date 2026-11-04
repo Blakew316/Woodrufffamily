@@ -48,6 +48,8 @@ final class Dreo {
     private var socketFailures = 0
     private var loop: Task<Void, Never>?
     private var keepalive: Task<Void, Never>?
+    /// The fans have been read since the app opened (until then Home shows the ones kept from last time).
+    @ObservationIgnored private var published = false
 
     func start() {
         guard connected, loop == nil, !Demo.isOn else { return }
@@ -177,11 +179,22 @@ final class Dreo {
                 apply(sn, mixed.mapValues { ($0 as? [String: Any])?["state"] ?? $0 }, initial: true)
             }
             if token.isEmpty { try await login() }   // a 401 on a state read: sign in again for the socket and next time
-            error = nil
+            if error != nil { error = nil }
             publish()
         } catch {
             self.error = error.localizedDescription
             if !connected { return }
+            // Nothing from Dreo yet since the app opened: the fans kept from last time don't show as they were then
+            // ("Speed 3"), but as not responding until Dreo answers.
+            if !published {
+                let kept = AccessoryStore.shared.fromDreo
+                let dimmed = kept.map { d -> HomeDevice in
+                    var d = d
+                    d.reachable = false
+                    return d
+                }
+                if dimmed != kept { AccessoryStore.shared.fromDreo = dimmed }
+            }
         }
     }
 
@@ -209,7 +222,7 @@ final class Dreo {
     }
 
     private func publish() {
-        AccessoryStore.shared.fromDreo = fans.values.map { f in
+        let list = fans.values.map { f -> HomeDevice in
             var d = HomeDevice(id: "dreo:" + f.sn, name: f.name, source: "dreo", kind: .fan, zone: f.room, status: "")
             d.isOn = f.on
             d.speed = Int((Double(f.level) * 100 / Double(max(1, f.maxSpeed))).rounded())
@@ -218,7 +231,14 @@ final class Dreo {
             d.status = !f.online ? "Offline" : f.on ? "Speed \(f.level) of \(f.maxSpeed)" + (f.swing ? " · Oscillating" : "") : "Off"
             return d
         }
-        .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        // By name (two of the same name in a steady order, so the list doesn't seem to change when it hasn't).
+        .sorted { a, b in
+            let order = a.name.localizedStandardCompare(b.name)
+            return order == .orderedSame ? a.id < b.id : order == .orderedAscending
+        }
+        // Only a real change reaches Home: most of the fans' live reports and each minute's read change nothing.
+        if AccessoryStore.shared.fromDreo != list { AccessoryStore.shared.fromDreo = list }
+        published = true
     }
 
     // MARK: Live connection
@@ -254,7 +274,7 @@ final class Dreo {
                 guard let self, self.socket === ws else { return }
                 switch result {
                 case .success(let m):
-                    self.socketFailures = 0
+                    if self.socketFailures != 0 { self.socketFailures = 0 }
                     var text: String?
                     switch m {
                     case .string(let t): text = t

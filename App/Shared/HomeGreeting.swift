@@ -169,6 +169,8 @@ final class HomeGreeting {
 
     @ObservationIgnored private var refreshedAt = Date.distantPast
     @ObservationIgnored private var writing: Task<Void, Never>?
+    /// When Woodruff opened, near enough: the greeting is made as it opens (the scene coming to the front, or Home).
+    private let openedAt = Date()
 
     /// A new one-liner (not more than once a minute unless [force]: a tap on the greeting).
     func refresh(force: Bool = false) {
@@ -185,10 +187,17 @@ final class HomeGreeting {
     private func write(_ p: DayPart) {
         writing?.cancel()
         #if canImport(FoundationModels)
-        guard case .available = SystemLanguageModel.default.availability else { return }
         let weather = HomeWeather.shared.now
         let sky = weather.map { "\($0.sky.words.lowercased()) and \(Int($0.temp.rounded()))°F" } ?? "unknown weather"
+        // Just opened: the model waits a moment, so Woodruff's first seconds (Home drawn, its pictures, the TVs
+        // answering) aren't shared with it. The picked line shows meanwhile.
+        let settle = Date().timeIntervalSince(openedAt) < 5
         writing = Task { @MainActor in
+            if settle {
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                guard !Task.isCancelled else { return }
+            }
+            guard case .available = SystemLanguageModel.default.availability else { return }
             do {
                 let session = LanguageModelSession(instructions: """
                     You write the one-liner under the greeting on the Woodruff family's TV and smart-home app. \

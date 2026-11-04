@@ -303,8 +303,9 @@ final class DecoWifi {
         }
         signKey = (sk[0], sk[1])
         seq = (ar["seq"] as? NSNumber)?.intValue ?? 0
-        guard let encPW = DecoCrypto.rsa(nHex: pw[0], eHex: pw[1], Data(password.utf8)) else { throw OAuthRelay.Failure.refused("Couldn’t encrypt the password.") }
-        let r = try await post("/cgi-bin/luci/;stok=/login", form: "login", body: try encode(["params": ["password": encPW], "operation": "login"]))
+        guard let encPW = await Self.rsa(nHex: pw[0], eHex: pw[1], Data(password.utf8)) else { throw OAuthRelay.Failure.refused("Couldn’t encrypt the password.") }
+        let body = try await encode(["params": ["password": encPW], "operation": "login"])
+        let r = try await post("/cgi-bin/luci/;stok=/login", form: "login", body: body)
         let data = try decrypt(r)
         let code = (data["error_code"] as? NSNumber)?.intValue ?? -1
         if code == -5002 { throw WrongPassword.refused }
@@ -318,7 +319,8 @@ final class DecoWifi {
     /// keepSession: a refusal of this one request (a satellite that can't list its clients) isn't a lost sign-in.
     private func call(_ path: String, form: String, _ payload: [String: Any], keepSession: Bool = false) async throws -> [String: Any] {
         guard let stok else { throw OAuthRelay.Failure.refused("Not signed in.") }
-        let r = try await post("/cgi-bin/luci/;stok=\(stok)\(path)", form: form, body: try encode(payload))
+        let body = try await encode(payload)
+        let r = try await post("/cgi-bin/luci/;stok=\(stok)\(path)", form: form, body: body)
         let d = try decrypt(r)
         if let code = (d["error_code"] as? NSNumber)?.intValue, code != 0 {
             if !keepSession { self.stok = nil }
@@ -327,7 +329,7 @@ final class DecoWifi {
         return d
     }
 
-    private func encode(_ payload: [String: Any]) throws -> Data {
+    private func encode(_ payload: [String: Any]) async throws -> Data {
         let json = try JSONSerialization.data(withJSONObject: payload)
         guard let enc = DecoCrypto.aes(true, key: aesKey, iv: aesIV, json), let sk = signKey else {
             throw OAuthRelay.Failure.refused("Couldn’t encrypt the request.")
@@ -336,11 +338,18 @@ final class DecoWifi {
         let data = enc.base64EncodedString()
         let hash = DecoCrypto.md5Hex("admin" + (Keychain.get("deco.password") ?? ""))
         let signText = "k=\(aesKey)&i=\(aesIV)&h=\(hash)&s=\(seq + data.count)"
-        guard let sign = DecoCrypto.rsa(nHex: n, eHex: e, Data(signText.utf8)) else { throw OAuthRelay.Failure.refused("Couldn’t sign the request.") }
+        // Everything above is taken as it is now; only the signing itself waits (off the main thread).
+        guard let sign = await Self.rsa(nHex: n, eHex: e, Data(signText.utf8)) else { throw OAuthRelay.Failure.refused("Couldn’t sign the request.") }
         var allowed = CharacterSet.alphanumerics
         allowed.insert(charactersIn: "-_.~")
         let quoted = data.addingPercentEncoding(withAllowedCharacters: allowed) ?? data
         return Data("sign=\(sign)&data=\(quoted)".utf8)
+    }
+
+    /// RSA done in plain Swift (`DecoCrypto`) takes a moment with the Deco's keys: worked out away from the main
+    /// thread, so nothing on screen waits for it.
+    private static func rsa(nHex: String, eHex: String, _ plain: Data) async -> String? {
+        await Task.detached(priority: .userInitiated) { DecoCrypto.rsa(nHex: nHex, eHex: eHex, plain) }.value
     }
 
     private func decrypt(_ r: [String: Any]) throws -> [String: Any] {

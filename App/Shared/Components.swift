@@ -232,12 +232,15 @@ func statusWord(_ t: FleetTV) -> String {
 // MARK: - Pictures
 
 /// A picture from a TV (posters, thumbnails, photos): at once when it's been seen before (kept by ImageStore),
-/// otherwise fading in as it arrives.
+/// otherwise fading in as it arrives. [maxPixel] is the most it needs on its longer side (a poster tile 512, a
+/// backdrop 1800), [storeOnDisk] false for a picture looked at once (a big photo in the TV's files).
 struct Artwork: View {
     var url: URL?
     var contentMode: ContentMode = .fill
+    var maxPixel: Int = 1800
+    var storeOnDisk: Bool = true
     var body: some View {
-        CachedImage(url: url, contentMode: contentMode) {
+        CachedImage(url: url, contentMode: contentMode, maxPixel: maxPixel, storeOnDisk: storeOnDisk) {
             Rectangle().fill(.quinary)
         } failure: {
             Rectangle().fill(.quaternary)
@@ -312,13 +315,18 @@ extension View {
 
 // MARK: - Formatting
 
+/// "5 min. ago": one formatter for every row that says when (making one costs more than using it).
+private let shortRelative: RelativeDateTimeFormatter = {
+    let f = RelativeDateTimeFormatter()
+    f.unitsStyle = .short
+    return f
+}()
+
 func relative(_ ms: Double?) -> String {
     guard let ms, ms > 0 else { return "never" }
     let d = Date(timeIntervalSince1970: ms / 1000)
     if abs(d.timeIntervalSinceNow) < 45 { return "just now" }
-    let f = RelativeDateTimeFormatter()
-    f.unitsStyle = .short
-    return f.localizedString(for: d, relativeTo: Date())
+    return shortRelative.localizedString(for: d, relativeTo: Date())
 }
 
 func formatBytes(_ n: Double?) -> String {

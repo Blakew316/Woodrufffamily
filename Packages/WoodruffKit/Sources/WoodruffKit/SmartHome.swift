@@ -941,12 +941,26 @@ public final class SmartHome {
         lan.start()
         browseSonos()
         #endif
-        // One round every 2.5 seconds. What's playing is asked every round while music plays (a new song shows
-        // within a moment) and every other round when nothing is; the lamps every other round.
+        // One round every 2.5 seconds while the app is in use (on the Mac: while its window can be seen), one every 15
+        // while it isn't. What's playing is asked every round while music plays (a new song shows within a moment)
+        // and every other round when nothing is; the lamps every other round in use, every round otherwise.
         loop = Task { [weak self] in
             var tick = 0
+            var lastRound = Date.distantPast
+            var wasInUse = true
             while !Task.isCancelled {
                 guard let self else { return }
+                let inUse = Fleet.shared.isActive
+                // In use again (the Mac's window seen again): the lamps get a moment to answer before any is called
+                // offline, as after waking, and the round comes at once.
+                if inUse && !wasInUse { self.graceLamps() }
+                wasInUse = inUse
+                // Not in use: the 2.5-second clock keeps going (so coming back is noticed at once), the rounds don't.
+                if !inUse && Date().timeIntervalSince(lastRound) < Self.idleRound - 0.1 {
+                    try? await Task.sleep(nanoseconds: 2_500_000_000)
+                    continue
+                }
+                lastRound = Date()
                 // Away from home nothing on this network is ours: no searching, and the speakers less often.
                 let away = Fleet.shared.probablyAway
                 // The slow ones (the household's rooms, Govee's cloud) run beside the rounds, never holding them up.
@@ -963,12 +977,22 @@ public final class SmartHome {
                 let playing = self.speakers.contains(where: \.isPlaying)
                 let speakersDue = away ? tick % 12 == 0 : (playing || tick % 2 == 0)
                 if speakersDue { await self.refreshSpeakers() }
-                if !away && tick % 2 == 0 { self.pollLights() }
+                if !away && (tick % 2 == 0 || !inUse) { self.pollLights() }
                 self.checkReachable()
                 tick += 1
                 try? await Task.sleep(nanoseconds: 2_500_000_000)
             }
         }
+    }
+
+    /// Seconds between rounds while the app isn't in use.
+    static let idleRound: TimeInterval = 15
+
+    /// Nothing may have been heard for a while (the app was asleep, or asking less often): every lamp gets a moment
+    /// to answer before it's called offline.
+    private func graceLamps() {
+        let now = Date()
+        for l in lights where l.ip != nil { lastSeen[l.id] = max(lastSeen[l.id] ?? .distantPast, now.addingTimeInterval(-lanTimeout + 15)) }
     }
 
     /// The app came back to the front: listen afresh and ask everything for its state straight away.
@@ -978,8 +1002,7 @@ public final class SmartHome {
         lan.restart()
         #endif
         // Nothing answered while the app was asleep; give the lamps a moment before calling them offline.
-        let now = Date()
-        for l in lights where l.ip != nil { lastSeen[l.id] = max(lastSeen[l.id] ?? .distantPast, now.addingTimeInterval(-lanTimeout + 15)) }
+        graceLamps()
         Task {
             try? await Task.sleep(nanoseconds: 400_000_000)
             pollLights()
@@ -1449,8 +1472,9 @@ public final class SmartHome {
     @ObservationIgnored private var lastSeen: [String: Date] = [:]
     /// What Govee's cloud last said about each light being connected (light id → online).
     @ObservationIgnored private var cloudOnline: [String: Bool] = [:]
-    /// How long a lamp asked every five seconds may stay silent before it's called offline (six asks).
-    private let lanTimeout: TimeInterval = 30
+    /// How long a lamp may stay silent before it's called offline: six asks while the app is in use (every five
+    /// seconds), four while it isn't (every `idleRound`).
+    private var lanTimeout: TimeInterval { Fleet.shared.isActive ? 30 : 60 }
     /// What was just asked of each light, held for a few seconds so an answer sent before the change
     /// (a poll already on its way, Govee's cloud lagging) doesn't flick it back.
     @ObservationIgnored private var held: [String: (state: GoveeLight, until: Date)] = [:]

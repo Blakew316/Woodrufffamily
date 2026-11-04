@@ -6,17 +6,53 @@ import WoodruffKit
 
 
 
+/// Where each source's devices are kept between launches (on this device only: they're never synced).
+private enum SavedDevices {
+    static let home = "devicesHome"
+    static let smartThings = "devicesSmartThings"
+    static let dreo = "devicesDreo"
+
+    /// What a source said last time, while it's still signed in (never in Demo mode).
+    static func load(_ key: String, signedIn: Bool) -> [HomeDevice] {
+        guard signedIn, !Demo.isOn else { return [] }
+        return Saved.load(key, as: [HomeDevice].self) ?? []
+    }
+}
+
 @Observable @MainActor
 final class AccessoryStore {
     static let shared = AccessoryStore()
 
-    var fromHome: [HomeDevice] = [] { didSet { zones() } }
-    var fromSmartThings: [HomeDevice] = [] { didSet { zones() } }
-    var fromDreo: [HomeDevice] = [] { didSet { zones() } }
+    // Each source's devices start as it last said (kept for the next launch), so Home shows every device at once and
+    // is drawn once, rather than again as each source answers. The sources only set these when something changed.
+    var fromHome: [HomeDevice] = SavedDevices.load(SavedDevices.home, signedIn: true) {
+        didSet { changed(SavedDevices.home, fromHome) }
+    }
+    var fromSmartThings: [HomeDevice] = SavedDevices.load(SavedDevices.smartThings, signedIn: Keychain.get("st.refresh") != nil || Keychain.get("st.token") != nil) {
+        didSet { changed(SavedDevices.smartThings, fromSmartThings) }
+    }
+    var fromDreo: [HomeDevice] = SavedDevices.load(SavedDevices.dreo, signedIn: Keychain.get("dreo.email") != nil && Keychain.get("dreo.password") != nil) {
+        didSet { changed(SavedDevices.dreo, fromDreo) }
+    }
     /// Carries out a change to an Apple Home accessory (set by the iPhone app).
     @ObservationIgnored var homeControl: ((HomeDevice, DeviceCommand) -> Void)?
     /// Why Apple Home has nothing to show on this iPhone (no permission, no home yet); nil when it's fine.
     var homeProblem: String?
+
+    /// Every device as `all` gives it, and each one's place in it by id: made again only when a source or a name
+    /// changes (Home reads it many times each time it's drawn).
+    @ObservationIgnored private var made: [HomeDevice] = []
+    @ObservationIgnored private var place: [String: Int] = [:]
+    /// The family's names `made` was made with; nil until it's made.
+    @ObservationIgnored private var madeWith: [String: String]?
+    /// What's kept on disk for each source (written again only when that source changes).
+    @ObservationIgnored private var kept: [String: [HomeDevice]] = [:]
+
+    init() {
+        kept = [SavedDevices.home: fromHome, SavedDevices.smartThings: fromSmartThings, SavedDevices.dreo: fromDreo]
+        // The rooms the kept devices report, for Home's first drawing.
+        zones()
+    }
 
     /// The house's thermostat (the ecobee): one that's responding first, Apple Home's before SmartThings'.
     var thermostat: HomeDevice? {
@@ -24,20 +60,20 @@ final class AccessoryStore {
         return list.first { $0.reachable && $0.source == "home" } ?? list.first { $0.reachable } ?? list.first
     }
 
+    /// Every device, by the names the family gave them, in name order.
     var all: [HomeDevice] {
+        // The sources and the names are read every time, so whatever shows devices redraws when any of them changes;
+        // the list itself is only made again when one of them did.
+        _ = (fromHome.count, fromSmartThings.count, fromDreo.count)
         let names = SmartHome.shared.names
-        // An ecobee linked to both Apple Home and SmartThings shows once (the Apple Home one).
-        let homeThermostats = Set(fromHome.filter { $0.kind == .thermostat }.map { $0.name.lowercased() })
-        let st = fromSmartThings.filter { !($0.kind == .thermostat && homeThermostats.contains($0.name.lowercased())) }
-        return (fromHome + st + fromDreo).map { d in
-            var d = d
-            if let n = names[d.id], !n.isEmpty { d.name = n }
-            return d
-        }
-        .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        if madeWith != names { make(names) }
+        return made
     }
 
-    func device(_ id: String) -> HomeDevice? { all.first { $0.id == id } }
+    func device(_ id: String) -> HomeDevice? {
+        let list = all
+        return place[id].map { list[$0] }
+    }
 
     func send(_ d: HomeDevice, _ c: DeviceCommand) {
         switch d.source {
@@ -49,10 +85,38 @@ final class AccessoryStore {
         }
     }
 
+    private func make(_ names: [String: String]) {
+        // An ecobee linked to both Apple Home and SmartThings shows once (the Apple Home one).
+        let homeThermostats = Set(fromHome.filter { $0.kind == .thermostat }.map { $0.name.lowercased() })
+        let st = fromSmartThings.filter { !($0.kind == .thermostat && homeThermostats.contains($0.name.lowercased())) }
+        let list = (fromHome + st + fromDreo).map { d -> HomeDevice in
+            var d = d
+            if let n = names[d.id], !n.isEmpty { d.name = n }
+            return d
+        }
+        .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        var ids: [String: Int] = [:]
+        for (i, d) in list.enumerated() where ids[d.id] == nil { ids[d.id] = i }
+        made = list
+        place = ids
+        madeWith = names
+    }
+
+    /// A source changed: the list is made again, the rooms the devices report go to SmartHome, and what the source
+    /// said is kept for the next launch.
+    private func changed(_ key: String, _ list: [HomeDevice]) {
+        make(SmartHome.shared.names)
+        zones()
+        guard kept[key] != list, !Demo.isOn else { return }
+        kept[key] = list
+        Saved.save(key, list)
+    }
+
     private func zones() {
         var z: [String: String] = [:]
         for d in fromHome + fromSmartThings + fromDreo { if let r = d.zone { z[d.id] = r } }
-        SmartHome.shared.externalZones = z
+        // Only a real change: every room on Home is worked out again from these.
+        if SmartHome.shared.externalZones != z { SmartHome.shared.externalZones = z }
     }
 }
 
@@ -89,10 +153,13 @@ struct DevicesSection: View {
     }
 }
 
-struct DeviceTile: View {
+struct DeviceTile: View, Equatable {
     var device: HomeDevice
     var openControls: () -> Void
     @State private var confirmUnlock = false
+
+    /// Drawn again for a change to the device, not each time the grid around it is (the action is always the same).
+    nonisolated static func == (a: DeviceTile, b: DeviceTile) -> Bool { a.device == b.device }
 
     private var lit: Bool {
         guard device.reachable else { return false }
@@ -111,8 +178,9 @@ struct DeviceTile: View {
         // Compact, like the Home app: icon on the left, name and state beside it.
         HStack(spacing: 10) {
             Group {
-                if device.source == "smartthings" && device.isRunning && ApplianceArt.animates(device.kind) {
-                    ApplianceArt(kind: device.kind, running: true, alert: device.alert)
+                // A fridge is always "running": on a tile it's its still symbol (its page shows the snow falling).
+                if device.source == "smartthings" && device.isRunning && device.kind != .fridge && ApplianceArt.animates(device.kind) {
+                    ApplianceArt(kind: device.kind, running: true, alert: device.alert, minimumInterval: 1.0 / 20)
                         .frame(width: 30, height: 30)
                         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                 } else {
@@ -400,9 +468,12 @@ struct FanControls: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
+        // How many turns the blades make a second.
+        let rate = device.isOn == true ? 0.5 + Double(device.speed ?? 50) / 25 : 0
         VStack(spacing: 14) {
-            TimelineView(.animation(paused: device.isOn != true || reduceMotion)) { tl in
-                let rate = device.isOn == true ? 0.5 + Double(device.speed ?? 50) / 25 : 0
+            // 30 frames a second is plenty for the blades, until they turn so fast that each frame's step would look
+            // like turning backwards: then 60.
+            TimelineView(.animation(minimumInterval: rate > 2.5 ? 1.0 / 60 : 1.0 / 30, paused: device.isOn != true || reduceMotion)) { tl in
                 Image(systemName: "fan.fill")
                     .font(.system(size: 54))
                     .rotationEffect(.degrees(reduceMotion ? 0 : tl.date.timeIntervalSinceReferenceDate * 360 * rate))

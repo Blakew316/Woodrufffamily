@@ -3,8 +3,8 @@ import WoodruffKit
 
 // MARK: - What a Home tab shows
 
-/// One tile on a Home tab.
-enum HomeTile: Identifiable {
+/// One tile on a Home tab. Equatable, so a tab is drawn again only when what it shows changed.
+enum HomeTile: Identifiable, Equatable {
     case camera(NestCameras.Camera)
     case tv(FleetTV)
     case speaker(SonosRoom)
@@ -163,6 +163,9 @@ func packBoard(_ items: [(id: String, span: TileSpan)], columns: Int) -> (slots:
 @Observable @MainActor
 final class HomeScroller {
     var position = ScrollPosition(edge: .top)
+    /// The page is moving (being dragged, gliding, or scrolled by a tile at its edge): Home's backdrop rests meanwhile.
+    /// Only the backdrop reads it, so the page itself isn't drawn again for it.
+    var scrolling = false
     /// How far down the page is scrolled, and how far it can go.
     @ObservationIgnored var offset: CGFloat = 0
     @ObservationIgnored var maxOffset: CGFloat = 0
@@ -241,7 +244,7 @@ struct ArrangeHomeButton: View {
 /// the size chosen. Edit (or press and hold) and they jiggle: drag one anywhere and the others move out of its way,
 /// drag its corner to make it bigger or smaller, − to take it off the tab. Kept with the Home layout, so it's the
 /// same on every device.
-struct HomeBoard: View {
+struct HomeBoard: View, Equatable {
     var page: String
     var tiles: [HomeTile]
     /// What tapping a TV does (the iPhone opens its player; the Mac grows the tile into the TV's page).
@@ -299,6 +302,11 @@ struct HomeBoard: View {
 
     private final class Place {
         var origin: CGPoint = .zero
+    }
+
+    /// Drawn again when what it shows changes, not each time Home is (the actions it's given are the same each time).
+    nonisolated static func == (a: HomeBoard, b: HomeBoard) -> Bool {
+        a.page == b.page && a.tiles == b.tiles && a.zoom == b.zoom && a.zoomed == b.zoomed
     }
 
     var body: some View {
@@ -377,10 +385,13 @@ struct HomeBoard: View {
 
     @ViewBuilder private func tileView(_ tile: HomeTile, _ size: CGSize) -> some View {
         switch tile {
+        // Each drawn again only for a change to itself (not for every move of a tile being dragged past it).
         case .camera(let cam):
             LiveCameraTile(camera: cam, compact: size.width < 260, fill: true) { openCamera = cam }
+                .equatable()
         case .tv(let tv):
             HomeTVTile(tv: tv, height: size.height) { openTV(tv.id) }
+                .equatable()
                 .modifier(TVZoom(id: tv.id, zoom: zoom, zoomed: zoomed))
         case .speaker(let r):
             SpeakerTile(room: r) { openSpeaker = r }
@@ -388,6 +399,7 @@ struct HomeBoard: View {
             LightTile(light: l) { openLight = l }
         case .device(let d):
             DeviceTile(device: d) { openDevice = d }
+                .equatable()
         }
     }
 
@@ -663,7 +675,8 @@ private struct Jiggle: ViewModifier {
     var size: CGSize
 
     func body(content: Content) -> some View {
-        TimelineView(.animation(minimumInterval: nil, paused: !active)) { ctx in
+        // 60 a second at most: the wobble is only a degree or so, and ProMotion's 120 just doubled the work.
+        TimelineView(.animation(minimumInterval: 1.0 / 60, paused: !active)) { ctx in
             let t = ctx.date.timeIntervalSinceReferenceDate
             let phase = Double(seed % 628) / 100
             let speed = 24 + Double(seed % 9)

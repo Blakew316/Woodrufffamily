@@ -116,7 +116,12 @@ struct WoodruffCommands: Commands {
     }
 
     @MainActor private func paired() -> [FleetTV] { fleet.tvs.filter { !$0.isUnpaired } }
-    @MainActor private func tvName(_ i: Int) -> String { i < paired().count ? paired()[i].name : "TV \(i + 1)" }
+    /// From `pairedNames` (the same TVs in the same order), not the TVs themselves: the menu is rebuilt whenever what
+    /// it reads changes, and the TVs change every second or two while their names hardly ever do.
+    @MainActor private func tvName(_ i: Int) -> String {
+        let names = fleet.pairedNames
+        return i < names.count ? names[i] : "TV \(i + 1)"
+    }
     @MainActor private func pick(_ i: Int) {
         let list = paired()
         guard i < list.count else { return }

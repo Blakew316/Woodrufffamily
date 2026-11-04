@@ -125,6 +125,19 @@ final class NowPlayingBridge {
     /// each one replaces all of Control Center's Now Playing.
     private var lastTitle: String?
     private var art: (title: String, artwork: MPMediaItemArtwork)?
+    /// What Control Center was last given (nil: nothing yet), and where the title was then: it's given again only when
+    /// that changes, or the title has got more than 2 seconds away from where Control Center's own clock has it.
+    /// (Every update replaced it all before, several times a minute while anything played.)
+    private var shown: Shown?
+    private var shownElapsed: TimeInterval = 0
+    private var shownAt = Date.distantPast
+    private var shownPlaying = false
+
+    private enum Shown: Equatable {
+        case nothing
+        case idle(tv: String, name: String)
+        case title(tv: String, name: String, title: String, app: String?, playing: Bool, duration: Double?)
+    }
 
     func wire() {
         guard !wired else { return }
@@ -145,8 +158,11 @@ final class NowPlayingBridge {
         let info = MPNowPlayingInfoCenter.default()
         // Only what's playing now: a TV that's off, or has nothing playing, clears Control Center.
         guard let tv = fleet.selected, tv.online, !tv.isUnpaired, tv.playing != nil else {
-            info.nowPlayingInfo = nil
-            info.playbackState = .stopped
+            if shown != .nothing {
+                info.nowPlayingInfo = nil
+                info.playbackState = .stopped
+                shown = .nothing
+            }
             lastTitle = nil
             art = nil
             return
@@ -154,24 +170,40 @@ final class NowPlayingBridge {
         guard let p = tv.nowPlaying else {
             // Left paused so long it no longer counts as playing: no old title or picture, only the TV, paused, so the
             // Mac's play/pause key still reaches it (with nothing here, macOS hands that key to Music instead).
-            let idle: [String: Any] = [MPMediaItemPropertyTitle: tv.name, MPNowPlayingInfoPropertyPlaybackRate: 0.0]
-            info.nowPlayingInfo = idle
-            info.playbackState = .paused
+            let idle = Shown.idle(tv: tv.id, name: tv.name)
+            if shown != idle {
+                let d: [String: Any] = [MPMediaItemPropertyTitle: tv.name, MPNowPlayingInfoPropertyPlaybackRate: 0.0]
+                info.nowPlayingInfo = d
+                info.playbackState = .paused
+                shown = idle
+            }
             lastTitle = nil
             art = nil
             return
         }
-        var d: [String: Any] = [
-            MPMediaItemPropertyTitle: p.title,
-            MPMediaItemPropertyArtist: tv.name,
-            MPMediaItemPropertyAlbumTitle: p.app ?? "Woodruff Family",
-            MPNowPlayingInfoPropertyPlaybackRate: p.isPlaying ? 1.0 : 0.0,
-            MPNowPlayingInfoPropertyElapsedPlaybackTime: p.estimatedPosition(at: Date()) / 1000,
-        ]
-        if let dur = p.duration, dur > 0 { d[MPMediaItemPropertyPlaybackDuration] = dur / 1000 }
-        if let art, art.title == p.title { d[MPMediaItemPropertyArtwork] = art.artwork }
-        info.nowPlayingInfo = d
-        info.playbackState = p.isPlaying ? .playing : .paused
+        let now = Date()
+        let elapsed = p.estimatedPosition(at: now) / 1000
+        let next = Shown.title(tv: tv.id, name: tv.name, title: p.title, app: p.app, playing: p.isPlaying, duration: p.duration)
+        // Where Control Center has it by now (its clock runs on by itself while it plays).
+        let expected = shownElapsed + (shownPlaying ? now.timeIntervalSince(shownAt) : 0)
+        if next != shown || abs(elapsed - expected) > 2 {
+            var d: [String: Any] = [
+                MPMediaItemPropertyTitle: p.title,
+                MPMediaItemPropertyArtist: tv.name,
+                MPMediaItemPropertyAlbumTitle: p.app ?? "Woodruff Family",
+                MPNowPlayingInfoPropertyPlaybackRate: p.isPlaying ? 1.0 : 0.0,
+                MPNowPlayingInfoPropertyElapsedPlaybackTime: elapsed,
+            ]
+            if let dur = p.duration, dur > 0 { d[MPMediaItemPropertyPlaybackDuration] = dur / 1000 }
+            // The poster stays: each write replaces everything.
+            if let art, art.title == p.title { d[MPMediaItemPropertyArtwork] = art.artwork }
+            info.nowPlayingInfo = d
+            info.playbackState = p.isPlaying ? .playing : .paused
+            shown = next
+            shownElapsed = elapsed
+            shownAt = now
+            shownPlaying = p.isPlaying
+        }
         if lastTitle != p.title, let path = fleet.artwork(for: p)?.poster, let url = fleet.hubClient()?.art(path) {
             lastTitle = p.title
             let title = p.title
@@ -184,6 +216,9 @@ final class NowPlayingBridge {
                 guard var cur = MPNowPlayingInfoCenter.default().nowPlayingInfo,
                       cur[MPMediaItemPropertyTitle] as? String == title else { return }
                 cur[MPMediaItemPropertyArtwork] = artwork
+                // Where Control Center's own clock has the title by now: what `cur` holds is from the last full write,
+                // and giving it again would set the clock back by however long the poster took to load.
+                cur[MPNowPlayingInfoPropertyElapsedPlaybackTime] = self.shownElapsed + (self.shownPlaying ? Date().timeIntervalSince(self.shownAt) : 0)
                 MPNowPlayingInfoCenter.default().nowPlayingInfo = cur
             }
         }
@@ -214,19 +249,63 @@ final class NowPlayingBridge {
 @MainActor
 enum WidgetSync {
     private static var lastKey = ""
+    /// What the snapshot was last saved from (`snapshotKey(_:_:)`).
+    private static var savedKey: Int?
+    /// The save waiting to go: changes within a second of each other go as one.
+    private static var pending: Task<Void, Never>?
 
+    /// Called for every change to the TVs, the remote's TV, the speakers and the lights: saved a second after the first
+    /// of a burst (as things are then), and only when something the widgets use changed.
     static func update(_ fleet: Fleet) {
-        let names = Dictionary(fleet.tvs.map { ($0.id, $0.name) }, uniquingKeysWith: { a, _ in a })
-        // Never write an empty list over the backup: it's what restores the pairings if the app's own are lost.
-        let hubs = fleet.hubs.isEmpty ? (SharedStore.load()?.hubs ?? [])
-            : fleet.hubs.map { SharedStore.HubLink(id: $0.id, name: $0.name, base: $0.connection.base, key: $0.connection.key) }
-        let home = SmartHome.shared
-        // What each TV plays now (nothing for one that's off or left paused), so a widget drawn from this never shows
-        // an old title.
-        let tvs = fleet.tvs.filter { !$0.isUnpaired }.map {
-            SharedStore.TVInfo(id: $0.id, name: $0.name, online: $0.online, playing: $0.nowPlaying, hubID: $0.hubID, routeID: $0.routeID)
+        guard pending == nil else { return }
+        pending = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            WidgetSync.pending = nil
+            WidgetSync.write(fleet)
         }
-        SharedStore.save(.init(hubs: hubs, selectedID: fleet.selectedID, names: names, speakers: home.speakers, lights: home.lights, tvs: tvs))
+    }
+
+    /// Everything the snapshot holds that a widget uses, hashed: the pairings (each hub's id, name, address and key, so
+    /// the pairing backup is saved whenever they change), the remote's TV, every TV's name, state and what it plays, and
+    /// the speakers and lights. Where a title has got to counts only by the minute: it moves all the time, and the
+    /// widgets ask the TVs for it themselves.
+    private static func snapshotKey(_ fleet: Fleet, _ home: SmartHome) -> Int {
+        var h = Hasher()
+        for hub in fleet.hubs {
+            h.combine(hub.id)
+            h.combine(hub.name)
+            h.combine(hub.connection.base)
+            h.combine(hub.connection.key)
+        }
+        h.combine(fleet.selectedID)
+        for t in fleet.tvs {
+            h.combine(t.id)
+            h.combine(t.name)
+            h.combine(t.link)
+            h.combine(t.online)
+            h.combine(t.hubID)
+            h.combine(t.routeID)
+            let p = t.nowPlaying
+            h.combine(p?.title)
+            h.combine(p?.subtitle)
+            h.combine(p?.app)
+            h.combine(p?.key)
+            h.combine(p?.isPlaying)
+            h.combine(p?.duration)
+            h.combine(p.map { (($0.position ?? 0) / 60_000).rounded(.down) })
+        }
+        h.combine(home.speakers)
+        h.combine(home.lights)
+        return h.finalize()
+    }
+
+    private static func write(_ fleet: Fleet) {
+        let home = SmartHome.shared
+        let saving = snapshotKey(fleet, home)
+        if saving != savedKey {
+            savedKey = saving
+            save(fleet, home)
+        }
         // Reload only when what a widget shows changes (titles, play state, on/off), not every refresh.
         let key = fleet.tvs.map { "\($0.id)|\($0.name)|\($0.link)|\($0.online)|\($0.nowPlaying?.title ?? "")|\($0.nowPlaying?.isPlaying ?? false)" }.joined(separator: ";") + "#\(fleet.selectedID ?? "")"
             + home.speakers.map { "\($0.name)|\($0.title ?? "")|\($0.isPlaying)" }.joined() + home.lights.map { "\($0.name)|\($0.on)" }.joined()
@@ -234,6 +313,19 @@ enum WidgetSync {
             lastKey = key
             WidgetCenter.shared.reloadAllTimelines()
         }
+    }
+
+    private static func save(_ fleet: Fleet, _ home: SmartHome) {
+        let names = Dictionary(fleet.tvs.map { ($0.id, $0.name) }, uniquingKeysWith: { a, _ in a })
+        // Never write an empty list over the backup: it's what restores the pairings if the app's own are lost.
+        let hubs = fleet.hubs.isEmpty ? (SharedStore.load()?.hubs ?? [])
+            : fleet.hubs.map { SharedStore.HubLink(id: $0.id, name: $0.name, base: $0.connection.base, key: $0.connection.key) }
+        // What each TV plays now (nothing for one that's off or left paused), so a widget drawn from this never shows
+        // an old title.
+        let tvs = fleet.tvs.filter { !$0.isUnpaired }.map {
+            SharedStore.TVInfo(id: $0.id, name: $0.name, online: $0.online, playing: $0.nowPlaying, hubID: $0.hubID, routeID: $0.routeID)
+        }
+        SharedStore.save(.init(hubs: hubs, selectedID: fleet.selectedID, names: names, speakers: home.speakers, lights: home.lights, tvs: tvs))
     }
 }
 

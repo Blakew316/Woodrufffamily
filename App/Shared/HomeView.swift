@@ -16,10 +16,29 @@ struct HomeView: View {
     @Namespace private var zoom
     private let layout = HomeLayout.shared
 
+    /// What one drawing of Home works from, found once and handed to every part (each part used to work these out
+    /// for itself, again for every room).
+    private struct Contents {
+        /// The room bar's choice as shown (see `shownRoom`): Favorites, "" for All Rooms, or a room.
+        var room: String
+        /// The rooms with something in them.
+        var rooms: [String]
+        /// Every device (Apple Home, SmartThings, Dreo).
+        var devices: [HomeDevice]
+        /// The favourites' ids.
+        var favorites: Set<String>
+    }
+
+    /// A room on Home with its tiles.
+    private struct RoomGroup: Identifiable {
+        var id: String
+        var tiles: [HomeTile]
+    }
+
     /// What Home shows for the room bar's choice. A room with nothing in it just now (its cameras or linked TVs
     /// still loading at launch, say) shows All Rooms until it's back, without forgetting the choice; with the room
     /// bar hidden there's no way to pick a room, so everything shows.
-    private var room: String {
+    private func shownRoom(_ rooms: [String]) -> String {
         if layout.hiddenSections.contains("rooms") { return "" }
         return picked == favoritesKey || picked.isEmpty || rooms.contains(picked) ? picked : ""
     }
@@ -35,6 +54,11 @@ struct HomeView: View {
         let editing = layout.editing
         let arranging = layout.arranging
         let player = playerTV
+        // Every device, the rooms and the room showing: worked out once for this drawing.
+        let devices = AccessoryStore.shared.all
+        let rooms = homeRooms(fleet, devices: devices)
+        let c = Contents(room: shownRoom(rooms), rooms: rooms, devices: devices, favorites: Set(layout.favorites))
+        let room = c.room
         @Bindable var scroller = scroller
         ScrollView {
             VStack(alignment: .leading, spacing: 30) {
@@ -59,22 +83,23 @@ struct HomeView: View {
                 .padding(.bottom, -10)
                 #endif
                 ForEach(layout.visibleSections.filter { $0 == "status" || $0 == "rooms" }, id: \.self) { key in
-                    section(key)
+                    section(key, c)
                 }
                 if room == favoritesKey || (room.isEmpty && !layout.favorites.isEmpty) {
-                    favoritesGroup
+                    favoritesGroup(c)
                 }
                 if room != favoritesKey {
                     if !room.isEmpty {
                         // One room picked in the room bar: its tiles, to arrange as you like.
-                        if hasThings(room) { roomGroup(room) }
+                        let tiles = roomTiles(room, c)
+                        if !tiles.isEmpty { roomGroup(room, tiles, c) }
                     } else if layout.groupByRoom {
                         // Like the Home app: each room with everything in it.
-                        ForEach(roomGroups, id: \.self) { r in roomGroup(r) }
+                        ForEach(roomGroups(c)) { g in roomGroup(g.id, g.tiles, c) }
                         if !layout.hiddenSections.contains("wifi") { WifiSection() }
                     } else {
                         ForEach(layout.visibleSections.filter { $0 != "status" && $0 != "rooms" }, id: \.self) { key in
-                            section(key)
+                            section(key, c)
                         }
                     }
                 }
@@ -97,6 +122,11 @@ struct HomeView: View {
         }
         .scrollPosition($scroller.position)
         .onScrollGeometryChange(for: HomeScrollSpot.self) { HomeScrollSpot($0) } action: { _, spot in scroller.take(spot) }
+        // While the page moves, Home's backdrop holds still (it's the only thing that reads this).
+        .onScrollPhaseChange { _, phase in
+            let moving = phase.isScrolling
+            if scroller.scrolling != moving { scroller.scrolling = moving }
+        }
         .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { f in scroller.frame = f }
         // A tile being dragged holds the page still (it scrolls by itself at the edges).
         .scrollDisabled(layout.draggingTile != nil)
@@ -139,7 +169,7 @@ struct HomeView: View {
             }
         }
         #endif
-        .background { HomeBackdrop(playing: featuredTV?.nowPlaying) }
+        .background { HomeBackdrop(playing: featuredTV?.nowPlaying, scroller: scroller) }
         // Home is always the dark, cinematic room: its glass and text read over the backdrop.
         .environment(\.colorScheme, .dark)
         .navigationTitle(openTV.flatMap { fleet.tv($0)?.name } ?? "Home")
@@ -165,16 +195,19 @@ struct HomeView: View {
         .onDisappear { layout.stopArranging() }
     }
 
-    @ViewBuilder private func section(_ key: String) -> some View {
+    @ViewBuilder private func section(_ key: String, _ c: Contents) -> some View {
+        let room = c.room
         switch key {
-        case "rooms": roomBar
+        case "rooms": roomBar(c)
         case "tvs":
-            if !shownTVs.isEmpty {
+            let tvs = shownTVs(room)
+            if !tvs.isEmpty {
                 VStack(alignment: .leading, spacing: 14) {
                     Text("TVs").font(.title2.bold())
                     LazyVGrid(columns: columns, spacing: 18) {
-                        ForEach(shownTVs) { tv in
+                        ForEach(tvs) { tv in
                             HomeTVTile(tv: tv) { open(tv.id) }
+                                .equatable()
                                 .matchedGeometryEffect(id: tv.id, in: zoom, isSource: openTV != tv.id)
                                 .opacity(openTV == tv.id ? 0 : 1)
                         }
@@ -183,7 +216,7 @@ struct HomeView: View {
             }
         case "speakers": SpeakersSection(room: room.isEmpty ? nil : room)
         case "lights": LightsSection(room: room.isEmpty ? nil : room)
-        case "cameras": CamerasSection(room: room.isEmpty ? nil : room, excluding: room.isEmpty ? Set(layout.favorites) : [])
+        case "cameras": CamerasSection(room: room.isEmpty ? nil : room, excluding: room.isEmpty ? c.favorites : [])
         case "devices": DevicesSection(room: room.isEmpty ? nil : room)
         case "wifi": if room.isEmpty { WifiSection() }
         default: EmptyView()
@@ -208,19 +241,20 @@ struct HomeView: View {
         await fleet.loadAllHealth()
     }
 
-    /// Rooms with something in them, like the Home app's room bar; picking one shows just that room.
-    private var rooms: [String] { homeRooms(fleet) }
-
     // MARK: By room
 
-    /// The rooms Home shows (the one picked in the room bar, or all with something in them), then Other.
-    private var roomGroups: [String] {
-        let list = room.isEmpty ? layout.arrangeRooms(rooms) + [noRoom] : [room]
-        return list.filter(hasThings)
+    /// The rooms Home shows (the one picked in the room bar, or all with something in them, then Other), each with
+    /// its tiles; a room with nothing to show isn't there.
+    private func roomGroups(_ c: Contents) -> [RoomGroup] {
+        let list = c.room.isEmpty ? layout.arrangeRooms(c.rooms) + [noRoom] : [c.room]
+        return list.compactMap { r in
+            let tiles = roomTiles(r, c)
+            return tiles.isEmpty ? nil : RoomGroup(id: r, tiles: tiles)
+        }
     }
 
     /// Favorites: everything starred, whatever room it's in.
-    private var favoritesGroup: some View {
+    private func favoritesGroup(_ c: Contents) -> some View {
         VStack(alignment: .leading, spacing: 16) {
             if layout.favorites.isEmpty {
                 Text("Touch and hold anything on Home (a camera, TV, speaker, light or device) and choose Add to Favorites. It shows up here.")
@@ -229,35 +263,41 @@ struct HomeView: View {
                     .glass(RoundedRectangle(cornerRadius: 20, style: .continuous), interactive: false)
             }
             // The same TV may also sit in its room below; only that one zooms.
-            HomeBoard(page: favoritesKey, tiles: favoriteTiles, openTV: { open($0) })
+            HomeBoard(page: favoritesKey, tiles: favoriteTiles(c), openTV: { open($0) })
+                .equatable()
         }
     }
 
-    /// Every favourite there is, cameras first, then TVs, then the rest, until they're arranged by hand.
-    private var favoriteTiles: [HomeTile] {
+    /// Every favourite there is, cameras first, then TVs, then the rest, until they're arranged by hand. Each kind is
+    /// looked up by id (not searched for again for every favourite).
+    private func favoriteTiles(_ c: Contents) -> [HomeTile] {
         let h = SmartHome.shared
-        let cams = NestCameras.shared.cameras
-        var cameras: [HomeTile] = [], tvs: [HomeTile] = [], small: [HomeTile] = []
-        for id in layout.favorites {
-            if let c = cams.first(where: { $0.id == id }) { cameras.append(.camera(c)) }
-            else if let t = fleet.tv(id) { tvs.append(.tv(t)) }
-            else if let r = h.speaker(id) { small.append(.speaker(r)) }
-            else if let l = h.light(id) { small.append(.light(l)) }
-            else if let d = AccessoryStore.shared.device(id) { small.append(.device(d)) }
+        func byID<T: Identifiable>(_ items: [T]) -> [String: T] where T.ID == String {
+            Dictionary(items.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         }
-        return cameras + tvs + small
+        let cams = byID(NestCameras.shared.cameras), tvs = byID(fleet.tvs)
+        let speakers = byID(h.speakers), lights = byID(h.lights), devices = byID(c.devices)
+        var cameraTiles: [HomeTile] = [], tvTiles: [HomeTile] = [], small: [HomeTile] = []
+        for id in layout.favorites {
+            if let cam = cams[id] { cameraTiles.append(.camera(cam)) }
+            else if let t = tvs[id] { tvTiles.append(.tv(t)) }
+            else if let r = speakers[id] { small.append(.speaker(r)) }
+            else if let l = lights[id] { small.append(.light(l)) }
+            else if let d = devices[id] { small.append(.device(d)) }
+        }
+        return cameraTiles + tvTiles + small
     }
 
     /// Everything in room [r] Home shows: its cameras, TVs, speakers, lights and devices (not ones hidden, nor kinds
     /// turned off in Rooms & Sections).
-    private func roomTiles(_ r: String) -> [HomeTile] {
+    private func roomTiles(_ r: String, _ c: Contents) -> [HomeTile] {
         let h = SmartHome.shared
         let shown = { (k: String) in !layout.hiddenSections.contains(k) }
         // Every room listed: a favourite camera is already playing under Favorites (one live picture, one place).
-        let everyRoom = room.isEmpty
+        let everyRoom = c.room.isEmpty
         var out: [HomeTile] = []
         if shown("cameras") {
-            let cams = NestCameras.shared.cameras.filter { roomMatches(h.rooms[$0.id] ?? $0.room, r) && !(everyRoom && layout.favorites.contains($0.id)) }
+            let cams = NestCameras.shared.cameras.filter { roomMatches(h.rooms[$0.id] ?? $0.room, r) && !(everyRoom && c.favorites.contains($0.id)) }
             out += layout.arrange(cams, in: "cameras").map { HomeTile.camera($0) }
         }
         if shown("tvs") { out += tvs(in: r).map { HomeTile.tv($0) } }
@@ -268,7 +308,7 @@ struct HomeView: View {
             out += layout.arrange(h.lights.filter { roomMatches(h.room(of: $0.id), r) }, in: "lights").map { HomeTile.light($0) }
         }
         if shown("devices") {
-            out += layout.arrange(AccessoryStore.shared.all.filter { roomMatches(h.room(of: $0.id), r) }, in: "devices").map { HomeTile.device($0) }
+            out += layout.arrange(c.devices.filter { roomMatches(h.room(of: $0.id), r) }, in: "devices").map { HomeTile.device($0) }
         }
         // Each thing once (a light found twice would otherwise upset the grid).
         var seen = Set<String>()
@@ -280,37 +320,28 @@ struct HomeView: View {
         layout.arrange(fleet.tvs.filter { roomMatches(SmartHome.shared.rooms[$0.id] ?? ($0.isUnpaired ? nil : $0.name), r) }, in: "tvs")
     }
 
-    private func hasThings(_ r: String) -> Bool {
-        let h = SmartHome.shared
-        let shown = { (k: String) in !layout.hiddenSections.contains(k) }
-        // Every room listed: a favourite camera is already playing under Favorites, so it doesn't count here.
-        let everyRoom = room.isEmpty
-        return (shown("tvs") && !tvs(in: r).isEmpty)
-            || (shown("cameras") && NestCameras.shared.cameras.contains { roomMatches(h.rooms[$0.id] ?? $0.room, r) && !layout.hiddenItems.contains($0.id) && !(everyRoom && layout.favorites.contains($0.id)) })
-            || (shown("speakers") && h.speakers.contains { roomMatches(h.room(of: $0.id), r) && !layout.hiddenItems.contains($0.id) })
-            || (shown("lights") && h.lights.contains { roomMatches(h.room(of: $0.id), r) && !layout.hiddenItems.contains($0.id) })
-            || (shown("devices") && AccessoryStore.shared.all.contains { roomMatches(h.room(of: $0.id), r) && !layout.hiddenItems.contains($0.id) })
-    }
-
-    private func roomGroup(_ r: String) -> some View {
+    private func roomGroup(_ r: String, _ tiles: [HomeTile], _ c: Contents) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             // The room picked in the room bar is already its title; names only when every room is listed.
-            if room.isEmpty { Text(r == noRoom ? "Other" : r).font(.title3.bold()) }
+            if c.room.isEmpty { Text(r == noRoom ? "Other" : r).font(.title3.bold()) }
             #if os(macOS)
-            HomeBoard(page: r, tiles: roomTiles(r), openTV: { open($0) }, zoom: zoom, zoomed: openTV)
+            HomeBoard(page: r, tiles: tiles, openTV: { open($0) }, zoom: zoom, zoomed: openTV)
+                .equatable()
             #else
-            HomeBoard(page: r, tiles: roomTiles(r), openTV: { open($0) })
+            HomeBoard(page: r, tiles: tiles, openTV: { open($0) })
+                .equatable()
             #endif
         }
     }
 
-    private var shownTVs: [FleetTV] {
+    private func shownTVs(_ room: String) -> [FleetTV] {
         room.isEmpty ? layout.arrange(fleet.tvs, in: "tvs") : tvs(in: room)
     }
 
     /// The room bar: Favorites, the few rooms chosen for it (Kitchen, Front Yard, Living Room, Backyard), and
     /// More for All Rooms and every other room.
-    private var roomBar: some View {
+    private func roomBar(_ c: Contents) -> some View {
+        let room = c.room, rooms = c.rooms
         let pinned = layout.pinned(in: rooms)
         let others = rooms.filter { !pinned.contains($0) }
         let inMore = room.isEmpty || others.contains(room)
@@ -411,7 +442,7 @@ struct StatusPill: View {
 
 /// One TV, as a Home app tile: its name and state, what it's playing over the title's artwork, the transport,
 /// and the remote.
-struct HomeTVTile: View {
+struct HomeTVTile: View, Equatable {
     #if os(macOS)
     static let macBig = true
     #else
@@ -425,6 +456,10 @@ struct HomeTVTile: View {
     var open: () -> Void
     @State private var hovering = false
     @State private var dropTarget = false
+
+    /// Drawn again for a change to the TV or the tile's height, not each time the grid around it is (a tile being
+    /// dragged past it, say); the action is the same each time. (Off: "Seen 5 min. ago" keeps up by itself, below.)
+    nonisolated static func == (a: HomeTVTile, b: HomeTVTile) -> Bool { a.tv == b.tv && a.height == b.height }
 
     /// Photos and videos dropped on a tile go into Family Memories and show on that TV.
     private func dropped(_ urls: [URL]) {
@@ -465,7 +500,7 @@ struct HomeTVTile: View {
         ZStack(alignment: .bottomLeading) {
             if pictured {
                 Color.clear
-                    .overlay { NowPlayingArt(playing: p, backdrop: true) }
+                    .overlay { NowPlayingArt(playing: p, backdrop: true, maxPixel: 1024) }
                     .clipped()
                     // Paused a moment ago: a little quieter until it plays again.
                     .saturation(p?.isPlaying == false ? 0.7 : 1)
@@ -487,8 +522,12 @@ struct HomeTVTile: View {
                     Text([p.subtitle, p.app].compactMap { $0?.isEmpty == false ? $0 : nil }.joined(separator: " · "))
                         .font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
                     LiveProgress(playing: p, times: false, tint: .white).padding(.top, 10)
+                } else if !tv.online {
+                    // "Seen 5 min. ago" keeps up by itself: the tile is drawn again only when the TV changes, and one
+                    // that's off doesn't.
+                    TimelineView(.periodic(from: .now, by: 30)) { _ in idleText }
                 } else {
-                    Text(idleLine).font(Self.macBig ? .title3.weight(.semibold) : .headline).foregroundStyle(tv.online ? .primary : .secondary)
+                    idleText
                 }
                 HStack(spacing: 8) {
                     if let p { Transport(tv: tv, playing: p, compact: true) }
@@ -592,6 +631,10 @@ struct HomeTVTile: View {
         if !tv.online { return "Seen \(relative(tv.seen))" }
         return tv.onScreen ? "Woodruff is on screen" : "Nothing playing"
     }
+
+    private var idleText: some View {
+        Text(idleLine).font(Self.macBig ? .title3.weight(.semibold) : .headline).foregroundStyle(tv.online ? .primary : .secondary)
+    }
 }
 
 /// A Home app scene: one tap does it on every TV.
@@ -684,11 +727,18 @@ struct HomeBackdrop: View {
     @Environment(Fleet.self) private var fleet
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var playing: NowPlaying?
+    /// Home's scrolling: the drift rests while the page moves.
+    var scroller: HomeScroller? = nil
+    /// Low Power Mode: the drift rests.
+    @State private var lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled
 
     var body: some View {
+        let resting = reduceMotion || lowPower || (scroller?.scrolling ?? false)
         ZStack {
             Color(red: 0.03, green: 0.05, blue: 0.09)
-            TimelineView(.animation(minimumInterval: 1 / 15)) { ctx in
+            // Twice a second is plenty for a drift this slow (each step moves it a fraction of a point), and none
+            // while the page scrolls, under Reduce Motion, or in Low Power Mode.
+            TimelineView(.animation(minimumInterval: 0.5, paused: resting)) { ctx in
                 // Still under Reduce Motion.
                 let t = reduceMotion ? 0 : ctx.date.timeIntervalSinceReferenceDate / 30
                 let w = Float(sin(t) * 0.12), v = Float(cos(t * 0.8) * 0.12)
@@ -705,7 +755,7 @@ struct HomeBackdrop: View {
             }
             if hasPicture(fleet, playing) {
                 GeometryReader { g in
-                    NowPlayingArt(playing: playing, backdrop: true)
+                    NowPlayingArt(playing: playing, backdrop: true, maxPixel: 1800)
                         .frame(width: g.size.width, height: g.size.height)
                         .blur(radius: 110, opaque: true)
                         .saturation(1.2)
@@ -720,6 +770,13 @@ struct HomeBackdrop: View {
         .ignoresSafeArea()
         .animation(.easeInOut(duration: 1.2), value: playing?.title)
         .allowsHitTesting(false)
+        .task {
+            // As it is now (it may have changed while Home was away), then as it changes.
+            lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled
+            for await _ in NotificationCenter.default.notifications(named: .NSProcessInfoPowerStateDidChange) {
+                lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled
+            }
+        }
     }
 }
 

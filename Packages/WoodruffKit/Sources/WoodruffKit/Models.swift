@@ -354,7 +354,8 @@ public struct MemoryItem: Codable, Hashable, Sendable, Identifiable {
     public var takenDate: Date? { taken.map { Date(timeIntervalSince1970: $0 / 1000) } }
 }
 
-public struct Memories: Codable, Sendable {
+/// Equatable, so an answer that brings nothing new is told apart (the Memories page redraws only when something changed).
+public struct Memories: Codable, Sendable, Equatable {
     public var items: [MemoryItem]
     public var folder: String?
     public var fit: [Double]?
@@ -441,7 +442,8 @@ public struct Shelf: Codable, Hashable, Sendable {
     public var items: [Title]
 }
 
-public struct WatchHome: Codable, Sendable {
+/// Equatable, so the library asked for again every couple of minutes is kept (and redrawn) only when it changed.
+public struct WatchHome: Codable, Sendable, Equatable {
     public var state: String
     public var tv: String?
     public var updated: Double?

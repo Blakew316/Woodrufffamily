@@ -1,12 +1,19 @@
 import SwiftUI
 import WoodruffKit
 
-/// The hub's settings, loaded once and shared by the Settings pages.
+/// The hub's settings, loaded once and shared by the Settings pages. One for the whole app (`shared`): Settings opened
+/// again (a click in the Mac's sidebar makes it afresh) shows what was read last time at once, and reads them again
+/// behind it.
 @Observable @MainActor final class HubSettings {
+    static let shared = HubSettings()
+
     var s: TVSettings?
     var loading = false
     /// Why the settings couldn't be read (the pages say so, with Try Again, instead of loading forever).
     var error: String?
+    /// How many pages showing them are open, and the one loop that reads them again while any is (`follow`).
+    @ObservationIgnored private var followers = 0
+    @ObservationIgnored private var following: Task<Void, Never>?
 
     func load(_ c: TVClient?) async {
         guard let c else { error = TVError.notPaired.localizedDescription; return }
@@ -37,17 +44,31 @@ import WoodruffKit
     /// A save the TV answered with its new settings; nothing is changed when it didn't answer.
     func save(_ work: (TVClient) async throws -> TVSettings, on c: TVClient?) async throws {
         guard let c else { throw TVError.notPaired }
-        s = try await work(c)
-        error = nil
+        let saved = try await work(c)
+        if saved != s { s = saved }
+        if error != nil { error = nil }
     }
 
-    /// Reads them again every 20 seconds while a page shows them: another of the family's iPhones or Macs may have
-    /// saved a key or signed a TV in meanwhile, and that shows here without leaving the page.
+    /// For a page that shows them, for as long as it's open: they're read again every 20 seconds while any such page
+    /// is (another of the family's iPhones or Macs may have saved a key or signed a TV in meanwhile, and that shows
+    /// without leaving the page). One loop however many pages are open, kept going from page to page.
     func follow(_ fleet: Fleet) async {
-        while !Task.isCancelled {
-            try? await Task.sleep(nanoseconds: 20_000_000_000)
-            if Task.isCancelled { return }
-            if !loading { await load(fleet.hubClient()) }
+        followers += 1
+        if following == nil {
+            following = Task { [weak self] in
+                while !Task.isCancelled {
+                    try? await Task.sleep(nanoseconds: 20_000_000_000)
+                    guard let self, !Task.isCancelled else { return }
+                    if !self.loading { await self.load(fleet.hubClient()) }
+                }
+            }
+        }
+        // Until the page goes (its task is cancelled then).
+        while !Task.isCancelled { try? await Task.sleep(nanoseconds: 60_000_000_000) }
+        followers -= 1
+        if followers == 0 {
+            following?.cancel()
+            following = nil
         }
     }
 }
@@ -73,11 +94,12 @@ struct HubSettingsPending: View {
 
 /// Settings in five rows, grouped as iOS Settings groups things: TVs (every TV, Software Update, and one tap for all
 /// of them) and Smart Home (speakers, lights, cameras, devices, the Wi‑Fi), with Send beside them on iPhone (it has no
-/// tab there); Notifications, and Accounts (what the TVs sign in to); and General (Away From Home, Shortcuts, Sync
-/// Across Devices, the TV's last crash).
+/// tab there); Notifications, and Accounts (every sign-in, the TVs' and this device's); and General (Away From Home,
+/// Shortcuts, Sync Across Devices, the TV's last crash).
 struct SettingsView: View {
     @Environment(Fleet.self) private var fleet
-    @State private var hub = HubSettings()
+    /// The TVs' settings as last read (shown at once), read again as the page opens.
+    private let hub = HubSettings.shared
     @State private var route: String? = { let r = UserDefaults.standard.string(forKey: "route"); return r == "tvs" || r == "tv" ? r : nil }()
     // Read through UserDefaults, so a switch turned on Notifications (or synced from another device) shows at once.
     @AppStorage("notifyFleet") private var notifyFleet = true
@@ -99,12 +121,13 @@ struct SettingsView: View {
             }
 
             Section {
-                // Alert choices, Now Playing on the Lock Screen, the cameras' alerts, recent messages, and (on the
-                // Macs) Instant iPhone Alerts' push key.
-                PageLink("Notifications") { PhoneSettingsView() } label: {
+                // Alert choices, Now Playing on the Lock Screen, the cameras' alerts (on the TVs and here), recent
+                // messages, and (on the Macs) Instant iPhone Alerts' push key.
+                PageLink("Notifications") { PhoneSettingsView(hub: hub) } label: {
                     IconRow(symbol: "", color: .clear, title: "Notifications", value: notificationsSummary)
                 }
-                // What the TVs sign in to: Google Drive, movie posters, the Nest cameras, mail.
+                // Every sign-in: what the TVs sign in to (Google Drive, movie posters, the Nest cameras, mail), and
+                // what this device signs in to (Govee, SmartThings, Dreo, the Deco).
                 PageLink("Accounts") { ConnectionsView(hub: hub) } label: {
                     IconRow(symbol: "", color: .clear, title: "Accounts", value: connectionsSummary)
                 }
@@ -188,12 +211,18 @@ struct TVsSummaryRow: View {
 
 struct PhoneSettingsView: View {
     @Environment(Fleet.self) private var fleet
+    /// The TVs' settings (their side of the cameras' alerts).
+    var hub = HubSettings.shared
     @State private var topic: String?
     @State private var telling = false
     // Read and written through UserDefaults, so a change synced from another device shows here at once. (The Mac's
     // click sound for the remote's keys is in General.)
     @AppStorage("liveActivity") private var liveActivity = true
     @AppStorage("notifyFleet") private var notifyFleet = true
+    // This device's camera alerts, as `NestAlerts` keeps them (read here for the row's summary only).
+    @AppStorage("nest.alert.doorbell") private var doorbellAlerts = true
+    @AppStorage("nest.alert.person") private var personAlerts = true
+    @AppStorage("nest.alert.motion") private var motionAlerts = false
 
     var body: some View {
         Form {
@@ -216,10 +245,23 @@ struct PhoneSettingsView: View {
             } footer: {
                 Text("Lock-screen alerts reach this device through the free ntfy app even when Woodruff is closed. TV alerts tell you when a TV goes off or needs attention.")
             }
-            // The cameras' alerts on this device, with the rest of its alerts (the same switches as Smart Home →
-            // Cameras, which is where the cameras are connected).
-            if NestCameras.shared.connected {
-                AlertsSection(title: "Doorbell & Cameras", showsReconnect: false)
+            // The cameras' alerts in one place: what pops up on every TV (kept on the TVs: the same switches as
+            // Accounts → Nest Cameras), and what this device shows (as in Smart Home → Cameras, where it's connected).
+            let onTVs = hub.s?.nest?.connected == true
+            let onDevice = NestCameras.shared.connected
+            if onTVs || onDevice {
+                Section {
+                    if onTVs {
+                        PageLink("Camera Alerts on the TVs") { TVCameraAlertsView(hub: hub) } label: {
+                            IconRow(symbol: "", color: .clear, title: "On the TVs", value: tvAlertsSummary)
+                        }
+                    }
+                    if onDevice {
+                        PageLink("Camera Alerts on This Device") { DeviceCameraAlertsView() } label: {
+                            IconRow(symbol: "", color: .clear, title: "On This Device", value: deviceAlertsSummary)
+                        }
+                    }
+                } header: { Text("Camera Alerts") }
             }
             #if os(macOS)
             // The push key the Macs send the iPhones' alerts with: set up once, so it has a page of its own.
@@ -255,6 +297,24 @@ struct PhoneSettingsView: View {
         #endif
         .onChange(of: notifyFleet) { _, on in if on { Notifier.requestPermission() } }
         .task { await loadTopic() }
+        // Opened before Settings had read the TVs' settings: read them (their camera alerts show once they're in).
+        .task { await hub.loadIfNeeded(fleet) }
+    }
+
+    /// The TVs' camera alerts that are on ("Person", "All", "Off").
+    private var tvAlertsSummary: String {
+        Self.summary([("Person", hub.s?.nest?.person ?? true), ("Motion", hub.s?.nest?.motion ?? false)])
+    }
+
+    /// This device's camera alerts that are on.
+    private var deviceAlertsSummary: String {
+        Self.summary([("Doorbell", doorbellAlerts), ("Person", personAlerts), ("Motion", motionAlerts)])
+    }
+
+    private static func summary(_ alerts: [(String, Bool)]) -> String {
+        let on = alerts.filter { $0.1 }.map { $0.0 }
+        if on.isEmpty { return "Off" }
+        return on.count == alerts.count ? "All" : on.joined(separator: ", ")
     }
 
     /// The ntfy topic the TVs use for this device (asked again each time the page opens).
@@ -555,11 +615,15 @@ private struct GitHubTokenField: View {
     }
 }
 
-/// Settings → Accounts: what the TVs sign in to (Google Drive, movie posters, the Nest cameras, mail), kept on the
-/// TVs and copied to every TV linked to them.
+/// Settings → Accounts: every sign-in in one list. What the TVs sign in to (Google Drive, movie posters, the Nest
+/// cameras, mail), kept on the TVs and copied to every TV linked to them; and what this device signs in to (Govee,
+/// SmartThings, Dreo, the Deco), each opening the page where it's set up.
 struct ConnectionsView: View {
     @Environment(Fleet.self) private var fleet
     var hub: HubSettings
+    /// This device's sign-ins (their keys are in the Keychain: read as the page opens, and again each time it's back on
+    /// screen, not at every redraw).
+    @State private var device = DeviceSignIns()
 
     var body: some View {
         Form {
@@ -569,8 +633,8 @@ struct ConnectionsView: View {
                     PageLink("Movie Posters") { PostersView(hub: hub) } label: { IconRow(symbol: "", color: .clear, title: "Movie Posters", value: s.tmdb == true ? "On" : "Off") }
                     PageLink("Nest Cameras") { CamerasView(hub: hub) } label: { IconRow(symbol: "", color: .clear, title: "Nest Cameras", value: s.nest?.statusText) }
                     PageLink("Mail") { MailView(hub: hub) } label: { IconRow(symbol: "", color: .clear, title: "Mail", value: mailSummary(s)) }
-                } footer: {
-                    Text("Keys entered here are copied to every TV linked to \(fleet.hubClient()?.hub.name ?? "this TV"). Speakers, lights, appliances, the Wi‑Fi and this device’s cameras sign in on their own pages in Smart Home.")
+                } header: { Text("On the TVs") } footer: {
+                    Text("Keys entered here are copied to every TV linked to \(fleet.hubClient()?.hub.name ?? "this TV").")
                 }
                 if let e = hub.error {
                     Section { Text(e).font(.footnote).foregroundStyle(Palette.attention) }
@@ -578,10 +642,30 @@ struct ConnectionsView: View {
             } else {
                 HubSettingsPending(hub: hub)
             }
+            Section {
+                PageLink("Lights") { LightsListView() } label: {
+                    IconRow(symbol: "", color: .clear, title: "Govee", value: device.govee ? "Signed In" : "Not Set Up")
+                }
+                PageLink("Devices") { DevicesListView() } label: {
+                    IconRow(symbol: "", color: .clear, title: "Samsung SmartThings", value: device.smartThings ? "Signed In" : "Not Set Up")
+                }
+                PageLink("Devices") { DevicesListView() } label: {
+                    IconRow(symbol: "", color: .clear, title: "Dreo", value: device.dreo ? "Signed In" : "Not Set Up")
+                }
+                PageLink("Wi‑Fi") { WifiView() } label: {
+                    IconRow(symbol: "", color: .clear, title: "TP-Link Deco", value: device.deco ? "Signed In" : "Not Set Up")
+                }
+            } header: { Text("On This Device") } footer: {
+                Text("Each opens the page it’s set up on: Govee in Lights, SmartThings and Dreo in Devices, the Deco in Wi‑Fi. Speakers need no account; this device’s cameras are connected in Smart Home → Cameras.")
+            }
         }
         .formStyle(.grouped)
         .navigationTitle("Accounts")
         .inlineTitle()
+        .onAppear {
+            let now = DeviceSignIns.read()
+            if now != device { device = now }
+        }
         .task { await hub.loadIfNeeded(fleet) }
         .task { await hub.follow(fleet) }
     }
@@ -589,6 +673,19 @@ struct ConnectionsView: View {
     private func mailSummary(_ s: TVSettings) -> String {
         let n = s.mail?.count ?? 0
         return n == 0 ? "Off" : "\(n)"
+    }
+}
+
+/// Which of this device's own accounts are signed in.
+struct DeviceSignIns: Equatable {
+    var govee = false
+    var smartThings = false
+    var dreo = false
+    var deco = false
+
+    @MainActor static func read() -> DeviceSignIns {
+        DeviceSignIns(govee: SmartHome.shared.goveeKey?.isEmpty == false, smartThings: SmartThings.shared.connected,
+                      dreo: Dreo.shared.connected, deco: DecoWifi.shared.connected)
     }
 }
 
@@ -703,12 +800,8 @@ struct CamerasView: View {
                     // clears the project (signing every TV out of the cameras) and the doorbell's subscription.
                     .disabled(hub.s == nil)
             }
-            Section {
-                Toggle("Person Alerts", isOn: Binding(get: { hub.s?.nest?.person ?? true }, set: { setAlert("person", $0) }))
-                    .disabled(hub.s == nil)
-                Toggle("Motion Alerts", isOn: Binding(get: { hub.s?.nest?.motion ?? false }, set: { setAlert("motion", $0) }))
-                    .disabled(hub.s == nil)
-            } footer: { Text(doorbellNote) }
+            // What pops up on every TV (also in Notifications → Camera Alerts → On the TVs).
+            TVCameraAlertsSection(hub: hub)
         }
         .formStyle(.grouped)
         .navigationTitle("Nest Cameras").inlineTitle()
@@ -721,15 +814,31 @@ struct CamerasView: View {
         .sheet(isPresented: $signIn, onDismiss: { Task { await hub.load(fleet.hubClient()) } }) { HubSignIn(grant: "cameras") }
     }
 
+    private func fill() {
+        if project.isEmpty { project = hub.s?.nest?.project ?? "" }
+        if doorbell.isEmpty { doorbell = hub.s?.nest?.doorbell ?? "" }
+    }
+}
+
+/// The cameras' alerts on the TVs: Person and Motion, kept on the TVs (Accounts → Nest Cameras, and Notifications →
+/// Camera Alerts → On the TVs).
+struct TVCameraAlertsSection: View {
+    @Environment(Fleet.self) private var fleet
+    var hub: HubSettings
+
+    var body: some View {
+        Section {
+            Toggle("Person Alerts", isOn: Binding(get: { hub.s?.nest?.person ?? true }, set: { setAlert("person", $0) }))
+                .disabled(hub.s == nil)
+            Toggle("Motion Alerts", isOn: Binding(get: { hub.s?.nest?.motion ?? false }, set: { setAlert("motion", $0) }))
+                .disabled(hub.s == nil)
+        } footer: { Text(doorbellNote) }
+    }
+
     private var doorbellNote: String {
         // The TV's words, pointing at where things are in Settings now (a TV not yet updated names older pages).
         if let s = hub.s?.nest?.doorbellStatus, !s.isEmpty { return currentSettingsPaths(s) }
         return "Rings and people seen pop up on every TV."
-    }
-
-    private func fill() {
-        if project.isEmpty { project = hub.s?.nest?.project ?? "" }
-        if doorbell.isEmpty { doorbell = hub.s?.nest?.doorbell ?? "" }
     }
 
     /// Shows the switch's new place at once, and puts it back (saying why) if the TV doesn't take it.
@@ -743,6 +852,20 @@ struct CamerasView: View {
                 fleet.show(error)
             }
         }
+    }
+}
+
+/// Notifications → Camera Alerts → On the TVs.
+struct TVCameraAlertsView: View {
+    @Environment(Fleet.self) private var fleet
+    var hub: HubSettings
+
+    var body: some View {
+        Form { TVCameraAlertsSection(hub: hub) }
+            .formStyle(.grouped)
+            .navigationTitle("Camera Alerts on the TVs").inlineTitle()
+            .task { await hub.loadIfNeeded(fleet) }
+            .task { await hub.follow(fleet) }
     }
 }
 

@@ -158,9 +158,9 @@ final class SmartThings {
             r.setValue("application/json", forHTTPHeaderField: "Content-Type")
             r.httpBody = try JSONSerialization.data(withJSONObject: body)
         }
-        let (d, resp) = try await URLSession.shared.data(for: r)
-        let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
-        let json = (try? JSONSerialization.jsonObject(with: d) as? [String: Any]) ?? [:]
+        // Sent, and its answer read, off the main actor (a round reads every appliance, several at once).
+        let answer = try await Self.fetch(r)
+        let code = answer.code, json = answer.json
         guard (200..<300).contains(code) else {
             // Signed in with an account (not a pasted token) and the sign-in ran out early: renew once and retry.
             if code == 401, !retried, Keychain.get("st.token") == nil, Keychain.get("st.refresh") != nil {
@@ -170,6 +170,20 @@ final class SmartThings {
             throw APIError(code: code, message: Self.errorWords(json) ?? "SmartThings answered \(code).")
         }
         return json
+    }
+
+    /// What SmartThings answered: its HTTP code and its JSON (read off the main actor, then only handed over).
+    private struct Answer: @unchecked Sendable {
+        var code: Int
+        var json: [String: Any]
+    }
+
+    /// Sends [request] and reads the JSON that comes back, off the main actor.
+    nonisolated private static func fetch(_ request: URLRequest) async throws -> Answer {
+        let (d, resp) = try await URLSession.shared.data(for: request)
+        let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+        let json = (try? JSONSerialization.jsonObject(with: d) as? [String: Any]) ?? [:]
+        return Answer(code: code, json: json)
     }
 
     /// `{"error": {"message": "…", "details": [{"message": "…"}]}}` → "…: …".
@@ -233,29 +247,44 @@ final class SmartThings {
             } catch {
                 // Keep the list it had; with none there's nothing to read.
                 listFailure = error.localizedDescription
-                if devices.isEmpty { self.error = listFailure; return }
+                if devices.isEmpty {
+                    self.error = listFailure
+                    // Nothing read yet since the app opened: the appliances kept from last time don't show as they
+                    // were then (a washer still "Running"), but as not responding until SmartThings answers.
+                    let kept = AccessoryStore.shared.fromSmartThings
+                    let dimmed = kept.map { $0.reachable ? Self.offline($0) : $0 }
+                    if dimmed != kept { AccessoryStore.shared.fromSmartThings = dimmed }
+                    return
+                }
             }
         }
+        let known = devices
         var out: [HomeDevice] = []
         var readAt: [String: Date] = [:]
         var failures = 0
         var lastFailure: String?
         let before = AccessoryStore.shared.fromSmartThings
-        for dev in devices {
-            guard let id = dev["deviceId"] as? String else { continue }
+        // Every appliance read together (four at a time), then taken in the list's order, as when they were read one
+        // by one.
+        let answers = await readings(known.compactMap { $0["deviceId"] as? String })
+        // Signed out while they were read: nothing comes back.
+        guard connected else { return }
+        for dev in known {
+            guard let id = dev["deviceId"] as? String, let r = answers[id] else { continue }
             let key = "st:" + id
-            capabilities[key] = allCaps(dev)
-            readAt[key] = Date()
-            let online = await health(id)
-            let status: [String: Any]
-            do {
-                status = try await call("GET", "/devices/\(id)/status")
-            } catch {
+            let caps = allCaps(dev)
+            if capabilities[key] != caps { capabilities[key] = caps }
+            readAt[key] = r.at
+            let online = r.online
+            guard let status = r.status else {
                 // Couldn't read it this time: keep what it last said (never a false "done" or "Idle"),
-                // unless SmartThings says it has gone offline.
+                // unless SmartThings says it has gone offline, or it hasn't said anything since the app opened (what's
+                // kept is from last time).
                 failures += 1
-                lastFailure = error.localizedDescription
-                if let old = before.first(where: { $0.id == key }) { out.append(online == false ? Self.offline(old) : old) }
+                lastFailure = r.failure
+                if let old = before.first(where: { $0.id == key }) {
+                    out.append(online == false || raw[key] == nil ? Self.offline(old) : old)
+                }
                 continue
             }
             if let until = holdUntil[key], until > .now, let current = before.first(where: { $0.id == key }) {
@@ -276,10 +305,58 @@ final class SmartThings {
             guard held || newer, let current = latest.first(where: { $0.id == d.id }) else { return d }
             return current
         }
-        if let listFailure { error = listFailure }
-        else if failures > 0 && failures == devices.count { error = lastFailure }
-        else { error = nil }
-        AccessoryStore.shared.fromSmartThings = out
+        let problem = listFailure ?? (failures > 0 && failures == known.count ? lastFailure : nil)
+        if error != problem { error = problem }
+        // Only a real change reaches Home (most rounds change nothing).
+        if AccessoryStore.shared.fromSmartThings != out { AccessoryStore.shared.fromSmartThings = out }
+    }
+
+    /// One appliance's health and status, read together.
+    private struct Reading: @unchecked Sendable {
+        /// When the reads began (a command's re-read after this keeps its newer word).
+        var at: Date
+        var online: Bool?
+        var status: [String: Any]?
+        /// Why the status couldn't be read.
+        var failure: String?
+    }
+
+    /// Reads one appliance's health and status at the same time.
+    private func reading(_ id: String) async -> Reading {
+        let at = Date()
+        async let reachable = health(id)
+        do {
+            let status = try await call("GET", "/devices/\(id)/status")
+            return Reading(at: at, online: await reachable, status: status, failure: nil)
+        } catch {
+            return Reading(at: at, online: await reachable, status: nil, failure: error.localizedDescription)
+        }
+    }
+
+    /// Every appliance's health and status, four appliances at a time (one after another, a house full of them
+    /// took several seconds a round), by device id.
+    private func readings(_ ids: [String]) async -> [String: Reading] {
+        await withTaskGroup(of: (String, Reading).self, returning: [String: Reading].self) { group in
+            var out: [String: Reading] = [:]
+            var waiting = ids[...]
+            for _ in 0..<4 {
+                guard let id = waiting.popFirst() else { break }
+                group.addTask {
+                    let got = await self.reading(id)
+                    return (id, got)
+                }
+            }
+            while let (id, r) = await group.next() {
+                out[id] = r
+                if let next = waiting.popFirst() {
+                    group.addTask {
+                        let got = await self.reading(next)
+                        return (next, got)
+                    }
+                }
+            }
+            return out
+        }
     }
 
     /// Whether SmartThings can reach the appliance right now (nil when it can't say).
@@ -321,9 +398,11 @@ final class SmartThings {
     @discardableResult
     func reread(_ id: String, expect: Expect = .nothing, last: Bool = true) async -> Bool {
         let key = "st:" + id
-        guard let dev = devices.first(where: { ($0["deviceId"] as? String) == id }),
-              let status = try? await call("GET", "/devices/\(id)/status") else { return false }
-        let online = await health(id)
+        guard let dev = devices.first(where: { ($0["deviceId"] as? String) == id }) else { return false }
+        // Its health asked alongside its status (the tile waited for one, then the other).
+        async let reachable = health(id)
+        guard let status = try? await call("GET", "/devices/\(id)/status") else { return false }
+        let online = await reachable
         guard let d = make(dev, status, online: online) else { return false }
         let agrees = matches(expect, d, status)
         guard agrees || last else { return false }
@@ -332,7 +411,7 @@ final class SmartThings {
         notifyIfFinished(d)
         var list = AccessoryStore.shared.fromSmartThings
         if let i = list.firstIndex(where: { $0.id == key }) { list[i] = d } else { list.append(d) }
-        AccessoryStore.shared.fromSmartThings = list
+        if AccessoryStore.shared.fromSmartThings != list { AccessoryStore.shared.fromSmartThings = list }
         return agrees
     }
 
@@ -394,7 +473,7 @@ final class SmartThings {
         guard let i = list.firstIndex(where: { $0.id == key }) else { return }
         change(&list[i])
         changedAt[key] = Date()
-        AccessoryStore.shared.fromSmartThings = list
+        if AccessoryStore.shared.fromSmartThings != list { AccessoryStore.shared.fromSmartThings = list }
     }
 
     private func caps(_ dev: [String: Any]) -> Set<String> {

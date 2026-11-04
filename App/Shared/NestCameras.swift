@@ -5,6 +5,9 @@ import AppKit
 #endif
 import WoodruffKit
 
+/// Where the cameras are kept between launches (on this device only: never synced).
+private let nestCamerasKey = "nestCameras"
+
 /// Google Home / Nest cameras and doorbells, live, through Google's Device Access (the same project and Google
 /// app keys the TVs use). This device signs in for itself once; the video plays over WebRTC.
 @Observable @MainActor
@@ -12,7 +15,7 @@ final class NestCameras {
     static let shared = NestCameras()
     static let sdm = "https://smartdevicemanagement.googleapis.com/v1/"
 
-    struct Camera: Identifiable, Hashable {
+    struct Camera: Identifiable, Hashable, Codable {
         var id: String          // enterprises/{project}/devices/{id}
         var name: String
         var room: String?
@@ -23,7 +26,9 @@ final class NestCameras {
         var online = true
     }
 
-    private(set) var cameras: [Camera] = []
+    /// The cameras, starting as they were last found (kept for the next launch while signed in), so Home shows them
+    /// at once; Google is asked again straight away.
+    private(set) var cameras: [Camera] = NestCameras.saved()
     private(set) var error: String?
     private(set) var busy = false
     /// Signed in (kept in memory; the Keychain is only read when it changes).
@@ -34,9 +39,20 @@ final class NestCameras {
     private var project: String? { Keychain.get("nest.project") }
     private var clientID: String? { Keychain.get("nest.client") }
 
+    /// The cameras kept from last time, if this device is still signed in (never in Demo mode).
+    nonisolated private static func saved() -> [Camera] {
+        guard !Demo.isOn, Keychain.get("nest.refresh") != nil else { return [] }
+        return Saved.load(nestCamerasKey, as: [Camera].self) ?? []
+    }
+
+    /// Keeps the cameras for the next launch.
+    private func keep() { Saved.save(nestCamerasKey, cameras) }
+
     func start() {
-        connected = Keychain.get("nest.refresh") != nil
-        canAlert = (Keychain.get("nest.scopes") ?? "").contains("pubsub")
+        let signedIn = Keychain.get("nest.refresh") != nil
+        if connected != signedIn { connected = signedIn }
+        let alerts = (Keychain.get("nest.scopes") ?? "").contains("pubsub")
+        if canAlert != alerts { canAlert = alerts }
         guard connected, !Demo.isOn else { return }
         if poll == nil { startPolling(now: true) } else { Task { await load() } }
     }
@@ -62,6 +78,7 @@ final class NestCameras {
     func setOnline(_ id: String, _ online: Bool) {
         guard let i = cameras.firstIndex(where: { $0.id == id }), cameras[i].online != online else { return }
         cameras[i].online = online
+        keep()
         CameraStreams.shared.availability(cameras)
     }
 
@@ -103,6 +120,7 @@ final class NestCameras {
         connected = false
         poll?.cancel(); poll = nil
         cameras = []
+        UserDefaults.standard.removeObject(forKey: nestCamerasKey)
         CameraStreams.shared.reset()
     }
 
@@ -175,12 +193,14 @@ final class NestCameras {
 
     func load() async {
         // Sign-ins can arrive from another device (settings sync): look again.
-        connected = Keychain.get("nest.refresh") != nil
-        canAlert = (Keychain.get("nest.scopes") ?? "").contains("pubsub")
+        let signedIn = Keychain.get("nest.refresh") != nil
+        if connected != signedIn { connected = signedIn }
+        let alerts = (Keychain.get("nest.scopes") ?? "").contains("pubsub")
+        if canAlert != alerts { canAlert = alerts }
         guard let project, connected else { return }
         do {
             let devices = (try await call("GET", "enterprises/\(project)/devices"))["devices"] as? [[String: Any]] ?? []
-            cameras = devices.compactMap { d in
+            let found: [Camera] = devices.compactMap { d in
                 guard let name = d["name"] as? String, let traits = d["traits"] as? [String: Any],
                       let live = traits["sdm.devices.traits.CameraLiveStream"] as? [String: Any] else { return nil }
                 let type = d["type"] as? String ?? ""
@@ -196,8 +216,15 @@ final class NestCameras {
                 return cam
             }
             .sorted { ($0.doorbell ? 0 : 1, $0.name) < ($1.doorbell ? 0 : 1, $1.name) }
+            // Signed out while Google answered: nothing comes back.
+            guard connected else { return }
+            // Only a real change reaches Home (and is kept for the next launch); most looks find the same cameras.
+            if found != cameras {
+                cameras = found
+                keep()
+            }
             CameraStreams.shared.availability(cameras)
-            error = nil
+            if error != nil { error = nil }
         } catch { self.error = error.localizedDescription }
     }
 
@@ -409,7 +436,7 @@ private struct CameraTileShape: ViewModifier {
 }
 
 /// A camera on Home: its live picture right in the tile (muted), its name over it. Tap for the big view.
-struct LiveCameraTile: View {
+struct LiveCameraTile: View, Equatable {
     static func nameFont(_ compact: Bool) -> Font {
         #if os(macOS)
         compact ? .headline : .title3.weight(.semibold)
@@ -424,14 +451,29 @@ struct LiveCameraTile: View {
     var fill = false
     var open: () -> Void
     private let streams = CameraStreams.shared
+    /// On one of Home's tabs: every tile there is laid out at once, on screen or not.
+    @Environment(\.inHomeBoard) private var inBoard
     /// An offline camera was tapped: Google is being asked about it again.
     @State private var checking = false
+    /// The tile has been drawn once: its live picture's web view is made only now (making one held up the frame).
+    @State private var ready = false
+    /// Between appearing and disappearing.
+    @State private var appeared = false
+    /// At least a fifth of it is on screen (Home's scrolling says).
+    @State private var visible = false
+    /// This tile has asked for the camera's stream (each ask is matched by one let-go).
+    @State private var watching = false
+
+    /// Drawn again for a change to the camera or the tile's shape, not each time the grid around it is.
+    nonisolated static func == (a: LiveCameraTile, b: LiveCameraTile) -> Bool {
+        a.camera == b.camera && a.compact == b.compact && a.fill == b.fill
+    }
 
     var body: some View {
         let status = camera.online ? (streams.status[camera.id] ?? "Starting…") : (checking ? "Checking…" : "Offline")
         ZStack(alignment: .bottomLeading) {
             Color.black
-            if camera.webRTC && streams.expanded != camera.id {
+            if camera.webRTC && ready && streams.expanded != camera.id {
                 LiveWebView(player: streams.player(camera)).allowsHitTesting(false)
             }
             if status != "Live" || streams.expanded == camera.id {
@@ -466,8 +508,32 @@ struct LiveCameraTile: View {
             if !camera.online { Button("Check Again") { checkAgain() } }
             FavoriteButton(id: camera.id)
         }
-        .onAppear { if camera.webRTC { streams.show(camera) } }
-        .onDisappear { if camera.webRTC { streams.hide() } }
+        // After the first frame: the web view, and the stream.
+        .task {
+            await Task.yield()
+            guard !Task.isCancelled else { return }
+            ready = true
+            appeared = true
+            follow()
+        }
+        // On Home's tabs a camera streams once it's on screen (and is let go the usual two minutes after nothing is
+        // watched), rather than as soon as it's laid out somewhere off the bottom of the page.
+        .onScrollVisibilityChange(threshold: 0.2) { on in
+            visible = on
+            follow()
+        }
+        .onDisappear {
+            appeared = false
+            follow()
+        }
+    }
+
+    /// Asks for the stream while the tile shows (on Home's tabs: while it's on screen), and lets it go after.
+    private func follow() {
+        let wanted = appeared && ready && camera.webRTC && (!inBoard || visible)
+        guard wanted != watching else { return }
+        watching = wanted
+        if wanted { streams.show(camera) } else { streams.hide() }
     }
 
     /// What the tile says over its picture when it isn't simply live.

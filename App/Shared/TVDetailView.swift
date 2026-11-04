@@ -6,7 +6,6 @@ import WoodruffKit
 struct TVDetailView: View {
     @Environment(Fleet.self) private var fleet
     var tvID: String
-    @State private var screen: PlatformImage?
     @State private var showScreen = false
     @State private var askRelink = false
     @State private var relinkCode = ""
@@ -56,13 +55,9 @@ struct TVDetailView: View {
             .navigationTitle(tv.name)
             .inlineTitle()
             .task(id: tvID) { await healthLoop() }
-            .task(id: "screen-\(tvID)") { await screenLoop() }
             .task(id: waking) { await watchWake() }
             // The TV's own answer replaces a play/pause guess the moment it arrives.
             .onChange(of: tv.playing?.isPlaying) { _, _ in flipped = nil }
-            // The last screen capture is only for a TV that's on and not playing: gone the moment it goes off or starts
-            // playing, so it never comes back later showing what was on screen before.
-            .onChange(of: tv.online && tv.nowPlaying == nil) { _, idle in if !idle { screen = nil } }
             .sheet(isPresented: $showScreen) {
                 Group { if tv.nowPlaying != nil { NowPlayingSheet(tvID: tvID) } else { TVScreenSheet(tvID: tvID) } }
                     .sheetBanner()
@@ -96,10 +91,12 @@ struct TVDetailView: View {
             Button { showScreen = true } label: {
                 ZStack {
                     Rectangle().fill(.black)
-                    // What's playing now; else, while it's on, its screen as last captured.
+                    // What's playing now; else, while it's on and nothing plays, its screen as last captured (only then:
+                    // the capture goes with the view the moment the TV goes off or starts playing, so it never comes back
+                    // later showing what was on screen before).
                     if let p = tv.nowPlaying { NowPlayingArt(playing: p, backdrop: true) }
-                    else if tv.online, let screen { Image(platformImage: screen).resizable().aspectRatio(contentMode: .fill) }
-                    else { Text(tv.online ? "" : "Off").font(.caption.weight(.semibold)).foregroundStyle(.white.opacity(0.5)) }
+                    else if tv.online { TVScreenThumb(tvID: tvID, paused: showScreen) }
+                    else { Text("Off").font(.caption.weight(.semibold)).foregroundStyle(.white.opacity(0.5)) }
                 }
                 .frame(width: 136, height: 77)
                 .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
@@ -323,20 +320,6 @@ struct TVDetailView: View {
         }
     }
 
-    private func screenLoop() async {
-        while !Task.isCancelled {
-            if let t = fleet.tv(tvID), !t.online || t.nowPlaying != nil {
-                // Off, or playing: the last capture is from before (it gets a fresh one once it's on and idle again).
-                if screen != nil { screen = nil }
-            } else if !showScreen, let t = fleet.tv(tvID), fleet.platform(of: t) != .webOS, let c = fleet.client(for: t) {
-                if let d = try? await c.screen(width: 480), let latest = fleet.tv(tvID), latest.online, latest.nowPlaying == nil {
-                    screen = PlatformImage(data: d)
-                }
-            }
-            try? await Task.sleep(nanoseconds: 3_000_000_000)
-        }
-    }
-
     // MARK: Words
 
     private func verdictTitle(_ tv: FleetTV, _ n: Int) -> String {
@@ -366,6 +349,34 @@ struct TVDetailView: View {
 }
 
 struct SignInGrant: Identifiable { var grant: String; var id: String { grant } }
+
+/// A TV's screen as last captured, on its page while it's on and nothing plays: a fresh capture every 3 seconds (not
+/// while the big screen is open over the page, which captures its own). A view of its own: each capture redraws only
+/// this, not the whole page. It's there only while the TV is on and idle, and its capture goes with it.
+struct TVScreenThumb: View {
+    @Environment(Fleet.self) private var fleet
+    var tvID: String
+    var paused: Bool
+    @State private var screen: PlatformImage?
+
+    var body: some View {
+        ZStack {
+            if let screen { Image(platformImage: screen).resizable().aspectRatio(contentMode: .fill) }
+        }
+        .task(id: paused) {
+            guard !paused else { return }
+            while !Task.isCancelled {
+                if let t = fleet.tv(tvID), t.online, t.nowPlaying == nil, fleet.platform(of: t) != .webOS, let c = fleet.client(for: t),
+                   let d = try? await c.screen(width: 480), !Task.isCancelled,
+                   // Still on and idle now the capture is back (it may have started playing meanwhile).
+                   let latest = fleet.tv(tvID), latest.online, latest.nowPlaying == nil {
+                    screen = PlatformImage(data: d)
+                }
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+            }
+        }
+    }
+}
 
 /// The TV's screen, live, with what's playing (tap the screen on a TV's page).
 struct TVScreenSheet: View {

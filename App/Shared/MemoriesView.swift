@@ -24,29 +24,11 @@ struct MemoriesView: View {
     private var client: TVClient? { fleet.hubClient() }
     @Namespace private var zoom
     @AppStorage("memories.columns") private var columnCount = 3
-    @State private var topItem: String?
-    @State private var showMonth = false
-    @State private var hideMonth: Task<Void, Never>?
-
-    /// The month of the photos at the top of the screen ("July 2025").
-    private var monthLabel: String? {
-        guard let items = memories?.items, !items.isEmpty else { return nil }
-        let item = items.first { $0.path == topItem } ?? items.first
-        return item?.takenDate?.formatted(.dateTime.month(.wide).year())
-    }
+    /// Where the grid is scrolled to, read only by the month capsule: the grid isn't redrawn as it moves.
+    @State private var spot = MemoriesSpot()
+    /// What's worked out once per answer (the counts, each photo's month), not again at every redraw.
+    @State private var index = MemoriesIndex()
     @State private var pinchBase: Int?
-
-    /// Photos grouped by the month they were taken, newest first.
-    private func months(_ items: [MemoryItem]) -> [(String, [MemoryItem])] {
-        var order: [String] = []
-        var groups: [String: [MemoryItem]] = [:]
-        for i in items {
-            let key = i.takenDate.map { $0.formatted(.dateTime.month(.wide).year()) } ?? "Undated"
-            if groups[key] == nil { order.append(key) }
-            groups[key, default: []].append(i)
-        }
-        return order.map { ($0, groups[$0]!) }
-    }
 
     private var gridColumns: [GridItem] {
         #if os(iOS)
@@ -64,7 +46,7 @@ struct MemoriesView: View {
                 fleet.say("Slideshow", "Family Memories is playing on \(c.hub.name).")
             }
         } label: { Image(systemName: "play.rectangle.on.rectangle") }
-        .disabled(memories?.items.contains { !$0.video } != true)
+        .disabled(!index.hasPhotos)
         .accessibilityLabel("Slideshow on TV")
         PhotosPicker(selection: $picks, matching: .any(of: [.images, .videos])) { Image(systemName: "plus") }
             .disabled(uploading != nil)
@@ -76,6 +58,8 @@ struct MemoriesView: View {
     }
 
     var body: some View {
+        // Worked out once for the page: the tiles are handed their pictures' addresses.
+        let client = self.client
         ScrollView {
             if let m = memories {
                 if let u = uploading {
@@ -85,7 +69,7 @@ struct MemoriesView: View {
                 // Like Photos: one continuous grid; the month floats in a glass capsule while scrolling.
                 LazyVGrid(columns: gridColumns, spacing: 2) {
                     ForEach(m.items) { item in
-                        Button { viewing = item } label: { tile(item).zoomSource(item.path, zoom) }
+                        Button { viewing = item } label: { tile(item, client).zoomSource(item.path, zoom) }
                             .buttonStyle(.plain)
                             .contextMenu { itemMenu(item) }
                     }
@@ -106,8 +90,7 @@ struct MemoriesView: View {
                     EmptyState(symbol: "photo.on.rectangle", title: "No Memories Yet", message: "Add photos and videos from this device. Every TV’s slideshow can show them.")
                         .padding(.top, 60)
                 } else {
-                    let photos = m.items.filter { !$0.video }.count, videos = m.items.count - photos
-                    Text("\(photos) Photos, \(videos) Videos")
+                    Text("\(index.photos) Photos, \(index.videos) Videos")
                         .font(.footnote.weight(.semibold)).foregroundStyle(.secondary)
                         .padding(.vertical, 18)
                 }
@@ -126,34 +109,11 @@ struct MemoriesView: View {
                 .shimmer()
             }
         }
-        .scrollPosition(id: $topItem, anchor: .top)
+        .scrollPosition(id: Binding(get: { spot.top }, set: { spot.top = $0 }), anchor: .top)
         .onScrollPhaseChange { _, phase in
-            // Shows while scrolling, fades a moment after it stops (as Photos does).
-            if phase.isScrolling {
-                hideMonth?.cancel()
-                withAnimation(.smooth(duration: 0.25)) { showMonth = true }
-            } else {
-                hideMonth?.cancel()
-                hideMonth = Task {
-                    try? await Task.sleep(nanoseconds: 1_200_000_000)
-                    guard !Task.isCancelled else { return }
-                    withAnimation(.smooth(duration: 0.4)) { showMonth = false }
-                }
-            }
+            if spot.scrolling != phase.isScrolling { spot.scrolling = phase.isScrolling }
         }
-        .overlay(alignment: .top) {
-            if showMonth, let monthLabel {
-                Text(monthLabel)
-                    .font(.subheadline.weight(.semibold))
-                    .contentTransition(.numericText())
-                    .padding(.horizontal, 16).padding(.vertical, 8)
-                    .glass(Capsule(), interactive: false)
-                    .padding(.top, 8)
-                    .transition(.move(edge: .top).combined(with: .opacity))
-                    .animation(.snappy, value: monthLabel)
-                    .allowsHitTesting(false)
-            }
-        }
+        .overlay(alignment: .top) { MonthCapsule(spot: spot, index: index) }
         .screenTitle("Family Memories")
         #if os(macOS)
         .dropDestination(for: URL.self) { urls, _ in Task { await addFiles(urls) }; return true }
@@ -173,24 +133,24 @@ struct MemoriesView: View {
         .confirmationDialog(deleting?.video == true ? "Delete This Video?" : "Delete This Photo?",
                             isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }),
                             titleVisibility: .visible, presenting: deleting) { item in
-            Button("Delete", role: .destructive) { act { c in memories = try await c.deleteMemory(item) } }
+            Button("Delete", role: .destructive) { act { c in take(try await c.deleteMemory(item)) } }
             Button("Cancel", role: .cancel) {}
         } message: { _ in
             Text("It’s removed from Family Memories on the TVs. This can’t be undone.")
         }
         #if os(iOS)
         .fullScreenCover(item: $viewing) { item in
-            MemoryViewer(items: memories?.items ?? [], start: item, folder: memories?.folder, onChange: { memories = $0 }).zoomDestination(item.path, zoom)
+            MemoryViewer(items: memories?.items ?? [], start: item, folder: memories?.folder, onChange: { take($0) }).zoomDestination(item.path, zoom)
         }
         #else
-        .sheet(item: $viewing) { item in MemoryViewer(items: memories?.items ?? [], start: item, folder: memories?.folder, onChange: { memories = $0 }).macResizable(width: 1000, height: 720, minWidth: 600, minHeight: 450) }
+        .sheet(item: $viewing) { item in MemoryViewer(items: memories?.items ?? [], start: item, folder: memories?.folder, onChange: { take($0) }).macResizable(width: 1000, height: 720, minWidth: 600, minHeight: 450) }
         #endif
     }
 
-    private func tile(_ item: MemoryItem) -> some View {
+    private func tile(_ item: MemoryItem, _ client: TVClient?) -> some View {
         Color.clear
             .aspectRatio(1, contentMode: .fit)
-            .overlay { TVImage(url: client?.thumbURL(item)) }
+            .overlay { TVImage(url: client?.thumbURL(item), maxPixel: 512) }
             .clipped()
             .overlay(alignment: .bottomTrailing) {
                 if item.video { Image(systemName: "video.fill").font(.caption).foregroundStyle(.white).shadow(radius: 2).padding(5) }
@@ -214,12 +174,21 @@ struct MemoriesView: View {
     private func load() async {
         guard let c = client else { error = TVError.notPaired.localizedDescription; return }
         do {
-            memories = try await c.memories(); error = nil
+            take(try await c.memories())
+            if error != nil { error = nil }
             if UserDefaults.standard.string(forKey: "route") == "photo", viewing == nil { viewing = memories?.items.first }
         } catch {
             if Task.isCancelled { return }
             self.error = error.localizedDescription
         }
+    }
+
+    /// The TV's answer, shown (and what's worked out from it with it) only when it's new: the page is asked again after
+    /// every add and delete, and pulling to refresh, and redraws only for what changed.
+    private func take(_ m: Memories) {
+        guard m != memories else { return }
+        index = MemoriesIndex(m.items)
+        memories = m
     }
 
     // MARK: Adding
@@ -241,7 +210,9 @@ struct MemoriesView: View {
                 if item.supportedContentTypes.contains(where: { $0.conforms(to: .movie) }), let movie = try await item.loadTransferable(type: MovieFile.self) {
                     prepared = PreparedMemory(file: movie.url, name: movie.url.lastPathComponent, taken: nil)
                 } else if let data = try await item.loadTransferable(type: Data.self) {
-                    prepared = try MemoryPrep.photo(data, name: "IMG_\(Int(Date().timeIntervalSince1970))_\(i).jpg", fit: fit)
+                    // Shrunk and written off the main thread: the page keeps moving while a big photo is prepared.
+                    let name = "IMG_\(Int(Date().timeIntervalSince1970))_\(i).jpg", box = fit
+                    prepared = try await Task.detached(priority: .userInitiated) { try MemoryPrep.photo(data, name: name, fit: box) }.value
                 } else { continue }
                 let size = Double((try? prepared.file.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
                 if let free = memories?.free, size > free - sent {
@@ -265,8 +236,14 @@ struct MemoriesView: View {
             defer { if access { url.stopAccessingSecurityScopedResource() } }
             do {
                 let isVideo = (UTType(filenameExtension: url.pathExtension)?.conforms(to: .movie)) ?? false
-                let p = isVideo ? PreparedMemory(file: url, name: url.lastPathComponent, taken: nil)
-                                : try MemoryPrep.photo(try Data(contentsOf: url), name: url.lastPathComponent, fit: fit)
+                let p: PreparedMemory
+                if isVideo {
+                    p = PreparedMemory(file: url, name: url.lastPathComponent, taken: nil)
+                } else {
+                    // Read, shrunk and written off the main thread.
+                    let box = fit
+                    p = try await Task.detached(priority: .userInitiated) { try MemoryPrep.photo(try Data(contentsOf: url), name: url.lastPathComponent, fit: box) }.value
+                }
                 _ = try await c.addMemory(file: p.file, name: p.name, taken: p.taken)
             } catch { fleet.show(error); break }
         }
@@ -279,6 +256,76 @@ struct PreparedMemory {
     var file: URL
     var name: String
     var taken: Date?
+}
+
+/// Where the Memories grid is scrolled to, and whether it's moving: written as it scrolls, read only by the month
+/// capsule.
+@Observable final class MemoriesSpot {
+    var top: String?
+    var scrolling = false
+}
+
+/// What the Memories page works out once per answer from the TV: the counts, and each photo's month.
+struct MemoriesIndex {
+    var photos = 0
+    var videos = 0
+    var hasPhotos: Bool { photos > 0 }
+    /// Each item's month ("July 2025"; empty when it has no date), by path.
+    var month: [String: String] = [:]
+    /// The first item's month (shown before the grid has scrolled anywhere).
+    var first = ""
+
+    init() {}
+
+    init(_ items: [MemoryItem]) {
+        let cal = Calendar.current
+        var names: [Int: String] = [:]
+        month.reserveCapacity(items.count)
+        for i in items {
+            if i.video { videos += 1 } else { photos += 1 }
+            guard let d = i.takenDate else { month[i.path] = ""; continue }
+            let c = cal.dateComponents([.year, .month], from: d)
+            let k = (c.year ?? 0) * 100 + (c.month ?? 0)
+            let name = names[k] ?? d.formatted(.dateTime.month(.wide).year())
+            names[k] = name
+            month[i.path] = name
+        }
+        first = items.first.flatMap { month[$0.path] } ?? ""
+    }
+}
+
+/// The month of the photos at the top of the screen ("July 2025") in a glass capsule: shown while the grid scrolls,
+/// gone a moment after it stops (as Photos does). Only this follows the scrolling.
+private struct MonthCapsule: View {
+    var spot: MemoriesSpot
+    var index: MemoriesIndex
+    @State private var shown = false
+
+    var body: some View {
+        let name = spot.top.flatMap { index.month[$0] } ?? index.first
+        ZStack {
+            if shown, !name.isEmpty {
+                Text(name)
+                    .font(.subheadline.weight(.semibold))
+                    .contentTransition(.numericText())
+                    .padding(.horizontal, 16).padding(.vertical, 8)
+                    .glass(Capsule(), interactive: false)
+                    .padding(.top, 8)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .animation(.snappy, value: name)
+            }
+        }
+        .allowsHitTesting(false)
+        .task(id: spot.scrolling) {
+            if spot.scrolling {
+                withAnimation(.smooth(duration: 0.25)) { shown = true }
+            } else if shown {
+                try? await Task.sleep(nanoseconds: 1_200_000_000)
+                guard !Task.isCancelled else { return }
+                withAnimation(.smooth(duration: 0.4)) { shown = false }
+            }
+        }
+    }
 }
 
 /// Shrinks a photo to the size the TV shows it at (JPEG, quality 0.9) and reads when it was taken, as the phone page does.
@@ -352,13 +399,17 @@ struct MemoryViewer: View {
     private var item: MemoryItem? { items.first { $0.path == current } }
 
     var body: some View {
+        // Worked out once for the viewer: the photos are handed their addresses.
+        let client = self.client
         ZStack {
             Color.black.ignoresSafeArea()
-            photos
+            photos(client)
             if chrome { controls.transition(.opacity) }
         }
         .environment(\.colorScheme, .dark)
         .onAppear { current = start.path }
+        // The photos either side are made ready, so the next swipe (or arrow) shows one at once.
+        .task(id: current) { await prepareNeighbours(client) }
         .task(id: "\(current)-\(follow)") {
             guard follow, let it = item else { return }
             try? await Task.sleep(nanoseconds: 160_000_000)
@@ -394,7 +445,7 @@ struct MemoryViewer: View {
     }
 
     #if os(iOS)
-    private var photos: some View {
+    private func photos(_ client: TVClient?) -> some View {
         TabView(selection: $current) {
             ForEach(items) { m in
                 ZoomableImage(url: client?.photoURL(m)).tag(m.path)
@@ -406,7 +457,7 @@ struct MemoryViewer: View {
     }
     #else
     /// The Mac has no swiping pages (a plain TabView there is a strip of blank tabs): one photo, with the arrows.
-    private var photos: some View {
+    private func photos(_ client: TVClient?) -> some View {
         ZStack {
             if let m = item {
                 ZoomableImage(url: client?.photoURL(m))
@@ -419,6 +470,21 @@ struct MemoryViewer: View {
         .ignoresSafeArea()
     }
     #endif
+
+    /// The next and previous photos decoded (as the viewer shows them), the two beyond those downloaded. A moment after
+    /// the photo shown changes, so it goes first; stopped when it changes again.
+    private func prepareNeighbours(_ client: TVClient?) async {
+        guard let c = client, let i = items.firstIndex(where: { $0.path == current }) else { return }
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        guard !Task.isCancelled else { return }
+        let near = [i + 1, i - 1].filter { items.indices.contains($0) }.map { c.photoURL(items[$0]) }
+        let far = [i + 2, i - 2].filter { items.indices.contains($0) }.map { c.photoURL(items[$0]) }
+        let px = ZoomableImage.maxPixel
+        await withTaskGroup(of: Void.self) { g in
+            for u in near { g.addTask(priority: .utility) { _ = await ImageStore.shared.image(u, maxPixel: px) } }
+            for u in far { g.addTask(priority: .utility) { await ImageStore.shared.prefetch(u) } }
+        }
+    }
 
     /// The next (or previous) photo, when there is one.
     private func step(_ by: Int) {
@@ -522,11 +588,13 @@ struct MemoryViewer: View {
 
 /// Pinch and double-tap zoom on a photo.
 struct ZoomableImage: View {
+    /// The pixels a photo is decoded at on its longer side (the viewer gets its neighbours ready at the same).
+    static let maxPixel = 1800
     var url: URL?
     @State private var scale: CGFloat = 1
     @State private var last: CGFloat = 1
     var body: some View {
-        TVImage(url: url, contentMode: .fit)
+        TVImage(url: url, contentMode: .fit, maxPixel: Self.maxPixel)
             .scaleEffect(scale)
             .gesture(MagnifyGesture()
                 .onChanged { v in scale = max(1, min(5, last * v.magnification)) }

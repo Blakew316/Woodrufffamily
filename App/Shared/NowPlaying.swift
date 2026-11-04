@@ -63,15 +63,18 @@ struct NowPlayingArt: View {
     @Environment(Fleet.self) private var fleet
     var playing: NowPlaying?
     var backdrop = false
+    /// The most pixels the picture is decoded at on its longer side: a small thumbnail needs few (256), a tile more
+    /// (1024), a backdrop the most (1800).
+    var maxPixel: Int = 1024
 
     var body: some View {
         let art = fleet.artwork(for: playing)
         let path = backdrop ? (art?.backdrop ?? art?.poster) : (art?.poster ?? art?.backdrop)
         if let path, let url = fleet.hubClient()?.art(path) {
-            Artwork(url: url)
+            Artwork(url: url, maxPixel: maxPixel)
         } else if let url = VideoThumbnails.shared.url(for: playing) {
             // hqdefault is 4:3 with black bars; filling crops them away.
-            Artwork(url: url).scaleEffect(1.34)
+            Artwork(url: url, maxPixel: maxPixel).scaleEffect(1.34)
         } else {
             ZStack {
                 LinearGradient(colors: [Color(white: 0.2), Color(white: 0.09)], startPoint: .topLeading, endPoint: .bottomTrailing)
@@ -87,16 +90,21 @@ struct NowPlayingArt: View {
     }
 }
 
-/// A thin progress bar with elapsed and remaining time, moving every second.
+/// A thin progress bar with elapsed and remaining time. It's drawn again only as often as it changes: every second
+/// with the times showing, otherwise each time it moves a pixel (a film on a tile: every several seconds), and not
+/// at all while paused.
 struct LiveProgress: View {
     @Environment(Fleet.self) private var fleet
+    @Environment(\.displayScale) private var displayScale
     var playing: NowPlaying
     var times = true
     var tint: Color = .primary
+    /// The bar's width (how far it moves for a pixel), without the times.
+    @State private var width: CGFloat = 0
 
     var body: some View {
         if let d = playing.duration, d > 0 {
-            TimelineView(.periodic(from: .now, by: 1)) { ctx in
+            TimelineView(.periodic(from: .now, by: interval(d))) { ctx in
                 // The TV's own clock for this title (when its answer arrived), so the bar never jumps back on a
                 // slightly stale answer; the app-wide time is only for an answer that doesn't carry one.
                 let pos = livePosition(playing, at: ctx.date, since: playing.reportedAt ?? fleet.refreshedAt)
@@ -105,11 +113,15 @@ struct LiveProgress: View {
                         Capsule().fill(tint.opacity(0.2))
                             .overlay(alignment: .leading) {
                                 Capsule().fill(tint).frame(width: max(4, g.size.width * min(1, max(0, pos / d))))
-                                    // Glides from one second to the next instead of stepping.
-                                    .animation(playing.isPlaying ? Animation.linear(duration: 1) : Animation.snappy, value: pos)
+                                    // Beside the times (drawn every second) it glides from one second to the next; on a
+                                    // tile (drawn once a pixel) each step, and any real change from the TV, is a quick one.
+                                    .animation(times && playing.isPlaying ? Animation.linear(duration: 1) : Animation.snappy, value: pos)
                             }
                     }
                     .frame(height: times ? 5 : 3)
+                    .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { w in
+                        if !times, abs(w - width) >= 1 { width = w }
+                    }
                     if times {
                         HStack {
                             Text(formatTime(ms: pos))
@@ -122,6 +134,15 @@ struct LiveProgress: View {
                 }
             }
         }
+    }
+
+    /// Seconds between drawings of a title [duration] ms long: every second beside the times; otherwise once per
+    /// pixel the bar moves, between 1 and 30 seconds. Paused, it doesn't move (the TV's next answer redraws it).
+    private func interval(_ duration: Double) -> TimeInterval {
+        guard playing.isPlaying else { return 3600 }
+        if times { return 1 }
+        let pixels = Double(max(1, width * displayScale))
+        return min(30, max(1, duration / 1000 / pixels))
     }
 }
 
@@ -136,7 +157,7 @@ struct NowPlayingBar: View {
             HStack(spacing: 12) {
                 Button { open = true } label: {
                     HStack(spacing: 10) {
-                        NowPlayingArt(playing: p)
+                        NowPlayingArt(playing: p, maxPixel: 256)
                             .frame(width: 40, height: 40)
                             .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
                         VStack(alignment: .leading, spacing: 2) {
@@ -239,7 +260,7 @@ struct NowPlayingDropdown: View {
                     Button { open = true } label: {
                         // A picture only of what's playing now (not of a title left paused long ago).
                         Group {
-                            if tv.nowPlaying != nil { NowPlayingArt(playing: playing) } else { Color.secondary.opacity(0.18) }
+                            if tv.nowPlaying != nil { NowPlayingArt(playing: playing, maxPixel: 256) } else { Color.secondary.opacity(0.18) }
                         }
                         .frame(width: 52, height: 52)
                         .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
@@ -354,7 +375,7 @@ struct NowPlayingSheet: View {
                 if let screen { Image(platformImage: screen).resizable().aspectRatio(contentMode: .fit) }
                 else { Text(screenNote ?? "Loading the TV’s screen…").font(.footnote).foregroundStyle(.white.opacity(0.6)).padding() }
             } else if let p {
-                NowPlayingArt(playing: p, backdrop: true)
+                NowPlayingArt(playing: p, backdrop: true, maxPixel: 1800)
             }
         }
     }
@@ -365,7 +386,7 @@ struct NowPlayingSheet: View {
             ZStack {
                 Color(white: 0.07)
                 if let p {
-                    NowPlayingArt(playing: p, backdrop: true)
+                    NowPlayingArt(playing: p, backdrop: true, maxPixel: 1800)
                         .frame(width: g.size.width, height: g.size.height)
                         .blur(radius: 80, opaque: true)
                         .saturation(1.2)

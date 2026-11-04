@@ -15,6 +15,13 @@ enum AlertsRefresh {
 }
 #endif
 
+/// Whether the app has really been in the background since it was last in front: coming back from there wakes
+/// everything; coming back from a glance at Control Center (only inactive for a moment) doesn't.
+@MainActor
+enum AppWake {
+    static var wentAway = false
+}
+
 @main
 struct WoodruffApp: App {
     @State private var fleet = Fleet.shared
@@ -37,36 +44,52 @@ struct WoodruffApp: App {
                 #if os(macOS)
                 // Remembers the window's size and place, and which window is Woodruff's own.
                 .background(WindowMemory())
+                // How often the TVs are asked follows whether this window can be seen.
+                .background(WindowActivityWatcher())
                 #endif
                 .task {
+                    // Launch in steps, so the TVs come first and nothing else holds up the first screen. (Every start
+                    // below is safe to run again, as it is for a window opened again.)
+                    // 1. What has to be there before the TVs are asked, then the TVs: the Mac's pairing backup (it may
+                    //    bring pairings back), notifications (the first answers can already be news), and the settings
+                    //    sync's starting point (before anything below can write a setting that travels: a sign-in
+                    //    renewed as the app opens must count as new, or the family's older copy could replace it).
                     #if os(macOS)
                     if !Demo.isOn { MacPairingBackup.attach(fleet) }
                     #endif
                     // Apple's own prompts on first launch: notifications, then location while using (for weather).
-                    if !Demo.isOn { Notifier.attach(to: fleet); PushRelay.shared.start() }
-                    if !Demo.isOn && !fleet.hubs.isEmpty { LocationWeather.shared.start(fleet) }
+                    if !Demo.isOn { Notifier.attach(to: fleet) }
+                    SettingsSync.shared.prepare(fleet)
+                    await fleet.start()
+                    #if os(iOS)
+                    // Lock Screen Now Playing follows the TVs from launch, also while the app is in the background.
+                    LiveActivitySync.shared.sync(fleet)
+                    #endif
+                    // 2. A moment later, what Home shows besides the TVs: speakers and lights, Samsung, the fans, the
+                    //    cameras and Apple Home.
+                    try? await Task.sleep(nanoseconds: 400_000_000)
                     SmartHome.shared.start()
-                    // Siri learns the family's light, room, speaker and TV names (and again whenever they change).
-                    SiriVocabulary.start()
                     SmartThings.shared.start()
                     Dreo.shared.start()
-                    DecoWifi.shared.start()
                     NestCameras.shared.start()
-                    NestAlerts.shared.start(fleet)
-                    SettingsSync.shared.start(fleet)
-                    // Keeps the pictures' disk cache from growing past its limit.
-                    Task.detached(priority: .background) { await ImageStore.shared.trim() }
                     #if os(iOS)
                     HomeKitLights.shared.start()
                     #else
                     // Apple Home on the Mac, through Woodruff Home Helper.
                     HomeBridgeClient.shared.start()
                     #endif
-                    await fleet.start()
-                    #if os(iOS)
-                    // Lock Screen Now Playing follows the TVs from launch, also while the app is in the background.
-                    LiveActivitySync.shared.sync(fleet)
-                    #endif
+                    // 3. A couple of seconds in, what works behind the scenes: push, the weather's place, settings sync,
+                    //    doorbell alerts, the Wi‑Fi, Siri's names and the pictures' disk cache.
+                    try? await Task.sleep(nanoseconds: 2_100_000_000)
+                    if !Demo.isOn { PushRelay.shared.start() }
+                    if !Demo.isOn && !fleet.hubs.isEmpty { LocationWeather.shared.start(fleet) }
+                    SettingsSync.shared.start(fleet)
+                    NestAlerts.shared.start(fleet)
+                    DecoWifi.shared.start()
+                    // Siri learns the family's light, room, speaker and TV names (and again whenever they change).
+                    SiriVocabulary.start()
+                    // Keeps the pictures' disk cache from growing past its limit.
+                    Task.detached(priority: .background) { await ImageStore.shared.trim() }
                 }
                 .onOpenURL { url in
                     // woodruff://remote (widgets, Control Center): open the remote; anything else is a pairing link.
@@ -92,24 +115,35 @@ struct WoodruffApp: App {
             // Only really leaving pauses things (not a glance at Notification Center or the app switcher).
             if phase == .active { fleet.setActive(true) } else if phase == .background { fleet.setActive(false) }
             if phase == .background {
+                AppWake.wentAway = true
                 CameraStreams.shared.background()
                 #if os(iOS)
                 AlertsRefresh.schedule()
                 #endif
             }
+            #if os(macOS)
+            // The Mac leaves the front for another app without going into the background: coming back from there is
+            // coming back too (a new one-liner, the weather if it's been a while, everything asked afresh).
+            if phase == .inactive { AppWake.wentAway = true }
+            #endif
             if phase == .active {
                 CameraStreams.shared.foreground()
-                // Back in the app: Home's weather if it's been a while, and a new one-liner.
-                HomeWeather.shared.refresh()
-                HomeGreeting.shared.refresh()
-                SmartHome.shared.wake()
-                SettingsSync.shared.wake()
-                PushRelay.shared.wake()
-                #if os(iOS)
-                HomeKitLights.shared.refresh()
-                #endif
+                // Back from the background (on the iPhone, not a glance at Control Center or Notification Center, which
+                // only makes the app inactive for a moment): Home's weather if it's been a while, a new one-liner, and
+                // everything else asked afresh.
+                if AppWake.wentAway {
+                    AppWake.wentAway = false
+                    HomeWeather.shared.refresh()
+                    HomeGreeting.shared.refresh()
+                    SmartHome.shared.wake()
+                    SettingsSync.shared.wake()
+                    PushRelay.shared.wake()
+                    #if os(iOS)
+                    HomeKitLights.shared.refresh()
+                    #endif
+                    if !Demo.isOn && !fleet.hubs.isEmpty { LocationWeather.shared.start(fleet) }
+                }
             }
-            if phase == .active && !Demo.isOn && !fleet.hubs.isEmpty { LocationWeather.shared.start(fleet) }
         }
         #if os(iOS)
         // Closed a while: iOS wakes the app now and then to check for doorbell and camera alerts.
@@ -130,6 +164,8 @@ struct WoodruffApp: App {
         #if os(macOS)
         Window("Mini Player", id: "mini") {
             MiniPlayerView().environment(fleet)
+                // Floating over other apps it's still Woodruff in use: the TVs are asked at full speed while it shows.
+                .background(WindowActivityWatcher())
         }
         .windowResizability(.contentMinSize)
         .windowStyle(.hiddenTitleBar)
@@ -138,6 +174,8 @@ struct WoodruffApp: App {
 
         MenuBarExtra {
             MenuBarFleetView().environment(fleet)
+                // Open, it shows the TVs live: asked at full speed while it's showing, as for the main window.
+                .background(WindowActivityWatcher())
         } label: {
             MenuBarIcon(fleet: fleet)
         }
@@ -288,6 +326,8 @@ struct MacRoot: View {
     private var narrow: Bool { width < 760 }
     /// Bumped by every click in the sidebar, so the page it opens starts fresh (Home's open TV closes, and so on).
     @State private var visit = 0
+    /// Where the sidebar last went, and when: one click calls `go(to:)` twice (the list's selection and the click).
+    @State private var lastGo = SidebarGo()
     /// The remote's sidebar has the keyboard (arrows, Return, Esc, H, M, + and − go to the TV).
     @FocusState private var remoteFocused: Bool
     @AppStorage("macWelcomeShown") private var welcomeShown = false
@@ -373,7 +413,8 @@ struct MacRoot: View {
             .environment(\.macPageStack, true)
             // Woodruff's own bar: the window's toolbar is hidden, so nothing in it can move about or be covered.
             .safeAreaBar(edge: .top) { topBar }
-            .background { AmbientArtwork() }
+            // Not under Home's own first page: its backdrop covers the whole page (and draws what's playing itself).
+            .background { if !onHome { AmbientArtwork() } }
             // A clicked camera fills everything right of the sidebar (Esc or ✕ to close).
             .overlay {
                 if let cam = camera {
@@ -403,6 +444,9 @@ struct MacRoot: View {
         .onChange(of: selection) { _, _ in nav.reset() }
         .onChange(of: fleet.tvs) { _, _ in NowPlayingBridge.shared.update(fleet); WidgetSync.update(fleet) }
         .onChange(of: fleet.selectedID) { _, _ in NowPlayingBridge.shared.update(fleet); WidgetSync.update(fleet) }
+        // Control Center's poster as soon as the library has it (the TV's first report usually comes before the
+        // library does, and the TVs only change now and then once something plays steadily).
+        .onChange(of: fleet.artwork(for: fleet.selected?.nowPlaying)) { _, _ in NowPlayingBridge.shared.update(fleet) }
         .onAppear { SmartHome.shared.onChange = { WidgetSync.update(fleet) } }
         .sheet(isPresented: Binding(get: { !welcomeShown && !Demo.isOn }, set: { if !$0 { welcomeShown = true } })) { MacWelcome().macResizable(width: 520, height: 420) }
         .userActivity("com.woodruff.family.remote", isActive: fleet.remotePanel) { a in
@@ -439,6 +483,12 @@ struct MacRoot: View {
     /// Where the sidebar takes you, always: that section's (or TV's, speaker's, light's) first page, with the search
     /// cleared, anything opened on top closed, and a camera filling the window put away.
     private func go(to v: String) {
+        // The same place again straight away is the same click (its selection, then the click itself): the page it
+        // opened isn't started over a second time.
+        let now = Date()
+        if lastGo.target == v && now.timeIntervalSince(lastGo.at) < 0.4 { return }
+        lastGo.target = v
+        lastGo.at = now
         if CameraStreams.shared.full != nil { withAnimation(.smooth(duration: 0.25)) { CameraStreams.shared.full = nil } }
         nav.reset()
         if !query.isEmpty { query = "" }
@@ -548,6 +598,67 @@ enum SpaceKey {
                 MacActions.send("playpause", fleet: Fleet.shared)
             }
             return nil
+        }
+    }
+}
+
+/// Where the Mac's sidebar last went, and when. A plain class kept in `@State`: changing it redraws nothing.
+final class SidebarGo {
+    var target: String?
+    var at = Date.distantPast
+}
+
+/// Mac: the TVs are asked at full speed while one of Woodruff's windows can be seen, and at the Mac's slower pace
+/// (still enough for the menu bar, the widgets and the media keys) once every one is behind other windows, minimised
+/// or closed. Each window (the main ones, the Mini Player and the menu bar's panel) says whether it can be seen
+/// (`WindowActivityWatcher`); the fleet follows them all.
+@MainActor
+enum WindowActivity {
+    private static var visible: Set<ObjectIdentifier> = []
+
+    static func note(_ window: NSWindow, visible on: Bool) {
+        let id = ObjectIdentifier(window)
+        if on { visible.insert(id) } else { visible.remove(id) }
+        let any = !visible.isEmpty
+        // Only a change: the fleet asks every TV afresh each time it's made active.
+        if any != Fleet.shared.isActive { Fleet.shared.setActive(any) }
+    }
+}
+
+/// Tells `WindowActivity` whether its window can be seen, each time that changes.
+struct WindowActivityWatcher: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView { Watcher() }
+    func updateNSView(_ nsView: NSView, context: Context) {}
+
+    final class Watcher: NSView {
+        private weak var watched: NSWindow?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            guard window !== watched else { return }
+            let center = NotificationCenter.default
+            if let old = watched {
+                center.removeObserver(self, name: nil, object: old)
+                WindowActivity.note(old, visible: false)
+            }
+            watched = window
+            guard let window else { return }
+            for name in [NSWindow.didChangeOcclusionStateNotification, NSWindow.didMiniaturizeNotification, NSWindow.didDeminiaturizeNotification] {
+                center.addObserver(self, selector: #selector(changed), name: name, object: window)
+            }
+            center.addObserver(self, selector: #selector(closing), name: NSWindow.willCloseNotification, object: window)
+            // Once the window is up (this runs while it's being put together).
+            Task { @MainActor [weak self] in self?.changed() }
+        }
+
+        @objc private func changed() {
+            guard let w = watched else { return }
+            WindowActivity.note(w, visible: w.occlusionState.contains(.visible) && !w.isMiniaturized)
+        }
+
+        @objc private func closing() {
+            guard let w = watched else { return }
+            WindowActivity.note(w, visible: false)
         }
     }
 }

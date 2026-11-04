@@ -291,7 +291,11 @@ struct FilesView: View {
     @State private var progress: String?
     @State private var saving: URL?
     @State private var previewing: URL?
-    @State private var hovered: FileEntry?
+    /// The file under the pointer (for Space → Quick Look on the Mac): kept where moving the pointer redraws nothing.
+    @State private var hover = HoverSpot()
+    /// What's shown, worked out again only when the folder, the search or a view option changes (not at every redraw:
+    /// sorting a big folder by name the way Files does is slow).
+    @State private var shown: [FileEntry] = []
     /// Why the TV's storage couldn't be opened (with Try Again, instead of placeholders forever).
     @State private var failed: String?
     /// Waiting for "Delete" to be confirmed: nothing on the TV goes without asking (there's no bin to get it back).
@@ -309,7 +313,7 @@ struct FilesView: View {
     @AppStorage("files.hidden") private var showHidden = false
 
     /// What's shown: search, the Show filter, hidden files, then the sort (folders first, like Files).
-    private var shown: [FileEntry] {
+    private func filtered(_ listing: FolderListing?) -> [FileEntry] {
         guard let l = listing else { return [] }
         let list = l.files.filter { f in
             if !showHidden && f.name.hasPrefix(".") { return false }
@@ -352,6 +356,8 @@ struct FilesView: View {
     #endif
 
     var body: some View {
+        // Worked out once for the page: the pictures are handed their addresses.
+        let client = self.client
         Group {
             if listing == nil, let failed {
                 VStack(spacing: 14) {
@@ -371,9 +377,9 @@ struct FilesView: View {
                     .shimmer()
                 }
             } else if layout == .grid {
-                gridView
+                gridView(client)
             } else {
-                listView
+                listView(client)
             }
         }
         #if os(macOS)
@@ -420,8 +426,12 @@ struct FilesView: View {
         #if os(macOS)
         .focusable()
         .focusEffectDisabled()
-        .onKeyPress(.space) { if let f = hovered, !f.dir { quickLook(f); return .handled }; return .ignored }
+        .onKeyPress(.space) { if let f = hover.file, !f.dir { quickLook(f); return .handled }; return .ignored }
         #endif
+        .onChange(of: filter) { _, _ in refreshShown() }
+        .onChange(of: show) { _, _ in refreshShown() }
+        .onChange(of: sort) { _, _ in refreshShown() }
+        .onChange(of: showHidden) { _, _ in refreshShown() }
         #if os(iOS)
         .sheet(item: Binding(get: { saving.map { ShareItem(url: $0) } }, set: { saving = $0?.url })) { ShareSheet(items: [$0.url]) }
         #endif
@@ -483,7 +493,7 @@ struct FilesView: View {
         return (parent, (parent as NSString).lastPathComponent)
     }
 
-    private var listView: some View {
+    private func listView(_ client: TVClient?) -> some View {
         List {
             if let progress { HStack(spacing: 12) { ProgressView(); Text(progress).font(.subheadline) } }
             if let up = upButton {
@@ -495,14 +505,14 @@ struct FilesView: View {
                 }
                 .buttonStyle(.plain)
             }
-            ForEach(shown) { f in row(f) }
+            ForEach(shown) { f in row(f, client) }
             Text(footer).font(.footnote).foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity).listRowSeparator(.hidden).padding(.vertical, 10)
         }
         .listStyle(.plain)
     }
 
-    private var gridView: some View {
+    private func gridView(_ client: TVClient?) -> some View {
         ScrollView {
             if let progress { HStack(spacing: 12) { ProgressView(); Text(progress).font(.subheadline) }.padding() }
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 108, maximum: 150), spacing: 10, alignment: .top)], spacing: 28) {
@@ -510,16 +520,17 @@ struct FilesView: View {
                     Button { open(up.0) } label: { tileLabel(kind: .up, title: up.1, lines: ["Back"]) }
                         .buttonStyle(PressScale(scale: 0.95))
                 }
-                ForEach(shown) { f in tile(f) }
+                ForEach(shown) { f in tile(f, client) }
             }
             .padding(.horizontal, 16).padding(.top, 8)
             Text(footer).font(.footnote).foregroundStyle(.secondary).padding(.vertical, 24)
         }
     }
 
-    private func kindOf(_ f: FileEntry) -> FileGlyph.Kind {
+    private func kindOf(_ f: FileEntry, _ client: TVClient?) -> FileGlyph.Kind {
         if f.dir { return .folder }
-        if f.isImage, let u = client?.downloadURL(f.path) { return .image(u) }
+        // Its own picture, unless it's a very big file (downloading all of it for an icon isn't worth it).
+        if f.isImage, (f.size ?? 0) <= 15_000_000, let u = client?.downloadURL(f.path) { return .image(u) }
         if f.isVideo { return .document(f.ext.uppercased(), .video) }
         if f.isAudio { return .document(f.ext.uppercased(), .audio) }
         if ["zip", "rar", "7z", "gz", "tar"].contains(f.ext) { return .document(f.ext.uppercased(), .zip) }
@@ -540,9 +551,9 @@ struct FilesView: View {
         return [shortDate(f), formatBytes(f.size)].compactMap { $0 }.joined(separator: " – ")
     }
 
-    @ViewBuilder private func tile(_ f: FileEntry) -> some View {
-        let label = tileLabel(kind: kindOf(f), title: f.name, lines: [shortDate(f), f.dir ? nil : formatBytes(f.size)].compactMap { $0 })
-            .onHover { inside in if inside { hovered = f } else if hovered?.id == f.id { hovered = nil } }
+    @ViewBuilder private func tile(_ f: FileEntry, _ client: TVClient?) -> some View {
+        let label = tileLabel(kind: kindOf(f, client), title: f.name, lines: [shortDate(f), f.dir ? nil : formatBytes(f.size)].compactMap { $0 })
+            .onHover { [hover] inside in if inside { hover.file = f } else if hover.file?.id == f.id { hover.file = nil } }
         Group {
             if f.dir { Button { open(f.path) } label: { label }.buttonStyle(PressScale(scale: 0.95)) }
             else { Menu { menu(f) } label: { label }.menuStyle(.button).buttonStyle(.plain) }
@@ -566,9 +577,9 @@ struct FilesView: View {
         .contentShape(Rectangle())
     }
 
-    @ViewBuilder private func row(_ f: FileEntry) -> some View {
+    @ViewBuilder private func row(_ f: FileEntry, _ client: TVClient?) -> some View {
         let label = HStack(spacing: 12) {
-            FileGlyph(kind: kindOf(f), size: 40)
+            FileGlyph(kind: kindOf(f, client), size: 40)
             VStack(alignment: .leading, spacing: 2) {
                 Text(f.name).lineLimit(1).truncationMode(.middle)
                 Text(detail(f)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
@@ -657,7 +668,11 @@ struct FilesView: View {
             do {
                 let l = try await c.list(p)
                 path = p
-                withAnimation(.snappy) { listing = l }
+                let list = filtered(l)
+                withAnimation(.snappy) {
+                    listing = l
+                    shown = list
+                }
                 failed = nil
             } catch {
                 if listing == nil { failed = error.localizedDescription } else { fleet.show(error) }
@@ -666,6 +681,9 @@ struct FilesView: View {
     }
 
     private func reload() { if let path { open(path) } }
+
+    /// The search or a view option changed: what's shown is worked out again.
+    private func refreshShown() { shown = filtered(listing) }
 
     private func upload(_ urls: [URL]) {
         guard let dir = listing?.path, let c = client else { return }
@@ -708,6 +726,12 @@ struct FilesView: View {
     }
 }
 
+/// The file under the pointer in the TV's files. A plain box: the pointer moving over the icons changes it all the time,
+/// and nothing on screen shows it.
+final class HoverSpot {
+    var file: FileEntry?
+}
+
 /// File icons drawn the way Apple's Files app draws them: the two-tone blue folder, a photo's own picture
 /// with a thin border, and a white page with a folded corner, a grey glyph and the file's type underneath.
 struct FileGlyph: View {
@@ -725,7 +749,8 @@ struct FileGlyph: View {
                 .foregroundStyle(.secondary)
                 .frame(width: size, height: size * 0.8)
         case .image(let url):
-            Artwork(url: url, contentMode: .fit)
+            // An icon's worth of the picture, kept in memory only (these are the TV's own photos, often big).
+            Artwork(url: url, contentMode: .fit, maxPixel: 256, storeOnDisk: false)
                 .frame(maxWidth: size * 0.86, maxHeight: size * 0.86)
                 .background(Color.white)
                 .overlay(Rectangle().strokeBorder(.black.opacity(0.18), lineWidth: 0.5))

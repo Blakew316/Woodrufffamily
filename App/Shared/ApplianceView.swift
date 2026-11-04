@@ -10,6 +10,9 @@ struct ApplianceArt: View {
     var kind: HomeDevice.Kind
     var running: Bool
     var alert = false
+    /// Drawn at most this often: 30 times a second on the appliance's page, 20 on a tile (smooth at those sizes,
+    /// and far less work than every frame of the display).
+    var minimumInterval: Double = 1.0 / 30
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     static func animates(_ k: HomeDevice.Kind) -> Bool {
@@ -17,7 +20,7 @@ struct ApplianceArt: View {
     }
 
     var body: some View {
-        TimelineView(.animation(paused: !running || reduceMotion)) { tl in
+        TimelineView(.animation(minimumInterval: minimumInterval, paused: !running || reduceMotion)) { tl in
             let t = running && !reduceMotion ? tl.date.timeIntervalSinceReferenceDate : 0
             Canvas { ctx, size in draw(&ctx, size, t) }
         }

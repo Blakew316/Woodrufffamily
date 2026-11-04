@@ -4,7 +4,7 @@ import WoodruffKit
 // MARK: - Categories
 //
 // Settings is five rows, grouped the way iOS Settings groups things: TVs and Smart Home (the house), Notifications
-// and Accounts (what reaches you, and what the TVs sign in to), and General (the rest). These are the pages those
+// and Accounts (what reaches you, and every sign-in), and General (the rest). These are the pages those
 // rows open; the pages they lead to are the ones Settings always had.
 
 /// Reads the TVs' settings for the Settings pages, again when the remote moves to a TV with another hub (its keys and
@@ -85,6 +85,9 @@ struct SmartHomeSummaryRow: View {
 /// renamed, given its room, and signed in).
 struct SmartHomeSettingsView: View {
     var hub: HubSettings
+    /// Whether the Deco is signed in: its password is in the Keychain, read as the page opens (and each time it's back
+    /// on screen), not every time a speaker or light reports and the page redraws.
+    @State private var decoSignedIn = false
 
     var body: some View {
         Form {
@@ -111,12 +114,16 @@ struct SmartHomeSettingsView: View {
         .formStyle(.grouped)
         .navigationTitle("Smart Home")
         .inlineTitle()
+        .onAppear {
+            let now = DecoWifi.shared.connected
+            if now != decoSignedIn { decoSignedIn = now }
+        }
     }
 
-    /// The Deco: signed in or not (its password is in the Keychain, read only here, never on Settings itself).
+    /// The Deco: signed in or not (read on this page only, never on Settings itself).
     private var wifiSummary: String {
         let deco = DecoWifi.shared
-        guard deco.connected else { return "Not Connected" }
+        guard decoSignedIn else { return "Not Connected" }
         if deco.internetUp == false { return "Internet Down" }
         return deco.nodes.count == 1 ? "1 Deco" : "\(deco.nodes.count) Decos"
     }

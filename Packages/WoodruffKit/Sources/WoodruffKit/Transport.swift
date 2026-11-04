@@ -167,6 +167,8 @@ public extension URLSession {
         c.httpCookieStorage = nil
         c.httpShouldSetCookies = false
         c.requestCachePolicy = .reloadIgnoringLocalCacheData
+        // Never read back (above), so not written either: every answer used to go to the disk cache all the same.
+        c.urlCache = nil
         c.waitsForConnectivity = false
         c.httpMaximumConnectionsPerHost = 6
         if Demo.isOn { c.protocolClasses = [DemoURLProtocol.self] + (c.protocolClasses ?? []) }

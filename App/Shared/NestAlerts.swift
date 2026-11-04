@@ -205,10 +205,23 @@ struct AlertsSection: View {
         }
         .task {
             while !Task.isCancelled {
-                status = NestAlerts.shared.status
+                // Only when it's changed: the switches above aren't redrawn every 2 seconds for nothing.
+                let now = NestAlerts.shared.status
+                if now != status { status = now }
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
             }
         }
+    }
+}
+
+/// Settings → Notifications → Camera Alerts → On This Device: the doorbell's and cameras' alerts on this iPhone or Mac
+/// (the same switches as Smart Home → Cameras, where the cameras are connected).
+struct DeviceCameraAlertsView: View {
+    var body: some View {
+        Form { AlertsSection(title: "Doorbell & Cameras", showsReconnect: false) }
+            .formStyle(.grouped)
+            .navigationTitle("Camera Alerts on This Device")
+            .inlineTitle()
     }
 }
 

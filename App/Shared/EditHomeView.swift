@@ -255,11 +255,12 @@ struct FavoriteButton: View {
     }
 }
 
-/// Every room something is in: the TVs' rooms, and the rooms of cameras, speakers, lights and devices.
-@MainActor func homeRooms(_ fleet: Fleet) -> [String] {
+/// Every room something is in: the TVs' rooms, and the rooms of cameras, speakers, lights and devices. [devices]: the
+/// devices, when they're already at hand (Home works them out once for each drawing).
+@MainActor func homeRooms(_ fleet: Fleet, devices: [HomeDevice]? = nil) -> [String] {
     let h = SmartHome.shared
     let tvRooms = fleet.tvs.filter { !$0.isUnpaired }.map { h.rooms[$0.id] ?? $0.name }
-    let deviceRooms = (h.speakers.map(\.id) + h.lights.map(\.id) + AccessoryStore.shared.all.map(\.id)).compactMap { h.room(of: $0) }
+    let deviceRooms = (h.speakers.map(\.id) + h.lights.map(\.id) + (devices ?? AccessoryStore.shared.all).map(\.id)).compactMap { h.room(of: $0) }
     let cameraRooms = NestCameras.shared.cameras.compactMap { h.rooms[$0.id] ?? $0.room }
     return Array(Set(tvRooms + deviceRooms + cameraRooms).filter { !$0.isEmpty }).sorted { $0.localizedStandardCompare($1) == .orderedAscending }
 }
@@ -280,6 +281,8 @@ struct EditHomeView: View {
 
     var body: some View {
         @Bindable var layout = layout
+        // Worked out once for the sheet (three parts of it list the rooms).
+        let rooms = homeRooms(fleet)
         NavigationStack {
             List {
                 Section {
@@ -307,7 +310,7 @@ struct EditHomeView: View {
                 }
 
                 Section {
-                    ForEach(homeRooms(fleet), id: \.self) { r in
+                    ForEach(rooms, id: \.self) { r in
                         Toggle(r, isOn: Binding(get: { layout.pinned(in: [r]).count == 1 }, set: { _ in layout.togglePinned(r) }))
                     }
                 } header: { Text("Room Bar") } footer: {
@@ -317,8 +320,8 @@ struct EditHomeView: View {
                 Section {
                     Toggle("Group by Room", isOn: $layout.groupByRoom)
                     if layout.groupByRoom {
-                        ForEach(layout.arrangeRooms(homeRooms(fleet)), id: \.self) { r in Text(r) }
-                            .onMove { layout.moveRooms(homeRooms(fleet), from: $0, to: $1) }
+                        ForEach(layout.arrangeRooms(rooms), id: \.self) { r in Text(r) }
+                            .onMove { layout.moveRooms(rooms, from: $0, to: $1) }
                     }
                 } header: { Text("Rooms") } footer: {
                     Text(layout.groupByRoom ? "Home shows each room with everything in it. Drag rooms into the order you want." : "Home shows Cameras, TVs, Speakers, Lights and Devices each together.")

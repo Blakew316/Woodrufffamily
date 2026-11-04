@@ -33,12 +33,13 @@ enum SharedStore {
         var routeID: String
     }
 
-    static var groupID: String? {
+    static let groupID: String? = {
         guard let g = Bundle.main.object(forInfoDictionaryKey: "WoodruffAppGroup") as? String, !g.isEmpty, !g.hasPrefix("$(") else { return nil }
         return g
-    }
+    }()
 
-    static var defaults: UserDefaults? { groupID.flatMap { UserDefaults(suiteName: $0) } }
+    /// Made once (it was made afresh on every save and load, several times a minute while anything played).
+    static let defaults: UserDefaults? = groupID.flatMap { UserDefaults(suiteName: $0) }
 
     static func save(_ s: Snapshot) {
         guard let d = defaults, let data = try? JSONEncoder().encode(s) else { return }
