@@ -230,17 +230,16 @@ func statusWord(_ t: FleetTV) -> String {
 
 // MARK: - Pictures
 
-/// A picture from a TV (posters, thumbnails, photos), fading in.
+/// A picture from a TV (posters, thumbnails, photos): at once when it's been seen before (kept by ImageStore),
+/// otherwise fading in as it arrives.
 struct Artwork: View {
     var url: URL?
     var contentMode: ContentMode = .fill
     var body: some View {
-        AsyncImage(url: url, transaction: Transaction(animation: .easeOut(duration: 0.25))) { phase in
-            switch phase {
-            case .success(let img): img.resizable().aspectRatio(contentMode: contentMode)
-            case .failure: Rectangle().fill(.quaternary)
-            default: Rectangle().fill(.quinary)
-            }
+        CachedImage(url: url, contentMode: contentMode) {
+            Rectangle().fill(.quinary)
+        } failure: {
+            Rectangle().fill(.quaternary)
         }
     }
 }

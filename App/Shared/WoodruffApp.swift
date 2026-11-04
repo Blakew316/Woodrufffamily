@@ -54,6 +54,8 @@ struct WoodruffApp: App {
                     NestCameras.shared.start()
                     NestAlerts.shared.start(fleet)
                     SettingsSync.shared.start(fleet)
+                    // Keeps the pictures' disk cache from growing past its limit.
+                    Task.detached(priority: .background) { await ImageStore.shared.trim() }
                     #if os(iOS)
                     HomeKitLights.shared.start()
                     #else

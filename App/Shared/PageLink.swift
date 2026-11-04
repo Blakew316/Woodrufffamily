@@ -154,6 +154,14 @@ struct MacBackRow: View {
         .padding(.horizontal, 18)
         .padding(.top, 2)
         .padding(.bottom, 10)
+        // A soft frosted edge, so a page scrolling under it never makes it hard to read.
+        .background {
+            Rectangle().fill(.regularMaterial)
+                .mask(LinearGradient(stops: [.init(color: .black, location: 0), .init(color: .black, location: 0.6), .init(color: .clear, location: 1)],
+                                     startPoint: .top, endPoint: .bottom))
+                .ignoresSafeArea(edges: .horizontal)
+                .allowsHitTesting(false)
+        }
     }
 }
 #endif

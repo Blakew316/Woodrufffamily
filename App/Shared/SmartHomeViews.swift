@@ -129,7 +129,7 @@ struct SpeakerArt: View {
             .fill(.white.opacity(0.08))
             .overlay {
                 if let url {
-                    AsyncImage(url: url) { $0.resizable().scaledToFill() } placeholder: { Color.clear }
+                    CachedImage(url: url) { Color.clear }
                 } else {
                     Image(systemName: "hifispeaker.fill").font(.system(size: size * 0.38)).foregroundStyle(.secondary)
                 }
