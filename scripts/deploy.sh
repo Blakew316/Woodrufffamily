@@ -106,8 +106,14 @@ hints() {  # $1 = a log; plain-English hints for failures seen before
 
 # A build or verify that failed because WoodruffMacWidgets.appex inside the generated app has a stale signature.
 stale_widget_signature() {
-  grep -E -B 3 -A 3 'code object is not signed at all|a sealed resource is missing or invalid|invalid signature' \
+  # Includes the wording Xcode 26 uses when the embedded widget was signed by another certificate.
+  grep -E -B 3 -A 3 'code object is not signed at all|a sealed resource is missing or invalid|invalid signature|not signed with the same certificate as the parent app' \
     "$1" 2>/dev/null | grep -q 'WoodruffMacWidgets\.appex'
+}
+
+# Xcode refuses this Mac's own certificate (revoked by Apple, usually because another Mac made a new one).
+revoked_certificate() {
+  grep -q 'Signing certificate is invalid' "$1" 2>/dev/null
 }
 
 identity_count() {
@@ -280,6 +286,10 @@ deploy_mac() {
       fi
       attempt=2
       continue
+    fi
+    if revoked_certificate "$log"; then
+      mac_failed "this Mac's signing certificate was revoked by Apple, so it can't sign builds any more (log $log); $MAC_INSTALLED wasn't touched. Install the Mac app built on another Mac instead (README: Deploying), rather than signing in here." "$log"
+      return 1
     fi
     mac_failed "the Mac app didn't build or verify (log $log); $MAC_INSTALLED wasn't touched" "$log"
     return 1
