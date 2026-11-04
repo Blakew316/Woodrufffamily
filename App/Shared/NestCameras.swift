@@ -1,5 +1,8 @@
 import SwiftUI
 import WebKit
+#if os(macOS)
+import AppKit
+#endif
 import WoodruffKit
 
 /// Google Home / Nest cameras and doorbells, live, through Google's Device Access (the same project and Google
@@ -295,7 +298,7 @@ struct CamerasSection: View {
                     }
                 }
             }
-            .sheet(item: $open) { cam in CameraLiveView(camera: cam).macResizable(width: 960, height: 540, minWidth: 480, minHeight: 270, aspect: 16 / 9) }
+            .cameraPresenter($open)
         }
     }
 }
@@ -794,6 +797,69 @@ struct CamerasPhoneView: View {
                 clientID = s.google?.clientId ?? ""
             }
         }
-        .sheet(item: $open) { cam in CameraLiveView(camera: cam).macResizable(width: 960, height: 540, minWidth: 480, minHeight: 270, aspect: 16 / 9) }
+        .cameraPresenter($open)
     }
 }
+
+extension View {
+    /// Opens a camera: on iPhone in a sheet; on the Mac in its own window that goes full screen.
+    func cameraPresenter(_ camera: Binding<NestCameras.Camera?>) -> some View { modifier(CameraPresenter(camera: camera)) }
+}
+
+struct CameraPresenter: ViewModifier {
+    @Binding var camera: NestCameras.Camera?
+    #if os(macOS)
+    @Environment(\.openWindow) private var openWindow
+    #endif
+
+    func body(content: Content) -> some View {
+        #if os(macOS)
+        content.onChange(of: camera?.id, initial: true) { _, id in
+            guard let id else { return }
+            openWindow(id: "camera", value: id)
+            camera = nil
+        }
+        #else
+        content.sheet(item: $camera) { cam in CameraLiveView(camera: cam) }
+        #endif
+    }
+}
+
+#if os(macOS)
+/// A camera on the Mac: its own window, full screen straight away. Esc or the close button closes it.
+struct CameraFullScreen: View {
+    var cameraID: String?
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        Group {
+            if let cam = NestCameras.shared.cameras.first(where: { $0.id == cameraID }) {
+                CameraLiveView(camera: cam)
+            } else {
+                Color.black.overlay { ProgressView().tint(.white) }
+            }
+        }
+        .frame(minWidth: 480, minHeight: 270)
+        .background(Color.black)
+        .background(FullScreenOnOpen())
+        .onExitCommand { dismiss() }
+    }
+}
+
+/// Puts its window into full screen once it appears.
+struct FullScreenOnOpen: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView { Watcher() }
+    func updateNSView(_ nsView: NSView, context: Context) {}
+
+    final class Watcher: NSView {
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            guard let w = window else { return }
+            w.collectionBehavior.insert(.fullScreenPrimary)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                if !w.styleMask.contains(.fullScreen) { w.toggleFullScreen(nil) }
+            }
+        }
+    }
+}
+#endif
