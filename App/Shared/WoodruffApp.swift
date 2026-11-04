@@ -415,7 +415,7 @@ struct MacRoot: View {
                     }
             }
             .environment(\.macPageStack, true)
-            // Woodruff's own bar: the window's toolbar is hidden, so nothing in it can move about or be covered.
+            // Woodruff's own bar, under the window's see-through toolbar (which keeps only the window's buttons).
             .safeAreaBar(edge: .top) { topBar }
             // Not under Home's own first page: its backdrop covers the whole page (and draws what's playing itself).
             .background { if !onHome { AmbientArtwork() } }
@@ -427,7 +427,9 @@ struct MacRoot: View {
                         .transition(.opacity)
                 }
             }
-            .toolbar(.hidden, for: .windowToolbar)
+            // The window's own toolbar stays (hiding it took the close, minimize and full-screen buttons with it on
+            // every page that has no title of its own), see-through and without a title, so Woodruff's bar shows.
+            .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
             .toolbar(removing: .title)
             .safeAreaInset(edge: .bottom) {
                 if tvSelection == nil && deviceSelection == nil && section != .home && !fleet.remotePanel {
