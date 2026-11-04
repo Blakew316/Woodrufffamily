@@ -339,6 +339,17 @@ func timeLeft(position: Double?, duration: Double?) -> String? {
     return left >= 60 ? String(format: "%dh %02dm left", left / 60, left % 60) : "\(left)m left"
 }
 
+/// Help written on the TVs (a problem's details, the doorbell's status, a TV's messages), pointing at the phone app's
+/// Settings as it is now: TVs not yet updated still name pages it used to have (Connections, its Cameras, and the
+/// last crash at the top of Settings).
+func currentSettingsPaths(_ text: String) -> String {
+    guard text.contains("Settings → ") else { return text }
+    return text
+        .replacingOccurrences(of: "Settings → Connections → Cameras", with: "Settings → Accounts → Nest Cameras")
+        .replacingOccurrences(of: "Settings → Connections →", with: "Settings → Accounts →")
+        .replacingOccurrences(of: "Settings → Last Crash on This TV", with: "Settings → General → Last Crash on This TV")
+}
+
 struct EmptyState: View {
     var symbol: String
     var title: String

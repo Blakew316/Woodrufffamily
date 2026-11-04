@@ -105,7 +105,8 @@ struct WhatsPlayingIntent: AppIntent {
     @MainActor func perform() async throws -> some IntentResult & ProvidesDialog {
         let list = await tvsForIntent(tv)
         let lines = list.compactMap { t -> String? in
-            guard let p = t.playing else { return tv == nil ? nil : "Nothing is playing on \(t.name)." }
+            // What's playing now: a title left paused for a while is nothing playing, as everywhere else in the app.
+            guard let p = t.nowPlaying else { return tv == nil ? nil : "Nothing is playing on \(t.name)." }
             return "\(t.name): \(p.title)\(p.isPlaying ? "" : " (paused)")"
         }
         return .result(dialog: "\(lines.isEmpty ? "Nothing is playing." : lines.joined(separator: ". "))")

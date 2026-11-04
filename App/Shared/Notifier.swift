@@ -52,7 +52,8 @@ enum Notifier {
     static func post(_ title: String, _ body: String, id: String, category: String, tv: String?, relay: Bool = true) {
         let c = UNMutableNotificationContent()
         c.title = title
-        c.body = body
+        // A TV's words, pointing at Settings as it is now (a TV not yet updated names older pages).
+        c.body = currentSettingsPaths(body)
         c.sound = .default
         c.categoryIdentifier = category
         c.threadIdentifier = tv ?? "messages"

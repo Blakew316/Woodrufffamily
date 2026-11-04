@@ -155,7 +155,8 @@ struct TVDetailView: View {
 
     private func attentionRow(_ tv: FleetTV, _ a: AttentionItem) -> some View {
         Menu {
-            if let d = a.detail { Text(d) }
+            // The TV's words, pointing at Settings as it is now (a TV not yet updated names older pages).
+            if let d = a.detail { Text(currentSettingsPaths(d)) }
             fix(tv, a)
         } label: {
             HStack(spacing: 12) {

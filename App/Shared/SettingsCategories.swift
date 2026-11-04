@@ -161,7 +161,7 @@ struct GeneralSettingsView: View {
         .inlineTitle()
         .refreshable { await hub.load(fleet.hubClient()) }
         // Opened before Settings had read them (or they couldn't be read then): read them now, and keep them current.
-        .task { if hub.s == nil && !hub.loading { await hub.load(fleet.hubClient()) } }
+        .task { await hub.loadIfNeeded(fleet) }
         .task { await hub.follow(fleet) }
     }
 
@@ -183,7 +183,8 @@ struct RecentMessagesView: View {
                 ForEach(fleet.recentMessages) { m in
                     VStack(alignment: .leading, spacing: 3) {
                         Text(m.title).font(.subheadline.weight(.semibold))
-                        if let b = m.body, !b.isEmpty { Text(b).font(.subheadline) }
+                        // (A TV not yet updated names Settings pages as they used to be.)
+                        if let b = m.body, !b.isEmpty { Text(currentSettingsPaths(b)).font(.subheadline) }
                         Text([m.from, m.at.map { Date(timeIntervalSince1970: $0 / 1000).formatted(date: .abbreviated, time: .shortened) }].compactMap { $0 }.joined(separator: " · "))
                             .font(.caption).foregroundStyle(.secondary)
                     }

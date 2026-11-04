@@ -13,12 +13,25 @@ import WoodruffKit
         loading = true
         defer { loading = false }
         do {
-            s = try await c.settings()
-            error = nil
+            let read = try await c.settings()
+            // Only what changed: they're read every 20 seconds, and every page showing them would redraw each time.
+            if read != s { s = read }
+            if error != nil { error = nil }
         } catch {
             // What was read before stays (a TV that blinked off for a moment doesn't empty every page).
             if !Task.isCancelled { self.error = error.localizedDescription }
         }
+    }
+
+    /// For a page that shows them: reads them unless they're read already. A read the page it was opened from had
+    /// under way stops as that page goes behind this one, so this waits for that read to end first, then reads them
+    /// itself if it ended without them (instead of leaving the page empty until the next read, 20 seconds later).
+    func loadIfNeeded(_ fleet: Fleet) async {
+        while loading {
+            try? await Task.sleep(nanoseconds: 200_000_000)
+            if Task.isCancelled { return }
+        }
+        if s == nil { await load(fleet.hubClient()) }
     }
 
     /// A save the TV answered with its new settings; nothing is changed when it didn't answer.
@@ -39,10 +52,29 @@ import WoodruffKit
     }
 }
 
-/// Settings in five rows, grouped as iOS Settings groups things: TVs (every TV, Software Update, Send on iPhone, and
-/// one tap for all of them) and Smart Home (speakers, lights, cameras, devices, the Wi‑Fi); Notifications, and
-/// Accounts (what the TVs sign in to); and General (Away From Home, Shortcuts, Sync Across Devices, the TV's last
-/// crash).
+/// In place of a page's rows until the TVs' settings are read: a spinner while they're being read, or why they
+/// couldn't be, with Try Again (never a spinner that spins forever).
+struct HubSettingsPending: View {
+    @Environment(Fleet.self) private var fleet
+    var hub: HubSettings
+
+    var body: some View {
+        if let e = hub.error {
+            Section {
+                Text("Can’t Read the Settings").font(.headline)
+                Text(e).font(.subheadline).foregroundStyle(.secondary)
+                ActionButton(action: { await hub.load(fleet.hubClient()) }) { Text("Try Again") }
+            }
+        } else {
+            ProgressView().frame(maxWidth: .infinity)
+        }
+    }
+}
+
+/// Settings in five rows, grouped as iOS Settings groups things: TVs (every TV, Software Update, and one tap for all
+/// of them) and Smart Home (speakers, lights, cameras, devices, the Wi‑Fi), with Send beside them on iPhone (it has no
+/// tab there); Notifications, and Accounts (what the TVs sign in to); and General (Away From Home, Shortcuts, Sync
+/// Across Devices, the TV's last crash).
 struct SettingsView: View {
     @Environment(Fleet.self) private var fleet
     @State private var hub = HubSettings()
@@ -53,10 +85,17 @@ struct SettingsView: View {
     var body: some View {
         Form {
             Section {
-                // Every TV, Software Update, Send (iPhone) and one tap for all of them.
+                // Every TV, Software Update and one tap for all of them.
                 PageLink("TVs") { TVsView() } label: { TVsSummaryRow() }
                 // Speakers, lights, cameras, devices and the Wi‑Fi.
                 PageLink("Smart Home") { SmartHomeSettingsView(hub: hub) } label: { SmartHomeSummaryRow() }
+                #if os(iOS)
+                // Messages, links and files to the TVs and phones: Send has no tab on iPhone (the Mac has it in its
+                // sidebar), so it's here, where it's easy to find.
+                PageLink("Send") { SendView() } label: {
+                    IconRow(symbol: "", color: .clear, title: "Send", subtitle: "A message, photos, files or a link")
+                }
+                #endif
             }
 
             Section {
@@ -72,9 +111,11 @@ struct SettingsView: View {
             }
 
             Section {
-                // Away From Home, Shortcuts, Sync Across Devices, and the TV's last crash.
+                // Away From Home, Shortcuts, Sync Across Devices, and the TV's last crash. Only a crash report shows
+                // beside it: Sync Across Devices, inside, says how syncing is really going (read here, it would redraw
+                // Settings at every sync round, every 12 seconds).
                 PageLink("General") { GeneralSettingsView(hub: hub) } label: {
-                    IconRow(symbol: "", color: .clear, title: "General", value: generalSummary, valueColor: hasCrash ? Palette.attention : .secondary)
+                    IconRow(symbol: "", color: .clear, title: "General", value: hasCrash ? "Crash Report" : nil, valueColor: Palette.attention)
                 }
             }
 
@@ -117,11 +158,6 @@ struct SettingsView: View {
 
     /// The TV that holds the settings has a crash report waiting.
     private var hasCrash: Bool { !(hub.s?.crash ?? "").isEmpty }
-
-    private var generalSummary: String {
-        if hasCrash { return "Crash Report" }
-        return SettingsSync.shared.lastSynced == nil ? "Not Synced Yet" : "In Sync"
-    }
 }
 
 /// Settings' TVs row: one that needs attention, what's playing, or how many there are; and the red count of TVs with
@@ -198,8 +234,9 @@ struct PhoneSettingsView: View {
                 }
             }
             #else
-            // Only on an iPhone that has signed up for them (a copy built without push never does).
-            if PushRelay.shared.registered || PushRelay.shared.tokens[DeviceID.value] != nil {
+            // Not on a copy built without push (it can never have them). On one built with push it shows even before
+            // this iPhone has signed up, with why it couldn't when it fails: nowhere else says so.
+            if PushRelay.builtWithPush || PushRelay.shared.registered || PushRelay.shared.tokens[DeviceID.value] != nil {
                 PushSettingsSection()
             }
             #endif
@@ -258,7 +295,7 @@ struct PhoneSettingsView: View {
 // MARK: - TVs
 
 /// Every TV: what's playing, off, needs attention, link again. Tap one for its screen, controls and health. Below
-/// them, Software Update, Send (on iPhone; the Mac has it in its sidebar), and one tap for all of them.
+/// them, Software Update and one tap for all of them.
 struct TVsView: View {
     @Environment(Fleet.self) private var fleet
     @State private var pairing = false
@@ -288,12 +325,6 @@ struct TVsView: View {
                 }
             }
             Section {
-                #if os(iOS)
-                // Messages, links and files to the TVs and phones (the Mac has Send in its sidebar).
-                PageLink("Send") { SendView() } label: {
-                    IconRow(symbol: "", color: .clear, title: "Send", subtitle: "A message, photos, files or a link")
-                }
-                #endif
                 PageLink("Software Update") { SoftwareUpdateView() } label: { SoftwareUpdateRow() }
             }
             EveryTVSection()
@@ -334,7 +365,8 @@ struct TVRow: View {
                     if tv.needsAttention { Circle().fill(Palette.attention).frame(width: 7, height: 7).accessibilityLabel("Needs attention") }
                 }
                 Text(line).font(.subheadline).foregroundStyle(tv.needsAttention && tv.link == "refused" ? Palette.attention : tv.isUnpaired ? Color.accentColor : .secondary).lineLimit(1)
-                if let p = tv.playing, let d = p.duration, d > 0 {
+                // What's playing now (a title left paused reads as nothing playing, as on its Home tile).
+                if let p = tv.nowPlaying, let d = p.duration, d > 0 {
                     TimelineView(.periodic(from: .now, by: 1)) { ctx in
                         // From when the TV's answer arrived (as the player's bar does), so every screen agrees.
                         let pos = min(d, livePosition(p, at: ctx.date, since: fleet.refreshedAt))
@@ -359,7 +391,7 @@ struct TVRow: View {
         if tv.isUnpaired { return "Found on Wi‑Fi · Not paired" }
         if tv.link == "refused" { return tv.alertsHidden ? "Off · link stopped working" : "Link again" }
         if !tv.online { return "Off · seen \(relative(tv.seen))" }
-        if let p = tv.playing { return (p.isPlaying ? "Playing " : "Paused · ") + p.title + (p.app.map { " · \($0)" } ?? "") }
+        if let p = tv.nowPlaying { return (p.isPlaying ? "Playing " : "Paused · ") + p.title + (p.app.map { " · \($0)" } ?? "") }
         return tv.onScreen ? "Woodruff on screen" : "Nothing playing"
     }
 }
@@ -378,10 +410,10 @@ struct SoftwareUpdateView: View {
                 VStack(spacing: 12) {
                     Text(headline).font(.title3.weight(.semibold)).multilineTextAlignment(.center)
                     Text(subline).font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
-                    // Whenever there's a TV to ask: with nothing waiting it has each Android TV look for itself now.
-                    if fleet.updatesWaiting > 0 || androidOn {
+                    // Only with something to install. (Check Now, under Newest Releases, has every TV look for itself.)
+                    if fleet.updatesWaiting > 0 {
                         ActionButton(action: { await updateAll() }) {
-                            Text(fleet.updatesWaiting > 0 ? "Update All TVs" : "Check Every TV Now").font(.headline).frame(maxWidth: .infinity).padding(.vertical, 6)
+                            Text("Update All TVs").font(.headline).frame(maxWidth: .infinity).padding(.vertical, 6)
                         }
                         .buttonStyle(.glassProminent)
                         .padding(.top, 4)
@@ -405,7 +437,7 @@ struct SoftwareUpdateView: View {
                         else { ProgressView().controlSize(.small) }
                     }
                 }
-                ActionButton(action: { await fleet.checkReleases(); await fleet.loadAllHealth() }) { Text("Check Now") }
+                ActionButton(action: { await checkNow() }) { Text("Check Now") }
             } header: { Text("Newest Releases") }
 
             Section {
@@ -422,11 +454,6 @@ struct SoftwareUpdateView: View {
         .navigationTitle("Software Update")
         .inlineTitle()
         .task { if fleet.latest.isEmpty { await fleet.checkReleases() }; await fleet.loadAllHealth() }
-    }
-
-    /// An Android TV that's on: Update All can ask it (LG TVs install from the Mac, over SSH).
-    private var androidOn: Bool {
-        fleet.tvs.contains { $0.online && !$0.isUnpaired && fleet.platform(of: $0) != .webOS }
     }
 
     private var headline: String {
@@ -466,10 +493,20 @@ struct SoftwareUpdateView: View {
         }
     }
 
+    /// The newest releases from GitHub; every Android TV that's on looks for an update itself too (it installs one
+    /// once nobody's watching), so a TV still finds one when GitHub can't be read from here; then every TV's version.
+    private func checkNow() async {
+        // Both at once: a TV slow to answer doesn't hold up GitHub.
+        async let asked: (Int, [String]) = fleet.pushUpdateToAll()
+        await fleet.checkReleases()
+        let (_, failed) = await asked
+        if !failed.isEmpty { log.insert("Couldn’t ask every TV to look: " + failed.joined(separator: "; "), at: 0) }
+        await fleet.loadAllHealth()
+    }
+
     private func updateAll() async {
-        let checking = fleet.updatesWaiting == 0
         let (n, failed) = await fleet.pushUpdateToAll()
-        log.insert("Asked \(n) Android TV\(n == 1 ? "" : "s") to \(checking ? "look for an update now" : "update")." + (failed.isEmpty ? "" : " " + failed.joined(separator: "; ")), at: 0)
+        log.insert("Asked \(n) Android TV\(n == 1 ? "" : "s") to update." + (failed.isEmpty ? "" : " " + failed.joined(separator: "; ")), at: 0)
         #if os(macOS)
         for tv in fleet.tvs where fleet.platform(of: tv) == .webOS && fleet.isBehind(tv) && fleet.extras[tv.id]?.ssh != nil { await installWebOS(tv) }
         #endif
@@ -538,21 +575,14 @@ struct ConnectionsView: View {
                 if let e = hub.error {
                     Section { Text(e).font(.footnote).foregroundStyle(Palette.attention) }
                 }
-            } else if let e = hub.error {
-                // Never a spinner that spins forever: say why, and let it be tried again.
-                Section {
-                    Text("Can’t Read the Settings").font(.headline)
-                    Text(e).font(.subheadline).foregroundStyle(.secondary)
-                    ActionButton(action: { await hub.load(fleet.hubClient()) }) { Text("Try Again") }
-                }
             } else {
-                ProgressView().frame(maxWidth: .infinity)
+                HubSettingsPending(hub: hub)
             }
         }
         .formStyle(.grouped)
         .navigationTitle("Accounts")
         .inlineTitle()
-        .task { if hub.s == nil && !hub.loading { await hub.load(fleet.hubClient()) } }
+        .task { await hub.loadIfNeeded(fleet) }
         .task { await hub.follow(fleet) }
     }
 
@@ -638,6 +668,8 @@ struct PostersView: View {
                     key = ""
                     fleet.say("Movie Posters", hub.s?.note ?? "Saved. Posters appear as the library refreshes.")
                 }) { Text("Save") }
+                // A blank Save would erase the key on every TV: only a key that's been typed can be saved.
+                .disabled(key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             } footer: { Text("A free key from themoviedb.org adds official posters, genres and ratings. Your own poster.jpg files always win.") }
         }
         .formStyle(.grouped)
@@ -667,22 +699,31 @@ struct CamerasView: View {
                     try await hub.save({ try await $0.saveNest(["project": p, "doorbell": d]) }, on: fleet.hubClient())
                     fleet.say("Nest Cameras", hub.s?.nest?.connected == true || p.isEmpty ? "Saved." : "Saved. Press Connect Cameras… to sign in.")
                 }) { Text("Save") }
+                    // Not before the TVs' settings are read: the fields would still be blank, and saving blanks
+                    // clears the project (signing every TV out of the cameras) and the doorbell's subscription.
+                    .disabled(hub.s == nil)
             }
             Section {
                 Toggle("Person Alerts", isOn: Binding(get: { hub.s?.nest?.person ?? true }, set: { setAlert("person", $0) }))
+                    .disabled(hub.s == nil)
                 Toggle("Motion Alerts", isOn: Binding(get: { hub.s?.nest?.motion ?? false }, set: { setAlert("motion", $0) }))
+                    .disabled(hub.s == nil)
             } footer: { Text(doorbellNote) }
         }
         .formStyle(.grouped)
         .navigationTitle("Nest Cameras").inlineTitle()
+        // Opened before the settings were read (the read the page it came from started stops as this one opens).
+        .task { await hub.loadIfNeeded(fleet) }
         .task { await hub.follow(fleet) }
         .onAppear { fill() }
         .onChange(of: hub.s?.nest?.project) { _, _ in fill() }
+        .onChange(of: hub.s?.nest?.doorbell) { _, _ in fill() }
         .sheet(isPresented: $signIn, onDismiss: { Task { await hub.load(fleet.hubClient()) } }) { HubSignIn(grant: "cameras") }
     }
 
     private var doorbellNote: String {
-        if let s = hub.s?.nest?.doorbellStatus, !s.isEmpty { return s }
+        // The TV's words, pointing at where things are in Settings now (a TV not yet updated names older pages).
+        if let s = hub.s?.nest?.doorbellStatus, !s.isEmpty { return currentSettingsPaths(s) }
         return "Rings and people seen pop up on every TV."
     }
 
@@ -745,19 +786,28 @@ struct AwayView: View {
                     if let link = URL(string: a) { Button("Use This Link Here") { fleet.handle(url: link) } }
                     Button("Copy Link") { copyToClipboard(a) }
                 } footer: { Text("Works anywhere through Tailscale, encrypted.") }
-            } else {
+            } else if hub.s != nil {
                 Section { Text("Install Tailscale on the TV and this device, signed in to the same account. The TV then offers a link that works from anywhere.") }
+            } else {
+                // Not read yet: never "Install Tailscale" for a TV that may well have its link.
+                HubSettingsPending(hub: hub)
             }
         }
         .formStyle(.grouped)
         .navigationTitle("Away From Home").inlineTitle()
+        // Opened before the settings were read (the read General started stops as this page opens).
+        .task { await hub.loadIfNeeded(fleet) }
     }
 }
 
 struct ShortcutsView: View {
+    @Environment(Fleet.self) private var fleet
     var hub: HubSettings
     var body: some View {
         Form {
+            if hub.s == nil {
+                HubSettingsPending(hub: hub)
+            }
             Section {
                 if let u = hub.s?.shareUrl { Button("Copy “Share to TV” Link") { copyToClipboard(u) } }
                 if let u = hub.s?.notifyUrl { Button("Copy Announcement Link") { copyToClipboard(u) } }
@@ -767,6 +817,8 @@ struct ShortcutsView: View {
         }
         .formStyle(.grouped)
         .navigationTitle("Shortcuts").inlineTitle()
+        // Opened before the settings were read (the read General started stops as this page opens).
+        .task { await hub.loadIfNeeded(fleet) }
     }
 }
 

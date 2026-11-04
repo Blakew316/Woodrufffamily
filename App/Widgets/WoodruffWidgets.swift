@@ -23,13 +23,18 @@ struct WoodruffWidgets: WidgetBundle {
 struct NowPlayingLiveActivity: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: NowPlayingAttributes.self) { context in
-            LockScreenNowPlaying(state: context.state)
+            LockScreenNowPlaying(state: context.state, idle: context.isStale && !context.state.isPlaying)
                 .activityBackgroundTint(Color.black.opacity(0.55))
                 .activitySystemActionForegroundColor(.white)
                 // Tapping it (anywhere but its buttons) opens the remote, as the Dynamic Island does.
                 .widgetURL(URL(string: "woodruff://remote"))
         } dynamicIsland: { context in
             let s = context.state
+            // Left paused until it went stale (5 minutes on) while the app was asleep and couldn't end it: the TV, with
+            // nothing playing (no old title, bar or buttons) until the app next runs and ends it.
+            let idle = context.isStale && !s.isPlaying
+            let headline: String = idle ? s.tvName : s.title
+            let subline: String = idle ? "Nothing playing" : s.tvName + (s.detail.isEmpty ? "" : " · " + s.detail)
             return DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
                     Image("Emblem").resizable().frame(width: 42, height: 42)
@@ -38,34 +43,36 @@ struct NowPlayingLiveActivity: Widget {
                 }
                 DynamicIslandExpandedRegion(.center) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(s.title).font(.headline).lineLimit(1)
-                        Text(s.tvName + (s.detail.isEmpty ? "" : " · " + s.detail)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        Text(headline).font(.headline).lineLimit(1)
+                        Text(subline).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 DynamicIslandExpandedRegion(.trailing) {
-                    ActivityRing(state: s).frame(width: 24, height: 24).padding(.trailing, 4)
+                    if !idle { ActivityRing(state: s).frame(width: 24, height: 24).padding(.trailing, 4) }
                 }
                 DynamicIslandExpandedRegion(.bottom) {
-                    VStack(spacing: 12) {
-                        ActivityProgress(state: s).tint(.white)
-                        HStack {
-                            Button(intent: VolumeDownTVIntent()) { Image(systemName: "speaker.minus.fill").font(.body) }
-                            Spacer()
-                            if s.canSkip { Button(intent: SkipBackTVIntent()) { Image(systemName: "gobackward.10").font(.title3.weight(.semibold)) } }
-                            Spacer()
-                            Button(intent: PlayPauseTVIntent()) {
-                                Image(systemName: s.isPlaying ? "pause.fill" : "play.fill").font(.title2.weight(.semibold))
+                    if !idle {
+                        VStack(spacing: 12) {
+                            ActivityProgress(state: s).tint(.white)
+                            HStack {
+                                Button(intent: VolumeDownTVIntent()) { Image(systemName: "speaker.minus.fill").font(.body) }
+                                Spacer()
+                                if s.canSkip { Button(intent: SkipBackTVIntent()) { Image(systemName: "gobackward.10").font(.title3.weight(.semibold)) } }
+                                Spacer()
+                                Button(intent: PlayPauseTVIntent()) {
+                                    Image(systemName: s.isPlaying ? "pause.fill" : "play.fill").font(.title2.weight(.semibold))
+                                }
+                                Spacer()
+                                if s.canSkip { Button(intent: SkipForwardTVIntent()) { Image(systemName: "goforward.30").font(.title3.weight(.semibold)) } }
+                                Spacer()
+                                Button(intent: VolumeUpTVIntent()) { Image(systemName: "speaker.plus.fill").font(.body) }
                             }
-                            Spacer()
-                            if s.canSkip { Button(intent: SkipForwardTVIntent()) { Image(systemName: "goforward.30").font(.title3.weight(.semibold)) } }
-                            Spacer()
-                            Button(intent: VolumeUpTVIntent()) { Image(systemName: "speaker.plus.fill").font(.body) }
+                            .buttonStyle(.plain)
+                            .padding(.horizontal, 6)
                         }
-                        .buttonStyle(.plain)
-                        .padding(.horizontal, 6)
+                        .padding(.horizontal, 4)
                     }
-                    .padding(.horizontal, 4)
                 }
             } compactLeading: {
                 Image(systemName: "tv.fill").font(.caption.weight(.semibold)).foregroundStyle(.tint)
@@ -83,23 +90,31 @@ struct NowPlayingLiveActivity: Widget {
 
 struct LockScreenNowPlaying: View {
     var state: NowPlayingAttributes.ContentState
+    /// Left paused until it went stale (5 minutes on) while the app couldn't end it: the TV, with nothing playing.
+    var idle = false
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 12) {
                 Image("Emblem").resizable().frame(width: 46, height: 46)
                     .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(state.title).font(.headline).lineLimit(1)
-                    Text([state.detail, state.tvName].filter { !$0.isEmpty }.joined(separator: " · "))
-                        .font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                    Text(headline).font(.headline).lineLimit(1)
+                    Text(subline).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
                 }
                 Spacer(minLength: 0)
             }
-            ActivityProgress(state: state).tint(.white)
-            ActivityTransport(state: state)
+            if !idle {
+                ActivityProgress(state: state).tint(.white)
+                ActivityTransport(state: state)
+            }
         }
         .padding(16)
         .foregroundStyle(.white)
+    }
+
+    private var headline: String { idle ? state.tvName : state.title }
+    private var subline: String {
+        idle ? "Nothing playing" : [state.detail, state.tvName].filter { !$0.isEmpty }.joined(separator: " · ")
     }
 }
 

@@ -11,12 +11,14 @@
 #            already made on this Mac, and install it on every iPhone paired with this Mac.
 #   --expect <commit>   Stop before building unless the checkout is that commit (a prefix is enough).
 #
-# First it updates the checkout (git fetch, checkout claude/native-apps, pull --ff-only) and runs xcodegen.
+# First it updates the checkout (git fetch, checkout claude/native-apps, pull --ff-only; if that brought a new
+# deploy.sh, it runs the new one) and runs xcodegen.
 #
 # It never runs -allowProvisioningUpdates or -authenticationKey*, never contacts Apple's developer services,
 # never asks for an Apple ID (or anything else), and never creates, imports, revokes, deletes or changes a
-# certificate, key, profile, keychain or keychain search list. When the iPhone profiles expire it says so and
-# skips the iPhones; only then does someone need to sign in to Xcode once on this Mac.
+# certificate, key, profile, keychain or keychain search list. When the iPhone profiles or a signing certificate
+# expire (or a certificate is revoked) it says so and skips what can't be signed; only then does someone need to
+# sign in to Xcode once on this Mac. It warns 30 days ahead.
 #
 # It deletes nothing but its own temporary folder and, at most once, a stale generated
 # build/Build/Products/Release/Woodruff Family.app. Logs stay in a temporary folder named at the end.
@@ -25,6 +27,7 @@
 # Written for macOS's /bin/bash 3.2: no associative arrays, mapfile, ${x,,}, &>> or wait -n.
 
 set -u
+unset CDPATH   # an exported CDPATH would make `cd scripts/..` print the folder and spoil ROOT
 
 TEAM="D8D94SXAG6"
 BRANCH="claude/native-apps"
@@ -109,6 +112,22 @@ stale_widget_signature() {
 
 identity_count() {
   security find-identity -v -p codesigning </dev/null 2>&1 | tail -1 | sed 's/^[[:space:]]*//'
+}
+
+# Warns when a signing certificate has less than 30 days left. $1 = whose, $2 = expiry (ISO), $3 = days left.
+certificate_warning() {
+  case "$3" in
+    '' | *[!0-9-]* | -) return 0 ;;
+  esac
+  if [ "$3" -lt 30 ]; then
+    warn "$1 signing certificate expires on ${2%%T*}. After that someone needs to sign in to Xcode once on"
+    warn "this Mac to get a new one; until then this keeps working."
+  fi
+}
+
+# "valid until 2027-11-04" for a certificate's expiry (ISO), or "expiry unknown".
+valid_until() {
+  if [ -n "$1" ]; then printf 'valid until %s\n' "${1%%T*}"; else printf 'expiry unknown\n'; fi
 }
 
 cleanup() {  # removes only the iPhone signing folder this run made
@@ -211,7 +230,7 @@ remove_stale_mac_product() {
 
 deploy_mac() {
   local pick="$LOGDIR/mac-identity.json" product="$ROOT/build/Build/Products/Release/$APP_NAME.app"
-  local identity name why attempt=1 log vlog status built waited bid ilog verified=1 running=0
+  local identity name why cert_expires cert_days attempt=1 log vlog status built waited bid ilog verified=1 running=0
 
   step "Mac: choosing the signing identity"
   if ! signing pick-mac --team "$TEAM" --app "$MAC_INSTALLED" >"$pick" 2>"$LOGDIR/mac-identity.log"; then
@@ -223,7 +242,11 @@ deploy_mac() {
   identity=$(signing get "$pick" identity)
   name=$(signing get "$pick" name)
   why=$(signing get "$pick" reason)
+  cert_expires=$(signing get "$pick" identity_expires 2>/dev/null)
+  cert_days=$(signing get "$pick" identity_days_left 2>/dev/null)
   say "    $identity  $name ($why)"
+  say "    certificate $(valid_until "$cert_expires")"
+  certificate_warning "this Mac's" "$cert_expires" "$cert_days"
 
   while :; do
     log="$LOGDIR/mac-build-$attempt.log"
@@ -324,7 +347,7 @@ deploy_mac() {
   else
     note "Mac: installed $MAC_INSTALLED, but its signature DOESN'T VERIFY (log $vlog)"
   fi
-  note "     signed by $identity ($name)"
+  note "     signed by $identity ($name), certificate $(valid_until "$cert_expires")"
   return 0
 }
 
@@ -353,7 +376,7 @@ sign_frameworks() {  # $1 = .app or .appex, $2 = identity, $3 = log
 deploy_iphone() {
   local devs="$LOGDIR/iphones.json" pick="$LOGDIR/iphone-signing.json" plog="$LOGDIR/iphone-signing.log"
   local -a targets usable
-  local udid name i status identity identity_name app_profile app_uuid app_expires app_days
+  local udid name i status identity identity_name cert_expires cert_days app_profile app_uuid app_expires app_days
   local widgets_profile widgets_uuid widgets_expires widgets_days log product copy appex slog vlog
   local bid item ilog llog installed=0
 
@@ -418,6 +441,8 @@ deploy_iphone() {
   fi
   identity=$(signing get "$pick" identity)
   identity_name=$(signing get "$pick" identity_name)
+  cert_expires=$(signing get "$pick" identity_expires 2>/dev/null)
+  cert_days=$(signing get "$pick" identity_days_left 2>/dev/null)
   app_profile=$(signing get "$pick" app.path)
   app_uuid=$(signing get "$pick" app.uuid)
   app_expires=$(signing get "$pick" app.expires)
@@ -431,12 +456,14 @@ deploy_iphone() {
     return 1
   fi
   say "    identity:        $identity  $identity_name"
+  say "                     certificate $(valid_until "$cert_expires")"
   say "    app profile:     $app_uuid (expires ${app_expires%%T*})"
   say "    widgets profile: $widgets_uuid (expires ${widgets_expires%%T*})"
   if [ "${app_days:-0}" -lt 30 ] || [ "${widgets_days:-0}" -lt 30 ]; then
     warn "the iPhone profiles expire soon (${app_expires%%T*} / ${widgets_expires%%T*}). After that someone needs to"
     warn "sign in to Xcode once on this Mac to renew them; until then this keeps working."
   fi
+  certificate_warning "the iPhone profiles'" "$cert_expires" "$cert_days"
 
   step "iPhone: building (Release, unsigned)"
   log="$LOGDIR/iphone-build.log"
@@ -552,7 +579,7 @@ deploy_iphone() {
       note "iPhone: installed on $name ($udid), but it DIDN'T OPEN (log $llog)"
     fi
   done
-  note "     signed by $identity ($identity_name)"
+  note "     signed by $identity ($identity_name), certificate $(valid_until "$cert_expires")"
   note "     app profile $app_uuid (expires ${app_expires%%T*}), widgets profile $widgets_uuid (expires ${widgets_expires%%T*})"
   [ "$installed" -gt 0 ]
 }
@@ -560,7 +587,9 @@ deploy_iphone() {
 # ------------------------------------------------------------------------------------------------------ main
 
 main() {
-  local do_mac=0 do_iphone=0 expect="" parts="" missing="" tool dir ids_before ids_after line
+  local do_mac=0 do_iphone=0 expect="" parts="" missing="" tool dir ids_before ids_after line self_sum=""
+  local -a orig_args
+  orig_args=(${1+"$@"})
 
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -604,6 +633,7 @@ main() {
     return 1
   fi
   SIGNING="$ROOT/scripts/signing.py"
+  self_sum=$(cksum <"$ROOT/scripts/deploy.sh" 2>/dev/null)
 
   # xcodegen (Homebrew) may be missing from PATH in a non-login shell.
   for dir in /opt/homebrew/bin /usr/local/bin; do
@@ -632,6 +662,9 @@ main() {
   say "Logs: $LOGDIR"
   ids_before=$(identity_count)
   say "Signing identities (security find-identity -v -p codesigning | tail -1): $ids_before"
+  if [ -n "${WOODRUFF_DEPLOY_REEXEC:-}" ] && [ -n "${WOODRUFF_DEPLOY_IDS_BEFORE:-}" ]; then
+    ids_before=$WOODRUFF_DEPLOY_IDS_BEFORE   # counted by the run that updated this script, before anything else
+  fi
 
   for tool in git python3 xcodebuild security codesign ditto; do
     command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"
@@ -650,16 +683,33 @@ main() {
   elif ! python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 7) else 1)' >/dev/null 2>&1; then
     problem "python3 is older than 3.7"
     note "Nothing was built or installed."
-  elif update_checkout "$expect" && generate_project; then
-    if [ "$do_mac" -eq 1 ]; then
-      deploy_mac
-    fi
-    if [ "$do_iphone" -eq 1 ]; then
-      deploy_iphone
-      cleanup
-    fi
-  else
+  elif ! update_checkout "$expect"; then
     note "Nothing was built or installed."
+  else
+    # The pull may have brought a new deploy.sh, and this run would mix the old steps with the new signing.py:
+    # run the new one instead (once; nothing has been built or installed yet).
+    if [ -z "${WOODRUFF_DEPLOY_REEXEC:-}" ] && [ -n "$self_sum" ] &&
+      [ "$(cksum <"$ROOT/scripts/deploy.sh" 2>/dev/null)" != "$self_sum" ]; then
+      say "    scripts/deploy.sh changed in this update; running the new one"
+      WOODRUFF_DEPLOY_REEXEC=1
+      WOODRUFF_DEPLOY_IDS_BEFORE=$ids_before
+      export WOODRUFF_DEPLOY_REEXEC WOODRUFF_DEPLOY_IDS_BEFORE
+      shopt -s execfail
+      exec "${BASH:-/bin/bash}" "$ROOT/scripts/deploy.sh" ${orig_args[@]+"${orig_args[@]}"}
+      shopt -u execfail
+      problem "couldn't run the updated scripts/deploy.sh; run it again"
+      note "Nothing was built or installed."
+    elif generate_project; then
+      if [ "$do_mac" -eq 1 ]; then
+        deploy_mac
+      fi
+      if [ "$do_iphone" -eq 1 ]; then
+        deploy_iphone
+        cleanup
+      fi
+    else
+      note "Nothing was built or installed."
+    fi
   fi
 
   ids_after=$(identity_count)

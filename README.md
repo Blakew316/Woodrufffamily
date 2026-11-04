@@ -19,7 +19,7 @@ the same five sections, as tabs on iPhone and a sidebar on the Mac.
 | **Watch** | Movies and TV Shows from the TV's Google Drive, like the Apple TV app: a featured billboard, Continue Watching, Recently Added, grids with sort/genre/unwatched, search, title sheets with seasons and episodes. Play on the remote's TV, **Play On** any TV, or **Watch Together on All TVs**. What's playing rides above the tab bar with ↺10, Play/Pause and 30↻. |
 | **Send** | A message to TV screens and phones, or kept on every TV's Home; Photos & Files on the TV; Open a Link; Start Photo Slideshow. |
 | **Memories** | Family Memories edge to edge. Add from Photos (shrunk to the TV's size, keeping when each was taken). Full-screen viewer; **Show on TV** follows as you swipe. |
-| **Settings** | Five rows. **TVs**: every TV's state, what's playing and health (each TV's page has its screen, controls, every problem with its fix, sign-ins, updates, Link Again, LG direct control), **Software Update** (every TV's version against the newest release, Update All; the Mac installs LG updates over SSH), Send on iPhone, and Pause, Mute or Woodruff Home on all of them. **Smart Home**: speakers, lights, cameras, devices and the Wi‑Fi, each renamed, given its room and signed in on its own page. **Notifications**: this device's alerts, the doorbell and cameras, Instant iPhone Alerts (set up on a Mac), recent messages. **Accounts**: what the TVs sign in to: Google Drive, Movie Posters, Nest Cameras, Mail. **General**: Away From Home, Shortcuts, Sync Across Devices, the TV's last crash (and the Mac's key click). |
+| **Settings** | Five rows (and Send, on iPhone, where it has no tab). **TVs**: every TV's state, what's playing and health (each TV's page has its screen, controls, every problem with its fix, sign-ins, updates, Link Again, LG direct control), **Software Update** (every TV's version against the newest release, Update All, and Check Now, which has every TV look for itself too; the Mac installs LG updates over SSH), and Pause, Mute or Woodruff Home on all of them. **Smart Home**: speakers, lights, cameras, devices and the Wi‑Fi, each renamed, given its room and signed in on its own page. **Notifications**: this device's alerts, the doorbell and cameras, Instant iPhone Alerts (set up on a Mac), recent messages. **Accounts**: what the TVs sign in to: Google Drive, Movie Posters, Nest Cameras, Mail. **General**: Away From Home, Shortcuts, Sync Across Devices, the TV's last crash (and the Mac's key click). |
 
 Try it without a TV: run with the launch argument `-demo YES` (sample TVs, library and photos). Every CI run
 screenshots each screen this way, light and dark, on the `screenshots` branch.
@@ -32,6 +32,11 @@ type its key. **Pairing one TV is enough**: every TV linked to it appears too, a
 Pair a second TV so the rest stay reachable when the first is off.
 
 ## Build and install
+
+**For the family's own Macs and iPhones, don't follow these steps:** use `scripts/deploy.sh` (see
+[Deploying to the family's devices](#deploying-to-the-familys-devices)). The family iPhones always keep the bundle
+identifier `com.blakew316.woodruff` (another one loses the TV pairings), and nobody needs to sign in to Xcode
+(Xcode's automatic signing is what made new certificates and broke the other Macs' signing).
 
 You need a Mac with Xcode 16 or newer and [XcodeGen](https://github.com/yonaskolb/XcodeGen).
 
@@ -60,7 +65,7 @@ and builds the iOS app for the simulator and for devices (unsigned), and the Mac
 ## Deploying to the family's devices
 
 `scripts/deploy.sh` updates the checkout to the newest `claude/native-apps`, builds, and installs with the signing
-certificate and provisioning profiles already on that Mac:
+certificate and provisioning profiles already on that Mac. Run it in Terminal from the repository folder:
 
 - On each Mac: `scripts/deploy.sh mac`. It quits Woodruff Family, replaces `/Applications/Woodruff Family.app` with
   the new build (only once that build's signature checks out) and opens it again.
@@ -68,11 +73,17 @@ certificate and provisioning profiles already on that Mac:
   profiles Xcode already made there and installs it on every paired iPhone (unlock them so it can open).
 - Add `--expect <commit>` to stop unless the checkout is at that commit.
 
-It never asks for an Apple ID, never makes, revokes or changes certificates or profiles, and never runs
-`-allowProvisioningUpdates`, so one Mac's deploy can't break another's signing. When the iPhone profiles expire
-(the current ones on November 4, 2027) it says so and skips the iPhones; only then does someone need to sign in to
-Xcode once on that Mac. It ends with a summary (what was installed where, the identity, the profiles and their
-expiry) and keeps its logs in a temporary folder.
+The first time on a Mac whose checkout doesn't have `scripts/deploy.sh` yet, get it with
+`git fetch origin claude/native-apps && git checkout claude/native-apps && git pull --ff-only origin claude/native-apps`
+in the repository folder, then run it as above.
+
+It never asks for an Apple ID, never makes, imports, revokes or changes certificates or profiles, and never runs
+`-allowProvisioningUpdates`, so one Mac's deploy can't break another's signing. When the iPhone profiles or that
+Mac's signing certificate expire, or the certificate is revoked, it says so and skips what it can't sign; only then
+does someone need to sign in to Xcode once on that Mac. The same goes for an iPhone the profiles don't list yet.
+The current iPhone profiles expire on November 4, 2027; each Mac's certificate has its own date, and the summary
+shows both (it warns 30 days ahead). The summary also says what was installed where and with which identity and
+profiles; the logs stay in a temporary folder.
 
 ## How it's built
 

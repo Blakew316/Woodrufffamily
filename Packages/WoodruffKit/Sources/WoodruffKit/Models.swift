@@ -507,8 +507,9 @@ public struct EpisodeList: Codable, Sendable {
 
 // MARK: Settings
 
-public struct TVSettings: Codable, Sendable {
-    public struct Google: Codable, Sendable {
+/// Equatable, so a read that brings nothing new is told apart (the Settings pages redraw only when something changed).
+public struct TVSettings: Codable, Sendable, Equatable {
+    public struct Google: Codable, Sendable, Equatable {
         public var clientId: String?
         public var hasSecret: Bool?
         public var connected: Bool?
@@ -521,7 +522,7 @@ public struct TVSettings: Codable, Sendable {
             return hasSecret == true ? "Not signed in" : "Not set up"
         }
     }
-    public struct Nest: Codable, Sendable {
+    public struct Nest: Codable, Sendable, Equatable {
         public var project: String?
         public var connected: Bool?
         public var doorbell: String?

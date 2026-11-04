@@ -121,6 +121,11 @@ struct TVsProvider: TimelineProvider {
         }
         var tvs: [String: WidgetTV] = [:]
         var rank: [String: Int] = [:]
+        // What the app last had each TV playing now (`FleetTV.nowPlaying`, which leaves out a title left paused for a
+        // while or already paused when it first saw it): a paused title shows here only when the app had it too, so a
+        // session left behind (after leaving YouTube, say) never shows as something to resume.
+        var shown: [String: NowPlaying] = [:]
+        for t in snap.tvs ?? [] { if let p = t.playing { shown[t.id] = p } }
         // In the order the TVs were paired, so the same answers always give the same list.
         for hub in snap.hubs {
             guard let list = answers[hub.id] else { continue }
@@ -131,7 +136,9 @@ struct TVsProvider: TimelineProvider {
                 if let have = rank[id], have >= r { continue }
                 rank[id] = r
                 // Only a TV that's on plays anything (a hub can still hold what an off TV last played).
-                tvs[id] = WidgetTV(id: id, name: snap.names[id] ?? e.name, online: e.online, playing: e.online ? e.playing : nil, hub: hub, routeID: e.id)
+                var playing = e.online ? e.playing : nil
+                if let p = playing, !p.isPlaying, shown[id]?.title != p.title { playing = nil }
+                tvs[id] = WidgetTV(id: id, name: snap.names[id] ?? e.name, online: e.online, playing: playing, hub: hub, routeID: e.id)
             }
         }
         // Every TV the app knows is listed, also one no TV reported just now. One whose TV didn't answer is off from

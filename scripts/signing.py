@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Choose the signing identity and provisioning profiles that are already on this Mac (for scripts/deploy.sh).
 
-Read-only. It runs `security find-identity`, `security find-certificate`, `security cms -D` (to decode a
-profile), `codesign -d` and `xcrun devicectl list devices`, and reads the two profile folders. It never
-creates, imports, revokes, deletes or changes a certificate, key, profile, keychain or keychain search list,
-never writes into a profile folder, and never contacts Apple.
+Read-only. It runs `security find-identity`, `security find-certificate`, `codesign -d` and
+`xcrun devicectl list devices`, and reads the profiles in the two profile folders itself (a profile is a signed
+CMS message whose content is a plist). It never runs `security cms -D`, which imports a profile's certificates
+into the login keychain while it decodes it. It never creates, imports, revokes, deletes or changes a
+certificate, key, profile, keychain or keychain search list, never writes into a profile folder, and never
+contacts Apple.
 
   signing.py identities [--team TEAM]          valid "Apple Development" identities (of one team)
   signing.py profiles                           every provisioning profile on this Mac, decoded
@@ -53,6 +55,7 @@ WIDGET_ROLES = ("widgets", "widgets-wildcard")
 
 OID_CN = b"\x55\x04\x03"
 OID_OU = b"\x55\x04\x0b"
+OID_SIGNED_DATA = b"\x2a\x86\x48\x86\xf7\x0d\x01\x07\x02"  # 1.2.840.113549.1.7.2
 
 
 # ---------------------------------------------------------------------------------------------- helpers
@@ -245,6 +248,7 @@ def openssl_ou(der):
 # ----------------------------------------------------------------------------------------- identities
 
 _IDENTITY_LINE = re.compile(r'^\s*\d+\)\s+([0-9A-Fa-f]{40})\s+"(.*)"\s*$')
+_INVALID_IDENTITY_LINE = re.compile(r'^\s*\d+\)\s+([0-9A-Fa-f]{40})\s+"(.*)"\s+\(([^()]+)\)\s*$')
 _PEM = re.compile(r"-----BEGIN CERTIFICATE-----(.*?)-----END CERTIFICATE-----", re.S)
 
 
@@ -259,6 +263,18 @@ def parse_identities(text):
         if sha1 not in seen:
             seen.add(sha1)
             out.append({"sha1": sha1, "name": match.group(2)})
+    return out
+
+
+def parse_invalid_identities(text):
+    """`security find-identity -p codesigning` (without -v) -> [{"sha1", "name", "reason"}] for the identities
+    this Mac has but can't sign with: macOS prints why after the name, e.g. (CSSMERR_TP_CERT_REVOKED)."""
+    out, seen = [], set()
+    for line in text.splitlines():
+        match = _INVALID_IDENTITY_LINE.match(line)
+        if match and match.group(1).upper() not in seen:
+            seen.add(match.group(1).upper())
+            out.append({"sha1": match.group(1).upper(), "name": match.group(2), "reason": match.group(3).strip()})
     return out
 
 
@@ -305,6 +321,11 @@ def read_identities():
     return parse_identities(out.decode("utf-8", "replace"))
 
 
+def read_invalid_identities():
+    _, out, _ = run(["security", "find-identity", "-p", "codesigning"])
+    return parse_invalid_identities(out.decode("utf-8", "replace"))
+
+
 def read_certificates():
     _, out, _ = run(["security", "find-certificate", "-a", "-Z", "-p", "-c", "Apple Development"])
     return parse_pem_certificates(out.decode("utf-8", "replace"))
@@ -321,8 +342,15 @@ def profile_from_plist(plist, path=""):
     app_id = ents.get("application-identifier") or ents.get("com.apple.application-identifier") or ""
     teams = plist.get("TeamIdentifier")
     team = teams[0] if isinstance(teams, list) and teams else ents.get("com.apple.developer.team-identifier", "")
-    certs = [hashlib.sha1(bytes(der)).hexdigest().upper()
-             for der in plist.get("DeveloperCertificates") or [] if isinstance(der, (bytes, bytearray))]
+    certificates, seen = [], set()
+    for der in plist.get("DeveloperCertificates") or []:
+        if not isinstance(der, (bytes, bytearray)):
+            continue
+        sha1 = hashlib.sha1(bytes(der)).hexdigest().upper()
+        if sha1 not in seen:
+            seen.add(sha1)
+            info = certificate_info(bytes(der))
+            certificates.append({"sha1": sha1, "cn": info["cn"], "not_after": info["not_after"]})
     devices = [str(udid).strip().upper() for udid in plist.get("ProvisionedDevices") or [] if isinstance(udid, str)]
     platforms = plist.get("Platform")
     return {
@@ -335,25 +363,143 @@ def profile_from_plist(plist, path=""):
         "expires": _aware(plist.get("ExpirationDate")),
         "devices": devices,
         "all_devices": plist.get("ProvisionsAllDevices") is True,
-        "cert_sha1s": _unique(certs),
+        "cert_sha1s": [cert["sha1"] for cert in certificates],
+        "certificates": certificates,
         "platforms": [str(p) for p in platforms] if isinstance(platforms, list) else [],
         "xcode_managed": plist.get("IsXcodeManaged") is True,
     }
 
 
-def decode_profile(path):
-    """`security cms -D -i path` -> profile dict, or None if it can't be decoded."""
-    status, out, _ = run(["security", "cms", "-D", "-i", path])
-    if status != 0 or not out:
+def _ber(data, pos, limit, depth=0):
+    """(tag, value start, value end, next element) of the BER element at pos, which must end by limit.
+
+    DER's definite lengths and BER's indefinite ones (0x80: the value runs to its end-of-contents octets).
+    """
+    if depth > 32:
+        raise ValueError("BER nested too deeply")
+    if pos + 2 > limit:
+        raise ValueError("truncated BER")
+    tag = data[pos]
+    pos += 1
+    if tag & 0x1F == 0x1F:  # high tag number form
+        while pos < limit and data[pos] & 0x80:
+            pos += 1
+        pos += 1
+    if pos >= limit:
+        raise ValueError("truncated BER")
+    length = data[pos]
+    pos += 1
+    if length == 0x80:
+        if not tag & 0x20:
+            raise ValueError("indefinite length on a primitive element")
+        start = pos
+        while True:
+            if pos + 2 > limit:
+                raise ValueError("no end-of-contents octets")
+            if data[pos] == 0 and data[pos + 1] == 0:
+                return tag, start, pos, pos + 2
+            pos = _ber(data, pos, limit, depth + 1)[3]
+    if length & 0x80:
+        count = length & 0x7F
+        if count > 4 or pos + count > limit:
+            raise ValueError("unsupported BER length")
+        length = int.from_bytes(data[pos:pos + count], "big")
+        pos += count
+    if pos + length > limit:
+        raise ValueError("truncated BER")
+    return tag, pos, pos + length, pos + length
+
+
+def _ber_children(data, start, end, depth=0):
+    out, pos = [], start
+    while pos < end:
+        tag, value_start, value_end, pos = _ber(data, pos, end, depth)
+        out.append((tag, value_start, value_end))
+    return out
+
+
+def _octet_string(data, tag, start, end, depth=0):
+    """An OCTET STRING's bytes: primitive, or BER's constructed form (its pieces joined)."""
+    if tag == 0x04:
+        return bytes(data[start:end])
+    if tag == 0x24 and depth < 32:
+        return b"".join(_octet_string(data, t, s, e, depth + 1) for t, s, e in _ber_children(data, start, end))
+    raise ValueError("not an OCTET STRING")
+
+
+def cms_signed_content(data):
+    """The content of a CMS SignedData message (DER or BER), read here without the Security framework.
+
+    ContentInfo { contentType signedData, [0] SignedData { version, digestAlgorithms,
+    encapContentInfo { eContentType, [0] OCTET STRING }, ... } }. Raises ValueError if it isn't one.
+    """
+    tag, start, end, _ = _ber(data, 0, len(data))
+    if tag != 0x30:
+        raise ValueError("not a CMS message")
+    info = _ber_children(data, start, end)
+    if len(info) < 2 or info[0][0] != 0x06 or data[info[0][1]:info[0][2]] != OID_SIGNED_DATA or info[1][0] != 0xA0:
+        raise ValueError("not CMS SignedData")
+    wrapper = _ber_children(data, info[1][1], info[1][2])
+    if not wrapper or wrapper[0][0] != 0x30:
+        raise ValueError("no SignedData")
+    signed = _ber_children(data, wrapper[0][1], wrapper[0][2])
+    if len(signed) < 3 or signed[2][0] != 0x30:
+        raise ValueError("no encapsulated content")
+    encap = _ber_children(data, signed[2][1], signed[2][2])
+    if len(encap) < 2 or encap[1][0] != 0xA0:
+        raise ValueError("the content isn't in the message")
+    content = _ber_children(data, encap[1][1], encap[1][2])
+    if len(content) != 1:
+        raise ValueError("unexpected content")
+    return _octet_string(data, *content[0])
+
+
+def _load_plist(blob):
+    """A plist dict from bytes that hold one (anything before "<?xml" is skipped), or None."""
+    if not blob:
         return None
-    start = out.find(b"<?xml")
+    start = blob.find(b"<?xml")
     if start > 0:
-        out = out[start:]
+        blob = blob[start:]
     try:
-        plist = plistlib.loads(out)
-    except Exception:  # noqa: BLE001 - any undecodable profile is skipped
+        plist = plistlib.loads(blob)
+    except Exception:  # noqa: BLE001 - anything that isn't a plist
         return None
-    return profile_from_plist(plist, path) if isinstance(plist, dict) else None
+    return plist if isinstance(plist, dict) else None
+
+
+def profile_plist(raw, path=None):
+    """A provisioning profile's plist from the file's bytes, or None if it can't be read.
+
+    The CMS message is parsed here; failing that, the plist is looked for in the bytes as they are; failing
+    that (and given the path), LibreSSL's `openssl smime` (which has no keychain) extracts it. Never
+    `security cms -D`: it adds the message's certificates to the login keychain while decoding.
+    """
+    try:
+        plist = _load_plist(cms_signed_content(raw))
+    except (ValueError, IndexError):
+        plist = None
+    if plist is None:
+        start = raw.find(b"<?xml")
+        end = raw.find(b"</plist>", start) if start >= 0 else -1
+        if end > start:
+            plist = _load_plist(raw[start:end + len(b"</plist>")])
+    if plist is None and path:
+        status, out, _ = run(["openssl", "smime", "-inform", "DER", "-verify", "-noverify", "-in", path])
+        if status == 0:
+            plist = _load_plist(out)
+    return plist
+
+
+def decode_profile(path):
+    """The profile at path read into a profile dict, or None if it can't be read."""
+    try:
+        with open(path, "rb") as handle:
+            raw = handle.read()
+    except OSError:
+        return None
+    plist = profile_plist(raw, path)
+    return profile_from_plist(plist, path) if plist is not None else None
 
 
 def profile_files(dirs=PROFILE_DIRS):
@@ -515,17 +661,30 @@ def _combinations(identities, cands, devices, allow_missing):
 
 
 def _rank(identities):
-    """Most devices, then an exact widgets profile before the TEAM.* wildcard, then the latest expiry."""
+    """Most devices, then an exact widgets profile before the TEAM.* wildcard, then the latest expiry (of the
+    profiles, then of the identity's certificate)."""
     order = {ident["sha1"]: n for n, ident in enumerate(identities)}
 
     def key(combo):
         ident, app, widget, served = combo
         app_expires, widget_expires = app["profile"]["expires"], widget["profile"]["expires"]
+        cert_expires = _identity_expires(ident, app["profile"])
         return (-len(served), 0 if widget["role"] == "widgets" else 1,
                 -min(app_expires, widget_expires).timestamp(), -app_expires.timestamp(),
-                -widget_expires.timestamp(), order.get(ident["sha1"], 0))
+                -widget_expires.timestamp(), -(cert_expires.timestamp() if cert_expires else 0),
+                order.get(ident["sha1"], 0))
 
     return key
+
+
+def _identity_expires(ident, profile=None):
+    """When the identity's certificate expires: from the keychain's copy, else the profile's (or None)."""
+    if ident.get("not_after"):
+        return ident["not_after"]
+    for cert in (profile or {}).get("certificates") or []:
+        if cert["sha1"] == ident["sha1"]:
+            return cert.get("not_after")
+    return None
 
 
 def _profile_choice(cand, kind, bundle_id, now):
@@ -544,12 +703,82 @@ def _profile_choice(cand, kind, bundle_id, now):
     }
 
 
-def _headline(team, app_id, widgets_id, identities, cands):
-    if not identities:
-        return ("No valid Apple Development signing identity for team %s is in this Mac's keychain, so nothing "
-                "here can sign the iPhone app." % team)
+def _days_left(when, now):
+    return int((when - now).total_seconds() // 86400) if when is not None else None
+
+
+def certificate_state(not_after, reason, now):
+    """What's wrong with a signing certificate ("expired on 2027-11-04", "was revoked", "can't sign (...)"),
+    from its expiry date and find-identity's reason (parse_invalid_identities); None if neither says."""
+    reason = reason or ""
+    if not_after is not None and not_after <= now:
+        return "expired on %s" % _day(not_after)
+    if "EXPIRED" in reason.upper():
+        return "expired (%s)" % reason
+    if "REVOKED" in reason.upper():
+        return "was revoked"
+    if reason:
+        return "can't sign (%s)" % reason
+    return None
+
+
+RENEW = "someone needs to sign in to Xcode once on this Mac to get a new certificate"
+RENEW_IOS = RENEW + " and profiles"
+
+
+def _sentence(text):
+    return text[0].upper() + text[1:]
+
+
+def certificate_trouble(profile_certs, certs=None, invalid=None, now=None):
+    """Why this Mac can sign with none of the profiles' certificates, and what to do about it.
+
+    profile_certs: [{"sha1", "cn", "not_after"}] from the profiles (they carry each certificate whole);
+    certs: {SHA-1: DER} from `security find-certificate -a`, which lists expired and revoked certificates too;
+    invalid: parse_invalid_identities() (identities this Mac has but can't sign with, and why).
+    """
+    now = now or datetime.now(timezone.utc)
+    certs = certs or {}
+    reasons = {ident["sha1"]: ident["reason"] for ident in invalid or []}
+    clauses, dead, keyless, elsewhere = [], [], [], []
+    for cert in profile_certs:
+        sha1 = cert["sha1"]
+        not_after = cert.get("not_after") or certificate_info(certs.get(sha1))["not_after"]
+        state = certificate_state(not_after, reasons.get(sha1), now)
+        if state:
+            dead.append(sha1)
+        elif sha1 in certs:
+            state = "is in this Mac's keychain but can't sign here (it was revoked, or its private key isn't on this Mac)"
+            keyless.append(sha1)
+        else:
+            state = "isn't a valid identity in this Mac's keychain"
+            elsewhere.append(sha1)
+        clauses.append("%s%s, which %s" % (sha1, " (%s)" % cert["cn"] if cert.get("cn") else "", state))
+    if not clauses:
+        return "The iPhone profiles on this Mac list no signing certificate. %s; this script never does." % (
+            _sentence(RENEW_IOS))
+    text = "The iPhone profiles on this Mac are for signing certificate%s %s." % (
+        "s" if len(clauses) > 1 else "", "; and ".join(clauses))
+    if elsewhere and not (dead or keyless):
+        advice = "Deploy the iPhones from the Mac that has %s." % ("it" if len(elsewhere) == 1 else "one of them")
+    elif elsewhere:
+        advice = "Deploy the iPhones from the Mac that has %s, or %s (this script never does)." % (
+            " or ".join(elsewhere), RENEW_IOS)
+    elif keyless and not dead:
+        advice = "If %s revoked, %s (this script never does); if not, deploy the iPhones from the Mac that has %s." % (
+            "it was" if len(keyless) == 1 else "they were", RENEW_IOS,
+            "its private key" if len(keyless) == 1 else "their private keys")
+    else:
+        advice = "%s; this script never does." % _sentence(RENEW_IOS)
+    return text + " " + advice
+
+
+def _headline(team, app_id, widgets_id, identities, cands, now, certs=None, invalid=None):
     apps = [c for c in cands if c["role"] == "app"]
     widgets = [c for c in cands if c["role"] in WIDGET_ROLES]
+    if not identities and not (apps and widgets):
+        return ("No valid Apple Development signing identity for team %s is in this Mac's keychain, so nothing "
+                "here can sign the iPhone app." % team)
     if not apps:
         return "No provisioning profile for %s.%s is on this Mac." % (team, app_id)
     if not widgets:
@@ -561,9 +790,16 @@ def _headline(team, app_id, widgets_id, identities, cands):
                     "renew the profiles; this script never does." % (what, _day(last)))
     live = [c for c in apps + widgets if not c["expired"]]
     if all(len(c["problems"]) == 1 and c["problems"][0].startswith(NO_IDENTITY) for c in live):
-        certs = _unique(sha1 for c in live for sha1 in c["profile"]["cert_sha1s"])
-        return ("The iPhone profiles on this Mac are for signing certificate %s, which isn't a valid identity in "
-                "this Mac's keychain. Deploy the iPhones from the Mac that has it." % ", ".join(certs or ["(none)"]))
+        profile_certs, seen = [], set()
+        for cand in live:
+            for cert in cand["profile"]["certificates"]:
+                if cert["sha1"] not in seen:
+                    seen.add(cert["sha1"])
+                    profile_certs.append(cert)
+        return certificate_trouble(profile_certs, certs, invalid, now)
+    if not identities:
+        return ("No valid Apple Development signing identity for team %s is in this Mac's keychain, so nothing "
+                "here can sign the iPhone app." % team)
     if all(not c["problems"] for c in live):
         missing = _unique(udid for c in live for udid in c["missing"])
         if missing:
@@ -576,15 +812,18 @@ def _headline(team, app_id, widgets_id, identities, cands):
             + (": " + "; ".join(details[:4]) if details else " (see the candidates)") + ".")
 
 
-def pick_ios(identities, profiles, team, app_id, widgets_id, devices=(), need=(), now=None):
+def pick_ios(identities, profiles, team, app_id, widgets_id, devices=(), need=(), now=None, certs=None,
+             invalid=None):
     """One identity that is in both an app profile and a widgets profile that can sign for every device.
 
     identities: the team's valid identities in `security find-identity` order (team_identities);
     profiles: decoded profiles (profile_from_plist). App profile: exactly TEAM.app_id, not expired, has every
     `need` entitlement, lists every device (or all devices). Widgets profile: exactly TEAM.widgets_id, else the
-    TEAM.* wildcard, not expired, lists every device. Latest expiry first.
+    TEAM.* wildcard, not expired, lists every device. Latest expiry first. certs ({SHA-1: DER}, every
+    certificate in the keychain) and invalid (parse_invalid_identities) only make the problem clearer.
 
-    Returns (choice, None) or (None, failure), both ready for JSON. A failure has "problem", "identities" and
+    Returns (choice, None) or (None, failure), both ready for JSON. A choice has the identity, its
+    certificate's expiry and days left, and the two profiles. A failure has "problem", "identities" and
     "candidates" (each profile with why it was rejected) and, when some devices could still be served by one
     identity and pair of profiles, "usable_devices" and "unusable_devices".
     """
@@ -615,9 +854,12 @@ def pick_ios(identities, profiles, team, app_id, widgets_id, devices=(), need=()
     full = _combinations(identities, cands, devices, allow_missing=False)
     if full:
         ident, app, widget, _ = min(full, key=_rank(identities))
+        cert_expires = _identity_expires(ident, app["profile"])
         return {
             "identity": ident["sha1"],
             "identity_name": ident["name"],
+            "identity_expires": cert_expires,
+            "identity_days_left": _days_left(cert_expires, now),
             "app": _profile_choice(app, "app", app_id, now),
             "widgets": _profile_choice(widget, "widget", widgets_id, now),
             "devices": devices,
@@ -643,7 +885,7 @@ def pick_ios(identities, profiles, team, app_id, widgets_id, devices=(), need=()
             "rejected_because": reasons,
         })
     failure = {
-        "problem": _headline(team, app_id, widgets_id, identities, cands),
+        "problem": _headline(team, app_id, widgets_id, identities, cands, now, certs, invalid),
         "identities": [{"sha1": i["sha1"], "name": i["name"], "ou": i.get("ou")} for i in identities],
         "candidates": listing,
     }
@@ -658,11 +900,14 @@ def pick_ios(identities, profiles, team, app_id, widgets_id, devices=(), need=()
 # ------------------------------------------------------------------------------------------- pick-mac
 
 
-def pick_mac(identities, signer_sha1=None, signer_cn=None, team="the team"):
+def pick_mac(identities, signer_sha1=None, signer_cn=None, team="the team", unusable=()):
     """(identity, why) for the Mac app: the one that signed the installed app if it's still valid, else one
-    with the same certificate name, else the one whose certificate lasts longest. (None, problem) if none."""
+    with the same certificate name, else the one whose certificate lasts longest. (None, problem) if none;
+    unusable (unusable_identities) says what happened to the ones this Mac had."""
     if not identities:
-        return None, "No valid Apple Development signing identity for team %s is in this Mac's keychain." % team
+        return None, ("No valid Apple Development signing identity for team %s is in this Mac's keychain%s. %s; "
+                      "this script never does." % (team, (": " + "; ".join(unusable)) if unusable else "",
+                                                   _sentence(RENEW)))
 
     def longest(group):
         ranked = sorted(enumerate(group), key=lambda pair: (
@@ -680,6 +925,22 @@ def pick_mac(identities, signer_sha1=None, signer_cn=None, team="the team"):
     if signer_sha1:
         return longest(identities), "the installed app's signer is no longer valid"
     return longest(identities), "valid for team %s" % team
+
+
+def unusable_identities(invalid, certs, team=None, now=None):
+    """["SHA-1 (name) was revoked", ...] for this Mac's "Apple Development" identities of the team that can't
+    sign (invalid: parse_invalid_identities; certs: {SHA-1: DER} for each certificate's OU and expiry)."""
+    now = now or datetime.now(timezone.utc)
+    out = []
+    for ident in invalid or []:
+        if not ident["name"].startswith(DEVELOPMENT):
+            continue
+        info = certificate_info((certs or {}).get(ident["sha1"]))
+        if team and info["ou"] is not None and info["ou"] != team:
+            continue
+        state = certificate_state(info["not_after"], ident["reason"], now) or "can't sign"
+        out.append("%s (%s) %s" % (ident["sha1"], ident["name"], state))
+    return out
 
 
 def installed_signer(app_path):
@@ -805,10 +1066,15 @@ def cmd_profiles(args):
 
 
 def cmd_pick_ios(args):
-    identities = team_identities(read_identities(), read_certificates(), args.team)
+    certs = read_certificates()
+    identities = team_identities(read_identities(), certs, args.team)
     devices = [udid for group in args.device or [] for udid in group]
-    choice, failure = pick_ios(identities, load_profiles(), args.team, args.app_id, args.widgets_id,
-                               devices, args.need_entitlement or [])
+    profiles = load_profiles()
+    choice, failure = pick_ios(identities, profiles, args.team, args.app_id, args.widgets_id,
+                               devices, args.need_entitlement or [], certs=certs)
+    if failure:  # find out why the identities this Mac has can't sign, for the message
+        choice, failure = pick_ios(identities, profiles, args.team, args.app_id, args.widgets_id, devices,
+                                   args.need_entitlement or [], certs=certs, invalid=read_invalid_identities())
     print_json(choice or failure)
     return 0 if choice else 2
 
@@ -816,7 +1082,7 @@ def cmd_pick_ios(args):
 def cmd_entitlements(args):
     profile = decode_profile(args.profile)
     if profile is None:
-        return _fail("Couldn't decode %s with security cms -D." % args.profile)
+        return _fail("Couldn't read the provisioning profile %s." % args.profile)
     ents, problems = build_entitlements(profile, args.kind, args.bundle_id)
     if problems:
         return _fail("The %s entitlements aren't allowed by profile %s (%s): it %s."
@@ -833,13 +1099,17 @@ def cmd_entitlements(args):
 
 def cmd_pick_mac(args):
     everyone = read_identities()
-    identities = team_identities(everyone, read_certificates(), args.team)
+    certs = read_certificates()
+    identities = team_identities(everyone, certs, args.team)
     signer_sha1, signer_cn = installed_signer(args.app)
-    ident, why = pick_mac(identities, signer_sha1, signer_cn, args.team)
+    unusable = [] if identities else unusable_identities(read_invalid_identities(), certs, args.team)
+    ident, why = pick_mac(identities, signer_sha1, signer_cn, args.team, unusable)
     if ident is None:
         print_json({"problem": why, "identities": everyone})
         return 2
-    print_json({"identity": ident["sha1"], "name": ident["name"], "reason": why, "installed_signer": signer_sha1})
+    now = datetime.now(timezone.utc)
+    print_json({"identity": ident["sha1"], "name": ident["name"], "reason": why, "installed_signer": signer_sha1,
+                "identity_expires": ident.get("not_after"), "identity_days_left": _days_left(ident.get("not_after"), now)})
     return 0
 
 

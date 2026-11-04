@@ -42,7 +42,12 @@ final class PushRelay {
     /// Goes up whenever the push key changes here or arrives from another Mac, so what shows it looks again.
     private(set) var keyChanges = 0
     var keyID: String { _ = keyChanges; return Keychain.get("apns.keyid") ?? "" }
-    var hasKey: Bool { Keychain.get("apns.key") != nil && !keyID.isEmpty }
+    /// Reads `keyChanges` first, whatever the Keychain holds: a page showing "Not Set Up" then shows the key as soon
+    /// as it's saved here or arrives from another Mac.
+    var hasKey: Bool { _ = keyChanges; return Keychain.get("apns.key") != nil && !(Keychain.get("apns.keyid") ?? "").isEmpty }
+    /// This copy was built able to have push (its profile carries the push entitlement): its iPhone can sign up for
+    /// instant alerts. Read from the app's profile once.
+    static let builtWithPush: Bool = provisionedEnvironment() != nil
     /// Whether this Mac sends (each Mac's own choice; not synced).
     var sendsFromHere: Bool {
         get { UserDefaults.standard.object(forKey: "push.sendFromHere") as? Bool ?? true }
@@ -123,7 +128,8 @@ final class PushRelay {
     func didFail(_ error: Error) { lastError = error.localizedDescription }
 
     /// "development" for apps installed from Xcode, "production" for TestFlight/App Store, from the app's own profile.
-    static func provisionedEnvironment() -> String? {
+    /// (Reads only the app's own files, so from anywhere.)
+    nonisolated static func provisionedEnvironment() -> String? {
         guard let url = Bundle.main.url(forResource: "embedded", withExtension: "mobileprovision"),
               let raw = try? Data(contentsOf: url), let text = String(data: raw, encoding: .isoLatin1),
               let r = text.range(of: "<key>aps-environment</key>") else { return nil }

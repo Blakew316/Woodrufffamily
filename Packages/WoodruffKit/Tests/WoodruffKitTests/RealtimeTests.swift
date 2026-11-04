@@ -287,6 +287,39 @@ final class RealtimeTests: XCTestCase {
         XCTAssertFalse(r.stale)
     }
 
+    func testARelayAskedLessOftenGetsLonger() {
+        // In the background an iPhone asks every 25 s (stale after 75): a hub passing on the same `seen` once or twice
+        // more (its check of the TV ran late) hasn't lost it.
+        var r = FleetMerge.relay(seen: 1_000, at: t0, kept: nil, after: 75)
+        r = FleetMerge.relay(seen: 1_000, at: t0.addingTimeInterval(25), kept: r.kept, after: 75)
+        XCTAssertFalse(r.stale)
+        r = FleetMerge.relay(seen: 1_000, at: t0.addingTimeInterval(50), kept: r.kept, after: 75)
+        XCTAssertFalse(r.stale)
+        r = FleetMerge.relay(seen: 1_000, at: t0.addingTimeInterval(75), kept: r.kept, after: 75)
+        XCTAssertTrue(r.stale)
+    }
+
+    func testAFreshRelayBeatsAStaleOneWhateverTheOrder() {
+        let a = HubAnswer.answered([entry("this", "Living Room"), entry("tv-k", "Kitchen", playing: show("Ironwood", at: 2_000, key: "drive:m2"))])
+        let b = HubAnswer.answered([entry("this", "Den"), entry("tv-k", "Kitchen", playing: show("Ironwood", at: 2_000, key: "drive:m2"))])
+        for hubs in [[hubA, hubB], [hubB, hubA]] {
+            // Living Room hasn't heard from the Kitchen lately; the Den has.
+            let relay = mergeStale(hubs, ["tv-a": a, "tv-b": b], now: t0, staleRelays: [FleetMerge.relayKey("tv-a", "tv-k")])
+            XCTAssertEqual(relay["tv-k"]?.hubID, "tv-b")
+            XCTAssertEqual(relay["tv-k"]?.playing?.title, "Ironwood")
+            // Living Room's whole answer is old; the Den's is fresh.
+            let old = mergeStale(hubs, ["tv-a": a, "tv-b": b], now: t0.addingTimeInterval(30),
+                                 answeredAt: ["tv-a": t0, "tv-b": t0.addingTimeInterval(29)], staleAfter: 20)
+            XCTAssertEqual(old["tv-k"]?.hubID, "tv-b")
+            XCTAssertEqual(old["tv-k"]?.playing?.title, "Ironwood")
+            // A TV's own word still comes first, old or not.
+            XCTAssertEqual(old["tv-a"]?.isHub, true)
+        }
+        // Both believed: the hub paired first, as before.
+        XCTAssertEqual(mergeStale([hubA, hubB], ["tv-a": a, "tv-b": b], now: t0)["tv-k"]?.hubID, "tv-a")
+        XCTAssertEqual(mergeStale([hubB, hubA], ["tv-a": a, "tv-b": b], now: t0)["tv-k"]?.hubID, "tv-b")
+    }
+
     func testATitleFirstSeenPausedCountsAsPausedLongAtOnce() {
         // Just launched, or an Android session left behind after leaving YouTube: there's no telling when it paused.
         let first = FleetMerge.pause(show(playing: false, at: 50_000), mark: nil, heardAt: t0, now: t0)
@@ -298,14 +331,81 @@ final class RealtimeTests: XCTestCase {
         XCTAssertFalse(played.long)
     }
 
-    func testAPauseSeenHappeningCountsForFiveMinutes() {
+    func testAPauseSeenHappeningCountsForItsAllowance() {
+        // Heard playing 10 s in, then paused at 11 s, which the next answer (a second later) shows: the allowance from then.
+        let allowance = FleetMerge.pausedLongAfter
         var mark = FleetMerge.pause(show(at: 10_000), mark: nil, heardAt: t0, now: t0).mark
         let paused = show(playing: false, at: 11_000)
-        for (s, long) in [(1.0, false), (299.0, false), (300.0, true), (900.0, true)] {
+        for (s, long) in [(1.0, false), (allowance, false), (allowance + 1, true), (allowance * 3, true)] {
             let judged = FleetMerge.pause(paused, mark: mark, heardAt: t0.addingTimeInterval(s), now: t0.addingTimeInterval(s))
-            XCTAssertEqual(judged.long, long, "\(s) s after it was last heard playing")
+            XCTAssertEqual(judged.long, long, "\(s - 1) s after it paused")
             mark = judged.mark
         }
+    }
+
+    func testAPauseMadeWhileTheAppSleptCountsFromWhereItStopped() {
+        // Heard playing 1,000 s in; then the app slept for 40 minutes.
+        let watched = FleetMerge.pause(show(at: 1_000_000), mark: nil, heardAt: t0, now: t0).mark
+        let woke = t0.addingTimeInterval(40 * 60)
+        // Paused 5 seconds before the app looked again (it played on for 39 min 55 s): its allowance is still to come.
+        let allowance = FleetMerge.pausedLongAfter
+        let lately = show(playing: false, at: 1_000_000 + 2_395_000)
+        let first = FleetMerge.pause(lately, mark: watched, heardAt: woke, now: woke)
+        XCTAssertFalse(first.long)
+        XCTAssertFalse(FleetMerge.pause(lately, mark: first.mark, heardAt: woke.addingTimeInterval(allowance - 6), now: woke.addingTimeInterval(allowance - 6)).long)
+        XCTAssertTrue(FleetMerge.pause(lately, mark: first.mark, heardAt: woke.addingTimeInterval(allowance - 5), now: woke.addingTimeInterval(allowance - 5)).long)
+        // Paused a minute after the app last looked (and left behind after YouTube, say): long over by now.
+        XCTAssertTrue(FleetMerge.pause(show(playing: false, at: 1_060_000), mark: watched, heardAt: woke, now: woke).long)
+        // A pause never counts from later than the answer that shows it, whatever the position says (a skip forward).
+        let skipped = FleetMerge.pause(show(playing: false, at: 5_000_000), mark: watched, heardAt: t0.addingTimeInterval(10), now: t0.addingTimeInterval(10))
+        XCTAssertEqual(skipped.mark?.pausedAt, t0.addingTimeInterval(10))
+        // No positions to go by: from the last answer that heard it playing.
+        let live = FleetMerge.pause(NowPlaying(title: "News", playing: true), mark: nil, heardAt: t0, now: t0).mark
+        XCTAssertTrue(FleetMerge.pause(NowPlaying(title: "News", playing: false), mark: live, heardAt: woke, now: woke).long)
+    }
+
+    func testTheNextEpisodeLoadingIsNotALeftover() {
+        // Android counts only "playing" as playing: while the next video or episode loads, it reads as paused.
+        let watching = FleetMerge.pause(show("Episode 4", at: 1_500_000, key: nil), mark: nil, heardAt: t0, now: t0)
+        let loading = FleetMerge.pause(show("Episode 5", playing: false, at: 0, key: nil), mark: watching.mark,
+                                       heardAt: t0.addingTimeInterval(1.5), now: t0.addingTimeInterval(1.5))
+        XCTAssertFalse(loading.long)
+        let started = FleetMerge.pause(show("Episode 5", at: 1_000, key: nil), mark: loading.mark,
+                                       heardAt: t0.addingTimeInterval(3), now: t0.addingTimeInterval(3))
+        XCTAssertFalse(started.long)
+        // One that never starts still goes, its allowance on.
+        let allowance = FleetMerge.pausedLongAfter
+        let stuck = show("Episode 5", playing: false, at: 0, key: nil)
+        XCTAssertFalse(FleetMerge.pause(stuck, mark: loading.mark, heardAt: t0.addingTimeInterval(allowance + 1), now: t0.addingTimeInterval(allowance + 1)).long)
+        XCTAssertTrue(FleetMerge.pause(stuck, mark: loading.mark, heardAt: t0.addingTimeInterval(allowance + 1.5), now: t0.addingTimeInterval(allowance + 1.5)).long)
+        // Partway through, or long after anything was heard playing: a session left behind.
+        XCTAssertTrue(FleetMerge.pause(show("Orbit", playing: false, at: 1_200_000, key: nil), mark: watching.mark,
+                                       heardAt: t0.addingTimeInterval(1.5), now: t0.addingTimeInterval(1.5)).long)
+        XCTAssertTrue(FleetMerge.pause(stuck, mark: watching.mark, heardAt: t0.addingTimeInterval(3_600), now: t0.addingTimeInterval(3_600)).long)
+    }
+
+    func testAPauseKeepsItsClockWhileTheTVIsBrieflyOff() {
+        var tv = FleetTV(id: "tv-k", name: "Kitchen", online: true, onScreen: true, playing: show(at: 10_000), version: nil, seen: nil,
+                         link: "ok", health: nil, hubID: "tv-a", routeID: "tv-k", platform: nil)
+        let watched = FleetMerge.pause(of: tv, mark: nil, heardAt: t0, tooOld: false, now: t0)
+        tv.playing = show(playing: false, at: 12_000)
+        let paused = FleetMerge.pause(of: tv, mark: watched.mark, heardAt: t0.addingTimeInterval(2), tooOld: false, now: t0.addingTimeInterval(2))
+        XCTAssertFalse(paused.long)
+        // One missed check: its hub passes it on as off (so playing nothing), then on again with the same pause.
+        var off = tv
+        off.online = false
+        off.playing = nil
+        let during = FleetMerge.pause(of: off, mark: paused.mark, heardAt: t0.addingTimeInterval(4), tooOld: false, now: t0.addingTimeInterval(4))
+        XCTAssertEqual(during.mark, paused.mark)
+        let back = FleetMerge.pause(of: tv, mark: during.mark, heardAt: t0.addingTimeInterval(6), tooOld: false, now: t0.addingTimeInterval(6))
+        XCTAssertFalse(back.long, "still the pause from a few seconds ago")
+        let allowance = FleetMerge.pausedLongAfter
+        XCTAssertTrue(FleetMerge.pause(of: tv, mark: back.mark, heardAt: t0.addingTimeInterval(allowance + 2), tooOld: false, now: t0.addingTimeInterval(allowance + 2)).long)
+        // Showing nothing only because what was heard is too old: kept too. On, with nothing playing: cleared.
+        var quiet = tv
+        quiet.playing = nil
+        XCTAssertEqual(FleetMerge.pause(of: quiet, mark: back.mark, heardAt: t0, tooOld: true, now: t0.addingTimeInterval(60)).mark, back.mark)
+        XCTAssertNil(FleetMerge.pause(of: quiet, mark: back.mark, heardAt: t0.addingTimeInterval(60), tooOld: false, now: t0.addingTimeInterval(60)).mark)
     }
 
     func testANewTitleStartsAfresh() {

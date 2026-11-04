@@ -121,7 +121,10 @@ struct MiniPlayerView: View {
 final class NowPlayingBridge {
     static let shared = NowPlayingBridge()
     private var wired = false
+    /// The title whose poster was asked for last, and that poster once it has loaded: every update puts it back, since
+    /// each one replaces all of Control Center's Now Playing.
     private var lastTitle: String?
+    private var art: (title: String, artwork: MPMediaItemArtwork)?
 
     func wire() {
         guard !wired else { return }
@@ -140,11 +143,22 @@ final class NowPlayingBridge {
     func update(_ fleet: Fleet) {
         wire()
         let info = MPNowPlayingInfoCenter.default()
-        // Only what's playing now: a TV that's off, or a title left paused, clears Control Center.
-        guard let tv = fleet.selected, let p = tv.nowPlaying else {
+        // Only what's playing now: a TV that's off, or has nothing playing, clears Control Center.
+        guard let tv = fleet.selected, tv.online, !tv.isUnpaired, tv.playing != nil else {
             info.nowPlayingInfo = nil
             info.playbackState = .stopped
             lastTitle = nil
+            art = nil
+            return
+        }
+        guard let p = tv.nowPlaying else {
+            // Left paused so long it no longer counts as playing: no old title or picture, only the TV, paused, so the
+            // Mac's play/pause key still reaches it (with nothing here, macOS hands that key to Music instead).
+            let idle: [String: Any] = [MPMediaItemPropertyTitle: tv.name, MPNowPlayingInfoPropertyPlaybackRate: 0.0]
+            info.nowPlayingInfo = idle
+            info.playbackState = .paused
+            lastTitle = nil
+            art = nil
             return
         }
         var d: [String: Any] = [
@@ -155,6 +169,7 @@ final class NowPlayingBridge {
             MPNowPlayingInfoPropertyElapsedPlaybackTime: p.estimatedPosition(at: Date()) / 1000,
         ]
         if let dur = p.duration, dur > 0 { d[MPMediaItemPropertyPlaybackDuration] = dur / 1000 }
+        if let art, art.title == p.title { d[MPMediaItemPropertyArtwork] = art.artwork }
         info.nowPlayingInfo = d
         info.playbackState = p.isPlaying ? .playing : .paused
         if lastTitle != p.title, let path = fleet.artwork(for: p)?.poster, let url = fleet.hubClient()?.art(path) {
@@ -162,10 +177,13 @@ final class NowPlayingBridge {
             let title = p.title
             Task {
                 guard let data = try? await URLSession.woodruff.data(from: url).0, let img = NSImage(data: data) else { return }
-                // Still showing that title (not cleared, nor moved on, while the poster loaded).
+                // Still that title (not cleared, nor moved on, while the poster loaded): kept for every update after.
+                guard self.lastTitle == title else { return }
+                let artwork = MPMediaItemArtwork(boundsSize: img.size) { _ in img }
+                self.art = (title, artwork)
                 guard var cur = MPNowPlayingInfoCenter.default().nowPlayingInfo,
                       cur[MPMediaItemPropertyTitle] as? String == title else { return }
-                cur[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: img.size) { _ in img }
+                cur[MPMediaItemPropertyArtwork] = artwork
                 MPNowPlayingInfoCenter.default().nowPlayingInfo = cur
             }
         }

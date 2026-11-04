@@ -854,8 +854,9 @@ struct CamerasPhoneView: View {
                 }
             }
             if let e = nest.error { Section { Text(e).foregroundStyle(Palette.attention) } }
-            if let hub {
-                // The TVs' own camera keys and alerts (the same page as Accounts → Nest Cameras), right from here.
+            if let hub, hub.s != nil {
+                // The TVs' own camera keys and alerts (the same page as Accounts → Nest Cameras), right from here. Only
+                // once their settings are read, as on Accounts: that page's fields would be blank before.
                 Section {
                     PageLink("Nest Cameras") { CamerasView(hub: hub) } label: {
                         IconRow(symbol: "", color: .clear, title: "Camera Keys on the TVs", value: hub.s?.nest?.statusText)
@@ -867,7 +868,7 @@ struct CamerasPhoneView: View {
         .navigationTitle("Cameras")
         .inlineTitle()
         // Settings hadn't read the TVs' settings yet (or this page was opened from somewhere else): read them once.
-        .task { if settings.s == nil && !settings.loading { await settings.load(fleet.hubClient()) } }
+        .task { await settings.loadIfNeeded(fleet) }
         .cameraPresenter($open)
     }
 }
