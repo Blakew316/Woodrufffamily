@@ -154,6 +154,7 @@ struct PhoneSettingsView: View {
             } footer: {
                 Text("Lock-screen alerts reach this device through the free ntfy app even when Woodruff is closed. TV alerts tell you when a TV goes off or needs attention.")
             }
+            PushSettingsSection()
             Section("Recent Messages") {
                 if fleet.recentMessages.isEmpty { Text("No messages in the last week.").foregroundStyle(.secondary) }
                 ForEach(fleet.recentMessages) { m in

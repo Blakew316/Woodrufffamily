@@ -25,15 +25,16 @@ final class SettingsSync {
         "st.client", "st.secret", "st.access", "st.refresh", "st.expires", "st.token",
         "nest.project", "nest.client", "nest.secret", "nest.access", "nest.refresh", "nest.expires", "nest.scopes", "nest.subscription",
         "github.token", "dreo.email", "dreo.password", "deco.host", "deco.password",
+        "apns.key", "apns.keyid", "apns.team",
     ]
     /// Saved settings that travel (JSON in UserDefaults).
-    static let dataKeys = ["smartNames", "smartRooms", "smartExtraRooms", "goveeManualIPs", "homeLayout", "extras", "hiddenAlerts"]
+    static let dataKeys = ["smartNames", "smartRooms", "smartExtraRooms", "goveeManualIPs", "homeLayout", "extras", "hiddenAlerts", "pushTokens"]
     /// Plain preferences that travel.
     static let valueKeys = ["nest.alert.person", "nest.alert.motion", "nest.alert.doorbell"]
 
     /// Saved settings kept entry by entry (one TV's name, one light's room), so two devices changing
     /// different entries at the same time both keep their change.
-    static let entryKeys: Set<String> = ["ud:smartNames", "ud:smartRooms", "ud:extras", "ud:hiddenAlerts"]
+    static let entryKeys: Set<String> = ["ud:smartNames", "ud:smartRooms", "ud:extras", "ud:hiddenAlerts", "ud:pushTokens"]
 
     /// "Saved on Living Room, Master Bedroom · 12:04" for Settings.
     private(set) var status = "Not synced yet"

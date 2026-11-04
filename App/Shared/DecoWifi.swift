@@ -181,7 +181,7 @@ final class DecoWifi {
         c.title = up ? "Internet Is Back" : "Internet Is Down"
         c.body = up ? "The Deco is online again." : "The Deco says the home internet connection dropped."
         c.sound = .default
-        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "deco-inet", content: c, trigger: nil))
+        Notifier.deliver(c, id: "deco-inet")
     }
 
     // MARK: Restart

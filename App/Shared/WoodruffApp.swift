@@ -18,6 +18,9 @@ enum AlertsRefresh {
 struct WoodruffApp: App {
     @State private var fleet = Fleet.shared
     @Environment(\.scenePhase) private var scenePhase
+    #if os(iOS)
+    @UIApplicationDelegateAdaptor(PushAppDelegate.self) private var pushDelegate
+    #endif
 
     var body: some Scene {
         WindowGroup {
@@ -28,7 +31,7 @@ struct WoodruffApp: App {
                     if !Demo.isOn { MacPairingBackup.attach(fleet) }
                     #endif
                     // Apple's own prompts on first launch: notifications, then location while using (for weather).
-                    if !Demo.isOn { Notifier.attach(to: fleet) }
+                    if !Demo.isOn { Notifier.attach(to: fleet); PushRelay.shared.start() }
                     if !Demo.isOn && !fleet.hubs.isEmpty { LocationWeather.shared.start(fleet) }
                     SmartHome.shared.start()
                     SmartThings.shared.start()
@@ -75,6 +78,7 @@ struct WoodruffApp: App {
                 CameraStreams.shared.foreground()
                 SmartHome.shared.wake()
                 SettingsSync.shared.wake()
+                PushRelay.shared.wake()
                 #if os(iOS)
                 HomeKitLights.shared.refresh()
                 #endif

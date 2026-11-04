@@ -332,7 +332,7 @@ final class SmartThings {
         c.title = "\(name) is done"
         c.body = d.kind == .dryer ? "The dryer has finished." : d.kind == .washer ? "The wash has finished. Time to move it to the dryer." : "It has finished."
         c.sound = .default
-        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "st-\(d.id)-\(Date().timeIntervalSince1970)", content: c, trigger: nil))
+        Notifier.deliver(c, id: "st-\(d.id)-done")
     }
 
     // MARK: Commands

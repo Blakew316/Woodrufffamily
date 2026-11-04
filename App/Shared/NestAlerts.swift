@@ -155,7 +155,7 @@ final class NestAlerts {
         c.sound = .default
         c.threadIdentifier = "nest-\(camera)"
         c.userInfo = ["camera": camera]
-        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "nest-\(key)", content: c, trigger: nil))
+        Notifier.deliver(c, id: "nest-\(key)")
     }
 }
 

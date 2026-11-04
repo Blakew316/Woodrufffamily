@@ -5,5 +5,8 @@
 	<!-- Apple Home: Cync (Matter) lights next to the Govee ones. -->
 	<key>com.apple.developer.homekit</key>
 	<true/>
+	<!-- Instant alerts: the family Macs push camera, TV, internet and appliance alerts to the iPhones. -->
+	<key>aps-environment</key>
+	<string>development</string>
 </dict>
 </plist>
