@@ -149,7 +149,8 @@ extension HomeWeather.Now {
 }
 
 extension HomeWeather {
-    static func sky(code: Int, isDay: Bool) -> (words: String, symbol: String) {
+    /// (Not tied to the main actor: the readings' own `sky` uses it from anywhere.)
+    nonisolated static func sky(code: Int, isDay: Bool) -> (words: String, symbol: String) {
         switch code {
         case 0: return isDay ? ("Sunny", "sun.max.fill") : ("Clear", "moon.stars.fill")
         case 1: return isDay ? ("Mostly Sunny", "sun.max.fill") : ("Mostly Clear", "moon.fill")
