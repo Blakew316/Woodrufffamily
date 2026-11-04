@@ -170,7 +170,23 @@ public enum Sonos {
 
     // Playback goes to the group's coordinator; volume to each speaker.
     public static func play(_ r: SonosRoom) async throws { _ = try await transport(r.coordinatorHost, "Play", [("Speed", "1")]) }
-    public static func pause(_ r: SonosRoom) async throws { _ = try await transport(r.coordinatorHost, "Pause") }
+    public static func pause(_ r: SonosRoom) async throws {
+        do {
+            _ = try await transport(r.coordinatorHost, "Pause")
+        } catch SonosError.refused(let code) where code == 701 {
+            // The TV's sound, line-in and some radio streams can't pause ("transition not available"): stopping
+            // is what pausing means there, and Play starts them again.
+            _ = try await transport(r.coordinatorHost, "Stop")
+        }
+    }
+
+    /// Whether a state a speaker reports is the one asked for (starting counts as playing, stopped as paused).
+    static func sameState(_ reported: String, _ asked: String) -> Bool {
+        let playing: Set<String> = ["PLAYING", "TRANSITIONING"]
+        if playing.contains(asked) { return playing.contains(reported) }
+        if asked == "PAUSED_PLAYBACK" || asked == "STOPPED" { return reported == "PAUSED_PLAYBACK" || reported == "STOPPED" }
+        return reported == asked
+    }
     public static func next(_ r: SonosRoom) async throws { _ = try await transport(r.coordinatorHost, "Next") }
     public static func previous(_ r: SonosRoom) async throws { _ = try await transport(r.coordinatorHost, "Previous") }
     public static func setVolume(_ r: SonosRoom, _ v: Int) async throws { _ = try await rendering(r.host, "SetVolume", [("DesiredVolume", String(max(0, min(100, v))))]) }
@@ -310,7 +326,9 @@ public enum Sonos {
     /// Switches the soundbar to the TV's sound.
     public static func playTV(_ r: SonosRoom) async throws {
         _ = try await transport(r.host, "SetAVTransportURI", [("CurrentURI", "x-sonos-htastream:\(r.id):spdif"), ("CurrentURIMetaData", "")])
-        _ = try await transport(r.host, "Play", [("Speed", "1")])
+        // The TV's sound plays by itself once it's chosen; Play is only a nudge, and a soundbar that turns it down
+        // (the TV sending nothing yet) has still switched, so that isn't a failure.
+        _ = try? await transport(r.host, "Play", [("Speed", "1")])
     }
 
     // MARK: Groups
@@ -923,21 +941,32 @@ public final class SmartHome {
         lan.start()
         browseSonos()
         #endif
+        // One round every 2.5 seconds. What's playing is asked every round while music plays (a new song shows
+        // within a moment) and every other round when nothing is; the lamps every other round.
         loop = Task { [weak self] in
             var tick = 0
             while !Task.isCancelled {
                 guard let self else { return }
                 // Away from home nothing on this network is ours: no searching, and the speakers less often.
                 let away = Fleet.shared.probablyAway
-                if tick % 60 == 0 { await self.findSonos() }
-                if tick % 24 == 0 { await self.refreshCloud() }
+                // The slow ones (the household's rooms, Govee's cloud) run beside the rounds, never holding them up.
+                let first = tick == 0
+                if tick % 120 == 0 {
+                    Task {
+                        await self.findSonos()
+                        if first { await self.refreshSpeakers() }
+                    }
+                }
+                if tick % 48 == 0 { Task { await self.refreshCloud() } }
                 // Ask for lights a few times early on (UDP answers can get lost), then every five minutes.
-                if !away, [0, 1, 3, 6, 12].contains(tick) || tick % 60 == 0 { self.scanLights() }
-                if !away || tick % 6 == 0 { await self.refreshSpeakers() }
-                if !away { self.pollLights() }
+                if !away, [0, 2, 6, 12, 24].contains(tick) || tick % 120 == 0 { self.scanLights() }
+                let playing = self.speakers.contains(where: \.isPlaying)
+                let speakersDue = away ? tick % 12 == 0 : (playing || tick % 2 == 0)
+                if speakersDue { await self.refreshSpeakers() }
+                if !away && tick % 2 == 0 { self.pollLights() }
                 self.checkReachable()
                 tick += 1
-                try? await Task.sleep(nanoseconds: 5_000_000_000)
+                try? await Task.sleep(nanoseconds: 2_500_000_000)
             }
         }
     }
@@ -980,6 +1009,21 @@ public final class SmartHome {
                 c.start(queue: .main)
             }
         }
+        let mine = ObjectIdentifier(b)
+        b.stateUpdateHandler = { [weak self] state in
+            guard case .failed = state else { return }
+            // Delivered on the main queue (started there below). The network changed, or the system let it go
+            // while the app was away: it used to stay stopped for good. Browse again in a moment.
+            MainActor.assumeIsolated {
+                guard let self, let current = self.browser, ObjectIdentifier(current) == mine else { return }
+                current.cancel()
+                self.browser = nil
+                Task {
+                    try? await Task.sleep(nanoseconds: 3_000_000_000)
+                    if self.browser == nil { self.browseSonos() }
+                }
+            }
+        }
         b.start(queue: .main)
         browser = b
     }
@@ -990,7 +1034,11 @@ public final class SmartHome {
         // Each speaker announces itself; only a new address (or none known yet) is worth asking for the rooms.
         if sonosSeed == nil || speakers.isEmpty || (sonosSeed != host && !knownSonosHosts.contains(host)) {
             useSeed(host)
-            Task { await findSonos() }
+            // Rooms just found have no state yet: ask them what they're playing straight away.
+            Task {
+                await findSonos()
+                await refreshSpeakers()
+            }
         }
     }
 
@@ -1009,8 +1057,30 @@ public final class SmartHome {
         UserDefaults.standard.set(host, forKey: "sonosSeed")
     }
 
-    /// The household's rooms, from the last speaker that answered (or by asking the network on port 1400).
+    @ObservationIgnored private var finding: Task<Void, Never>?
+
+    /// The household's rooms, from the last speaker that answered (or by asking the network on port 1400). One
+    /// search at a time: a second call waits for the one already looking.
     public func findSonos() async {
+        if let running = finding { await running.value; return }
+        await runFind()
+    }
+
+    private func runFind() async {
+        let t = Task { await self.findSonosNow() }
+        finding = t
+        await t.value
+        if finding == t { finding = nil }
+    }
+
+    /// After a change to the groups: a search already under way began before it, so look again once it's done.
+    private func findSonosAfterChange() async {
+        if let running = finding { await running.value }
+        if let running = finding { await running.value; return }   // a newer one started meanwhile
+        await runFind()
+    }
+
+    private func findSonosNow() async {
         if let s = sonosSeed, let rooms = try? await Sonos.rooms(from: s), !rooms.isEmpty { merge(rooms); return }
         // The saved speaker is off or has a new address (DHCP): any other one we know lists the household too.
         let others = knownSonosHosts.filter { $0 != sonosSeed }
@@ -1109,12 +1179,13 @@ public final class SmartHome {
     public func regroup(_ id: String? = nil, _ op: @escaping @Sendable () async throws -> Void) async {
         do { try await op() } catch { if let id, let r = speaker(id) { report(r, error) } }
         try? await Task.sleep(nanoseconds: 600_000_000)
-        await findSonos()
+        // Never the answer of a search that began before the change (it would show the old groups).
+        await findSonosAfterChange()
         await refreshSpeakers()
         // Sonos can take a moment longer to settle which speaker leads the group.
         Task {
             try? await Task.sleep(nanoseconds: 2_000_000_000)
-            await self.findSonos()
+            await self.findSonosAfterChange()
             await self.refreshSpeakers()
         }
     }
@@ -1126,6 +1197,14 @@ public final class SmartHome {
     /// refresh that began before then carries an older answer and mustn't undo it.
     @ObservationIgnored private var transportAt: [String: Date] = [:]
     @ObservationIgnored private var levelsAt: [String: Date] = [:]
+    /// When the refresh whose answer was last used began, per room and per group leader (by address): refreshes
+    /// overlap (one after a command, the regular one), and an older one that answers last never puts back what
+    /// it saw over a newer answer.
+    @ObservationIgnored private var polledAt: [String: Date] = [:]
+    @ObservationIgnored private var leaderPolledAt: [String: Date] = [:]
+    /// What a command just asked a group to do (by its leader's address): kept on screen until the speaker says
+    /// the same or a few seconds pass, so one that's a moment slow to switch doesn't flick back to the old state.
+    @ObservationIgnored private var expected: [String: (state: String, until: Date)] = [:]
     @ObservationIgnored private var refreshCount = 0
     /// Ask the offline speakers too on the next refresh (the app just came back to the front).
     @ObservationIgnored private var askOfflineSpeakers = false
@@ -1154,14 +1233,21 @@ public final class SmartHome {
         var playing: [String: SonosRoom] = [:]
         for p in polls where leaderIDs.contains(p.room.id) {
             let h = p.room.coordinatorHost
+            // A refresh that began later has already heard from this leader.
+            guard (leaderPolledAt[h] ?? .distantPast) <= started else { continue }
+            leaderPolledAt[h] = started
             if p.transportAnswered { playing[h] = p.room; leaderMisses[h] = 0 } else { leaderMisses[h, default: 0] += 1 }
         }
         let held = Set(pendingVolume.filter { $0.value.timeIntervalSinceNow > -2.5 }.keys)
+        let now = Date()
         // Only the playing state comes from the refresh; names, models and parts may have changed meanwhile.
         var next = speakers
         var lost = false
         for i in next.indices {
             guard let p = byID[next[i].id] else { continue }
+            // A refresh that began later has already said how this room is: this older answer only arrived last.
+            guard (polledAt[next[i].id] ?? .distantPast) <= started else { continue }
+            polledAt[next[i].id] = started
             var r = next[i]
             if p.answered {
                 sonosMisses[r.id] = 0
@@ -1180,6 +1266,10 @@ public final class SmartHome {
             if (transportAt[r.coordinatorHost] ?? .distantPast) < started {
                 if let l = playing[r.coordinatorHost] {
                     r.state = l.state; r.title = l.title; r.artist = l.artist; r.album = l.album; r.art = l.art; r.isTV = l.isTV
+                    // Just asked to play or pause: that shows until the speaker says the same (or time runs out).
+                    if let e = expected[r.coordinatorHost] {
+                        if Sonos.sameState(l.state, e.state) || e.until < now { expected[r.coordinatorHost] = nil } else { r.state = e.state }
+                    }
                 } else if (leaderMisses[r.coordinatorHost] ?? 0) >= 2 {
                     // The group's leader has gone quiet: what it was playing isn't known any more.
                     r.state = ""; r.title = nil; r.artist = nil; r.album = nil; r.art = nil; r.isTV = false
@@ -1236,7 +1326,9 @@ public final class SmartHome {
         do {
             try await op(r)
             speakerErrors[r.id] = nil
+            if let expect { expected[group] = (state: expect, until: Date().addingTimeInterval(4)) }
         } catch {
+            expected[group] = nil
             for i in speakers.indices { if let s = before[speakers[i].id] { speakers[i].state = s } }
             report(r, error)
         }
@@ -1271,21 +1363,36 @@ public final class SmartHome {
     @ObservationIgnored private var pendingVolume: [String: Date] = [:]
     @ObservationIgnored private var volumeSends: [String: Task<Void, Never>] = [:]
 
-    /// Dragging the slider: shows each value at once, but sends at most every ~150 ms and always the latest
-    /// (so the speaker never ends on a stale value), and the refresh leaves it alone until it settles.
+    /// Dragging the slider: shows each value at once and sends the newest one about every 150 ms, one send at a
+    /// time (two at once could arrive out of order and leave the speaker on an older value), and the refresh
+    /// leaves the level alone until it settles.
     public func setVolume(_ room: SonosRoom, _ v: Int) {
-        if let i = speakers.firstIndex(where: { $0.id == room.id }) { speakers[i].volume = v }
-        pendingVolume[room.id] = Date()
-        lastSpeakerID = room.id
-        guard volumeSends[room.id] == nil else { return }   // the one waiting picks up the newest value
-        volumeSends[room.id] = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 150_000_000)
-            guard let self else { return }
-            let target = self.speaker(room.id) ?? room
-            let latest = target.volume
-            self.volumeSends[room.id] = nil
-            do { try await Sonos.setVolume(target, latest) } catch { self.report(target, error) }
-            self.pendingVolume[room.id] = Date()
+        let v = max(0, min(100, v))
+        let id = room.id
+        if let i = speakers.firstIndex(where: { $0.id == id }) { speakers[i].volume = v }
+        pendingVolume[id] = Date()
+        levelsAt[id] = Date()
+        lastSpeakerID = id
+        guard volumeSends[id] == nil else { return }   // the one running sends the newest value next
+        volumeSends[id] = Task { [weak self] in
+            var sent: Int?
+            while true {
+                try? await Task.sleep(nanoseconds: 150_000_000)
+                guard let home = self else { return }
+                let target = home.speaker(id) ?? room
+                let latest = home.speaker(id)?.volume ?? v
+                if latest == sent { break }   // the speaker has the newest value
+                do {
+                    try await Sonos.setVolume(target, latest)
+                } catch {
+                    home.report(target, error)
+                    break
+                }
+                sent = latest
+                home.pendingVolume[id] = Date()
+                home.levelsAt[id] = Date()
+            }
+            self?.volumeSends[id] = nil
         }
     }
 
@@ -1394,8 +1501,10 @@ public final class SmartHome {
     private func holding(_ incoming: GoveeLight) -> GoveeLight {
         guard let h = held[incoming.id] else { return incoming }
         let s = h.state
+        // Give or take the rounding a light does on the way back (Apple Home goes through hue, saturation and
+        // mireds): an exact match never came, so the change was never taken as done.
         let confirmed = incoming.on == s.on
-            && (!s.on || (incoming.brightness == s.brightness && incoming.color == s.color && incoming.kelvin == s.kelvin))
+            && (!s.on || (incoming.brightness == s.brightness && Self.near(incoming.color, s.color) && Self.near(incoming.kelvin, s.kelvin, by: 100)))
         if confirmed || h.until < Date() {
             held[incoming.id] = nil
             return incoming
@@ -1403,6 +1512,16 @@ public final class SmartHome {
         var l = incoming
         l.on = s.on; l.brightness = s.brightness; l.color = s.color; l.kelvin = s.kelvin
         return l
+    }
+
+    private static func near(_ a: LightColor?, _ b: LightColor?) -> Bool {
+        guard let a, let b else { return a == nil && b == nil }
+        return abs(a.r - b.r) <= 8 && abs(a.g - b.g) <= 8 && abs(a.b - b.b) <= 8
+    }
+
+    private static func near(_ a: Int?, _ b: Int?, by d: Int) -> Bool {
+        guard let a, let b else { return a == nil && b == nil }
+        return abs(a - b) <= d
     }
 
     /// Every light that answered the search, by address: what it says it is (shown in Settings → Lights).
@@ -1532,8 +1651,8 @@ public final class SmartHome {
 
     /// Turns a light on or off: on the LAN when it's there, else through Govee's cloud (or Apple Home).
     public func setOn(_ l: GoveeLight, _ on: Bool) {
-        update(l) { $0.on = on }
-        send(l.id, .power(on))
+        let before = update(l) { $0.on = on }
+        send(l.id, .power(on), before: before)
     }
 
     public func setBrightness(_ l: GoveeLight, _ v: Int) {
@@ -1541,15 +1660,15 @@ public final class SmartHome {
         guard v > 0 else { setOn(l, false); return }
         let v = min(100, v)
         let wasOn = light(l.id)?.isLit ?? l.on
-        update(l) { $0.brightness = v; $0.on = true }
-        send(l.id, .brightness(v), turnOn: !wasOn)
+        let before = update(l) { $0.brightness = v; $0.on = true }
+        send(l.id, .brightness(v), turnOn: !wasOn, before: before)
     }
 
     public func setColor(_ l: GoveeLight, _ c: LightColor) {
         let c = LightColor(r: max(0, min(255, c.r)), g: max(0, min(255, c.g)), b: max(0, min(255, c.b)))
         let wasOn = light(l.id)?.isLit ?? l.on
-        update(l) { $0.color = c; $0.kelvin = nil; $0.on = true }
-        send(l.id, .color(c), turnOn: !wasOn)
+        let before = update(l) { $0.color = c; $0.kelvin = nil; $0.on = true }
+        send(l.id, .color(c), turnOn: !wasOn, before: before)
     }
 
     public func setWhite(_ l: GoveeLight, kelvin: Int) {
@@ -1557,24 +1676,49 @@ public final class SmartHome {
         // Apple Home lights clamp to their own range; Govee lamps to their model's.
         let k = current.isHome ? max(1000, min(10_000, kelvin)) : current.clampKelvin(kelvin)
         let wasOn = current.isLit
-        update(l) { $0.kelvin = k; $0.color = nil; $0.on = true }
-        send(l.id, .kelvin(k), turnOn: !wasOn)
+        let before = update(l) { $0.kelvin = k; $0.color = nil; $0.on = true }
+        send(l.id, .kelvin(k), turnOn: !wasOn, before: before)
     }
 
-    private func update(_ l: GoveeLight, _ f: (inout GoveeLight) -> Void) {
-        if let i = lights.firstIndex(where: { $0.id == l.id }) { f(&lights[i]); onChange?() }
+    /// Shows a change at once; returns the light as it was, to put back if the change can't be carried out.
+    @discardableResult
+    private func update(_ l: GoveeLight, _ f: (inout GoveeLight) -> Void) -> GoveeLight? {
+        guard let i = lights.firstIndex(where: { $0.id == l.id }) else { return nil }
+        let before = lights[i]
+        f(&lights[i])
+        onChange?()
+        return before
+    }
+
+    /// Changes sent to each light, counted: a check or a failure that belongs to an older change leaves a newer
+    /// one alone.
+    @ObservationIgnored private var commandSeq: [String: Int] = [:]
+
+    /// A change that didn't happen: the light goes back to how it was shown before it (unless it's been changed
+    /// again since), instead of showing something it isn't doing.
+    private func restore(_ before: GoveeLight?, seq: Int) {
+        guard let before, commandSeq[before.id] == seq, let i = lights.firstIndex(where: { $0.id == before.id }) else { return }
+        held[before.id] = nil
+        lights[i].on = before.on
+        lights[i].brightness = before.brightness
+        lights[i].color = before.color
+        lights[i].kelvin = before.kelvin
+        onChange?()
     }
 
     /// Sends a change by the light's own path: Apple Home; its address on the Wi‑Fi (always, for twins);
     /// else Govee's cloud — and the cloud too when the Wi‑Fi doesn't answer after the change.
-    private func send(_ id: String, _ c: LightCommand, turnOn: Bool = false) {
+    private func send(_ id: String, _ c: LightCommand, turnOn: Bool = false, before: GoveeLight? = nil) {
         guard let l = light(id) else { return }
+        let seq = (commandSeq[id] ?? 0) + 1
+        commandSeq[id] = seq
         if l.isHome {
-            hold(l, for: 6)
             guard let homeControl else {
                 goveeError = "\(l.name) is in Apple Home, which only the iPhone app can reach."
+                restore(before, seq: seq)
                 return
             }
+            hold(l, for: 6)
             homeControl(l, c)
             return
         }
@@ -1586,19 +1730,28 @@ public final class SmartHome {
             let sent = Date()
             let viaCloud = cloudUsable(l)
             Task { [weak self] in
-                // Ask how it is now; a lamp that doesn't answer gets the change through Govee's cloud.
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
-                guard let self else { return }
-                if let ip = self.light(id)?.ip { self.lan.status(ip) }
-                guard viaCloud else { return }
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
-                guard let now = self.light(id), (self.lastSeen[id] ?? .distantPast) < sent else { return }
-                self.cloud(now, c, turnOn: turnOn)
+                // UDP can lose a packet either way. Ask the lamp how it is; while it hasn't taken the change, send it
+                // again (twice at most). The lamp's answer clears the hold once it matches.
+                for attempt in 0..<3 {
+                    try? await Task.sleep(nanoseconds: 800_000_000)
+                    guard let home = self, home.commandSeq[id] == seq, home.held[id] != nil else { return }
+                    guard let addr = home.light(id)?.ip else { break }
+                    if attempt > 0 {
+                        if turnOn { home.lanSend(addr, .power(true)) }
+                        home.lanSend(addr, c)
+                    }
+                    home.lan.status(addr)
+                }
+                try? await Task.sleep(nanoseconds: 800_000_000)
+                // Never answered at all: the change goes through Govee's cloud when it can.
+                guard let home = self, home.commandSeq[id] == seq, home.held[id] != nil, viaCloud,
+                      (home.lastSeen[id] ?? .distantPast) < sent, let now = home.light(id) else { return }
+                home.cloud(now, c, turnOn: turnOn, before: before, seq: seq)
             }
             return
         }
         #endif
-        cloud(l, c, turnOn: turnOn)
+        cloud(l, c, turnOn: turnOn, before: before, seq: seq)
     }
 
     #if canImport(Network)
@@ -1612,11 +1765,13 @@ public final class SmartHome {
     }
     #endif
 
-    private func cloud(_ l: GoveeLight, _ c: LightCommand, turnOn: Bool = false) {
+    private func cloud(_ l: GoveeLight, _ c: LightCommand, turnOn: Bool = false, before: GoveeLight? = nil, seq: Int) {
         guard let key = goveeKey, !key.isEmpty, l.cloud, !twinned(l) else {
             goveeError = twinned(l)
                 ? "\(l.name) is reached only on the Wi‑Fi (it shares its Govee ID with its twin). Check it’s plugged in."
                 : "Turn on LAN Control for \(l.name) in the Govee app, or add a Govee API key."
+            // Nowhere to send it: don't leave the light showing a change it never got.
+            restore(before, seq: seq)
             return
         }
         hold(l, for: 15)
@@ -1629,8 +1784,10 @@ public final class SmartHome {
             }
             guard let self else { return }
             if let failure {
-                // It didn't happen: stop holding it, and show the light as it really is.
+                // It didn't happen: show the light as it was (unless it's been changed again since), then as
+                // Govee says it is.
                 self.held[id] = nil
+                self.restore(before, seq: seq)
                 self.goveeError = failure.localizedDescription
                 await self.refreshCloud()
             } else if self.goveeError != nil {

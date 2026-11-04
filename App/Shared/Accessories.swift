@@ -215,13 +215,31 @@ struct DeviceTile: View {
         .opacity(device.reachable ? 1 : 0.6)
         .animation(.smooth(duration: 0.25), value: lit)
         .onTapGesture { tap() }
+        #if os(macOS)
+        // Press and hold for the controls (right-click has the menu). Not on iPhone: there touch and hold is the menu
+        // below, and a second hold here fought it for the same touch (both fired).
         .onLongPressGesture(minimumDuration: 0.35, perform: openControls)
+        #endif
         .contextMenu {
+            if let quick = quickAction { Button(quick) { tap() } }
             Button("Controls…", action: openControls)
             FavoriteButton(id: device.id)
         }
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isButton)
         .confirmationDialog("Unlock \(device.name)?", isPresented: $confirmUnlock, titleVisibility: .visible) {
             Button("Unlock") { AccessoryStore.shared.send(device, .lock(false)) }
+        }
+    }
+
+    /// What a tap does, for the menu (nil when a tap just opens the controls).
+    private var quickAction: String? {
+        guard device.reachable else { return nil }
+        switch device.kind {
+        case .outlet, .toggle, .fan: return device.isOn.map { $0 ? "Turn Off" : "Turn On" }
+        case .lock: return device.locked == true ? "Unlock" : "Lock"
+        case .blinds: return (device.position ?? 0) > 0 ? "Close" : "Open"
+        default: return nil
         }
     }
 
@@ -341,9 +359,9 @@ struct DeviceDetailView: View {
     /// Pull down on a device's page: it's asked again.
     private func reread(_ d: HomeDevice) async {
         #if os(iOS)
-        if d.source == "home" { HomeKitLights.shared.refresh() }
+        if d.source == "home" { HomeKitLights.shared.refresh(device: d.id) }
         #endif
-        if d.source == "smartthings" { await SmartThings.shared.refresh(full: false) }
+        if d.source == "smartthings" { await SmartThings.shared.refresh(device: d.id) }
         if d.source == "dreo" { await Dreo.shared.refresh(full: false) }
     }
 
@@ -439,7 +457,10 @@ struct DevicesListView: View {
             #if os(iOS)
             HomeKitLights.shared.reload()
             #endif
-            await SmartThings.shared.refresh(full: true)
+            // Everything listed here, the fans too.
+            async let samsung: Void = SmartThings.shared.refresh(full: true)
+            async let fans: Void = Dreo.shared.refresh(full: true)
+            _ = await (samsung, fans)
         }
     }
 }
@@ -539,13 +560,11 @@ struct ThermostatControls: View {
                 .frame(maxWidth: 360)
                 .disabled(!d.reachable)
             }
-            HStack(spacing: 28) {
-                if showsHeat(d), let h = heat ?? d.heatTo ?? d.target {
-                    setpoint("Heat To", h, tint: .orange) { v in change(heating: true, to: v) }
-                }
-                if showsCool(d), let c = cool ?? d.coolTo ?? d.target {
-                    setpoint("Cool To", c, tint: .cyan) { v in change(heating: false, to: v) }
-                }
+            // Side by side when there's room; one above the other in the iPhone's pop-over or page and the Mac's
+            // pop-over (Auto's two temperatures are wider than those).
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 28) { setpoints(d) }
+                VStack(spacing: 18) { setpoints(d) }
             }
             .disabled(!d.reachable)
             if d.thermostatMode == "off" { Text("Off").font(.headline).foregroundStyle(.secondary) }
@@ -559,6 +578,30 @@ struct ThermostatControls: View {
             }
         }
         .frame(maxWidth: .infinity)
+        // Fresh numbers while the controls are open: asked once now (Apple Home then sends its changes as they
+        // happen), and SmartThings, which can't send them, asked again every 10 seconds.
+        .task(id: device.id) {
+            let id = device.id
+            let source = device.source
+            #if os(iOS)
+            if source == "home" { HomeKitLights.shared.refresh(device: id) }
+            #endif
+            guard source == "smartthings" else { return }
+            while !Task.isCancelled {
+                await SmartThings.shared.refresh(device: id)
+                try? await Task.sleep(nanoseconds: 10_000_000_000)
+            }
+        }
+    }
+
+    /// The heat and cool temperatures this mode holds, each with − and +.
+    @ViewBuilder private func setpoints(_ d: HomeDevice) -> some View {
+        if showsHeat(d), let h = heat ?? d.heatTo ?? d.target {
+            setpoint("Heat To", h, tint: .orange) { v in change(heating: true, to: v) }
+        }
+        if showsCool(d), let c = cool ?? d.coolTo ?? d.target {
+            setpoint("Cool To", c, tint: .cyan) { v in change(heating: false, to: v) }
+        }
     }
 
     /// Heat To shows in Heat and Auto (and, with no mode reported, whenever it has a heat temperature).

@@ -10,8 +10,17 @@ struct WatchView: View {
     @State private var error: String?
     @State private var page = 0
     @State private var openTitle: String?
+    /// The hub whose library is shown (the remote's TV picks it).
+    @State private var loadedHub: String?
+    /// Taken off Continue Watching here, hidden until the TV's next answer (which no longer has them).
+    @State private var removed: Set<String> = []
 
     private var client: TVClient? { fleet.hubClient() }
+
+    /// What every TV is playing, and whether it plays: when it changes, Continue Watching has changed too.
+    private var playingKey: String {
+        fleet.tvs.map { "\($0.id)|\($0.playing?.key ?? $0.playing?.title ?? "")|\($0.playing?.isPlaying == true)" }.joined(separator: ";")
+    }
 
     var body: some View {
         ScrollView {
@@ -19,7 +28,13 @@ struct WatchView: View {
                 if let h = home {
                     content(h)
                 } else if let error {
-                    EmptyState(symbol: "wifi.exclamationmark", title: "Can’t Load the Library", message: error).padding(.top, 80)
+                    VStack(spacing: 14) {
+                        EmptyState(symbol: "wifi.exclamationmark", title: "Can’t Load the Library", message: error)
+                        ActionButton(action: { await load() }) { Text("Try Again") }
+                            .buttonStyle(.glass)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 80)
                 } else {
                     WatchPlaceholder()
                 }
@@ -47,8 +62,21 @@ struct WatchView: View {
         }
         .environment(\.openTitle, OpenTitleAction { openTitle = $0 })
         .environment(\.zoomNamespace, zoom)
+        // Marked watched or taken off Continue Watching anywhere in Watch: gone at once, then asked again.
+        .environment(\.watchChanged, WatchChanged { key in
+            if let key { withAnimation(.smooth) { _ = removed.insert(key) } }
+            Task { await load() }
+        })
         .refreshable { await load() }
-        .task { await loop() }
+        // Again from the start when the remote moves to a TV with another library.
+        .task(id: client?.hub.id) { await loop() }
+        // Something started, paused or stopped on a TV: Continue Watching follows (the TV saves where it got to).
+        .task(id: playingKey) {
+            guard home != nil else { return }
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            guard !Task.isCancelled else { return }
+            await load()
+        }
         .onAppear { if UserDefaults.standard.string(forKey: "route") == "title" { openTitle = "t_backyard_science" } }
     }
 
@@ -59,7 +87,7 @@ struct WatchView: View {
         if let featured = h.featured, !featured.isEmpty {
             Billboard(titles: featured, page: $page)
         }
-        if let c = h.continue, !c.isEmpty {
+        if let c = h.continue?.filter({ !removed.contains($0.key) }), !c.isEmpty {
             ShelfRow("Continue Watching") { ForEach(c) { ContinueTile(item: $0) } }
         }
         if let r = h.recent, !r.isEmpty {
@@ -74,12 +102,26 @@ struct WatchView: View {
     }
 
     private func load() async {
-        guard let c = client else { return }
+        guard let c = client else { error = TVError.notPaired.localizedDescription; return }
+        let hubID = c.hub.id
         do {
             let h = try await c.watchHome()
-            withAnimation(.smooth) { home = h }
+            // The remote moved to a TV with another library meanwhile: this answer is for the old one.
+            guard client?.hub.id == hubID else { return }
+            withAnimation(.smooth) {
+                home = h
+                removed = []
+            }
+            loadedHub = hubID
             error = nil
-        } catch { if home == nil { self.error = error.localizedDescription } }
+        } catch {
+            if Task.isCancelled { return }
+            // A library already shown stays (a blink in the Wi‑Fi isn't worth an empty page); another TV's doesn't.
+            if home == nil || loadedHub != hubID {
+                home = nil
+                self.error = error.localizedDescription
+            }
+        }
     }
 
     private func loop() async {
@@ -116,10 +158,20 @@ struct LibraryRef: Hashable { var place: String }
 /// Opens a title's sheet from anywhere in Watch.
 struct OpenTitleAction { var open: (String) -> Void; func callAsFunction(_ id: String) { open(id) } }
 private struct OpenTitleKey: EnvironmentKey { static let defaultValue = OpenTitleAction { _ in } }
+
+/// Tells Watch the library changed here (marked watched, taken off Continue Watching), so it shows at once
+/// instead of on its next round. [removed] is a Continue Watching key to hide straight away.
+struct WatchChanged { var changed: (String?) -> Void; func callAsFunction(removed: String? = nil) { changed(removed) } }
+private struct WatchChangedKey: EnvironmentKey { static let defaultValue = WatchChanged { _ in } }
+
 extension EnvironmentValues {
     var openTitle: OpenTitleAction {
         get { self[OpenTitleKey.self] }
         set { self[OpenTitleKey.self] = newValue }
+    }
+    var watchChanged: WatchChanged {
+        get { self[WatchChangedKey.self] }
+        set { self[WatchChangedKey.self] = newValue }
     }
 }
 
@@ -131,25 +183,57 @@ struct Billboard: View {
     @Binding var page: Int
 
     var body: some View {
+        pages
+            .frame(maxWidth: .infinity)
+            .overlay(alignment: .bottomTrailing) { dots }
+            // A shorter list after a refresh: never a page that isn't there.
+            .onChange(of: titles.count) { _, n in if page >= n { page = 0 } }
+    }
+
+    #if os(iOS)
+    private var pages: some View {
         TabView(selection: $page) {
             ForEach(Array(titles.enumerated()), id: \.offset) { i, t in card(t).tag(i) }
         }
-        #if os(iOS)
         .tabViewStyle(.page(indexDisplayMode: .never))
         .aspectRatio(0.82, contentMode: .fit)
-        #else
-        .aspectRatio(2.2, contentMode: .fit)
-        #endif
-        .frame(maxWidth: .infinity)
-        .overlay(alignment: .bottomTrailing) {
-            HStack(spacing: 5) {
-                ForEach(titles.indices, id: \.self) { i in
-                    Circle().fill(.white.opacity(i == page ? 0.95 : 0.4)).frame(width: 6, height: 6)
-                }
+    }
+    #else
+    /// The Mac has no swiping pages (a plain TabView there is a strip of blank tabs): one card at a time that moves
+    /// on by itself; the dots pick one.
+    private var pages: some View {
+        ZStack {
+            if let t = titles[safe: page] ?? titles.first {
+                card(t).id(t.id).transition(.opacity)
             }
-            .padding(.trailing, 24).padding(.bottom, 34)
-            .animation(.snappy, value: page)
         }
+        .aspectRatio(2.2, contentMode: .fit)
+        .clipped()
+        .task(id: page) {
+            try? await Task.sleep(nanoseconds: 9_000_000_000)
+            guard !Task.isCancelled, titles.count > 1 else { return }
+            withAnimation(.smooth(duration: 0.6)) { page = (page + 1) % titles.count }
+        }
+    }
+    #endif
+
+    private var dots: some View {
+        HStack(spacing: 5) {
+            ForEach(titles.indices, id: \.self) { i in
+                #if os(macOS)
+                Button { withAnimation(.smooth(duration: 0.4)) { page = i } } label: {
+                    Circle().fill(.white.opacity(i == page ? 0.95 : 0.4)).frame(width: 7, height: 7)
+                        .padding(3).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(titles[i].title)
+                #else
+                Circle().fill(.white.opacity(i == page ? 0.95 : 0.4)).frame(width: 6, height: 6)
+                #endif
+            }
+        }
+        .padding(.trailing, 24).padding(.bottom, 34)
+        .animation(.snappy, value: page)
     }
 
     private func card(_ t: Title) -> some View {
@@ -165,7 +249,7 @@ struct Billboard: View {
                 Text(meta(t)).font(.footnote.weight(.medium)).foregroundStyle(.white.opacity(0.75))
                 HStack(spacing: 10) {
                     if let p = t.play {
-                        CapsuleButton(title: t.isShow ? "Play" : "Play", symbol: "play.fill") { PlayRouter.start(p, fleet: fleet) }
+                        CapsuleButton(title: p.label ?? "Play", symbol: "play.fill") { PlayRouter.start(p, fleet: fleet) }
                     }
                     CapsuleButton(title: "Details", symbol: nil, prominent: false) { openTitle(t.id) }
                 }
@@ -262,6 +346,7 @@ struct PosterTile: View {
 struct ContinueTile: View {
     @Environment(Fleet.self) private var fleet
     @Environment(\.openTitle) private var openTitle
+    @Environment(\.watchChanged) private var watchChanged
     var item: ContinueItem
 
     var body: some View {
@@ -296,8 +381,20 @@ struct ContinueTile: View {
             if let r = item.restart { Button { PlayRouter.start(r, fleet: fleet, fromStart: true) } label: { Label(r.label ?? "Start Over", systemImage: "arrow.counterclockwise") } }
             PlayOnMenu(action: item.play)
             if let id = item.titleId { Button { openTitle(id) } label: { Label(item.kind == "show" ? "Episodes" : "Details", systemImage: "info.circle") } }
-            Button { act { try await fleet.hubClient()?.markWatched([item.key], true) } } label: { Label("Mark as Watched", systemImage: "checkmark.circle") }
-            Button(role: .destructive) { act { try await fleet.hubClient()?.removeContinue(key: item.key, title: item.playTitle) } } label: { Label("Remove from Continue Watching", systemImage: "xmark.circle") }
+            Button {
+                act {
+                    guard let c = fleet.hubClient() else { throw TVError.notPaired }
+                    try await c.markWatched([item.key], true)
+                    watchChanged(removed: item.key)
+                }
+            } label: { Label("Mark as Watched", systemImage: "checkmark.circle") }
+            Button(role: .destructive) {
+                act {
+                    guard let c = fleet.hubClient() else { throw TVError.notPaired }
+                    try await c.removeContinue(key: item.key, title: item.playTitle)
+                    watchChanged(removed: item.key)
+                }
+            } label: { Label("Remove from Continue Watching", systemImage: "xmark.circle") }
         }
     }
 
@@ -313,6 +410,7 @@ struct ContinueTile: View {
 /// The long-press menu on a poster.
 struct TitleMenu: View {
     @Environment(Fleet.self) private var fleet
+    @Environment(\.watchChanged) private var watchChanged
     var title: Title
     var body: some View {
         if let p = title.play {
@@ -324,30 +422,40 @@ struct TitleMenu: View {
             let on = !(title.watched ?? false)
             Button {
                 Task {
-                    do { if let k = try await fleet.hubClient()?.title(title.id).watchKey { try await fleet.hubClient()?.markWatched([k], on) } } catch { fleet.show(error) }
+                    do {
+                        guard let c = fleet.hubClient() else { throw TVError.notPaired }
+                        guard let k = try await c.title(title.id).watchKey else {
+                            throw TVError.badAnswer("\(title.title) can’t be marked as watched from here.")
+                        }
+                        try await c.markWatched([k], on)
+                        watchChanged()
+                    } catch { fleet.show(error) }
                 }
             } label: { Label(on ? "Mark as Watched" : "Mark as Unwatched", systemImage: on ? "checkmark.circle" : "circle") }
         }
     }
 }
 
-/// "Play On…" any TV, or every TV together (Drive videos).
+/// "Play On…" any TV, or every TV together (Drive videos). [then] runs once a play has gone out (a sheet closes).
 struct PlayOnMenu: View {
     @Environment(Fleet.self) private var fleet
     var action: PlayAction
     var fromStart = false
+    var then: () -> Void = {}
     var body: some View {
-        if fleet.tvs.count > 1 {
+        // Paired and linked TVs only (one heard on the Wi‑Fi but not paired can't be asked to play).
+        let tvs = fleet.tvs.filter { !$0.isUnpaired }
+        if tvs.count > 1 {
             Menu {
-                ForEach(fleet.tvs) { tv in
-                    Button { PlayRouter.start(action, fleet: fleet, on: tv, fromStart: fromStart) } label: {
+                ForEach(tvs) { tv in
+                    Button { if PlayRouter.start(action, fleet: fleet, on: tv, fromStart: fromStart) { then() } } label: {
                         Text(tv.name); Text(statusWord(tv))
                     }
                     .disabled(!tv.online || tv.link == "refused" || (!action.isDrive && fleet.hubClient()?.hub.id != tv.id))
                 }
                 if action.isDrive {
                     Divider()
-                    Button { PlayRouter.together(action, fleet: fleet) } label: { Label("Watch Together on All TVs", systemImage: "tv.and.mediabox") }
+                    Button { if PlayRouter.together(action, fleet: fleet) { then() } } label: { Label("Watch Together on All TVs", systemImage: "tv.and.mediabox") }
                 }
             } label: { Label("Play On…", systemImage: "tv") }
         }
@@ -357,28 +465,45 @@ struct PlayOnMenu: View {
 /// Where a Play goes: the remote's TV (through the hub that holds the library), as the phone page routes it.
 @MainActor
 enum PlayRouter {
-    static func start(_ a: PlayAction, fleet: Fleet, on tv: FleetTV? = nil, fromStart: Bool = false) {
-        guard let c = fleet.hubClient(), let target = tv ?? fleet.selected else { return }
+    /// Starts [a] on [tv] (the remote's TV when nil). False when there's nowhere to play it (and says so).
+    @discardableResult
+    static func start(_ a: PlayAction, fleet: Fleet, on tv: FleetTV? = nil, fromStart: Bool = false) -> Bool {
+        guard let c = fleet.hubClient(), let target = tv ?? fleet.selected, !target.isUnpaired else {
+            fleet.show(TVError.notPaired)
+            return false
+        }
         let id = target.id == c.hub.id ? "this" : target.id
+        let name = target.name
         Task {
             do {
+                // The client tells the fleet, which asks the TV again at once and a moment later.
                 let r = try await c.start(a, on: id, fromStart: fromStart)
-                if r.started?.bool == false { fleet.say("Ready on \(target.name)", r.message ?? "Open Woodruff on \(target.name) to start it.") }
+                if r.started?.bool == false { fleet.say("Ready on \(name)", r.message ?? "Open Woodruff on \(name) to start it.") }
                 try? await Task.sleep(nanoseconds: 1_500_000_000)
                 await fleet.refresh()
             } catch { fleet.show(error) }
         }
+        return true
     }
 
-    static func together(_ a: PlayAction, fleet: Fleet) {
-        guard let c = fleet.hubClient() else { return }
+    @discardableResult
+    static func together(_ a: PlayAction, fleet: Fleet) -> Bool {
+        guard let c = fleet.hubClient() else {
+            fleet.show(TVError.notPaired)
+            return false
+        }
         Task {
             do {
                 let r = try await c.start(a, on: "all")
-                let n = r.started?.int ?? 0, of = r.of ?? n
-                fleet.say("Watching Together", n == of ? "Playing on \(n) TVs." : "Playing on \(n) of \(of) TVs." + ((r.failed ?? []).isEmpty ? "" : " Not on " + r.failed!.joined(separator: ", ") + "."))
+                let n = r.started?.int ?? 0
+                let of = r.of ?? n
+                let missed = r.failed ?? []
+                var words = n == of ? "Playing on \(n) TVs." : "Playing on \(n) of \(of) TVs."
+                if !missed.isEmpty { words += " Not on " + missed.joined(separator: ", ") + "." }
+                fleet.say("Watching Together", words)
             } catch { fleet.show(error) }
         }
+        return true
     }
 }
 
@@ -386,11 +511,18 @@ enum PlayRouter {
 struct TitleSheet: View {
     @Environment(Fleet.self) private var fleet
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.watchChanged) private var watchChanged
     var id: String
     @State private var d: TitleDetails?
     @State private var season = 0
     @State private var episodes: [Episode] = []
     @State private var loadingEpisodes = false
+    /// The season the episodes shown belong to.
+    @State private var episodesSeason: String?
+    @State private var episodesNote: String?
+    /// Why the title couldn't be read (with Try Again, instead of a spinner that never ends).
+    @State private var failed: String?
+    @State private var marking = false
 
     private var client: TVClient? { fleet.hubClient() }
 
@@ -404,10 +536,14 @@ struct TitleSheet: View {
                             if let o = d.overview { Text(o).font(.body).foregroundStyle(.primary.opacity(0.9)) }
                             if let cast = d.cast, !cast.isEmpty { Text("Starring " + cast.joined(separator: ", ")).font(.footnote).foregroundStyle(.secondary) }
                             if let key = d.watchKey, d.kind != "show" {
-                                Button {
-                                    Task { do { try await client?.markWatched([key], !(d.watched ?? false)); await load() } catch { fleet.show(error) } }
-                                } label: { Text(d.watched == true ? "Mark as Unwatched" : "Mark as Watched") }
+                                Button { mark(key, watched: !(d.watched ?? false)) } label: {
+                                    HStack(spacing: 8) {
+                                        Text(d.watched == true ? "Mark as Unwatched" : "Mark as Watched")
+                                        if marking { ProgressView().controlSize(.small) }
+                                    }
+                                }
                                 .buttonStyle(.glass)
+                                .disabled(marking)
                             }
                             if let seasons = d.seasons, !seasons.isEmpty {
                                 Menu {
@@ -423,24 +559,44 @@ struct TitleSheet: View {
                                 }
                                 .padding(.top, 8)
                                 if loadingEpisodes && episodes.isEmpty { ProgressView().frame(maxWidth: .infinity) }
-                                ForEach(episodes) { e in EpisodeRow(episode: e) { Task { await loadEpisodes() } } }
+                                if let episodesNote, episodes.isEmpty && !loadingEpisodes {
+                                    Text(episodesNote).font(.subheadline).foregroundStyle(.secondary)
+                                    ActionButton(action: { await loadEpisodes() }) { Text("Try Again") }
+                                        .buttonStyle(.glass)
+                                }
+                                ForEach(episodes) { e in
+                                    EpisodeRow(episode: e, changed: { watchChanged(); Task { await loadEpisodes() } }, played: { dismiss() })
+                                }
                             }
                             if let films = d.films, !films.isEmpty {
                                 Text("In This Collection").font(.title3.bold()).padding(.top, 8)
-                                ForEach(films) { e in EpisodeRow(episode: e) { Task { await load() } } }
+                                ForEach(films) { e in
+                                    EpisodeRow(episode: e, changed: { watchChanged(); Task { await load() } }, played: { dismiss() })
+                                }
                             }
                         }
                         .padding(20)
                     }
+                } else if let failed {
+                    VStack(spacing: 14) {
+                        EmptyState(symbol: "wifi.exclamationmark", title: "Can’t Load This Title", message: failed)
+                        ActionButton(action: { await load() }) { Text("Try Again") }
+                            .buttonStyle(.glass)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 120)
                 } else {
-                    ProgressView().padding(.top, 160)
+                    ProgressView().frame(maxWidth: .infinity).padding(.top, 160)
                 }
             }
             .ignoresSafeArea(edges: .top)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button(role: .close) { dismiss() } } }
             .task { await load() }
-            .onChange(of: season) { _, _ in Task { await loadEpisodes() } }
+            // The episodes of the season picked (and of the first one shown, once the title arrives).
+            .task(id: "\(d?.id ?? "")|\(season)") { await loadEpisodes() }
         }
+        // Errors from here (a play that failed, Mark as Watched) show over the sheet, not hidden behind it.
+        .sheetBanner()
         #if os(macOS)
         .frame(minWidth: 620, idealWidth: 620, maxWidth: .infinity, minHeight: 700, idealHeight: 700, maxHeight: .infinity)
         #endif
@@ -456,20 +612,22 @@ struct TitleSheet: View {
                 Text(d.title).font(.largeTitle.bold()).foregroundStyle(.white)
                 Text(facts(d)).font(.footnote.weight(.medium)).foregroundStyle(.white.opacity(0.75))
                 HStack(spacing: 10) {
-                    if let p = d.play { CapsuleButton(title: p.label ?? "Play", symbol: "play.fill") { PlayRouter.start(p, fleet: fleet); dismiss() } }
+                    // Closes once the play has gone out; if there's nowhere to play it, stays open and says why.
+                    if let p = d.play { CapsuleButton(title: p.label ?? "Play", symbol: "play.fill") { if PlayRouter.start(p, fleet: fleet) { dismiss() } } }
                     if let r = d.restart {
-                        Button { PlayRouter.start(r, fleet: fleet, fromStart: true); dismiss() } label: {
+                        Button { if PlayRouter.start(r, fleet: fleet, fromStart: true) { dismiss() } } label: {
                             Image(systemName: "arrow.counterclockwise").font(.headline).foregroundStyle(.white)
                                 .frame(width: 40, height: 40).glass(Circle()).environment(\.colorScheme, .dark)
                         }
                         .buttonStyle(PressScale())
                         .accessibilityLabel(r.label ?? "Start Over")
                     }
-                    if let p = d.play, fleet.tvs.count > 1 {
-                        Menu { PlayOnMenu(action: p) } label: {
+                    if let p = d.play, fleet.tvs.filter({ !$0.isUnpaired }).count > 1 {
+                        Menu { PlayOnMenu(action: p, then: { dismiss() }) } label: {
                             Image(systemName: "ellipsis").font(.headline).foregroundStyle(.white).frame(width: 40, height: 40).glass(Circle()).environment(\.colorScheme, .dark)
                         }
                         .menuStyle(.button).buttonStyle(.plain)
+                        .accessibilityLabel("Play On…")
                     }
                 }
                 .padding(.top, 4)
@@ -491,22 +649,52 @@ struct TitleSheet: View {
     }
 
     private func load() async {
+        guard let c = client else { failed = TVError.notPaired.localizedDescription; return }
         do {
-            let t = try await client?.title(id)
+            let t = try await c.title(id)
+            let first = d == nil
             withAnimation(.smooth) { d = t }
-            season = t?.season ?? 0
-            await loadEpisodes()
-        } catch { fleet.show(error) }
+            failed = nil
+            // The season the TV suggests (the one in progress), the first time only: a reload keeps the one picked.
+            if first { season = t.season ?? 0 }
+        } catch {
+            if Task.isCancelled { return }
+            if d == nil { failed = error.localizedDescription } else { fleet.show(error) }
+        }
+    }
+
+    private func mark(_ key: String, watched: Bool) {
+        marking = true
+        Task {
+            do {
+                guard let c = client else { throw TVError.notPaired }
+                try await c.markWatched([key], watched)
+                await load()
+                watchChanged()
+            } catch { fleet.show(error) }
+            marking = false
+        }
     }
 
     private func loadEpisodes() async {
-        guard let d, let s = d.seasons?[safe: season] else { return }
+        guard let d, let s = d.seasons?[safe: season], let c = client else { return }
+        // Another season: not the last one's episodes while this one's arrive.
+        if episodesSeason != s.id { episodes = [] }
+        episodesNote = nil
         loadingEpisodes = true
         defer { loadingEpisodes = false }
         do {
-            let e = try await client?.episodes(show: d.id, season: s.id).episodes ?? []
-            withAnimation(.smooth) { episodes = e }
-        } catch { fleet.show(error) }
+            let list = try await c.episodes(show: d.id, season: s.id)
+            guard !Task.isCancelled else { return }
+            withAnimation(.smooth) { episodes = list.episodes }
+            episodesSeason = s.id
+            if list.episodes.isEmpty {
+                episodesNote = list.state == "loading" ? "\(c.hub.name) is still getting these episodes ready." : "No episodes in \(s.name)."
+            }
+        } catch {
+            if Task.isCancelled { return }
+            episodesNote = error.localizedDescription
+        }
     }
 }
 
@@ -514,13 +702,15 @@ struct EpisodeRow: View {
     @Environment(Fleet.self) private var fleet
     var episode: Episode
     var changed: () -> Void
+    /// A play went out (the title's sheet closes, so what's playing shows).
+    var played: () -> Void = {}
 
     private var action: PlayAction {
         PlayAction(key: episode.key, title: episode.playTitle, position: episode.position, label: nil, duration: episode.duration, resume: true, latest: nil)
     }
 
     var body: some View {
-        Button { PlayRouter.start(action, fleet: fleet) } label: {
+        Button { if PlayRouter.start(action, fleet: fleet) { played() } } label: {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(alignment: .center, spacing: 14) {
                     Color.clear.frame(width: 132, height: 74)
@@ -555,10 +745,16 @@ struct EpisodeRow: View {
         }
         .buttonStyle(.plain)
         .contextMenu {
-            Button { PlayRouter.start(action, fleet: fleet, fromStart: true) } label: { Label("Play from the Start", systemImage: "arrow.counterclockwise") }
-            PlayOnMenu(action: action)
+            Button { if PlayRouter.start(action, fleet: fleet, fromStart: true) { played() } } label: { Label("Play from the Start", systemImage: "arrow.counterclockwise") }
+            PlayOnMenu(action: action, then: played)
             Button {
-                Task { do { try await fleet.hubClient()?.markWatched([episode.key], !(episode.watched ?? false)); changed() } catch { fleet.show(error) } }
+                Task {
+                    do {
+                        guard let c = fleet.hubClient() else { throw TVError.notPaired }
+                        try await c.markWatched([episode.key], !(episode.watched ?? false))
+                        changed()
+                    } catch { fleet.show(error) }
+                }
             } label: { Label(episode.watched == true ? "Mark as Unwatched" : "Mark as Watched", systemImage: "checkmark.circle") }
         }
     }
@@ -575,6 +771,7 @@ struct EpisodeRow: View {
 /// All Movies or TV Shows, sorted and filtered, loading more as you scroll.
 struct LibraryGrid: View {
     @Environment(Fleet.self) private var fleet
+    @Environment(\.watchChanged) private var watchChanged
     @State private var openTitle: String?
     var place: String
     @State private var items: [Title] = []
@@ -586,9 +783,28 @@ struct LibraryGrid: View {
     @State private var genre: String?
     @State private var query = ""
     @State private var loading = false
+    /// Each new sort, filter or search gets a number: an answer for an older one is dropped, never shown.
+    @State private var generation = 0
+    @State private var loaded = false
+    @State private var failed: String?
+
+    private var heading: String { place == "shows" ? "TV Shows" : "Movies" }
+    private var filtered: Bool { unwatched || genre != nil || !query.isEmpty }
 
     var body: some View {
         ScrollView {
+            if items.isEmpty, let failed {
+                VStack(spacing: 14) {
+                    EmptyState(symbol: "wifi.exclamationmark", title: "Can’t Load \(heading)", message: failed)
+                    ActionButton(action: { await load(more: false) }) { Text("Try Again") }
+                        .buttonStyle(.glass)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.top, 80)
+            } else if items.isEmpty && loaded && !loading {
+                EmptyState(symbol: "film.stack", title: "Nothing Here", message: filtered ? "Nothing in \(heading) matches these choices." : "Nothing in \(heading) yet.")
+                    .padding(.top, 80)
+            }
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 104, maximum: 150), spacing: 12, alignment: .top)], spacing: 18) {
                 ForEach(items) { t in
                     PosterTile(title: t, width: 104)
@@ -598,9 +814,14 @@ struct LibraryGrid: View {
             .padding(16)
             if loading { ProgressView().padding() }
         }
-        .navigationTitle(place == "shows" ? "TV Shows" : "Movies")
-        .pageSearch(text: $query, prompt: place == "shows" ? "TV Shows" : "Movies")
+        .navigationTitle(heading)
+        .pageSearch(text: $query, prompt: heading)
         .environment(\.openTitle, OpenTitleAction { openTitle = $0 })
+        // Marked watched here: the checkmarks (and an Unwatched list) follow at once, and so does Watch.
+        .environment(\.watchChanged, WatchChanged { key in
+            watchChanged(removed: key)
+            Task { await reloadShown() }
+        })
         .sheet(item: Binding(get: { openTitle.map { TitleRef(id: $0) } }, set: { openTitle = $0?.id })) { TitleSheet(id: $0.id).macResizable(width: 760, height: 820, minWidth: 520, minHeight: 500) }
         .toolbar {
             Menu {
@@ -617,35 +838,71 @@ struct LibraryGrid: View {
         }
         .task(id: "\(sort)|\(unwatched)|\(genre ?? "")|\(query)") {
             try? await Task.sleep(nanoseconds: 200_000_000)
+            // Changed again while waiting (typing): only the newest choice is asked for.
+            guard !Task.isCancelled else { return }
             await load(more: false)
         }
     }
 
     private func load(more: Bool) async {
-        guard let c = fleet.hubClient(), !loading else { return }
+        guard let c = fleet.hubClient() else { failed = TVError.notPaired.localizedDescription; return }
+        if more {
+            guard !loading, items.count < count else { return }
+        } else {
+            generation += 1
+        }
+        let gen = generation
         loading = true
-        defer { loading = false }
+        defer { if gen == generation { loading = false } }
         do {
             let p = try await c.library(place: place, sort: sort, unwatched: unwatched, genre: genre, q: query, offset: more ? items.count : 0)
+            guard gen == generation, !Task.isCancelled else { return }
             items = more ? items + p.items : p.items
             count = p.count
             genres = p.genres ?? genres
             rated = p.rated ?? rated
-        } catch { fleet.show(error) }
+            failed = nil
+            loaded = true
+        } catch {
+            guard gen == generation, !Task.isCancelled else { return }
+            if items.isEmpty { failed = error.localizedDescription } else { fleet.show(error) }
+        }
+    }
+
+    /// Asks again for everything shown (a title was just marked watched), keeping the place in the list.
+    private func reloadShown() async {
+        guard let c = fleet.hubClient(), !items.isEmpty else { return }
+        generation += 1
+        let gen = generation
+        defer { if gen == generation { loading = false } }
+        do {
+            let p = try await c.library(place: place, sort: sort, unwatched: unwatched, genre: genre, q: query, offset: 0, limit: max(60, items.count))
+            guard gen == generation else { return }
+            items = p.items
+            count = p.count
+        } catch {
+            // The list stays as it was; the next scroll or filter asks again.
+        }
     }
 }
 
 /// Search Movies and TV Shows.
 struct SearchPage: View {
     @Environment(Fleet.self) private var fleet
+    @Environment(\.watchChanged) private var watchChanged
     @State private var query = ""
     @State private var r: SearchResults?
     @State private var openTitle: String?
+    @State private var failed: String?
+    /// Asked again (a result was marked watched).
+    @State private var again = 0
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 26) {
-                if let r, !query.isEmpty {
+                if !query.isEmpty, let failed {
+                    EmptyState(symbol: "wifi.exclamationmark", title: "Can’t Search", message: failed).padding(.top, 60)
+                } else if let r, !query.isEmpty {
                     let sections = r.first == "shows" ? [("TV Shows", r.shows), ("Movies", r.movies)] : [("Movies", r.movies), ("TV Shows", r.shows)]
                     ForEach(sections, id: \.0) { name, list in
                         if !list.isEmpty { ShelfRow(name) { ForEach(list) { PosterTile(title: $0) } } }
@@ -662,12 +919,25 @@ struct SearchPage: View {
         .navigationTitle("Search")
         .pageSearch(text: $query, prompt: "Movies and TV Shows")
         .environment(\.openTitle, OpenTitleAction { openTitle = $0 })
+        .environment(\.watchChanged, WatchChanged { key in
+            watchChanged(removed: key)
+            again += 1
+        })
         .sheet(item: Binding(get: { openTitle.map { TitleRef(id: $0) } }, set: { openTitle = $0?.id })) { TitleSheet(id: $0.id).macResizable(width: 760, height: 820, minWidth: 520, minHeight: 500) }
-        .task(id: query) {
-            guard !query.isEmpty else { return }
+        .task(id: "\(query)|\(again)") {
+            guard !query.isEmpty else { r = nil; failed = nil; return }
             try? await Task.sleep(nanoseconds: 200_000_000)
             guard !Task.isCancelled else { return }
-            r = try? await fleet.hubClient()?.search(query)
+            guard let c = fleet.hubClient() else { failed = TVError.notPaired.localizedDescription; return }
+            do {
+                let found = try await c.search(query)
+                guard !Task.isCancelled else { return }
+                r = found
+                failed = nil
+            } catch {
+                // Never an empty page that looks like "no results" when the TV didn't answer.
+                if !Task.isCancelled { failed = error.localizedDescription }
+            }
         }
     }
 }

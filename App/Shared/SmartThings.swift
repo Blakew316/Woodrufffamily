@@ -311,6 +311,11 @@ final class SmartThings {
         case attribute(cap: String, attr: String, component: String, value: String)
     }
 
+    /// Reads one device again (its page or the thermostat controls are open). Takes the app's id ("st:…").
+    func refresh(device key: String) async {
+        await reread(key.hasPrefix("st:") ? String(key.dropFirst(3)) : key)
+    }
+
     /// Reads one appliance again (after a command), so its tile updates in a second. With an expectation it
     /// only takes the answer once the appliance agrees (or on the last try); says whether it agreed.
     @discardableResult

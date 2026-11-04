@@ -63,7 +63,7 @@ targets:
         NSPhotoLibraryAddUsageDescription: Save photos from the TV to your library.
         NSUserNotificationsUsageDescription: Alerts when a TV needs attention or a family announcement arrives.
         NSLocationWhenInUseUsageDescription: Your city sets the weather shown on your TVs' Home screens.
-        NSHomeKitUsageDescription: Show and control your Apple Home lights, like Cync, next to your TVs.
+        NSHomeKitUsageDescription: Show and control your Apple Home lights, thermostat, locks, plugs and sensors next to your TVs.
         WoodruffHomeKit: $(WOODRUFF_HOMEKIT)
         UIBackgroundModes: [fetch]
         BGTaskSchedulerPermittedIdentifiers: [com.woodruff.family.alerts]

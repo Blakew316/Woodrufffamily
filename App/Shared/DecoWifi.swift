@@ -117,7 +117,12 @@ final class DecoWifi {
     /// One at a time (a second sign-in mid-request would swap the keys under it); callers share the one running.
     /// Only at home: away, whatever router has the Deco's address is someone else's, and gets no password.
     func refresh(evenAway: Bool = false) async {
-        guard connected, evenAway || Fleet.shared.atHome else { return }
+        guard connected else { return }
+        guard evenAway || Fleet.shared.atHome else {
+            // Refresh used to do nothing here without a word, the page showing the last look as if it were now.
+            if !nodes.isEmpty { error = "Away from the home Wi‑Fi: this is how the Deco was when last seen." }
+            return
+        }
         if let running = refreshing { await running.value; return }
         let t = Task { await self.refreshNow() }
         refreshing = t

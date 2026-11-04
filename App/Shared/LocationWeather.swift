@@ -42,12 +42,18 @@ final class LocationWeather: NSObject, CLLocationManagerDelegate {
         guard let mark = try? await CLGeocoder().reverseGeocodeLocation(loc).first,
               let city = mark.locality else { return }
         let place = [city, mark.administrativeArea].compactMap { $0 }.joined(separator: ", ")
-        UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "weatherCheckedAt")
-        guard let fleet, place != UserDefaults.standard.string(forKey: "weatherPlace") else { return }
-        var ok = false
-        for hub in fleet.hubs {
-            if (try? await TVClient(hub: hub, routeID: "this").saveWeather(place)) != nil { ok = true }
+        guard let fleet else { return }
+        // The place each TV was given (by hub id). Only a change of town used to be sent, so a TV that was off at
+        // the time (or paired since) never got it; now each one that hasn't is sent it.
+        var given = UserDefaults.standard.dictionary(forKey: "weatherPlaces") as? [String: String] ?? [:]
+        var missed = false
+        for hub in fleet.hubs where given[hub.id] != place {
+            if (try? await TVClient(hub: hub, routeID: "this").saveWeather(place)) != nil { given[hub.id] = place } else { missed = true }
         }
-        if ok { UserDefaults.standard.set(place, forKey: "weatherPlace") }
+        UserDefaults.standard.set(given, forKey: "weatherPlaces")
+        UserDefaults.standard.set(place, forKey: "weatherPlace")
+        // Every TV has it: look again in twelve hours. One didn't answer: try again in about an hour.
+        let now = Date().timeIntervalSince1970
+        UserDefaults.standard.set(missed ? now - 11 * 3600 : now, forKey: "weatherCheckedAt")
     }
 }

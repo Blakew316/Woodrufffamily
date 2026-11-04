@@ -11,9 +11,14 @@ struct TVDetailView: View {
     @State private var askRelink = false
     @State private var relinkCode = ""
     @State private var signIn: String?
-    @State private var fetchedAt = Date()
     @State private var renaming = false
     @State private var newName = ""
+    /// Play/pause as just pressed, shown until the TV's own answer arrives (or for 4 seconds, if it never changes).
+    @State private var flipped: Bool?
+    @State private var taps = 0
+    /// Wake-on-LAN was just sent: "Turning On…" until the TV answers (or a minute passes).
+    @State private var waking = false
+    @State private var forgetting = false
 
     private var tv: FleetTV? { fleet.tv(tvID) }
     private var report: HealthReport? { fleet.healthReports[tvID] }
@@ -52,22 +57,27 @@ struct TVDetailView: View {
             .inlineTitle()
             .task(id: tvID) { await healthLoop() }
             .task(id: "screen-\(tvID)") { await screenLoop() }
-            .onChange(of: tv.playing) { _, _ in fetchedAt = Date() }
+            .task(id: waking) { await watchWake() }
+            // The TV's own answer replaces a play/pause guess the moment it arrives.
+            .onChange(of: tv.playing?.isPlaying) { _, _ in flipped = nil }
             .sheet(isPresented: $showScreen) {
-                Group { if tv.playing != nil { NowPlayingSheet(tvID: tvID) } else { TVScreenSheet(tvID: tvID) } }.macResizable(width: 640, height: 780)
+                Group { if tv.playing != nil { NowPlayingSheet(tvID: tvID) } else { TVScreenSheet(tvID: tvID) } }
+                    .sheetBanner()
+                    .macResizable(width: 640, height: 780)
             }
-            .sheet(item: Binding(get: { signIn.map { SignInGrant(grant: $0) } }, set: { signIn = $0?.grant })) { SignInSheet(grant: $0.grant, tv: tv).macResizable() }
+            .sheet(item: Binding(get: { signIn.map { SignInGrant(grant: $0) } }, set: { signIn = $0?.grant }),
+                   onDismiss: { Task { await fleet.loadHealth(tv) } }) { SignInSheet(grant: $0.grant, tv: tv).macResizable() }
             .alert("Rename TV", isPresented: $renaming) {
                 TextField("Name", text: $newName)
                 Button("Save") { fleet.rename(tv, to: newName) }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("This is the name you’ll see in this app.")
+                Text("This is the name you’ll see on every iPhone and Mac in the family. Leave it empty for the TV’s own name.")
             }
             .alert("Link \(tv.name) Again", isPresented: $askRelink) {
                 TextField("6-digit code", text: $relinkCode)
-                Button("Link") { relink(tv) }
-                Button("Cancel", role: .cancel) {}
+                Button("Link") { relink(tv) }.disabled(relinkCode.filter(\.isNumber).isEmpty)
+                Button("Cancel", role: .cancel) { relinkCode = "" }
             } message: {
                 Text("On \(tv.name): Settings → TVs & phones → Other TVs → Link this TV to another. Type the code it shows.")
             }
@@ -108,10 +118,11 @@ struct TVDetailView: View {
     }
 
     private func transport(_ tv: FleetTV, _ p: NowPlaying) -> some View {
-        HStack(spacing: 24) {
+        let playing = flipped ?? p.isPlaying
+        return HStack(spacing: 24) {
             Spacer()
             if p.can("back10") { GlassCircle(symbol: "gobackward.10", size: 52) { media(tv, "back10") } }
-            GlassCircle(symbol: p.isPlaying ? "pause.fill" : "play.fill", size: 64) { media(tv, "playpause") }
+            GlassCircle(symbol: playing ? "pause.fill" : "play.fill", size: 64) { media(tv, "playpause") }
             if p.can("fwd30") { GlassCircle(symbol: "goforward.30", size: 52) { media(tv, "fwd30") } }
             Spacer()
         }
@@ -158,7 +169,21 @@ struct TVDetailView: View {
             if fleet.hub(tv.id) != nil, let g = a.grant { Button("Sign In from Here") { signIn = g } }
             else { Text("Sign in on \(tv.name): its screen shows a code to scan.") }
         case "update": Button("Check for Updates") { run { try await fleet.pushUpdate(tv); fleet.say("Checking for Updates", "\(tv.name) checks now.") } }
-        case "install": Button("Open Woodruff on \(tv.name)") { run { try await fleet.client(for: tv)?.key("home"); fleet.say("Opening Woodruff", "Press Install on \(tv.name).") } }
+        case "install":
+            Button("Open Woodruff on \(tv.name)") {
+                run {
+                    // LG direct control reaches the TV whatever is on screen; otherwise Woodruff on the TV.
+                    if let lg = fleet.lg(for: tv), let launchWoodruff = LGKeyMap.action(for: "home") {
+                        try await launchWoodruff(lg)
+                        fleet.poke(tv.id)
+                    } else if let c = fleet.client(for: tv) {
+                        try await c.key("home")
+                    } else {
+                        throw TVError.offline("\(tv.name) can’t be reached from here.")
+                    }
+                    fleet.say("Opening Woodruff", "Press Install on \(tv.name).")
+                }
+            }
         case "crash": if let rep = report?.lastCrash?.report { Button("Copy Crash Report") { copyToClipboard(rep) } }
         default: EmptyView()
         }
@@ -198,41 +223,90 @@ struct TVDetailView: View {
     }
 
     @ViewBuilder private func actions(_ tv: FleetTV) -> some View {
+        let onRemote = fleet.selectedID == tv.id && !fleet.remoteAll
         Section {
             Button("Rename…") { newName = tv.name; renaming = true }
-            Button("Use This TV for the Remote") { fleet.remoteAll = false; fleet.selectedID = tv.id }
+            Button(onRemote ? "Open the Remote" : "Use This TV for the Remote") { openRemote(tv) }
             if tv.isHub || fleet.hub(tv.id) != nil {
                 NavigationLink("Smoothness Report") { DiagnosticsView(tv: tv) }
             }
-            if let mac = fleet.extras[tv.id]?.mac {
-                Button("Turn On (Wake-on-LAN)") { WakeOnLAN.wake(mac: mac, lastHost: fleet.extras[tv.id]?.lastHost) }
+            if fleet.extras[tv.id]?.mac != nil {
+                Button(waking ? "Turning On…" : "Turn On (Wake-on-LAN)") { waking = true; fleet.wake(tv) }
+                    .disabled(waking)
             }
-            if !tv.isHub { Button("Link Again…") { askRelink = true } }
+            // A link that stopped working already offers this at the top.
+            if !tv.isHub && tv.link != "refused" { Button("Link Again…") { askRelink = true } }
             if let hub = fleet.hub(tv.id) {
-                Button("Forget This TV", role: .destructive) { fleet.unpair(hub.id) }
+                Button("Forget This TV", role: .destructive) { forgetting = true }
+                    .confirmationDialog("Forget \(tv.name)?", isPresented: $forgetting, titleVisibility: .visible) {
+                        Button("Forget \(tv.name)", role: .destructive) { fleet.unpair(hub.id) }
+                        Button("Cancel", role: .cancel) {}
+                    } message: {
+                        Text("It’s forgotten on every iPhone and Mac in the family. To pair it again, scan the QR code on its Phone screen.")
+                    }
             }
         }
     }
 
     // MARK: Work
 
+    /// Puts the remote on [tv] and opens it (the remote's sidebar on the Mac, the Remote tab on iPhone).
+    private func openRemote(_ tv: FleetTV) {
+        fleet.remoteAll = false
+        fleet.selectedID = tv.id
+        #if os(macOS)
+        withAnimation(.smooth) { fleet.remotePanel = true }
+        #else
+        UserDefaults.standard.set(AppSection.remote.rawValue, forKey: "section")
+        #endif
+    }
+
     private func media(_ tv: FleetTV, _ action: String) {
-        run {
-            guard let c = fleet.client(for: tv) else { return }
-            if action == "playpause" { try await c.key("playpause") } else { try await c.media(action) }
-            try? await Task.sleep(nanoseconds: 700_000_000)
-            await fleet.refresh()
+        // Play/pause answers at once; the TV's own answer replaces the guess as soon as it changes.
+        if action == "playpause" {
+            let next = !(flipped ?? tv.playing?.isPlaying ?? false)
+            withAnimation(.snappy) { flipped = next }
+        }
+        taps += 1
+        let tap = taps
+        Task {
+            do {
+                guard let c = fleet.client(for: tv) else { throw TVError.offline("\(tv.name) can’t be reached from here.") }
+                // The client tells the fleet, which asks the TV again at once and a moment later.
+                if action == "playpause" { try await c.key("playpause") } else { try await c.media(action) }
+                // The TV never changed (it ignored the key): show what it really says, not a button that lies.
+                try? await Task.sleep(nanoseconds: 4_000_000_000)
+                if taps == tap && flipped != nil { withAnimation(.snappy) { flipped = nil } }
+            } catch {
+                flipped = nil
+                fleet.show(error)
+            }
         }
     }
 
     private func relink(_ tv: FleetTV) {
-        let code = relinkCode
+        let code = relinkCode.filter(\.isNumber)
         relinkCode = ""
+        guard !code.isEmpty else { return }
         run {
-            let r = try await fleet.client(for: tv)?.relink(code: code)
-            fleet.say("Linked Again", "\(r?.name ?? tv.name) is linked.")
+            guard let c = fleet.client(for: tv) else { throw TVError.offline("\(tv.name) can’t be reached from here.") }
+            let r = try await c.relink(code: code)
+            fleet.say("Linked Again", "\(r.name) is linked.")
             await fleet.refresh()
         }
+    }
+
+    /// After Wake-on-LAN: waits for the TV to answer, and says so if it never does.
+    private func watchWake() async {
+        guard waking else { return }
+        for _ in 0..<60 {
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            if Task.isCancelled { return }
+            if fleet.tv(tvID)?.online == true { waking = false; return }
+        }
+        waking = false
+        let name = fleet.tv(tvID)?.name ?? "The TV"
+        fleet.say("Still Off", "\(name) didn’t answer after the wake-up. On an LG, turn on Quick Start+ and “Turn on via Wi‑Fi” in its settings, then try again.")
     }
 
     private func run(_ op: @escaping () async throws -> Void) { Task { do { try await op() } catch { fleet.show(error) } } }
@@ -340,25 +414,48 @@ struct DiagnosticsView: View {
     var tv: FleetTV
     @State private var text = ""
     @State private var left = 0
+    @State private var problem: String?
+
+    /// The report is the TV's own (`/api/diagnostics` has no relay): always asked of the TV itself.
+    private var client: TVClient? { fleet.hub(tv.id).map { TVClient(hub: $0, routeID: "this") } }
 
     var body: some View {
         ScrollView {
-            Text(text.isEmpty ? "Loading…" : text).font(.caption.monospaced()).textSelection(.enabled)
+            Text(text.isEmpty ? (problem ?? "Loading…") : text).font(.caption.monospaced()).textSelection(.enabled)
+                .foregroundStyle(text.isEmpty && problem != nil ? Palette.attention : .primary)
                 .frame(maxWidth: .infinity, alignment: .leading).padding()
         }
         .navigationTitle("Smoothness Report").inlineTitle()
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
                 Button(left > 0 ? "Recording · \(left)s" : "Record 3 Min") {
-                    Task { do { left = try await fleet.client(for: tv)?.recordDiagnostics() ?? 0 } catch { fleet.show(error) } }
+                    Task {
+                        do {
+                            guard let c = client else { throw TVError.notPaired }
+                            left = try await c.recordDiagnostics()
+                        } catch { fleet.show(error) }
+                    }
                 }
                 .disabled(left > 0)
                 Button { copyToClipboard(text) } label: { Image(systemName: "doc.on.doc") }
+                    .disabled(text.isEmpty)
+                    .accessibilityLabel("Copy Report")
             }
         }
         .task {
             while !Task.isCancelled {
-                if let c = fleet.client(for: tv), let r = try? await c.diagnostics() { text = r.0; left = r.1 }
+                if let c = client {
+                    do {
+                        let r = try await c.diagnostics()
+                        text = r.0; left = r.1; problem = nil
+                    } catch {
+                        if Task.isCancelled { return }
+                        problem = error.localizedDescription
+                    }
+                } else {
+                    problem = "Pair with \(tv.name) directly to see its report."
+                }
+                // While recording, every few seconds (the countdown and the report move); otherwise every 30.
                 try? await Task.sleep(nanoseconds: left > 0 ? 5_000_000_000 : 30_000_000_000)
             }
         }
@@ -374,44 +471,72 @@ struct SignInSheet: View {
     var tv: FleetTV
     @State private var status = "Starting…"
     @State private var done = false
+    /// The sign-in has ended, one way or the other (no more spinner; Try Again when it didn't work).
+    @State private var finished = false
+    @State private var attempt = 0
 
     var body: some View {
         NavigationStack {
             VStack(spacing: 18) {
-                Text(done ? "Signed In" : "Signing In").font(.title2.bold())
+                Text(done ? "Signed In" : finished ? "Not Signed In" : "Signing In").font(.title2.bold())
                 Text(status).multilineTextAlignment(.center).foregroundStyle(.secondary)
-                if !done { ProgressView() }
+                if !finished {
+                    ProgressView()
+                } else if !done {
+                    Button("Try Again") { attempt += 1 }.buttonStyle(.glassProminent)
+                }
             }
             .padding(30)
             .navigationTitle("Sign In on \(tv.name)").inlineTitle()
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button(done ? "Done" : "Cancel") { dismiss() } } }
-            .task { await run() }
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button(done ? "Done" : finished ? "Close" : "Cancel") { dismiss() } } }
+            .task(id: attempt) { await run() }
         }
         .presentationDetents([.medium])
+        .sheetBanner()
     }
 
     private func run() async {
+        done = false
+        finished = false
+        status = "Starting…"
+        await follow()
+        if !Task.isCancelled { finished = true }
+    }
+
+    private func follow() async {
         guard let hub = fleet.hub(tv.id) else { status = "Pair with \(tv.name) directly to sign it in from here."; return }
         let c = TVClient(hub: hub, routeID: "this")
-        do {
-            let s = try await c.startSignIn(grant)
-            guard let url = URL(string: s.authUrl) else { return }
-            status = "Pick your Google account and allow access. This follows along."
-            openURL(url)
-            let until = Date().addingTimeInterval(600)
-            while Date() < until && !Task.isCancelled {
-                try await Task.sleep(nanoseconds: 2_000_000_000)
-                let st = try await c.signInStatus(state: s.state, grant: grant)
-                if st.status == "finishing" { status = "Finishing on \(tv.name)…" }
-                if st.isFinal {
-                    done = st.status == "signedIn"
-                    status = st.message ?? (done ? "\(tv.name) is signed in." : "Sign-in \(st.status).")
-                    if done && st.weekly == true { status += " Google ends test sign-ins after 7 days; publish the app in Google Cloud to stop that." }
-                    await fleet.loadHealth(tv)
-                    return
-                }
+        let s: SignInStart
+        do { s = try await c.startSignIn(grant) } catch { status = error.localizedDescription; return }
+        guard let url = URL(string: s.authUrl) else { status = "\(tv.name) didn’t give a sign-in link. Try again."; return }
+        status = "Pick your Google account and allow access. This follows along."
+        openURL(url)
+        let until = Date().addingTimeInterval(600)
+        var misses = 0
+        while Date() < until {
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            if Task.isCancelled { return }
+            let st: SignInStatus
+            do {
+                st = try await c.signInStatus(state: s.state, grant: grant)
+                misses = 0
+            } catch {
+                if Task.isCancelled { return }
+                // A moment without an answer (this device was asleep in the browser, the Wi‑Fi blinked): keep following.
+                misses += 1
+                if misses >= 6 { status = error.localizedDescription; return }
+                continue
             }
-        } catch { status = error.localizedDescription }
+            if st.status == "finishing" { status = "Finishing on \(tv.name)…" }
+            if st.isFinal {
+                done = st.status == "signedIn"
+                status = st.message ?? (done ? "\(tv.name) is signed in." : "Sign-in \(st.status).")
+                if done && st.weekly == true { status += " Google ends test sign-ins after 7 days; publish the app in Google Cloud to stop that." }
+                await fleet.loadHealth(tv)
+                return
+            }
+        }
+        status = "The sign-in wasn’t finished within 10 minutes. Try again."
     }
 }
 
@@ -431,20 +556,29 @@ struct LGSection: View {
                     Button("Disconnect", role: .destructive) { fleet.forgetLG(tv) }
                 } else {
                     TextField("TV’s address, e.g. 192.168.1.40", text: $host).autocorrectionDisabled()
-                    Button(busy ? "Allow it on the TV…" : "Connect") {
-                        busy = true
-                        Task {
-                            do { try await fleet.connectLG(tv, host: host.trimmingCharacters(in: .whitespaces)); fleet.say("Connected", "The remote now works in every app on \(tv.name).") }
-                            catch { fleet.show(error) }
-                            busy = false
-                        }
-                    }
-                    .disabled(host.isEmpty || busy)
+                        .onSubmit { connect() }
+                    Button(busy ? "Allow it on the TV…" : "Connect") { connect() }
+                        .disabled(address.isEmpty || busy)
                 }
             } header: { Text("LG Direct Control") } footer: {
                 Text("LG lets Woodruff take keys only while it’s on screen. Connected directly, the remote works in every app, types into any keyboard, switches inputs, and turns \(tv.name) off and on.")
             }
             .onAppear { if host.isEmpty { host = fleet.extras[tv.id]?.lastHost ?? "" } }
+        }
+    }
+
+    private var address: String { host.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+    private func connect() {
+        let h = address
+        guard !h.isEmpty, !busy else { return }
+        busy = true
+        Task {
+            do {
+                try await fleet.connectLG(tv, host: h)
+                fleet.say("Connected", "The remote now works in every app on \(tv.name).")
+            } catch { fleet.show(error) }
+            busy = false
         }
     }
 }
@@ -466,7 +600,12 @@ struct SSHSection: View {
                 Picker("Access", selection: $mode) { ForEach(WebOSSSH.Mode.allCases, id: \.self) { Text($0.label).tag($0) } }
                 TextField("Private key", text: $keyPath, prompt: Text("~/.ssh/tv_webos"))
                 HStack {
-                    Button("Save") { fleet.extras[tv.id, default: TVExtras()].ssh = WebOSSSH(host: host, mode: mode, keyPath: keyPath); result = "Saved." }
+                    Button("Save") {
+                        let h = host.trimmingCharacters(in: .whitespacesAndNewlines)
+                        fleet.extras[tv.id, default: TVExtras()].ssh = WebOSSSH(host: h, mode: mode, keyPath: keyPath.trimmingCharacters(in: .whitespacesAndNewlines))
+                        result = "Saved. Software Update can install on \(tv.name) from this Mac now."
+                    }
+                    .disabled(host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     Button("Test") {
                         let ssh = WebOSSSH(host: host, mode: mode, keyPath: keyPath)
                         result = "Testing…"
@@ -495,6 +634,8 @@ struct PairFoundTVView: View {
     @State private var key = ""
     @State private var busy = false
     @State private var scanning = false
+    /// Why the last try didn't pair (shown under the key, where it was typed).
+    @State private var note: String?
 
     var body: some View {
         Form {
@@ -514,7 +655,9 @@ struct PairFoundTVView: View {
                     #if os(iOS)
                     .textInputAutocapitalization(.never)
                     #endif
-                Button(busy ? "Pairing…" : "Pair") { pair(key) }.disabled(key.isEmpty || busy)
+                    .onSubmit { pair(key) }
+                Button(busy ? "Pairing…" : "Pair") { pair(key) }.disabled(key.trimmingCharacters(in: .whitespaces).isEmpty || busy)
+                if let note { Text(note).font(.footnote).foregroundStyle(Palette.attention) }
             } footer: {
                 Text("On \(tv.name), open Woodruff → Settings → Phone connection. Scan the QR code, or type the key after “k=” in the link it shows.")
             }
@@ -527,6 +670,7 @@ struct PairFoundTVView: View {
             QRScannerView { code in
                 scanning = false
                 if let c = TVConnection.parse(code) { connect(c) }
+                else { note = "That QR code isn’t a TV’s pairing code. Scan the one on \(tv.name)’s Phone screen." }
             }
             .ignoresSafeArea()
         }
@@ -534,15 +678,45 @@ struct PairFoundTVView: View {
     }
 
     private func pair(_ k: String) {
-        guard let base = tv.foundAt else { return }
-        connect(TVConnection(base: base, key: k.trimmingCharacters(in: .whitespaces)))
+        let k = k.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !k.isEmpty, !busy else { return }
+        guard let base = tv.foundAt else { note = "\(tv.name) stopped answering on the Wi‑Fi. Make sure it’s on, then try again."; return }
+        // A pasted link works too (the key is the part after “k=”).
+        connect(TVConnection.parse(k) ?? TVConnection(base: base, key: k))
     }
 
     private func connect(_ c: TVConnection) {
         busy = true
+        note = nil
         Task {
-            do { let h = try await fleet.pair(c); fleet.say("Paired", "\(h.name) is connected.") } catch { fleet.show(error) }
+            do { let h = try await fleet.pair(c); fleet.say("Paired", "\(h.name) is connected.") } catch { note = error.localizedDescription }
             busy = false
         }
     }
+}
+
+/// Shows the fleet's banner (a result or an error) over a sheet: the window's own alert can't appear while a sheet
+/// covers it, so a failure inside one went unseen until it closed. While the sheet is up it takes the banner itself.
+struct SheetBanner: ViewModifier {
+    @Environment(Fleet.self) private var fleet
+    @State private var shown: Banner?
+
+    func body(content: Content) -> some View {
+        content
+            .onChange(of: fleet.banner) { _, b in
+                guard let b else { return }
+                shown = b
+                fleet.banner = nil
+            }
+            .alert(shown?.title ?? "", isPresented: Binding(get: { shown != nil }, set: { if !$0 { shown = nil } }), presenting: shown) { _ in
+                Button("OK", role: .cancel) {}
+            } message: { b in
+                Text(b.message)
+            }
+    }
+}
+
+extension View {
+    /// See `SheetBanner`: for the content of a sheet or full-screen cover.
+    func sheetBanner() -> some View { modifier(SheetBanner()) }
 }

@@ -159,7 +159,7 @@ func formPost(_ url: String, _ fields: [String: String], basic: (String, String)
     var r = URLRequest(url: URL(string: url)!, timeoutInterval: 20)
     r.httpMethod = "POST"
     r.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-    if let (u, p) = basic { r.setValue("Basic " + Data("\(u):\(p)".utf8).base64EncodedString(), forHTTPHeaderField: "Authorization") }
+    if let pair = basic { r.setValue("Basic " + Data("\(pair.0):\(pair.1)".utf8).base64EncodedString(), forHTTPHeaderField: "Authorization") }
     var c = URLComponents()
     c.queryItems = fields.map { URLQueryItem(name: $0.key, value: $0.value) }
     r.httpBody = Data((c.percentEncodedQuery ?? "").replacingOccurrences(of: "+", with: "%2B").utf8)

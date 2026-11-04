@@ -20,10 +20,18 @@ public final class TVDiscovery: ObservableObject {
     @Published public private(set) var browsing = false
     private var browser: NWBrowser?
     private var resolving: [String: NWConnection] = [:]
+    /// The services announced right now, by TV id: one that couldn't be reached yet (a TV announces itself while
+    /// it's still starting up) is tried again rather than never.
+    private var listed: [String: (endpoint: NWEndpoint, name: String)] = [:]
+    /// Failed tries in a row per TV id (each one waits longer before the next).
+    private var attempts: [String: Int] = [:]
+    /// start() was called and stop() wasn't: a browser that fails is started again.
+    private var wanted = false
 
     public init() {}
 
     public func start() {
+        wanted = true
         guard browser == nil else { return }
         let params = NWParameters()
         params.includePeerToPeer = false
@@ -31,9 +39,17 @@ public final class TVDiscovery: ObservableObject {
         b.browseResultsChangedHandler = { [weak self] results, _ in
             Task { @MainActor in self?.update(results) }
         }
+        let mine = ObjectIdentifier(b)
         b.stateUpdateHandler = { [weak self] state in
-            Task { @MainActor in
-                if case .failed = state { self?.stop() }
+            // Delivered on the main queue (started there below).
+            MainActor.assumeIsolated {
+                guard let self, let current = self.browser, ObjectIdentifier(current) == mine else { return }
+                // The network changed, or the system let it go while the app was away: it used to stay stopped
+                // for good (no TV heard switching on again). Look again shortly.
+                switch state {
+                case .failed, .cancelled: self.restartSoon()
+                default: break
+                }
             }
         }
         b.start(queue: .main)
@@ -42,21 +58,40 @@ public final class TVDiscovery: ObservableObject {
     }
 
     public func stop() {
+        wanted = false
+        tearDown()
+    }
+
+    private func tearDown() {
         browser?.cancel()
         browser = nil
         resolving.values.forEach { $0.cancel() }
         resolving = [:]
+        listed = [:]
+        attempts = [:]
         browsing = false
     }
 
+    private func restartSoon() {
+        tearDown()
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            guard let self, self.wanted, self.browser == nil else { return }
+            self.start()
+        }
+    }
+
     private func update(_ results: Set<NWBrowser.Result>) {
+        var now: [String: (endpoint: NWEndpoint, name: String)] = [:]
         for r in results {
             guard case let .service(name, _, _, _) = r.endpoint else { continue }
             var tvId = name
             if case let .bonjour(txt) = r.metadata, let id = txt["id"], !id.isEmpty { tvId = id }
+            now[tvId] = (endpoint: r.endpoint, name: name)
             if found.contains(where: { $0.id == tvId }) || resolving[tvId] != nil { continue }
             resolve(r.endpoint, id: tvId, name: name)
         }
+        listed = now
         let names = Set(results.compactMap { r -> String? in
             if case let .service(name, _, _, _) = r.endpoint { return name }; return nil
         })
@@ -70,27 +105,55 @@ public final class TVDiscovery: ObservableObject {
         let c = NWConnection(to: endpoint, using: params)
         resolving[id] = c
         c.stateUpdateHandler = { [weak self] state in
-            switch state {
-            case .ready:
-                if case let .hostPort(host, port)? = c.currentPath?.remoteEndpoint {
-                    var h = "\(host)"
-                    if let pct = h.firstIndex(of: "%") { h = String(h[..<pct]) }
-                    let tv = DiscoveredTV(id: id, name: name, host: h, port: Int(port.rawValue))
-                    Task { @MainActor in
-                        guard let self else { return }
+            // Delivered on the main queue (started there below).
+            MainActor.assumeIsolated {
+                guard let self else { c.cancel(); return }
+                switch state {
+                case .ready:
+                    if case let .hostPort(host, port)? = c.currentPath?.remoteEndpoint {
+                        var h = "\(host)"
+                        if let pct = h.firstIndex(of: "%") { h = String(h[..<pct]) }
                         self.found.removeAll { $0.id == id }
-                        self.found.append(tv)
+                        self.found.append(DiscoveredTV(id: id, name: name, host: h, port: Int(port.rawValue)))
                         self.found.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+                        self.attempts[id] = nil
                     }
+                    c.cancel()
+                case .waiting, .failed:
+                    // Not reachable yet (still starting up, or the network changed): this connection would wait
+                    // for good. Let it go and try again in a little while, as long as the TV is still announced.
+                    c.cancel()
+                    self.retry(id, after: c)
+                case .cancelled:
+                    if self.resolving[id] === c { self.resolving[id] = nil }
+                default: break
                 }
-                c.cancel()
-                Task { @MainActor in self?.resolving[id] = nil }
-            case .failed, .cancelled:
-                Task { @MainActor in self?.resolving[id] = nil }
-            default: break
             }
         }
         c.start(queue: .main)
+        // Never left resolving forever.
+        let key = ObjectIdentifier(c)
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 10_000_000_000)
+            guard let self, let stuck = self.resolving[id], ObjectIdentifier(stuck) == key else { return }
+            stuck.cancel()
+            self.retry(id, after: stuck)
+        }
+    }
+
+    /// Tries [id] again after a wait (5 s, doubling to a minute) if it's still announced and not found meanwhile.
+    private func retry(_ id: String, after c: NWConnection) {
+        guard resolving[id] === c else { return }
+        resolving[id] = nil
+        let n = (attempts[id] ?? 0) + 1
+        attempts[id] = n
+        let wait = UInt64(min(60, 5 << min(n - 1, 4)))
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: wait * 1_000_000_000)
+            guard let self, self.browser != nil, self.resolving[id] == nil, !self.found.contains(where: { $0.id == id }),
+                  let l = self.listed[id] else { return }
+            self.resolve(l.endpoint, id: id, name: l.name)
+        }
     }
 }
 
@@ -120,6 +183,20 @@ public enum WakeOnLAN {
             let parts = lastHost.split(separator: ".")
             if parts.count == 4 { hosts.append(parts.prefix(3).joined(separator: ".") + ".255") }
         }
+        #if canImport(Darwin)
+        // Network framework doesn't do broadcasts, so the packets to the broadcast addresses below never left this
+        // device and "Turn On" only worked while the TV's address was still known. A plain socket with
+        // SO_BROADCAST can (on iPhone only the TV's own address goes, as iOS keeps broadcasts for apps Apple
+        // allows). A few times, a moment apart: one packet is easily lost on Wi‑Fi.
+        var everywhere = hosts
+        for p in LANScan.prefixes() where !everywhere.contains(p + "255") { everywhere.append(p + "255") }
+        let targets = everywhere
+        for attempt in 0..<3 {
+            DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(400 * attempt)) {
+                for h in targets { for p: UInt16 in [9, 7] { _ = WakeOnLAN.sendUDP(data, to: h, port: p) } }
+            }
+        }
+        #endif
         for h in hosts {
             for p: UInt16 in [9, 7] {
                 let params = NWParameters.udp
@@ -134,6 +211,30 @@ public enum WakeOnLAN {
             }
         }
     }
+
+    #if canImport(Darwin)
+    /// One UDP datagram from a plain socket that may broadcast. True when it went.
+    static func sendUDP(_ data: Data, to host: String, port: UInt16) -> Bool {
+        let fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
+        guard fd >= 0 else { return false }
+        defer { close(fd) }
+        var on: Int32 = 1
+        _ = setsockopt(fd, SOL_SOCKET, SO_BROADCAST, &on, socklen_t(MemoryLayout<Int32>.size))
+        var addr = sockaddr_in()
+        addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = port.bigEndian
+        guard inet_pton(AF_INET, host, &addr.sin_addr) == 1 else { return false }
+        let sent = data.withUnsafeBytes { (buf: UnsafeRawBufferPointer) -> Int in
+            withUnsafePointer(to: &addr) { p in
+                p.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
+                    sendto(fd, buf.baseAddress, buf.count, 0, sa, socklen_t(MemoryLayout<sockaddr_in>.size))
+                }
+            }
+        }
+        return sent == data.count
+    }
+    #endif
 }
 #endif
 
@@ -191,8 +292,8 @@ public enum LANScan {
     private static func probe(_ host: String, _ s: URLSession) async -> DiscoveredTV? {
         for port in [8090, 8080] {
             guard let url = URL(string: "http://\(host):\(port)/manifest.webmanifest"),
-                  let (d, r) = try? await s.data(from: url), (r as? HTTPURLResponse)?.statusCode == 200,
-                  let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
+                  let answer = try? await s.data(from: url), (answer.1 as? HTTPURLResponse)?.statusCode == 200,
+                  let o = try? JSONSerialization.jsonObject(with: answer.0) as? [String: Any],
                   let name = o["name"] as? String, (o["icons"] as? [Any]) != nil else { continue }
             return DiscoveredTV(id: "lan-\(host)", name: name, host: host, port: port)
         }

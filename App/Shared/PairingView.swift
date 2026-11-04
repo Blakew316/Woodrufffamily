@@ -36,6 +36,8 @@ struct PairPanel: View {
     @State private var busy = false
     @State private var picked: DiscoveredTV?
     @State private var key = ""
+    /// Why the last link or code didn't pair (shown here, under the field).
+    @State private var note: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -57,12 +59,13 @@ struct PairPanel: View {
                     .textInputAutocapitalization(.never).keyboardType(.URL)
                     #endif
                     .onSubmit { pair(link) }
-                Button("Pair") { pair(link) }.disabled(link.isEmpty || busy)
+                Button("Pair") { pair(link) }.disabled(link.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || busy)
             }
             #if os(iOS)
             PasteButton(payloadType: String.self) { s in if let first = s.first { link = first; pair(first) } }
                 .labelStyle(.titleAndIcon)
             #endif
+            if let note { Text(note).font(.footnote).foregroundStyle(Palette.attention) }
 
             Divider()
             HStack {
@@ -75,7 +78,10 @@ struct PairPanel: View {
                     .font(.footnote).foregroundStyle(.secondary)
             }
             ForEach(discovery.found) { tv in
-                let paired = fleet.tvs.contains { $0.id == tv.id }
+                // Paired here already: nothing to do. Linked through another TV (or only heard on the Wi‑Fi): pairing
+                // it directly too keeps it reachable when that TV is off.
+                let paired = fleet.hub(tv.id) != nil
+                let linked = !paired && fleet.tvs.contains { $0.id == tv.id && !$0.isUnpaired }
                 Button {
                     picked = tv
                 } label: {
@@ -85,13 +91,16 @@ struct PairPanel: View {
                             Text("\(tv.host):\(tv.port)").font(.caption).foregroundStyle(.secondary)
                         }
                         Spacer()
-                        if paired { Text("Connected").font(.subheadline).foregroundStyle(.secondary) }
-                        else { Image(systemName: "chevron.right").foregroundStyle(.tertiary) }
+                        if paired { Text("Paired").font(.subheadline).foregroundStyle(.secondary) }
+                        else {
+                            if linked { Text("Linked").font(.subheadline).foregroundStyle(.secondary) }
+                            Image(systemName: "chevron.right").foregroundStyle(.tertiary)
+                        }
                     }
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .disabled(paired)
+                .disabled(paired || busy)
             }
             if busy { ProgressView("Pairing…") }
         }
@@ -113,9 +122,14 @@ struct PairPanel: View {
         .alert("Pair with \(picked?.name ?? "TV")", isPresented: Binding(get: { picked != nil }, set: { if !$0 { picked = nil } })) {
             TextField("Pairing key", text: $key)
             Button("Pair") {
-                if let p = picked, let base = p.base { pair(base.absoluteString + "/?k=" + key.trimmingCharacters(in: .whitespaces)) }
+                let k = key.trimmingCharacters(in: .whitespacesAndNewlines)
                 key = ""
+                guard let p = picked else { return }
+                guard let base = p.base else { note = "\(p.name) didn’t give an address to pair with. Scan its QR code instead."; return }
+                // A whole link pasted in works too.
+                if let c = TVConnection.parse(k) { connect(c) } else { connect(TVConnection(base: base, key: k)) }
             }
+            .disabled(key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             Button("Cancel", role: .cancel) { key = "" }
         } message: {
             Text("Type the key after “k=” in the link on the TV's Phone screen, or scan its QR code instead.")
@@ -123,17 +137,25 @@ struct PairPanel: View {
     }
 
     private func pair(_ text: String) {
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         guard let c = TVConnection.parse(text) else {
-            fleet.say("That isn't a TV link", "Use the link or QR code from the TV's Phone screen; it ends in ?k=…")
+            note = "That isn’t a TV link. Use the link or QR code from the TV’s Phone screen; it ends in ?k=…"
             return
         }
+        connect(c)
+    }
+
+    private func connect(_ c: TVConnection) {
+        guard !busy else { return }
         busy = true
+        note = nil
         Task {
             do {
                 let hub = try await fleet.pair(c)
                 link = ""
-                fleet.say("Paired with \(hub.name)", fleet.tvs.count > 1 ? "\(fleet.tvs.count) TVs are connected." : "Link more TVs on the TV (Settings → TVs → Add another TV), or pair them here.")
-            } catch { fleet.show(error) }
+                let count = fleet.tvs.filter { !$0.isUnpaired }.count
+                fleet.say("Paired with \(hub.name)", count > 1 ? "\(count) TVs are connected." : "Link more TVs on the TV (Settings → TVs → Add another TV), or pair them here.")
+            } catch { note = error.localizedDescription }
             busy = false
         }
     }

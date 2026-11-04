@@ -113,7 +113,7 @@ struct HomeView: View {
         .dynamicTypeSize(.xxLarge)
         #endif
         .sheet(isPresented: Binding(get: { editing }, set: { layout.editing = $0 })) { EditHomeView().macResizable(width: 520, height: 720) }
-        .sheet(item: Binding(get: { player.map { TitleRef(id: $0) } }, set: { playerTV = $0?.id })) { NowPlayingSheet(tvID: $0.id).macResizable(width: 560, height: 780) }
+        .sheet(item: Binding(get: { player.map { TitleRef(id: $0) } }, set: { playerTV = $0?.id })) { NowPlayingSheet(tvID: $0.id).sheetBanner().macResizable(width: 560, height: 780) }
         .refreshable { await refreshEverything() }
     }
 
@@ -682,7 +682,7 @@ struct NowPlayingBanner: View {
         .shadow(color: .black.opacity(0.35), radius: 24, y: 12)
         .contentShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
         .onTapGesture { open = true }
-        .sheet(isPresented: $open) { NowPlayingSheet(tvID: tv.id).macResizable(width: 560, height: 780) }
+        .sheet(isPresented: $open) { NowPlayingSheet(tvID: tv.id).sheetBanner().macResizable(width: 560, height: 780) }
         .animation(.smooth, value: playing.title)
     }
 }

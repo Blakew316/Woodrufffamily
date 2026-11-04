@@ -179,10 +179,14 @@ struct LightsOnControlIntent: LiveActivityIntent {
 struct SonosPlayPauseControlIntent: LiveActivityIntent {
     static let title: LocalizedStringResource = "Play or Pause Sonos"
     @MainActor func perform() async throws -> some IntentResult {
+        // Launched cold by the control: find the speakers first.
+        if SmartHome.shared.speakers.isEmpty { await SmartHome.shared.findSonos() }
         guard let r0 = SmartHome.shared.lastSpeaker else { return .result() }
         let r = await Sonos.refresh(r0)
         let playing = r.isPlaying
-        await SmartHome.shared.sonos(r) { playing ? try await Sonos.pause($0) : try await Sonos.play($0) }
+        await SmartHome.shared.sonos(r, expect: playing ? "PAUSED_PLAYBACK" : "PLAYING") { room in
+            if playing { try await Sonos.pause(room) } else { try await Sonos.play(room) }
+        }
         return .result()
     }
 }
@@ -193,9 +197,12 @@ struct SonosVolumeControlIntent: LiveActivityIntent {
     init() {}
     init(up: Bool) { self.up = up }
     @MainActor func perform() async throws -> some IntentResult {
+        if SmartHome.shared.speakers.isEmpty { await SmartHome.shared.findSonos() }
         guard let r0 = SmartHome.shared.lastSpeaker else { return .result() }
         let r = await Sonos.refresh(r0)
         try? await Sonos.setVolume(r, r.volume + (up ? 5 : -5))
+        // The app's speaker tiles show the new level at once.
+        await SmartHome.shared.refreshSpeakers()
         return .result()
     }
 }

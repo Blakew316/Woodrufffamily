@@ -153,7 +153,7 @@ struct NowPlayingBar: View {
             .glass(Capsule())
             .padding(.horizontal, 16)
             .padding(.bottom, 6)
-            .sheet(isPresented: $open) { NowPlayingSheet().macResizable(width: 560, height: 780) }
+            .sheet(isPresented: $open) { NowPlayingSheet().sheetBanner().macResizable(width: 560, height: 780) }
             .transition(.move(edge: .bottom).combined(with: .opacity))
         }
     }
@@ -255,7 +255,7 @@ struct NowPlayingDropdown: View {
             }
         }
         .glass(RoundedRectangle(cornerRadius: expanded ? 24 : 22, style: .continuous))
-        .sheet(isPresented: $open) { NowPlayingSheet().macResizable(width: 560, height: 780) }
+        .sheet(isPresented: $open) { NowPlayingSheet().sheetBanner().macResizable(width: 560, height: 780) }
     }
 }
 

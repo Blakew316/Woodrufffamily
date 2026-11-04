@@ -46,6 +46,8 @@ struct WoodruffApp: App {
                     if !Demo.isOn { Notifier.attach(to: fleet); PushRelay.shared.start() }
                     if !Demo.isOn && !fleet.hubs.isEmpty { LocationWeather.shared.start(fleet) }
                     SmartHome.shared.start()
+                    // Siri learns the family's light, room, speaker and TV names (and again whenever they change).
+                    SiriVocabulary.start()
                     SmartThings.shared.start()
                     Dreo.shared.start()
                     DecoWifi.shared.start()
@@ -56,6 +58,10 @@ struct WoodruffApp: App {
                     HomeKitLights.shared.start()
                     #endif
                     await fleet.start()
+                    #if os(iOS)
+                    // Lock Screen Now Playing follows the TVs from launch, also while the app is in the background.
+                    LiveActivitySync.shared.sync(fleet)
+                    #endif
                 }
                 .onOpenURL { url in
                     // woodruff://remote (widgets, Control Center): open the remote; anything else is a pairing link.
@@ -122,7 +128,7 @@ struct WoodruffApp: App {
         MenuBarExtra {
             MenuBarFleetView().environment(fleet)
         } label: {
-            Image(systemName: fleet.menuBarSymbol)
+            MenuBarIcon(fleet: fleet)
         }
         .menuBarExtraStyle(.window)
         #endif
@@ -340,7 +346,7 @@ struct MacRoot: View {
             .frame(minWidth: 480)
             .onGeometryChange(for: Bool.self) { $0.size.width < 760 } action: { narrow = $0 }
         }
-        .sheet(isPresented: $palette) { CommandPalette().macResizable(width: 620, height: 480) }
+        .sheet(isPresented: $palette) { CommandPalette().sheetBanner().macResizable(width: 620, height: 480) }
         .background {
             Button("Command Palette") { palette = true }.keyboardShortcut("k", modifiers: .command).opacity(0).frame(width: 0, height: 0)
         }
@@ -431,6 +437,25 @@ struct ToolbarSearchField: View {
         .padding(.horizontal, 10)
         .frame(width: width, height: 28)
         .background { Button("") { focused = true }.keyboardShortcut("f", modifiers: .command).opacity(0) }
+    }
+}
+#endif
+
+#if os(macOS)
+/// The menu bar icon. It's there even with every window closed, so it opens Woodruff's window when a camera or
+/// doorbell alert is clicked and no window is open to show the camera in.
+struct MenuBarIcon: View {
+    var fleet: Fleet
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Image(systemName: fleet.menuBarSymbol)
+            .onChange(of: CameraStreams.shared.requested) { _, id in
+                guard id != nil else { return }
+                if let w = MainWindow.current, w.isVisible || w.isMiniaturized { return }
+                NSApp.activate()
+                openWindow(id: "main")
+            }
     }
 }
 #endif

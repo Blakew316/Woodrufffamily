@@ -52,13 +52,15 @@ struct SendView: View {
             Section {
                 NavigationLink { FilesView() } label: { IconRow(symbol: "folder.fill", color: .blue, title: "Photos & Files") }
                 NavigationLink { OpenLinkView() } label: { IconRow(symbol: "link", color: .indigo, title: "Open a Link") }
-                Button {
-                    Task {
-                        do { try await fleet.hubClient()?.slideshow(start: true); fleet.say("Slideshow", "The photo slideshow is starting on \(fleet.hubClient()?.hub.name ?? "the TV").") }
-                        catch { fleet.show(error) }
+                Button { startSlideshow() } label: {
+                    HStack {
+                        IconRow(symbol: "photo.fill", color: .orange, title: "Start Photo Slideshow", subtitle: slideshowTV.map { "On \($0.hub.name)" })
+                        if startingSlideshow { ProgressView().controlSize(.small) }
                     }
-                } label: { IconRow(symbol: "photo.fill", color: .orange, title: "Start Photo Slideshow") }
+                    .contentShape(Rectangle())
+                }
                 .buttonStyle(.plain)
+                .disabled(startingSlideshow)
             }
         }
         .formStyle(.grouped)
@@ -67,7 +69,30 @@ struct SendView: View {
         .task { await loadPhones() }
     }
 
-    private var canSend: Bool { !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    @State private var startingSlideshow = false
+
+    /// The remote's TV when it's paired here (the slideshow has no relay), else the TV that links it.
+    private var slideshowTV: TVClient? {
+        if let tv = fleet.selected, let own = fleet.hub(tv.id) { return TVClient(hub: own, routeID: "this") }
+        return fleet.hubClient()
+    }
+
+    private func startSlideshow() {
+        guard let c = slideshowTV else { fleet.show(TVError.notPaired); return }
+        startingSlideshow = true
+        Task {
+            do {
+                try await c.slideshow(start: true)
+                fleet.say("Slideshow", "The photo slideshow is starting on \(c.hub.name).")
+            } catch { fleet.show(error) }
+            startingSlideshow = false
+        }
+    }
+
+    /// Someone to send it to: a TV, or a phone.
+    private var hasRecipient: Bool { to.allTVs || !to.tvs.isEmpty || !to.phones.isEmpty }
+
+    private var canSend: Bool { !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && hasRecipient }
 
     private var toSummary: String {
         let others = to.knownPhones.filter { $0.id != fleet.phone.id && $0.name.caseInsensitiveCompare(fleet.phone.name) != .orderedSame }
@@ -75,7 +100,7 @@ struct SendView: View {
         let phonesOn = Set(others.filter { to.phones.contains($0.id) }.map { $0.name.lowercased() }).count
         if to.allTVs && (names.isEmpty || phonesOn == names.count) { return to.pin ? "Everyone · Pinned" : "Everyone" }
         var parts: [String] = []
-        if to.allTVs { parts.append("All TVs") } else if !to.tvs.isEmpty { parts.append(to.tvs.count == 1 ? (fleet.tv(to.tvs.first!)?.name ?? "1 TV") : "\(to.tvs.count) TVs") }
+        if to.allTVs { parts.append("All TVs") } else if !to.tvs.isEmpty { parts.append(to.tvs.count == 1 ? (to.tvs.first.flatMap { fleet.tv($0)?.name } ?? "1 TV") : "\(to.tvs.count) TVs") }
         if phonesOn > 0 { parts.append(phonesOn == 1 ? "1 phone" : "\(phonesOn) phones") }
         return parts.isEmpty ? "No one" : parts.joined(separator: ", ")
     }
@@ -96,20 +121,32 @@ struct SendView: View {
     }
 
     private func send() {
-        guard let c = fleet.hubClient() else { return }
+        guard let c = fleet.hubClient() else { fleet.show(TVError.notPaired); return }
+        guard hasRecipient else { fleet.say("Who Gets It?", "Pick at least one TV or phone under To."); return }
         let (title, body) = split(message)
         let anyTV = to.allTVs || !to.tvs.isEmpty
         let tvList: [String]? = to.allTVs ? nil : to.tvs.map { $0 == c.hub.id ? "this" : $0 }
+        let pin = to.pin
         sending = true
         Task {
             do {
-                let r = try await c.announce(title: title, body: body, tv: anyTV, tvs: tvList, phones: Array(to.phones), allPhones: false, from: fleet.phone.name, pin: to.pin)
+                let r = try await c.announce(title: title, body: body, tv: anyTV, tvs: tvList, phones: Array(to.phones), allPhones: false, from: fleet.phone.name, pin: pin)
                 message = ""
                 focused = false
                 var words: [String] = []
-                if let n = r.tvs, n > 0 { words.append(n == 1 ? "the TV" : "\(n) TVs") }
+                if let n = r.tvs, n > 0 { words.append(n == 1 ? "1 TV" : "\(n) TVs") }
                 if let n = r.phones, n > 0 { words.append(n == 1 ? "1 phone" : "\(n) phones") }
-                fleet.say(to.pin ? "Pinned on Every TV" : "Sent", words.isEmpty ? "Sent." : "Sent to " + words.joined(separator: " and ") + ".")
+                if !words.isEmpty {
+                    fleet.say(pin ? "Pinned on Every TV" : "Sent", "Sent to " + words.joined(separator: " and ") + ".")
+                } else if r.tvs == nil && r.phones == nil {
+                    // An older TV that doesn't count who got it.
+                    fleet.say(pin ? "Pinned on Every TV" : "Sent", "Sent.")
+                } else if pin {
+                    fleet.say("Pinned on Every TV", "It shows on each TV’s Home as soon as it’s on.")
+                } else {
+                    // Said honestly: the TVs took the message, but none were on to show it and no phone was reached.
+                    fleet.say("Not Delivered Yet", "No TV or phone was reached just now. Turn on “Keep on Every TV’s Home” to leave it for when they’re on.")
+                }
             } catch { fleet.show(error) }
             sending = false
         }
@@ -175,7 +212,21 @@ struct OpenLinkView: View {
     @Environment(Fleet.self) private var fleet
     @Environment(\.dismiss) private var dismiss
     @State private var link = ""
+    @State private var opening = false
     @FocusState private var focused: Bool
+
+    /// Links open on the remote's TV when it's paired here; a TV only linked through another opens it on that one.
+    private var target: TVClient? {
+        if let tv = fleet.selected, let own = fleet.hub(tv.id) { return TVClient(hub: own, routeID: "this") }
+        return fleet.hubClient()
+    }
+
+    private var address: String {
+        let s = link.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !s.isEmpty else { return "" }
+        // "youtube.com/watch?v=…" typed without its start still opens.
+        return s.contains("://") ? s : "https://" + s
+    }
 
     var body: some View {
         Form {
@@ -191,7 +242,7 @@ struct OpenLinkView: View {
                 PasteButton(payloadType: String.self) { s in link = s.first ?? "" }
                 #endif
             } footer: {
-                Text("YouTube links open in YouTube, Apple Music in Apple Music, videos in Woodruff’s player. It opens on \(fleet.selected?.name ?? "the TV").")
+                Text("YouTube links open in YouTube, Apple Music in Apple Music, videos in Woodruff’s player. It opens on \(target?.hub.name ?? "the TV").")
             }
         }
         .formStyle(.grouped)
@@ -199,23 +250,26 @@ struct OpenLinkView: View {
         .inlineTitle()
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
-                Button("Open") { open() }.buttonStyle(.glassProminent).disabled(link.isEmpty)
+                Button { open() } label: { if opening { ProgressView() } else { Text("Open") } }
+                    .buttonStyle(.glassProminent)
+                    .disabled(address.isEmpty || opening)
             }
         }
         .onAppear { focused = true }
     }
 
     private func open() {
-        let url = link.trimmingCharacters(in: .whitespaces)
+        let url = address
+        guard !url.isEmpty, !opening else { return }
+        guard let c = target else { fleet.show(TVError.notPaired); return }
+        opening = true
         Task {
             do {
-                guard let tv = fleet.selected, let hub = fleet.hubClient() else { return }
-                // Links open on a TV paired here; a linked TV goes through its own pairing when there is one.
-                let c = fleet.hub(tv.id).map { TVClient(hub: $0, routeID: "this") } ?? hub
                 try await c.open(url)
                 fleet.say("Opening", "It’s opening on \(c.hub.name).")
                 dismiss()
             } catch { fleet.show(error) }
+            opening = false
         }
     }
 }
@@ -234,6 +288,10 @@ struct FilesView: View {
     @State private var saving: URL?
     @State private var previewing: URL?
     @State private var hovered: FileEntry?
+    /// Why the TV's storage couldn't be opened (with Try Again, instead of placeholders forever).
+    @State private var failed: String?
+    /// Waiting for "Delete" to be confirmed: nothing on the TV goes without asking (there's no bin to get it back).
+    @State private var deleting: FileEntry?
 
     private var client: TVClient? { fleet.hubClient() }
     private var root: StorageRoot? { roots.first { path?.hasPrefix($0.path) == true } ?? roots.first }
@@ -274,7 +332,14 @@ struct FilesView: View {
 
     var body: some View {
         Group {
-            if listing == nil {
+            if listing == nil, let failed {
+                VStack(spacing: 14) {
+                    EmptyState(symbol: "wifi.exclamationmark", title: "Can’t Open the TV’s Storage", message: failed)
+                    ActionButton(action: { await loadRoots() }) { Text("Try Again") }
+                        .buttonStyle(.glass)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if listing == nil {
                 ScrollView {
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 108, maximum: 150), spacing: 10)], spacing: 28) {
                         ForEach(0..<12, id: \.self) { _ in
@@ -309,10 +374,24 @@ struct FilesView: View {
         .alert("New Folder", isPresented: $askFolder) {
             TextField("Name", text: $newFolder)
             Button("Create") {
-                let name = newFolder; newFolder = ""
-                act { try await client?.mkdir(in: listing?.path ?? "", name: name); reload() }
+                let name = newFolder.trimmingCharacters(in: .whitespacesAndNewlines)
+                newFolder = ""
+                guard !name.isEmpty, let dir = listing?.path else { return }
+                act {
+                    guard let c = client else { throw TVError.notPaired }
+                    try await c.mkdir(in: dir, name: name)
+                    reload()
+                }
             }
+            .disabled(newFolder.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            Button("Cancel", role: .cancel) { newFolder = "" }
+        }
+        .confirmationDialog("Delete “\(deleting?.name ?? "")”?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }),
+                            titleVisibility: .visible, presenting: deleting) { f in
+            Button(f.dir ? "Delete Folder" : "Delete", role: .destructive) { delete(f) }
             Button("Cancel", role: .cancel) {}
+        } message: { f in
+            Text(f.dir ? "Everything in it is deleted from the TV too. This can’t be undone." : "It’s deleted from the TV. This can’t be undone.")
         }
         .task { await loadRoots() }
         .quickLookPreview($previewing)
@@ -481,25 +560,31 @@ struct FilesView: View {
             else { Menu { menu(f) } label: { label }.menuStyle(.button).buttonStyle(.plain) }
         }
         .contextMenu { menu(f) }
-        .swipeActions { Button(role: .destructive) { act { try await client?.delete(f.path); reload() } } label: { Label("Delete", systemImage: "trash") } }
+        .swipeActions { Button(role: .destructive) { deleting = f } label: { Label("Delete", systemImage: "trash") } }
     }
 
     @ViewBuilder private func menu(_ f: FileEntry) -> some View {
         if f.dir {
-            Button { act { try await client?.slideshow(folder: f.path, start: false); fleet.say("Slideshow", "The slideshow shows \(f.name) now.") } } label: { Label("Use for Slideshow", systemImage: "play.rectangle") }
+            Button { withTV { c in try await c.slideshow(folder: f.path, start: false); fleet.say("Slideshow", "The slideshow on \(c.hub.name) shows \(f.name) now.") } } label: { Label("Use for Slideshow", systemImage: "play.rectangle") }
         }
         if f.isMedia {
-            Button { act { let r = try await client?.play(path: f.path); if let m = r?.message { fleet.say("Ready on the TV", m) } } } label: { Label("Play on TV", systemImage: "play.tv") }
+            Button {
+                withTV { c in
+                    let r = try await c.play(path: f.path)
+                    if r.started?.bool == false { fleet.say("Ready on \(c.hub.name)", r.message ?? "Open Woodruff on \(c.hub.name) to start it.") }
+                    else if let m = r.message { fleet.say("Playing on \(c.hub.name)", m) }
+                }
+            } label: { Label("Play on TV", systemImage: "play.tv") }
         }
         if f.isImage {
-            Button { act { try await client?.background(f.path); fleet.say("Background Set", "\(f.name) is the TV’s background.") } } label: { Label("Set as TV Background", systemImage: "photo.on.rectangle") }
+            Button { withTV { c in try await c.background(f.path); fleet.say("Background Set", "\(f.name) is \(c.hub.name)’s background.") } } label: { Label("Set as TV Background", systemImage: "photo.on.rectangle") }
         }
         if !f.dir {
             Button { quickLook(f) } label: { Label("Quick Look", systemImage: "eye") }
             Button { save(f) } label: { Label("Save to This Device", systemImage: "square.and.arrow.down") }
         }
         Divider()
-        Button(role: .destructive) { act { try await client?.delete(f.path); reload() } } label: { Label("Delete", systemImage: "trash") }
+        Button(role: .destructive) { deleting = f } label: { Label("Delete", systemImage: "trash") }
     }
 
     private func icon(_ f: FileEntry) -> String {
@@ -514,18 +599,48 @@ struct FilesView: View {
 
     private func act(_ op: @escaping () async throws -> Void) { Task { do { try await op() } catch { fleet.show(error) } } }
 
-    private func loadRoots() async {
-        guard let c = client else { return }
-        do {
-            roots = try await c.roots()
-            if path == nil, let first = roots.first { open(first.path) }
-        } catch { fleet.show(error) }
+    /// [op] on the TV whose storage this is; says so when there's none, or when the TV says no.
+    private func withTV(_ op: @escaping (TVClient) async throws -> Void) {
+        guard let c = client else { fleet.show(TVError.notPaired); return }
+        Task { do { try await op(c) } catch { fleet.show(error) } }
     }
 
+    private func delete(_ f: FileEntry) {
+        withTV { c in
+            try await c.delete(f.path)
+            reload()
+        }
+    }
+
+    private func loadRoots() async {
+        guard let c = client else { failed = TVError.notPaired.localizedDescription; return }
+        failed = nil
+        do {
+            let r = try await c.roots()
+            roots = r
+            if let first = r.first {
+                if path == nil || listing == nil { open(path ?? first.path) }
+            } else {
+                failed = "\(c.hub.name) didn’t list any storage."
+            }
+        } catch {
+            if Task.isCancelled { return }
+            failed = error.localizedDescription
+        }
+    }
+
+    /// Opens folder [p]: the place moves only once the TV has answered with what's in it.
     private func open(_ p: String) {
-        path = p
+        guard let c = client else { fleet.show(TVError.notPaired); return }
         Task {
-            do { let l = try await client?.list(p); withAnimation(.snappy) { listing = l } } catch { fleet.show(error) }
+            do {
+                let l = try await c.list(p)
+                path = p
+                withAnimation(.snappy) { listing = l }
+                failed = nil
+            } catch {
+                if listing == nil { failed = error.localizedDescription } else { fleet.show(error) }
+            }
         }
     }
 

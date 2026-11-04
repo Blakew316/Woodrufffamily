@@ -148,7 +148,7 @@ final class NowPlayingBridge {
             MPMediaItemPropertyArtist: tv.name,
             MPMediaItemPropertyAlbumTitle: p.app ?? "Woodruff Family",
             MPNowPlayingInfoPropertyPlaybackRate: p.isPlaying ? 1.0 : 0.0,
-            MPNowPlayingInfoPropertyElapsedPlaybackTime: (p.position ?? 0) / 1000,
+            MPNowPlayingInfoPropertyElapsedPlaybackTime: p.estimatedPosition(at: Date()) / 1000,
         ]
         if let dur = p.duration, dur > 0 { d[MPMediaItemPropertyPlaybackDuration] = dur / 1000 }
         info.nowPlayingInfo = d

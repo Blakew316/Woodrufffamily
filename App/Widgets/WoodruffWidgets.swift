@@ -26,6 +26,8 @@ struct NowPlayingLiveActivity: Widget {
             LockScreenNowPlaying(state: context.state)
                 .activityBackgroundTint(Color.black.opacity(0.55))
                 .activitySystemActionForegroundColor(.white)
+                // Tapping it (anywhere but its buttons) opens the remote, as the Dynamic Island does.
+                .widgetURL(URL(string: "woodruff://remote"))
         } dynamicIsland: { context in
             let s = context.state
             return DynamicIsland {
@@ -196,7 +198,7 @@ struct LightsOffControl: ControlWidget {
             }
         }
         .displayName("Lights Off")
-        .description("Turns off every Govee light.")
+        .description("Turns off every light (Govee and Apple Home).")
     }
 }
 
@@ -208,7 +210,7 @@ struct LightsOnControl: ControlWidget {
             }
         }
         .displayName("Lights On")
-        .description("Turns on every Govee light.")
+        .description("Turns on every light (Govee and Apple Home).")
     }
 }
 

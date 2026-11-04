@@ -13,6 +13,8 @@ struct MemoriesView: View {
     @State private var viewing: MemoryItem?
     @State private var importing = false
     @State private var error: String?
+    /// Waiting for "Delete" to be confirmed (a family photo is gone for good once it's deleted on the TV).
+    @State private var deleting: MemoryItem?
 
     #if os(iOS)
     private let columns = Array(repeating: GridItem(.flexible(), spacing: 2), count: 3)
@@ -91,7 +93,13 @@ struct MemoriesView: View {
                         .padding(.vertical, 18)
                 }
             } else if let error {
-                EmptyState(symbol: "wifi.exclamationmark", title: "Can't Load Memories", message: error)
+                VStack(spacing: 14) {
+                    EmptyState(symbol: "wifi.exclamationmark", title: "Can’t Load Memories", message: error)
+                    ActionButton(action: { await load() }) { Text("Try Again") }
+                        .buttonStyle(.glass)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.top, 60)
             } else {
                 LazyVGrid(columns: gridColumns, spacing: 2) {
                     ForEach(0..<18, id: \.self) { _ in Placeholder(corner: 0).aspectRatio(1, contentMode: .fit) }
@@ -135,12 +143,13 @@ struct MemoriesView: View {
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
                 Button {
-                    Task {
-                        do { try await client?.slideshow(folder: memories?.folder, start: true); fleet.say("Slideshow", "Family Memories is playing on \(client?.hub.name ?? "the TV").") }
-                        catch { fleet.show(error) }
+                    act { c in
+                        try await c.slideshow(folder: memories?.folder, start: true)
+                        fleet.say("Slideshow", "Family Memories is playing on \(c.hub.name).")
                     }
                 } label: { Image(systemName: "play.rectangle.on.rectangle") }
                 .disabled(memories?.items.contains { !$0.video } != true)
+                .accessibilityLabel("Slideshow on TV")
                 PhotosPicker(selection: $picks, matching: .any(of: [.images, .videos])) { Image(systemName: "plus") }
                     .disabled(uploading != nil)
                 #if os(macOS)
@@ -153,12 +162,20 @@ struct MemoriesView: View {
             if case .success(let urls) = r { Task { await addFiles(urls) } }
         }
         .task { await load() }
+        .confirmationDialog(deleting?.video == true ? "Delete This Video?" : "Delete This Photo?",
+                            isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }),
+                            titleVisibility: .visible, presenting: deleting) { item in
+            Button("Delete", role: .destructive) { act { c in memories = try await c.deleteMemory(item) } }
+            Button("Cancel", role: .cancel) {}
+        } message: { _ in
+            Text("It’s removed from Family Memories on the TVs. This can’t be undone.")
+        }
         #if os(iOS)
         .fullScreenCover(item: $viewing) { item in
-            MemoryViewer(items: memories?.items ?? [], start: item, onChange: { memories = $0 }).zoomDestination(item.path, zoom)
+            MemoryViewer(items: memories?.items ?? [], start: item, folder: memories?.folder, onChange: { memories = $0 }).zoomDestination(item.path, zoom)
         }
         #else
-        .sheet(item: $viewing) { item in MemoryViewer(items: memories?.items ?? [], start: item, onChange: { memories = $0 }).macResizable(width: 1000, height: 720, minWidth: 600, minHeight: 450) }
+        .sheet(item: $viewing) { item in MemoryViewer(items: memories?.items ?? [], start: item, folder: memories?.folder, onChange: { memories = $0 }).macResizable(width: 1000, height: 720, minWidth: 600, minHeight: 450) }
         #endif
     }
 
@@ -173,21 +190,28 @@ struct MemoriesView: View {
     }
 
     @ViewBuilder private func itemMenu(_ item: MemoryItem) -> some View {
-        Button { act { try await client?.showMemory(item) } } label: { Label(item.video ? "Play on TV" : "Show on TV", systemImage: "tv") }
+        Button { act { c in try await c.showMemory(item) } } label: { Label(item.video ? "Play on TV" : "Show on TV", systemImage: "tv") }
         if !item.video {
-            Button { act { try await client?.background(item.path); fleet.say("Background set", "It's the TV's background now.") } } label: { Label("Set as TV Background", systemImage: "photo.on.rectangle") }
+            Button { act { c in try await c.background(item.path); fleet.say("Background Set", "It’s \(c.hub.name)’s background now.") } } label: { Label("Set as TV Background", systemImage: "photo.on.rectangle") }
         }
-        Button(role: .destructive) { act { memories = try await client?.deleteMemory(item) } } label: { Label("Delete", systemImage: "trash") }
+        Button(role: .destructive) { deleting = item } label: { Label("Delete", systemImage: "trash") }
     }
 
-    private func act(_ op: @escaping () async throws -> Void) { Task { do { try await op() } catch { fleet.show(error) } } }
+    /// [op] on the TV that holds Family Memories; says so when there's none, or when the TV says no.
+    private func act(_ op: @escaping (TVClient) async throws -> Void) {
+        guard let c = client else { fleet.show(TVError.notPaired); return }
+        Task { do { try await op(c) } catch { fleet.show(error) } }
+    }
 
     private func load() async {
-        guard let c = client else { return }
+        guard let c = client else { error = TVError.notPaired.localizedDescription; return }
         do {
             memories = try await c.memories(); error = nil
             if UserDefaults.standard.string(forKey: "route") == "photo", viewing == nil { viewing = memories?.items.first }
-        } catch { self.error = error.localizedDescription }
+        } catch {
+            if Task.isCancelled { return }
+            self.error = error.localizedDescription
+        }
     }
 
     // MARK: Adding
@@ -304,11 +328,17 @@ struct MemoryViewer: View {
     @Environment(\.dismiss) private var dismiss
     var items: [MemoryItem]
     @State var start: MemoryItem
+    /// The Family Memories folder, so Slideshow on TV shows these photos (not whatever folder it last showed).
+    var folder: String? = nil
     var onChange: (Memories) -> Void
     @State private var current: String = ""
     @State private var follow = false
     @State private var shareURL: URL?
     @State private var chrome = true
+    @State private var confirmDelete = false
+    #if os(macOS)
+    @FocusState private var keys: Bool
+    #endif
 
     private var client: TVClient? { fleet.hubClient() }
     private var item: MemoryItem? { items.first { $0.path == current } }
@@ -316,16 +346,7 @@ struct MemoryViewer: View {
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
-            TabView(selection: $current) {
-                ForEach(items) { m in
-                    ZoomableImage(url: client?.photoURL(m)).tag(m.path)
-                        .onTapGesture { withAnimation(.easeInOut(duration: 0.2)) { chrome.toggle() } }
-                }
-            }
-            #if os(iOS)
-            .tabViewStyle(.page(indexDisplayMode: .never))
-            #endif
-            .ignoresSafeArea()
+            photos
             if chrome { controls.transition(.opacity) }
         }
         .environment(\.colorScheme, .dark)
@@ -334,11 +355,67 @@ struct MemoryViewer: View {
             guard follow, let it = item else { return }
             try? await Task.sleep(nanoseconds: 160_000_000)
             guard !Task.isCancelled else { return }
-            do { try await client?.showMemory(it) } catch { fleet.show(error); follow = false }
+            do {
+                guard let c = client else { throw TVError.notPaired }
+                try await c.showMemory(it)
+            } catch {
+                if Task.isCancelled { return }
+                follow = false
+                fleet.show(error)
+            }
         }
+        .confirmationDialog(item?.video == true ? "Delete This Video?" : "Delete This Photo?", isPresented: $confirmDelete, titleVisibility: .visible) {
+            Button("Delete", role: .destructive) { delete() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("It’s removed from Family Memories on the TVs. This can’t be undone.")
+        }
+        // Errors from here show over the viewer, not hidden behind it until it closes.
+        .sheetBanner()
         #if os(iOS)
         .sheet(item: Binding(get: { shareURL.map { ShareItem(url: $0) } }, set: { shareURL = $0?.url })) { ShareSheet(items: [$0.url]) }
+        #else
+        // ← and → go through them, as in Photos.
+        .focusable()
+        .focusEffectDisabled()
+        .focused($keys)
+        .onAppear { keys = true }
+        .onKeyPress(.leftArrow) { step(-1); return .handled }
+        .onKeyPress(.rightArrow) { step(1); return .handled }
         #endif
+    }
+
+    #if os(iOS)
+    private var photos: some View {
+        TabView(selection: $current) {
+            ForEach(items) { m in
+                ZoomableImage(url: client?.photoURL(m)).tag(m.path)
+                    .onTapGesture { withAnimation(.easeInOut(duration: 0.2)) { chrome.toggle() } }
+            }
+        }
+        .tabViewStyle(.page(indexDisplayMode: .never))
+        .ignoresSafeArea()
+    }
+    #else
+    /// The Mac has no swiping pages (a plain TabView there is a strip of blank tabs): one photo, with the arrows.
+    private var photos: some View {
+        ZStack {
+            if let m = item {
+                ZoomableImage(url: client?.photoURL(m))
+                    .id(m.path)
+                    .transition(.opacity)
+                    .onTapGesture { withAnimation(.easeInOut(duration: 0.2)) { chrome.toggle() } }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .ignoresSafeArea()
+    }
+    #endif
+
+    /// The next (or previous) photo, when there is one.
+    private func step(_ by: Int) {
+        guard let i = items.firstIndex(where: { $0.path == current }), items.indices.contains(i + by) else { return }
+        withAnimation(.easeInOut(duration: 0.2)) { current = items[i + by].path }
     }
 
     private var controls: some View {
@@ -356,16 +433,29 @@ struct MemoryViewer: View {
                 }
                 Spacer()
                 Menu {
-                    if item?.video == false {
-                        Button { act { try await client?.background(item!.path); fleet.say("Background Set", "It’s the TV’s background now.") } } label: { Label("Set as TV Background", systemImage: "photo.on.rectangle") }
+                    if let it = item, !it.video {
+                        Button { act { c in try await c.background(it.path); fleet.say("Background Set", "It’s \(c.hub.name)’s background now.") } } label: { Label("Set as TV Background", systemImage: "photo.on.rectangle") }
                     }
-                    Button { act { try await client?.slideshow(folder: nil, start: true) } } label: { Label("Slideshow on TV", systemImage: "play.rectangle") }
+                    Button {
+                        act { c in
+                            try await c.slideshow(folder: folder, start: true)
+                            fleet.say("Slideshow", "Family Memories is playing on \(c.hub.name).")
+                        }
+                    } label: { Label("Slideshow on TV", systemImage: "play.rectangle") }
                 } label: {
                     Image(systemName: "ellipsis").font(.system(size: 17, weight: .semibold)).frame(width: 44, height: 44).glass(Circle())
                 }
                 .menuStyle(.button).buttonStyle(.plain)
             }
             Spacer()
+            #if os(macOS)
+            HStack {
+                GlassCircle(symbol: "chevron.left") { step(-1) }.opacity(items.first?.path == current ? 0.35 : 1)
+                Spacer()
+                GlassCircle(symbol: "chevron.right") { step(1) }.opacity(items.last?.path == current ? 0.35 : 1)
+            }
+            Spacer()
+            #endif
             HStack {
                 GlassCircle(symbol: "square.and.arrow.up") { share() }
                 Spacer()
@@ -379,10 +469,7 @@ struct MemoryViewer: View {
                 }
                 .buttonStyle(PressScale(scale: 0.96))
                 Spacer()
-                GlassCircle(symbol: "trash") {
-                    guard let it = item else { return }
-                    act { if let m = try await client?.deleteMemory(it) { onChange(m); dismiss() } }
-                }
+                GlassCircle(symbol: "trash") { if item != nil { confirmDelete = true } }
             }
         }
         .padding(.horizontal, 18)
@@ -390,10 +477,24 @@ struct MemoryViewer: View {
         .glassGroup()
     }
 
-    private func act(_ op: @escaping () async throws -> Void) { Task { do { try await op() } catch { fleet.show(error) } } }
+    /// [op] on the TV that holds Family Memories; says so when there's none, or when the TV says no.
+    private func act(_ op: @escaping (TVClient) async throws -> Void) {
+        guard let c = client else { fleet.show(TVError.notPaired); return }
+        Task { do { try await op(c) } catch { fleet.show(error) } }
+    }
+
+    private func delete() {
+        guard let it = item else { return }
+        act { c in
+            let m = try await c.deleteMemory(it)
+            onChange(m)
+            dismiss()
+        }
+    }
 
     private func share() {
-        guard let it = item, let c = client else { return }
+        guard let it = item else { return }
+        guard let c = client else { fleet.show(TVError.notPaired); return }
         Task {
             do {
                 let (tmp, _) = try await URLSession.woodruff.download(from: it.video ? c.downloadURL(it.path) : c.photoURL(it))

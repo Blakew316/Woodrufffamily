@@ -1,6 +1,9 @@
 import Foundation
 import UserNotifications
 import WoodruffKit
+#if os(macOS)
+import AppKit
+#endif
 
 /// Local notifications: announcements sent to this device, and TVs that go off or need attention, each with
 /// actions (open the TV, hide the alert, open the remote).
@@ -38,6 +41,9 @@ enum Notifier {
             case .needsAttention(let tv) where fleetAlerts:
                 post("\(tv.name) Needs Attention", tv.health?.first ?? (tv.link == "refused" ? "Its link stopped working." : ""),
                      id: "att-\(tv.id)", category: "tv.alert", tv: tv.id)
+            case .cameOnline(let tv):
+                // It answers again: its "Can't Reach" alert no longer holds, so it doesn't stay standing.
+                UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ["off-\(tv.id)"])
             default: break
             }
         }
@@ -70,7 +76,8 @@ enum Notifier {
 /// What a tap on a notification (or one of its actions) does.
 final class NotificationHandler: NSObject, UNUserNotificationCenterDelegate, @unchecked Sendable {
     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
-        [.banner, .sound]
+        // Kept in Notification Center too: an alert that arrives while Woodruff is open was only a passing banner.
+        [.banner, .list, .sound]
     }
 
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
@@ -83,14 +90,26 @@ final class NotificationHandler: NSObject, UNUserNotificationCenterDelegate, @un
             if let cameraID, action == UNNotificationDefaultActionIdentifier {
                 UserDefaults.standard.set("home", forKey: "section")
                 CameraStreams.shared.requested = cameraID
+                #if os(macOS)
+                // The camera opens in Woodruff's window: bring it forward if it's tucked away in the Dock.
+                if let w = MainWindow.current {
+                    if w.isMiniaturized { w.deminiaturize(nil) }
+                    w.makeKeyAndOrderFront(nil)
+                }
+                #endif
                 return
             }
             switch action {
             case "hide":
                 if let tvID, let tv = fleet.tv(tvID) { fleet.hideAlerts(tv) }
             case "remote":
-                if let tvID { fleet.selectedID = tvID }
+                if let tvID { fleet.remoteAll = false; fleet.selectedID = tvID }
+                #if os(macOS)
+                // The Mac has no Remote page: its remote slides out beside the window.
+                fleet.remotePanel = true
+                #else
                 UserDefaults.standard.set("remote", forKey: "section")
+                #endif
             default:
                 if tvID != nil { UserDefaults.standard.set("settings", forKey: "section") }
             }

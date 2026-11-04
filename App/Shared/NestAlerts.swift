@@ -159,7 +159,16 @@ final class NestAlerts {
         c.sound = .default
         c.threadIdentifier = "nest-\(camera)"
         c.userInfo = ["camera": camera]
-        Notifier.deliver(c, id: "nest-\(key)")
+        Notifier.deliver(c, id: "nest-" + Self.shortID(key))
+    }
+
+    /// A short name for an event, the same on every device. Google's event ids are long, and the Mac's push to the
+    /// iPhones carries at most 64 characters of it (Apple's limit), so the iPhone's own alert for the same event had
+    /// a different id and showed a second time; with the same short id the two are one notification.
+    static func shortID(_ key: String) -> String {
+        var h: UInt64 = 0xcbf29ce484222325
+        for b in key.utf8 { h = (h ^ UInt64(b)) &* 0x100000001b3 }
+        return String(h, radix: 16)
     }
 }
 

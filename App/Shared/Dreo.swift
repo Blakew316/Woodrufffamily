@@ -91,6 +91,9 @@ final class Dreo {
         socketFailures = 0
         pending = []
         fans = [:]
+        for t in confirms.values { t.cancel() }
+        confirms = [:]
+        sentAt = [:]
         AccessoryStore.shared.fromDreo = []
     }
 
@@ -166,7 +169,11 @@ final class Dreo {
                 fans = next
             }
             for sn in Array(fans.keys) {
+                let asked = Date()
                 guard let mixed = (try? await request("GET", "/api/user-device/device/state", query: ["deviceSn": sn]))?["mixed"] as? [String: Any] else { continue }
+                // A change sent while this was being read (or just before, Dreo's cloud still catching up) mustn't
+                // be undone by it: the fan's own report, and the check a few seconds after the change, say how it is.
+                if let sent = sentAt[sn], sent > asked.addingTimeInterval(-5) { continue }
                 apply(sn, mixed.mapValues { ($0 as? [String: Any])?["state"] ?? $0 }, initial: true)
             }
             if token.isEmpty { try await login() }   // a 401 on a state read: sign in again for the socket and next time
@@ -311,6 +318,8 @@ final class Dreo {
         apply(sn, params)
         publish()
         error = nil
+        sentAt[sn] = Date()
+        confirmSoon(sn)
         if let i = pending.firstIndex(where: { $0.sn == sn }) {
             pending[i].params.merge(params) { _, new in new }
             pending[i].at = Date()
@@ -318,6 +327,27 @@ final class Dreo {
             pending.append(Command(sn: sn, params: params, at: Date()))
         }
         flush()
+    }
+
+    /// When a change last went to each fan: state reads begun before then don't undo it.
+    @ObservationIgnored private var sentAt: [String: Date] = [:]
+    @ObservationIgnored private var confirms: [String: Task<Void, Never>] = [:]
+
+    /// Reads the fan's state a few seconds after the last change to it, so one Dreo didn't carry out (the fan
+    /// dropped off its Wi‑Fi, the command was lost) shows as it really is in moments, not at the next minute's
+    /// refresh. The fan's own live report usually confirms it sooner.
+    private func confirmSoon(_ sn: String) {
+        confirms[sn]?.cancel()
+        confirms[sn] = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 6_000_000_000)
+            guard let self, !Task.isCancelled else { return }
+            self.confirms[sn] = nil
+            guard let mixed = (try? await self.request("GET", "/api/user-device/device/state", query: ["deviceSn": sn]))?["mixed"] as? [String: Any] else { return }
+            // Changed again meanwhile: that change's own check looks later.
+            guard (self.sentAt[sn] ?? .distantPast) < Date().addingTimeInterval(-5) else { return }
+            self.apply(sn, mixed.mapValues { ($0 as? [String: Any])?["state"] ?? $0 })
+            self.publish()
+        }
     }
 
     /// Sends what's waiting, opening the socket (and signing in) first if it's down. A send that fails ends the
@@ -342,6 +372,9 @@ final class Dreo {
                       let text = String(data: data, encoding: .utf8) else { pending.removeFirst(); continue }
                 do {
                     try await ws.send(.string(text))
+                    // A change that waited for the socket counts from now: the fan only just got it.
+                    sentAt[c.sn] = Date()
+                    confirmSoon(c.sn)
                     // Changed again while it was going: it stays, and the loop sends the newer one.
                     if let i = pending.firstIndex(where: { $0.sn == c.sn }), pending[i].at == c.at { pending.remove(at: i) }
                 } catch {

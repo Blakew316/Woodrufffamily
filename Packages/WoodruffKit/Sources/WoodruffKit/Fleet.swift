@@ -182,6 +182,8 @@ public final class Fleet {
     @ObservationIgnored private var inboxLoop: Task<Void, Never>?
     @ObservationIgnored private var slowLoop: Task<Void, Never>?
     private var lgRemotes: [String: LGRemote] = [:]
+    /// The sign-in each LG connection was made with.
+    @ObservationIgnored private var lgKeys: [String: String] = [:]
 
     // Each hub is asked on its own clock and its answer shows the moment it arrives (see `askDue` and `take`).
     /// Each hub's latest answer (none yet: still waiting for its first).
@@ -872,9 +874,13 @@ public final class Fleet {
 
     public func lg(for tv: FleetTV) -> LGRemote? {
         guard let host = extras[tv.id]?.lgHost, !host.isEmpty else { return nil }
-        if let r = lgRemotes[tv.id], r.host == host { return r }
-        let r = LGRemote(host: host, clientKey: Keychain.get("lg.\(tv.id)"))
+        // The saved sign-in may have just arrived from another family device: connect afresh with it.
+        let key = Keychain.get("lg.\(tv.id)")
+        if let r = lgRemotes[tv.id], r.host == host, lgKeys[tv.id] == key { return r }
+        if let old = lgRemotes[tv.id] { Task { await old.disconnect() } }
+        let r = LGRemote(host: host, clientKey: key)
         lgRemotes[tv.id] = r
+        lgKeys[tv.id] = key
         return r
     }
 
@@ -886,6 +892,7 @@ public final class Fleet {
         guard let r = lg(for: tv) else { return }
         let key = try await r.connect()
         Keychain.set(key, for: "lg.\(tv.id)")
+        lgKeys[tv.id] = key
         if let mac = await r.macAddress() { extras[tv.id]?.mac = mac }
     }
 

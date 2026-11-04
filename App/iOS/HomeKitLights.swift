@@ -50,6 +50,12 @@ final class HomeKitLights: NSObject, HMHomeManagerDelegate, HMHomeDelegate, HMAc
         }
     }
 
+    /// Reads one accessory again (its page or the thermostat controls just opened).
+    func refresh(device id: String) {
+        guard let a = others[id] ?? accessories[id] else { refresh(); return }
+        for s in a.services where s.serviceType != HMServiceTypeAccessoryInformation { read(s) }
+    }
+
     /// Looks through Apple Home again from the start (a new accessory, a thermostat that hasn't shown up).
     func reload() {
         if manager == nil { start() } else { load() }
