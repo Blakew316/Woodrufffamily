@@ -582,7 +582,7 @@ struct ThermostatChip: View {
                     Text(t?.temperature.map { temperatureText($0) } ?? "--")
                         .font(.system(size: 17, weight: .semibold, design: .rounded)).monospacedDigit()
                         .contentTransition(.numericText())
-                    Text(t.map(subtitle) ?? "Thermostat")
+                    Text(t.map { subtitle($0) } ?? "Thermostat")
                         .font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary).lineLimit(1)
                 }
             }
