@@ -311,6 +311,8 @@ final class CameraStreams {
     private(set) var status: [String: String] = [:]
     /// The camera open in the big view (its tile shows a still while it's there).
     var expanded: String?
+    /// A camera to open in the big view straight away (a tapped camera or doorbell alert).
+    var requested: String?
     @ObservationIgnored private var players: [String: LivePlayer] = [:]
     @ObservationIgnored private var watching = 0
     @ObservationIgnored private var idle: Task<Void, Never>?

@@ -186,6 +186,12 @@ struct RootView: View {
         .alert(item: Binding(get: { fleet.banner }, set: { fleet.banner = $0 })) { b in
             Alert(title: Text(b.title), message: Text(b.message), dismissButton: .default(Text("OK")))
         }
+        // A tapped "Person seen at the doorbell" opens that camera live. Waits for the camera list if the app
+        // was just launched by the tap.
+        .sheet(item: Binding(
+            get: { CameraStreams.shared.requested.flatMap { id in NestCameras.shared.cameras.first { $0.id == id } } },
+            set: { if $0 == nil { CameraStreams.shared.requested = nil } }
+        )) { cam in CameraLiveView(camera: cam) }
     }
 
     #if os(iOS)

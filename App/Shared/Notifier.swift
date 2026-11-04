@@ -75,9 +75,16 @@ final class NotificationHandler: NSObject, UNUserNotificationCenterDelegate, @un
 
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
         let tvID = response.notification.request.content.userInfo["tv"] as? String
+        let cameraID = response.notification.request.content.userInfo["camera"] as? String
         let action = response.actionIdentifier
         await MainActor.run {
             let fleet = Fleet.shared
+            // A camera or doorbell alert: straight to that camera's live view.
+            if let cameraID, action == UNNotificationDefaultActionIdentifier {
+                UserDefaults.standard.set("home", forKey: "section")
+                CameraStreams.shared.requested = cameraID
+                return
+            }
             switch action {
             case "hide":
                 if let tvID, let tv = fleet.tv(tvID) { fleet.hideAlerts(tv) }
