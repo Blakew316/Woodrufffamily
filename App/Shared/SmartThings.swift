@@ -512,6 +512,22 @@ final class SmartThings {
             let words = ["cleaning": "Cleaning", "homing": "Going Home", "charging": "Charging", "idle": "Docked", "pause": "Paused", "alarm": "Needs Help", "after": "Done", "powerOff": "Off"]
             d.status = (move.flatMap { words[$0] } ?? "Ready") + (battery.map { " · \($0)%" } ?? "")
             d.alert = move == "alarm"
+        } else if c.contains("thermostatMode") || c.contains("thermostatHeatingSetpoint") || c.contains("thermostatCoolingSetpoint") {
+            // A thermostat (an ecobee added to SmartThings).
+            d.kind = .thermostat
+            d.temperature = celsius(st, "main")
+            d.heatTo = celsius(st, "main", "thermostatHeatingSetpoint", "heatingSetpoint")
+            d.coolTo = celsius(st, "main", "thermostatCoolingSetpoint", "coolingSetpoint")
+            let mode = (value(st, "thermostatMode", "thermostatMode") as? String).map { m -> String in
+                let l = m.lowercased()
+                return l.contains("heat") ? "heat" : l
+            }
+            d.thermostatMode = mode
+            d.modes = ((value(st, "thermostatMode", "supportedThermostatModes") as? [String]) ?? []).map { $0.lowercased() }
+            d.target = mode == "cool" ? d.coolTo : d.heatTo
+            d.action = (value(st, "thermostatOperatingState", "thermostatOperatingState") as? String)?.lowercased()
+            d.humidity = (value(st, "relativeHumidityMeasurement", "humidity") as? NSNumber)?.intValue
+            d.status = thermostatStatus(d)
         } else if c.contains("airConditionerMode") {
             d.kind = .aircon
             let mode = value(st, "airConditionerMode", "airConditionerMode") as? String
@@ -579,6 +595,19 @@ final class SmartThings {
         perform(d, c, expect: expect)
     }
 
+    /// Sets a thermostat's heat or cool temperature, in the units the thermostat uses (whole degrees in °F).
+    private func setpoint(_ d: HomeDevice, heating: Bool, _ celsiusValue: Double) {
+        let cap = heating ? "thermostatHeatingSetpoint" : "thermostatCoolingSetpoint"
+        let attr = heating ? "heatingSetpoint" : "coolingSetpoint"
+        let fahrenheit = unit(d.id, cap, attr) == "F" || (unit(d.id, cap, attr) == nil && Locale.current.measurementSystem == .us)
+        let v: Any = fahrenheit ? Int((celsiusValue * 9 / 5 + 32).rounded()) : (celsiusValue * 2).rounded() / 2
+        updateLocal(d.id) { x in
+            if heating { x.heatTo = celsiusValue } else { x.coolTo = celsiusValue }
+            x.status = thermostatStatus(x)
+        }
+        command(d, cap, heating ? "setHeatingSetpoint" : "setCoolingSetpoint", [v], sets: attr, to: v)
+    }
+
     /// Switches the appliance (or one part of it) on or off.
     func power(_ d: HomeDevice, _ on: Bool, component: String = "main") {
         guard component == "main" else {
@@ -630,6 +659,12 @@ final class SmartThings {
         switch cmd {
         case .power(let on): power(d, on)
         case .machine(let m): machine(d, m)
+        case .thermostatMode(let m):
+            updateLocal(d.id) { x in x.thermostatMode = m; x.status = thermostatStatus(x) }
+            command(d, "thermostatMode", "setThermostatMode", [m], sets: "thermostatMode", to: m)
+        case .heatTo(let t): setpoint(d, heating: true, t)
+        case .coolTo(let t): setpoint(d, heating: false, t)
+        case .target(let t): setpoint(d, heating: d.thermostatMode != "cool", t)
         default: return
         }
     }

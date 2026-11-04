@@ -183,10 +183,16 @@ final class HomeKitLights: NSObject, HMHomeManagerDelegate, HMAccessoryDelegate 
             d.kind = .thermostat
             d.temperature = num(a, HMCharacteristicTypeCurrentTemperature)
             d.target = num(a, HMCharacteristicTypeTargetTemperature)
-            let mode = Int(num(a, HMCharacteristicTypeCurrentHeatingCooling) ?? 0)
-            var s = d.temperature.map { "\(temperatureText($0)) now" } ?? ""
-            if let t = d.target, mode != 0 { s = "\(mode == 1 ? "Heating" : "Cooling") to \(temperatureText(t))" + (s.isEmpty ? "" : " · " + s) }
-            d.status = s.isEmpty ? "Thermostat" : s
+            let target = Int(num(a, HMCharacteristicTypeTargetHeatingCooling) ?? 0)
+            d.thermostatMode = ["off", "heat", "cool", "auto"][max(0, min(3, target))]
+            d.modes = ["off", "heat", "cool", "auto"]
+            let current = Int(num(a, HMCharacteristicTypeCurrentHeatingCooling) ?? 0)
+            d.action = current == 1 ? "heating" : current == 2 ? "cooling" : "idle"
+            // In heat or cool the target is the one temperature; in auto it holds between two.
+            d.heatTo = target == 3 ? num(a, HMCharacteristicTypeHeatingThreshold) ?? d.target : d.target
+            d.coolTo = target == 3 ? num(a, HMCharacteristicTypeCoolingThreshold) ?? d.target : d.target
+            d.humidity = num(a, HMCharacteristicTypeCurrentRelativeHumidity).map { Int($0.rounded()) }
+            d.status = thermostatStatus(d)
         case HMServiceTypeWindowCovering:
             d.kind = .blinds
             let pos = Int(num(a, HMCharacteristicTypeCurrentPosition) ?? 0)
@@ -252,6 +258,12 @@ final class HomeKitLights: NSObject, HMHomeManagerDelegate, HMAccessoryDelegate 
             }
             steps.append((HMCharacteristicTypeRotationSpeed, Double(max(0, min(100, v)))))
         case .swing(let on): steps = [(HMCharacteristicTypeSwingMode, on ? 1 : 0)]
+        case .thermostatMode(let m):
+            steps = [(HMCharacteristicTypeTargetHeatingCooling, ["off": 0, "heat": 1, "cool": 2, "auto": 3][m] ?? 0)]
+        case .heatTo(let t):
+            steps = [(d.thermostatMode == "auto" ? HMCharacteristicTypeHeatingThreshold : HMCharacteristicTypeTargetTemperature, t)]
+        case .coolTo(let t):
+            steps = [(d.thermostatMode == "auto" ? HMCharacteristicTypeCoolingThreshold : HMCharacteristicTypeTargetTemperature, t)]
         case .machine: return
         }
         guard a.isReachable else {
@@ -265,7 +277,9 @@ final class HomeKitLights: NSObject, HMHomeManagerDelegate, HMAccessoryDelegate 
             var failure: Error?
             for step in plan {
                 guard let acc = self.others[id], let c = self.characteristic(acc, step.0) else { continue }
-                if let e = await self.write(c, step.1) { failure = e; break }
+                // Temperatures and levels go in within the accessory's range and steps (HomeKit refuses others).
+                let v: Any = (step.1 as? Double).map { self.aligned(c, $0) } ?? step.1
+                if let e = await self.write(c, v) { failure = e; break }
             }
             if let failure {
                 let verb: String
@@ -284,6 +298,18 @@ final class HomeKitLights: NSObject, HMHomeManagerDelegate, HMAccessoryDelegate 
                 self.publishSoon()
             }
         }
+    }
+
+    /// [v] clamped to the characteristic's range and rounded to its step.
+    private func aligned(_ c: HMCharacteristic, _ v: Double) -> Double {
+        var x = v
+        if let lo = c.metadata?.minimumValue?.doubleValue { x = max(lo, x) }
+        if let hi = c.metadata?.maximumValue?.doubleValue { x = min(hi, x) }
+        if let step = c.metadata?.stepValue?.doubleValue, step > 0 {
+            let base = c.metadata?.minimumValue?.doubleValue ?? 0
+            x = base + ((x - base) / step).rounded() * step
+        }
+        return x
     }
 
     /// A writable characteristic of that type, in any of the accessory's services.

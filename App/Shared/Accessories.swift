@@ -32,6 +32,13 @@ struct HomeDevice: Identifiable, Hashable {
     var mode: String?             // vacuum movement, AC mode…
     var speed: Int?               // fan 0…100
     var swing: Bool?              // fan oscillating
+    // Thermostats (an ecobee through Apple Home or SmartThings).
+    var thermostatMode: String?   // off / heat / cool / auto
+    var modes: [String] = []      // the modes it offers
+    var heatTo: Double?           // °C
+    var coolTo: Double?           // °C
+    var humidity: Int?
+    var action: String?           // heating / cooling / idle
 
     /// Busy right now (for the running animations).
     var isRunning: Bool {
@@ -57,6 +64,9 @@ enum DeviceCommand {
     case machine(String)
     case speed(Int)
     case swing(Bool)
+    case thermostatMode(String)
+    case heatTo(Double)
+    case coolTo(Double)
 }
 
 @Observable @MainActor
@@ -71,7 +81,10 @@ final class AccessoryStore {
 
     var all: [HomeDevice] {
         let names = SmartHome.shared.names
-        return (fromHome + fromSmartThings + fromDreo).map { d in
+        // An ecobee linked to both Apple Home and SmartThings shows once (the Apple Home one).
+        let homeThermostats = Set(fromHome.filter { $0.kind == .thermostat }.map { $0.name.lowercased() })
+        let st = fromSmartThings.filter { !($0.kind == .thermostat && homeThermostats.contains($0.name.lowercased())) }
+        return (fromHome + st + fromDreo).map { d in
             var d = d
             if let n = names[d.id], !n.isEmpty { d.name = n }
             return d
@@ -153,6 +166,7 @@ struct DeviceTile: View {
         case .blinds: return (device.position ?? 0) > 0
         case .washer, .dryer, .dishwasher, .oven: return device.machineState == "run"
         case .vacuum: return device.mode == "cleaning"
+        case .thermostat: return device.action == "heating" || device.action == "cooling"
         default: return device.isOn == true
         }
     }
@@ -329,16 +343,7 @@ struct DeviceDetailView: View {
                 Text("\(Int(position))% open").font(.subheadline).foregroundStyle(.secondary)
             }
         case .thermostat:
-            if let t = d.target {
-                HStack(spacing: 24) {
-                    GlassCircle(symbol: "minus", size: 48) { store.send(d, .target(t - 0.5)) }
-                    VStack(spacing: 2) {
-                        Text(temperatureText(t)).font(.system(size: 40, weight: .semibold)).monospacedDigit()
-                        Text("Set To").font(.caption).foregroundStyle(.secondary)
-                    }
-                    GlassCircle(symbol: "plus", size: 48) { store.send(d, .target(t + 0.5)) }
-                }
-            }
+            ThermostatControls(device: d)
         case .washer, .dryer, .dishwasher, .oven:
             if let end = d.endsAt, end > .now, d.machineState == "run" {
                 Text(end, style: .timer).font(.system(size: 34, weight: .semibold)).monospacedDigit()
@@ -384,7 +389,7 @@ struct DevicesListView: View {
                 #if os(iOS)
                 Text("Everything in Apple Home (plugs, locks, thermostats, sensors, blinds, HomePod temperature) shows here, plus Samsung appliances once SmartThings is connected. Tap one to rename it or choose its room.")
                 #else
-                Text("Samsung appliances show here once SmartThings is connected. Apple Home accessories show in Woodruff on iPhone.")
+                Text("Samsung appliances show here once SmartThings is connected. Apple Home accessories show in Woodruff on iPhone. An ecobee thermostat shows here once it's added to the SmartThings app (on iPhone it also comes in through Apple Home).")
                 #endif
             }
             SmartThingsSection()
@@ -437,4 +442,115 @@ struct FanControls: View {
         .onAppear { speed = Double(device.speed ?? 0) }
         .onChange(of: device.speed) { _, v in if !editing { speed = Double(v ?? 0) } }
     }
+}
+
+// MARK: - Thermostat
+
+/// An ecobee (or any thermostat): what it is now, its mode, and the temperature(s) it's holding. Taps on
+/// + and − show straight away and are sent together a moment after the last one.
+struct ThermostatControls: View {
+    var device: HomeDevice
+    private let store = AccessoryStore.shared
+    @State private var heat: Double?
+    @State private var cool: Double?
+    @State private var sendSoon: Task<Void, Never>?
+
+    /// One degree in the family's units (°F steps on a US phone, half degrees in °C elsewhere).
+    private var step: Double { Locale.current.measurementSystem == .us ? 5.0 / 9.0 : 0.5 }
+    private var modes: [String] {
+        let wanted = ["off", "heat", "cool", "auto"]
+        let offered = device.modes.isEmpty ? wanted : wanted.filter { device.modes.contains($0) }
+        return offered.isEmpty ? wanted : offered
+    }
+
+    var body: some View {
+        let d = device
+        VStack(spacing: 22) {
+            VStack(spacing: 4) {
+                Text(d.temperature.map { temperatureText($0) } ?? "--")
+                    .font(.system(size: 64, weight: .semibold, design: .rounded)).monospacedDigit()
+                    .contentTransition(.numericText())
+                Text([actionWord(d), d.humidity.map { "\($0)% humidity" }].compactMap { $0 }.joined(separator: " · "))
+                    .font(.subheadline).foregroundStyle(actionColor(d))
+            }
+            Picker("Mode", selection: Binding(get: { d.thermostatMode ?? "off" }, set: { store.send(d, .thermostatMode($0)) })) {
+                ForEach(modes, id: \.self) { m in Text(modeName(m)).tag(m) }
+            }
+            .pickerStyle(.segmented)
+            .frame(maxWidth: 360)
+            .disabled(!d.reachable)
+            HStack(spacing: 28) {
+                if d.thermostatMode == "heat" || d.thermostatMode == "auto", let h = heat ?? d.heatTo ?? d.target {
+                    setpoint("Heat To", h, tint: .orange) { v in heat = v; schedule { store.send(d, .heatTo(v)) } }
+                }
+                if d.thermostatMode == "cool" || d.thermostatMode == "auto", let c = cool ?? d.coolTo ?? d.target {
+                    setpoint("Cool To", c, tint: .cyan) { v in cool = v; schedule { store.send(d, .coolTo(v)) } }
+                }
+            }
+            .disabled(!d.reachable)
+            if d.thermostatMode == "off" { Text("Off").font(.headline).foregroundStyle(.secondary) }
+        }
+        .frame(maxWidth: .infinity)
+        // A new reading from the thermostat replaces what was being typed once it's been sent.
+        .onChange(of: d.heatTo) { _, _ in if sendSoon == nil { heat = nil } }
+        .onChange(of: d.coolTo) { _, _ in if sendSoon == nil { cool = nil } }
+    }
+
+    private func setpoint(_ title: String, _ value: Double, tint: Color, set: @escaping (Double) -> Void) -> some View {
+        VStack(spacing: 10) {
+            Text(title).font(.caption.weight(.semibold)).foregroundStyle(tint)
+            HStack(spacing: 14) {
+                GlassCircle(symbol: "minus", size: 44) { set(value - step) }
+                Text(temperatureText(value))
+                    .font(.system(size: 34, weight: .semibold, design: .rounded)).monospacedDigit()
+                    .contentTransition(.numericText())
+                    .frame(minWidth: 70)
+                GlassCircle(symbol: "plus", size: 44) { set(value + step) }
+            }
+        }
+        .animation(.snappy, value: value)
+    }
+
+    private func schedule(_ send: @escaping () -> Void) {
+        sendSoon?.cancel()
+        sendSoon = Task {
+            try? await Task.sleep(nanoseconds: 700_000_000)
+            guard !Task.isCancelled else { return }
+            send()
+            sendSoon = nil
+        }
+    }
+
+    private func modeName(_ m: String) -> String {
+        ["off": "Off", "heat": "Heat", "cool": "Cool", "auto": "Auto"][m] ?? m.capitalized
+    }
+
+    private func actionWord(_ d: HomeDevice) -> String? {
+        guard d.reachable else { return "Offline" }
+        switch d.action {
+        case "heating": return "Heating"
+        case "cooling": return "Cooling"
+        case "idle": return "Idle"
+        default: return d.action.map { $0.capitalized }
+        }
+    }
+
+    private func actionColor(_ d: HomeDevice) -> Color {
+        switch d.action { case "heating": return .orange; case "cooling": return .cyan; default: return .secondary }
+    }
+}
+
+/// "Heating to 70° · 68° now", "Auto 68–74° · 70° now", "Off · 68° now".
+func thermostatStatus(_ d: HomeDevice) -> String {
+    let now = d.temperature.map { "\(temperatureText($0)) now" }
+    var lead: String
+    switch d.thermostatMode {
+    case "heat": lead = d.heatTo.map { "\(d.action == "heating" ? "Heating" : "Heat") to \(temperatureText($0))" } ?? "Heat"
+    case "cool": lead = d.coolTo.map { "\(d.action == "cooling" ? "Cooling" : "Cool") to \(temperatureText($0))" } ?? "Cool"
+    case "auto":
+        if let h = d.heatTo, let c = d.coolTo { lead = "Auto \(temperatureText(h))–\(temperatureText(c))" } else { lead = "Auto" }
+    case "off": lead = "Off"
+    default: lead = "Thermostat"
+    }
+    return [lead, now].compactMap { $0 }.joined(separator: " · ")
 }
