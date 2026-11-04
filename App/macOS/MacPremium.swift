@@ -105,7 +105,7 @@ struct MiniPlayerView: View {
             }
         }
         .padding(14)
-        .frame(width: 380)
+        .frame(minWidth: 320, idealWidth: 380, maxWidth: .infinity, maxHeight: .infinity)
         .background(.regularMaterial)
     }
 }

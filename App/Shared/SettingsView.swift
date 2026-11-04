@@ -222,7 +222,7 @@ struct TVsView: View {
                     .toolbar { ToolbarItem(placement: .confirmationAction) { Button(role: .close) { pairing = false } } }
             }
             #if os(macOS)
-            .frame(minWidth: 520, minHeight: 600)
+            .frame(minWidth: 520, idealWidth: 520, maxWidth: .infinity, minHeight: 600, idealHeight: 600, maxHeight: .infinity)
             #endif
         }
     }
@@ -469,7 +469,7 @@ struct DriveView: View {
         .formStyle(.grouped)
         .navigationTitle("Google Drive").inlineTitle()
         .onAppear { clientID = hub.s?.google?.clientId ?? "" }
-        .sheet(isPresented: $signIn) { if let tv = fleet.hubClient().flatMap({ fleet.tv($0.hub.id) }) { SignInSheet(grant: "drive", tv: tv) } }
+        .sheet(isPresented: $signIn) { if let tv = fleet.hubClient().flatMap({ fleet.tv($0.hub.id) }) { SignInSheet(grant: "drive", tv: tv).macResizable() } }
     }
 }
 
@@ -519,7 +519,7 @@ struct CamerasView: View {
         .formStyle(.grouped)
         .navigationTitle("Cameras").inlineTitle()
         .onAppear { project = hub.s?.nest?.project ?? ""; doorbell = hub.s?.nest?.doorbell ?? "" }
-        .sheet(isPresented: $signIn) { if let tv = fleet.hubClient().flatMap({ fleet.tv($0.hub.id) }) { SignInSheet(grant: "cameras", tv: tv) } }
+        .sheet(isPresented: $signIn) { if let tv = fleet.hubClient().flatMap({ fleet.tv($0.hub.id) }) { SignInSheet(grant: "cameras", tv: tv).macResizable() } }
     }
 }
 
@@ -540,7 +540,7 @@ struct MailView: View {
         }
         .formStyle(.grouped)
         .navigationTitle("Mail").inlineTitle()
-        .sheet(isPresented: $adding) { AddMailSheet(providers: hub.s?.providers ?? []) { hub.s = $0 } }
+        .sheet(isPresented: $adding) { AddMailSheet(providers: hub.s?.providers ?? []) { hub.s = $0 }.macResizable() }
     }
 }
 
@@ -646,7 +646,7 @@ struct AddMailSheet: View {
             }
         }
         #if os(macOS)
-        .frame(minWidth: 440, minHeight: 320)
+        .frame(minWidth: 440, idealWidth: 440, maxWidth: .infinity, minHeight: 320, idealHeight: 320, maxHeight: .infinity)
         #endif
     }
 

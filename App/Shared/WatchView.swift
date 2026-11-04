@@ -43,7 +43,7 @@ struct WatchView: View {
         #endif
         .navigationDestination(for: LibraryRef.self) { LibraryGrid(place: $0.place) }
         .sheet(item: Binding(get: { openTitle.map { TitleRef(id: $0) } }, set: { openTitle = $0?.id })) { ref in
-            TitleSheet(id: ref.id).zoomDestination(ref.id, zoom)
+            TitleSheet(id: ref.id).zoomDestination(ref.id, zoom).macResizable(width: 760, height: 820, minWidth: 520, minHeight: 500)
         }
         .environment(\.openTitle, OpenTitleAction { openTitle = $0 })
         .environment(\.zoomNamespace, zoom)
@@ -442,7 +442,7 @@ struct TitleSheet: View {
             .onChange(of: season) { _, _ in Task { await loadEpisodes() } }
         }
         #if os(macOS)
-        .frame(minWidth: 620, minHeight: 700)
+        .frame(minWidth: 620, idealWidth: 620, maxWidth: .infinity, minHeight: 700, idealHeight: 700, maxHeight: .infinity)
         #endif
     }
 
@@ -601,7 +601,7 @@ struct LibraryGrid: View {
         .navigationTitle(place == "shows" ? "TV Shows" : "Movies")
         .pageSearch(text: $query, prompt: place == "shows" ? "TV Shows" : "Movies")
         .environment(\.openTitle, OpenTitleAction { openTitle = $0 })
-        .sheet(item: Binding(get: { openTitle.map { TitleRef(id: $0) } }, set: { openTitle = $0?.id })) { TitleSheet(id: $0.id) }
+        .sheet(item: Binding(get: { openTitle.map { TitleRef(id: $0) } }, set: { openTitle = $0?.id })) { TitleSheet(id: $0.id).macResizable(width: 760, height: 820, minWidth: 520, minHeight: 500) }
         .toolbar {
             Menu {
                 Picker("Show", selection: $unwatched) { Text("All").tag(false); Text("Unwatched").tag(true) }
@@ -662,7 +662,7 @@ struct SearchPage: View {
         .navigationTitle("Search")
         .pageSearch(text: $query, prompt: "Movies and TV Shows")
         .environment(\.openTitle, OpenTitleAction { openTitle = $0 })
-        .sheet(item: Binding(get: { openTitle.map { TitleRef(id: $0) } }, set: { openTitle = $0?.id })) { TitleSheet(id: $0.id) }
+        .sheet(item: Binding(get: { openTitle.map { TitleRef(id: $0) } }, set: { openTitle = $0?.id })) { TitleSheet(id: $0.id).macResizable(width: 760, height: 820, minWidth: 520, minHeight: 500) }
         .task(id: query) {
             guard !query.isEmpty else { return }
             try? await Task.sleep(nanoseconds: 200_000_000)

@@ -296,6 +296,7 @@ struct SurroundCard: View {
             }
             .padding(24)
             .presentationDetents([.height(220)])
+            .macResizable(width: 380, height: 240, minWidth: 300, minHeight: 200)
         }
     }
 

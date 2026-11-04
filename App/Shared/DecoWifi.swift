@@ -438,7 +438,7 @@ struct WifiSection: View {
                 .buttonStyle(.plain)
                 .glass(RoundedRectangle(cornerRadius: 22, style: .continuous))
             }
-            .sheet(isPresented: $open) { NavigationStack { WifiView(inSheet: true) } }
+            .sheet(isPresented: $open) { NavigationStack { WifiView(inSheet: true) }.macResizable() }
         }
     }
 }

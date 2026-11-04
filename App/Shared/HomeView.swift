@@ -98,8 +98,8 @@ struct HomeView: View {
         // Everything a size up on the Mac's big screens.
         .dynamicTypeSize(.xxLarge)
         #endif
-        .sheet(isPresented: $editing) { EditHomeView() }
-        .sheet(item: Binding(get: { playerTV.map { TitleRef(id: $0) } }, set: { playerTV = $0?.id })) { NowPlayingSheet(tvID: $0.id) }
+        .sheet(isPresented: $editing) { EditHomeView().macResizable(width: 520, height: 720) }
+        .sheet(item: Binding(get: { playerTV.map { TitleRef(id: $0) } }, set: { playerTV = $0?.id })) { NowPlayingSheet(tvID: $0.id).macResizable(width: 560, height: 780) }
         // With the room bar hidden there's no way to pick a room: show everything.
         .onAppear { if layout.hiddenSections.contains("rooms") && !room.isEmpty { room = "" } }
         .refreshable { await refreshEverything() }
@@ -528,7 +528,7 @@ struct LibrarySearchResults: View {
         }
         .navigationTitle("Search")
         .environment(\.openTitle, OpenTitleAction { openTitle = $0 })
-        .sheet(item: Binding(get: { openTitle.map { TitleRef(id: $0) } }, set: { openTitle = $0?.id })) { TitleSheet(id: $0.id) }
+        .sheet(item: Binding(get: { openTitle.map { TitleRef(id: $0) } }, set: { openTitle = $0?.id })) { TitleSheet(id: $0.id).macResizable(width: 760, height: 820, minWidth: 520, minHeight: 500) }
         .task(id: query) {
             try? await Task.sleep(nanoseconds: 220_000_000)
             guard !Task.isCancelled else { return }
@@ -621,7 +621,7 @@ struct NowPlayingBanner: View {
         .shadow(color: .black.opacity(0.35), radius: 24, y: 12)
         .contentShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
         .onTapGesture { open = true }
-        .sheet(isPresented: $open) { NowPlayingSheet(tvID: tv.id) }
+        .sheet(isPresented: $open) { NowPlayingSheet(tvID: tv.id).macResizable(width: 560, height: 780) }
         .animation(.smooth, value: playing.title)
     }
 }

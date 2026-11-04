@@ -150,7 +150,7 @@ struct NowPlayingBar: View {
             .glass(Capsule())
             .padding(.horizontal, 16)
             .padding(.bottom, 6)
-            .sheet(isPresented: $open) { NowPlayingSheet() }
+            .sheet(isPresented: $open) { NowPlayingSheet().macResizable(width: 560, height: 780) }
             .transition(.move(edge: .bottom).combined(with: .opacity))
         }
     }
@@ -245,7 +245,7 @@ struct NowPlayingDropdown: View {
             }
         }
         .glass(RoundedRectangle(cornerRadius: expanded ? 24 : 22, style: .continuous))
-        .sheet(isPresented: $open) { NowPlayingSheet() }
+        .sheet(isPresented: $open) { NowPlayingSheet().macResizable(width: 560, height: 780) }
     }
 }
 
@@ -324,7 +324,7 @@ struct NowPlayingSheet: View {
         }
         .presentationDragIndicator(.visible)
         #if os(macOS)
-        .frame(minWidth: 480, minHeight: 720)
+        .frame(minWidth: 480, idealWidth: 480, maxWidth: .infinity, minHeight: 720, idealHeight: 720, maxHeight: .infinity)
         #endif
     }
 

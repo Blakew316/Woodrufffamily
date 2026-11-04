@@ -134,7 +134,7 @@ struct DevicesSection: View {
                 }
             }
             .sheet(item: $open) { d in
-                NavigationStack { DeviceDetailView(deviceID: d.id, inSheet: true) }
+                NavigationStack { DeviceDetailView(deviceID: d.id, inSheet: true) }.macResizable()
             }
         }
     }

@@ -414,3 +414,14 @@ extension View {
         #endif
     }
 }
+
+extension View {
+    /// Mac: a sheet opens at a comfortable size and can be dragged to any size. Does nothing on iPhone.
+    @ViewBuilder func macResizable(width: CGFloat = 680, height: CGFloat = 760, minWidth: CGFloat = 360, minHeight: CGFloat = 320) -> some View {
+        #if os(macOS)
+        self.frame(minWidth: minWidth, idealWidth: width, maxWidth: .infinity, minHeight: minHeight, idealHeight: height, maxHeight: .infinity)
+        #else
+        self
+        #endif
+    }
+}

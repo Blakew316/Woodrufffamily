@@ -105,9 +105,9 @@ struct RemoteView: View {
             }
         }
         .inlineTitle()
-        .sheet(isPresented: $typing) { if let tv { KeyboardSheet(tv: tv) } }
+        .sheet(isPresented: $typing) { if let tv { KeyboardSheet(tv: tv).macResizable(width: 480, height: 400) } }
         .task(id: "\(fleet.selectedID ?? "")-\(all)") { await fieldLoop() }
-        .sheet(isPresented: $nowPlaying) { NowPlayingSheet() }
+        .sheet(isPresented: $nowPlaying) { NowPlayingSheet().macResizable(width: 560, height: 780) }
         // Handoff: the Mac offers to open the remote on the same TV.
         .userActivity("com.woodruff.family.remote") { a in
             a.title = "Woodruff Remote"
@@ -648,7 +648,7 @@ struct KeyboardSheet: View {
         }
         .presentationDetents([.medium, .large])
         #if os(macOS)
-        .frame(minWidth: 440, minHeight: 360)
+        .frame(minWidth: 440, idealWidth: 440, maxWidth: .infinity, minHeight: 360, idealHeight: 360, maxHeight: .infinity)
         #endif
     }
 

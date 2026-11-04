@@ -289,7 +289,7 @@ struct EditHomeView: View {
             }
         }
         #if os(macOS)
-        .frame(minWidth: 420, minHeight: 520)
+        .frame(minWidth: 420, idealWidth: 420, maxWidth: .infinity, minHeight: 520, idealHeight: 520, maxHeight: .infinity)
         #endif
     }
 

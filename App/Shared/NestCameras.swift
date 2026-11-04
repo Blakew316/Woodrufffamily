@@ -295,7 +295,7 @@ struct CamerasSection: View {
                     }
                 }
             }
-            .sheet(item: $open) { cam in CameraLiveView(camera: cam) }
+            .sheet(item: $open) { cam in CameraLiveView(camera: cam).macResizable(width: 960, height: 640, minWidth: 480, minHeight: 320) }
         }
     }
 }
@@ -763,6 +763,6 @@ struct CamerasPhoneView: View {
                 clientID = s.google?.clientId ?? ""
             }
         }
-        .sheet(item: $open) { cam in CameraLiveView(camera: cam) }
+        .sheet(item: $open) { cam in CameraLiveView(camera: cam).macResizable(width: 960, height: 640, minWidth: 480, minHeight: 320) }
     }
 }

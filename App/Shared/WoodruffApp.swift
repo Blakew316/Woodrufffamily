@@ -102,7 +102,7 @@ struct WoodruffApp: App {
         Window("Mini Player", id: "mini") {
             MiniPlayerView().environment(fleet)
         }
-        .windowResizability(.contentSize)
+        .windowResizability(.contentMinSize)
         .windowStyle(.hiddenTitleBar)
         .windowLevel(.floating)
         .defaultPosition(.topTrailing)
@@ -191,7 +191,7 @@ struct RootView: View {
         .sheet(item: Binding(
             get: { CameraStreams.shared.requested.flatMap { id in NestCameras.shared.cameras.first { $0.id == id } } },
             set: { if $0 == nil { CameraStreams.shared.requested = nil } }
-        )) { cam in CameraLiveView(camera: cam) }
+        )) { cam in CameraLiveView(camera: cam).macResizable(width: 960, height: 640, minWidth: 480, minHeight: 320) }
     }
 
     #if os(iOS)
@@ -305,14 +305,14 @@ struct MacRoot: View {
         }
         .searchable(text: $query, placement: .toolbar, prompt: "Movies and TV Shows")
         .background(WindowMemory())
-        .sheet(isPresented: $palette) { CommandPalette() }
+        .sheet(isPresented: $palette) { CommandPalette().macResizable(width: 620, height: 480) }
         .background {
             Button("Command Palette") { palette = true }.keyboardShortcut("k", modifiers: .command).opacity(0).frame(width: 0, height: 0)
         }
         .onChange(of: fleet.tvs) { _, _ in NowPlayingBridge.shared.update(fleet); WidgetSync.update(fleet) }
         .onChange(of: fleet.selectedID) { _, _ in NowPlayingBridge.shared.update(fleet); WidgetSync.update(fleet) }
         .onAppear { SmartHome.shared.onChange = { WidgetSync.update(fleet) } }
-        .sheet(isPresented: Binding(get: { !welcomeShown && !Demo.isOn }, set: { if !$0 { welcomeShown = true } })) { MacWelcome() }
+        .sheet(isPresented: Binding(get: { !welcomeShown && !Demo.isOn }, set: { if !$0 { welcomeShown = true } })) { MacWelcome().macResizable(width: 640, height: 600) }
         .userActivity("com.woodruff.family.remote", isActive: fleet.remotePanel) { a in
             a.title = "Woodruff Remote"
             a.isEligibleForHandoff = true

@@ -54,9 +54,9 @@ struct TVDetailView: View {
             .task(id: "screen-\(tvID)") { await screenLoop() }
             .onChange(of: tv.playing) { _, _ in fetchedAt = Date() }
             .sheet(isPresented: $showScreen) {
-                if tv.playing != nil { NowPlayingSheet(tvID: tvID) } else { TVScreenSheet(tvID: tvID) }
+                Group { if tv.playing != nil { NowPlayingSheet(tvID: tvID) } else { TVScreenSheet(tvID: tvID) } }.macResizable(width: 640, height: 780)
             }
-            .sheet(item: Binding(get: { signIn.map { SignInGrant(grant: $0) } }, set: { signIn = $0?.grant })) { SignInSheet(grant: $0.grant, tv: tv) }
+            .sheet(item: Binding(get: { signIn.map { SignInGrant(grant: $0) } }, set: { signIn = $0?.grant })) { SignInSheet(grant: $0.grant, tv: tv).macResizable() }
             .alert("Rename TV", isPresented: $renaming) {
                 TextField("Name", text: $newName)
                 Button("Save") { fleet.rename(tv, to: newName) }
@@ -316,7 +316,7 @@ struct TVScreenSheet: View {
         }
         .presentationDetents([.medium, .large])
         #if os(macOS)
-        .frame(minWidth: 640, minHeight: 520)
+        .frame(minWidth: 640, idealWidth: 640, maxWidth: .infinity, minHeight: 520, idealHeight: 520, maxHeight: .infinity)
         #endif
     }
 

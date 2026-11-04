@@ -158,7 +158,7 @@ struct MemoriesView: View {
             MemoryViewer(items: memories?.items ?? [], start: item, onChange: { memories = $0 }).zoomDestination(item.path, zoom)
         }
         #else
-        .sheet(item: $viewing) { item in MemoryViewer(items: memories?.items ?? [], start: item, onChange: { memories = $0 }).frame(minWidth: 800, minHeight: 600) }
+        .sheet(item: $viewing) { item in MemoryViewer(items: memories?.items ?? [], start: item, onChange: { memories = $0 }).macResizable(width: 1000, height: 720, minWidth: 600, minHeight: 450) }
         #endif
     }
 

@@ -32,6 +32,7 @@ struct SpeakersSection: View {
             .sheet(item: $open) { r in
                 NavigationStack { SpeakerDetailView(speakerID: r.id, inSheet: true) }
                     .presentationBackground(.clear)
+                    .macResizable()
             }
         }
     }
@@ -190,10 +191,10 @@ struct RoomTiles: View {
                 }
             }
             .sheet(item: $openSpeaker) { r in
-                NavigationStack { SpeakerDetailView(speakerID: r.id, inSheet: true) }.presentationBackground(.clear)
+                NavigationStack { SpeakerDetailView(speakerID: r.id, inSheet: true) }.presentationBackground(.clear).macResizable()
             }
-            .sheet(item: $openLight) { l in LightSheet(lightID: l.id) }
-            .sheet(item: $openDevice) { d in NavigationStack { DeviceDetailView(deviceID: d.id, inSheet: true) } }
+            .sheet(item: $openLight) { l in LightSheet(lightID: l.id).macResizable(width: 520, height: 640) }
+            .sheet(item: $openDevice) { d in NavigationStack { DeviceDetailView(deviceID: d.id, inSheet: true) }.macResizable() }
         }
     }
 
@@ -242,7 +243,7 @@ struct LightsSection: View {
                     Text(e).font(.footnote).foregroundStyle(.secondary)
                 }
             }
-            .sheet(item: $open) { l in LightSheet(lightID: l.id) }
+            .sheet(item: $open) { l in LightSheet(lightID: l.id).macResizable(width: 520, height: 640) }
         }
     }
 }
