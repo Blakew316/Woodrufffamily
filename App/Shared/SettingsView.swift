@@ -49,28 +49,28 @@ struct SettingsView: View {
     var body: some View {
         Form {
             Section {
-                NavigationLink { TVsView() } label: {
+                PageLink("TVs") { TVsView() } label: {
                     IconRow(symbol: "tv.fill", color: .blue, title: "TVs", value: tvsSummary, valueColor: fleet.tvs.contains(where: \.needsAttention) ? Palette.attention : .secondary)
                 }
-                NavigationLink { EveryTVView() } label: {
+                PageLink("Every TV") { EveryTVView() } label: {
                     IconRow(symbol: "", color: .clear, title: "Every TV")
                 }
-                NavigationLink { SpeakersListView() } label: {
+                PageLink("Speakers") { SpeakersListView() } label: {
                     IconRow(symbol: "", color: .clear, title: "Speakers", value: SmartHome.shared.speakers.isEmpty ? "None" : "\(SmartHome.shared.speakers.count)")
                 }
-                NavigationLink { LightsListView() } label: {
+                PageLink("Lights") { LightsListView() } label: {
                     IconRow(symbol: "", color: .clear, title: "Lights", value: SmartHome.shared.lights.isEmpty ? "None" : "\(SmartHome.shared.lights.count)")
                 }
-                NavigationLink { CamerasPhoneView() } label: {
+                PageLink("Cameras") { CamerasPhoneView() } label: {
                     IconRow(symbol: "", color: .clear, title: "Cameras", value: NestCameras.shared.connected ? "\(NestCameras.shared.cameras.count)" : "Not Connected")
                 }
-                NavigationLink { WifiView() } label: {
+                PageLink("Wi‑Fi") { WifiView() } label: {
                     IconRow(symbol: "", color: .clear, title: "Wi‑Fi", value: DecoWifi.shared.connected ? (DecoWifi.shared.internetUp == false ? "Internet Down" : "\(DecoWifi.shared.nodes.count) Decos") : "Not Connected")
                 }
-                NavigationLink { DevicesListView() } label: {
+                PageLink("Devices") { DevicesListView() } label: {
                     IconRow(symbol: "", color: .clear, title: "Devices", value: AccessoryStore.shared.all.isEmpty ? "None" : "\(AccessoryStore.shared.all.count)")
                 }
-                NavigationLink { SoftwareUpdateView() } label: {
+                PageLink("Software Update") { SoftwareUpdateView() } label: {
                     HStack {
                         IconRow(symbol: "", color: .clear, title: "Software Update")
                         if fleet.updatesWaiting > 0 {
@@ -84,30 +84,30 @@ struct SettingsView: View {
             Section {
                 #if os(iOS)
                 // Messages, links and files to the TVs and phones (the Mac has Send in its sidebar).
-                NavigationLink { SendView() } label: { IconRow(symbol: "", color: .clear, title: "Send") }
+                PageLink("Send") { SendView() } label: { IconRow(symbol: "", color: .clear, title: "Send") }
                 #endif
                 // Alert choices, Now Playing on the Lock Screen, recent messages, and (on the Macs) Instant iPhone
                 // Alerts' push key: the only way to reach them.
-                NavigationLink { PhoneSettingsView() } label: {
+                PageLink("Notifications") { PhoneSettingsView() } label: {
                     IconRow(symbol: "", color: .clear, title: "Notifications", value: notificationsSummary)
                 }
             }
 
             Section {
-                NavigationLink { ConnectionsView(hub: hub) } label: {
+                PageLink("Connections") { ConnectionsView(hub: hub) } label: {
                     IconRow(symbol: "cloud.fill", color: .blue, title: "Connections", value: connectionsSummary)
                 }
             }
 
             Section {
-                NavigationLink { AwayView(hub: hub) } label: {
+                PageLink("Away From Home") { AwayView(hub: hub) } label: {
                     IconRow(symbol: "globe", color: .green, title: "Away From Home", value: hub.s?.awayUrl?.isEmpty == false ? "On" : "Off")
                 }
-                NavigationLink { ShortcutsView(hub: hub) } label: {
+                PageLink("Shortcuts") { ShortcutsView(hub: hub) } label: {
                     IconRow(symbol: "square.2.layers.3d.fill", color: .purple, title: "Shortcuts")
                 }
                 if let crash = hub.s?.crash, !crash.isEmpty {
-                    NavigationLink { CrashView(hub: hub) } label: { IconRow(symbol: "exclamationmark.triangle.fill", color: .red, title: "Last Crash on This TV") }
+                    PageLink("Last Crash") { CrashView(hub: hub) } label: { IconRow(symbol: "exclamationmark.triangle.fill", color: .red, title: "Last Crash on This TV") }
                 }
             }
 
@@ -121,12 +121,20 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .screenTitle("Settings")
+        #if os(iOS)
         .navigationDestination(item: $route) { r in
             switch r {
             case "tv": TVDetailView(tvID: "tv-den")
             default: TVsView()
             }
         }
+        #else
+        .onAppear {
+            guard let r = route else { return }
+            route = nil
+            if r == "tv" { MacNav.shared.push(fleet.tv("tv-den")?.name ?? "TV", TVDetailView(tvID: "tv-den")) } else { MacNav.shared.push("TVs", TVsView()) }
+        }
+        #endif
         // Again when the remote moves to a TV with another hub (its keys and links are that hub's).
         .task(id: fleet.hubClient()?.hub.id) {
             SiriVocabulary.start()
@@ -263,7 +271,7 @@ struct TVsView: View {
         Form {
             Section {
                 ForEach(fleet.tvs) { tv in
-                    NavigationLink { TVDetailView(tvID: tv.id) } label: { TVRow(tv: tv) }
+                    PageLink(tv.name) { TVDetailView(tvID: tv.id) } label: { TVRow(tv: tv) }
                         .swipeActions {
                             if tv.needsAttention { Button("Hide Alerts") { withAnimation { fleet.hideAlerts(tv) } }.tint(.gray) }
                             else if tv.alertsHidden { Button("Show Alerts") { withAnimation { fleet.showAlerts(tv) } }.tint(.orange) }
@@ -505,10 +513,10 @@ struct ConnectionsView: View {
         Form {
             if let s = hub.s {
                 Section {
-                    NavigationLink { DriveView(hub: hub) } label: { IconRow(symbol: "externaldrive.fill.badge.icloud", color: .blue, title: "Google Drive", value: s.google?.statusText) }
-                    NavigationLink { PostersView(hub: hub) } label: { IconRow(symbol: "film.fill", color: .orange, title: "Posters", value: s.tmdb == true ? "On" : "Off") }
-                    NavigationLink { CamerasView(hub: hub) } label: { IconRow(symbol: "video.fill", color: .green, title: "Cameras", value: s.nest?.statusText) }
-                    NavigationLink { MailView(hub: hub) } label: { IconRow(symbol: "envelope.fill", color: .blue, title: "Mail", value: mailSummary(s)) }
+                    PageLink("Google Drive") { DriveView(hub: hub) } label: { IconRow(symbol: "externaldrive.fill.badge.icloud", color: .blue, title: "Google Drive", value: s.google?.statusText) }
+                    PageLink("Posters") { PostersView(hub: hub) } label: { IconRow(symbol: "film.fill", color: .orange, title: "Posters", value: s.tmdb == true ? "On" : "Off") }
+                    PageLink("Cameras") { CamerasView(hub: hub) } label: { IconRow(symbol: "video.fill", color: .green, title: "Cameras", value: s.nest?.statusText) }
+                    PageLink("Mail") { MailView(hub: hub) } label: { IconRow(symbol: "envelope.fill", color: .blue, title: "Mail", value: mailSummary(s)) }
                 } footer: {
                     Text("Keys entered here are copied to every TV linked to \(fleet.hubClient()?.hub.name ?? "this TV").")
                 }

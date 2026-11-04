@@ -395,6 +395,19 @@ final class CameraStreams {
     }
 }
 
+/// A camera tile's shape: its own (16:9, or 4:3 two across), or whatever size Home's grid gives it.
+private struct CameraTileShape: ViewModifier {
+    var fill: Bool
+    var compact: Bool
+    @ViewBuilder func body(content: Content) -> some View {
+        if fill {
+            content.frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            content.aspectRatio(compact ? 4 / 3 : 16 / 9, contentMode: .fit)
+        }
+    }
+}
+
 /// A camera on Home: its live picture right in the tile (muted), its name over it. Tap for the big view.
 struct LiveCameraTile: View {
     static func nameFont(_ compact: Bool) -> Font {
@@ -407,6 +420,8 @@ struct LiveCameraTile: View {
     var camera: NestCameras.Camera
     /// Two across: taller (4:3) so the picture isn't small, and a smaller LIVE mark so the name fits.
     var compact = false
+    /// Fills whatever size it's given (a tile on Home's grid, sized there) instead of keeping its own shape.
+    var fill = false
     var open: () -> Void
     private let streams = CameraStreams.shared
     /// An offline camera was tapped: Google is being asked about it again.
@@ -436,15 +451,17 @@ struct LiveCameraTile: View {
             }
             .padding(compact ? 10 : 12)
         }
-        .aspectRatio(compact ? 4 / 3 : 16 / 9, contentMode: .fit)
+        .modifier(CameraTileShape(fill: fill, compact: compact))
         .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).strokeBorder(.white.opacity(0.08)))
         .contentShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         .onTapGesture {
+            guard HomeLayout.shared.tapsAllowed else { return }
             if camera.webRTC && camera.online { streams.expanded = camera.id; open() }
             else if !camera.online { checkAgain() }
         }
         .contextMenu {
+            ArrangeHomeButton()
             if camera.webRTC && camera.online { Button("Open") { streams.expanded = camera.id; open() } }
             if !camera.online { Button("Check Again") { checkAgain() } }
             FavoriteButton(id: camera.id)

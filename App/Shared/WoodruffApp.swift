@@ -116,7 +116,10 @@ struct WoodruffApp: App {
         #if os(macOS)
         .defaultSize(width: 1180, height: 800)
         .windowToolbarStyle(.unified)
-        .commands { WoodruffCommands(fleet: fleet) }
+        .commands {
+            SidebarCommands()
+            WoodruffCommands(fleet: fleet)
+        }
         #endif
 
         #if os(macOS)
@@ -256,22 +259,28 @@ struct RootView: View {
 }
 
 #if os(macOS)
-/// Mac: a glass sidebar (Home, Watch, Send, Memories, Settings, and the TVs like rooms), and the remote as a
-/// sidebar on the right that slides out only when it's wanted.
+/// Mac: a glass sidebar (Home, Watch, Send, Memories, Settings, and the TVs like rooms), Woodruff's own bar across the
+/// top of the page (search on the left; the remote, Edit Home and the thermostat on the right; Back under the search
+/// when there's somewhere to go back to), and the remote as a sidebar on the right that slides out when it's wanted.
 struct MacRoot: View {
     @Environment(Fleet.self) private var fleet
     @Binding var selection: AppSection
     @SceneStorage("mac.tv") private var tvSelection: String?
     @State private var deviceSelection: String?
     private let home = SmartHome.shared
+    private let nav = MacNav.shared
+    private let layout = HomeLayout.shared
     // Each group in the sidebar folds away (click its heading's arrow); remembered between launches.
     @AppStorage("sidebar.tvs") private var showTVs = true
     @AppStorage("sidebar.speakers") private var showSpeakers = false
     @AppStorage("sidebar.lights") private var showLights = false
     @State private var palette = false
     @State private var query = ""
-    /// The page area is too narrow for the full toolbar: the search field gets shorter so the thermostat stays.
+    @State private var columns: NavigationSplitViewVisibility = .all
+    /// The page area is narrow: the search field and the thermostat get shorter so everything stays in one row.
     @State private var narrow = false
+    /// Bumped by every click in the sidebar, so the page it opens starts fresh (Home's open TV closes, and so on).
+    @State private var visit = 0
     /// The remote's sidebar has the keyboard (arrows, Return, Esc, H, M, + and − go to the TV).
     @FocusState private var remoteFocused: Bool
     @AppStorage("macWelcomeShown") private var welcomeShown = false
@@ -283,22 +292,27 @@ struct MacRoot: View {
         CameraStreams.shared.full.flatMap { id in NestCameras.shared.cameras.first { $0.id == id } }
     }
 
+    /// Home's own first page (no TV or speaker picked, no search, nothing opened on top): Edit Home belongs here.
+    private var onHome: Bool {
+        section == .home && tvSelection == nil && deviceSelection == nil && query.isEmpty && nav.path.isEmpty
+    }
+
     var body: some View {
         @Bindable var fleet = fleet
+        @Bindable var nav = nav
         let camera = fullCamera
-        NavigationSplitView {
+        NavigationSplitView(columnVisibility: $columns) {
             List(selection: Binding<String?>(
-                get: { deviceSelection ?? tvSelection.map { "tv:\($0)" } ?? section.rawValue },
-                set: { v in
-                    guard let v else { return }
-                    // Going somewhere in the sidebar closes a camera that's filling the window.
-                    if CameraStreams.shared.full != nil { withAnimation(.smooth(duration: 0.25)) { CameraStreams.shared.full = nil } }
-                    if v.hasPrefix("tv:") { deviceSelection = nil; tvSelection = String(v.dropFirst(3)) }
-                    else if v.hasPrefix("spk:") || v.hasPrefix("light:") { tvSelection = nil; deviceSelection = v }
-                    else if let s = AppSection(rawValue: v) { tvSelection = nil; deviceSelection = nil; selection = s }
-                })) {
+                // Nothing is highlighted while searching, so a click on any item (Home too) always takes you there.
+                get: { query.isEmpty ? (deviceSelection ?? tvSelection.map { "tv:\($0)" } ?? section.rawValue) : nil },
+                set: { v in if let v { go(to: v) } })) {
                 Section {
-                    ForEach(AppSection.mac) { s in Label(s.title, systemImage: s.symbol).tag(s.rawValue) }
+                    ForEach(AppSection.mac) { s in
+                        Label(s.title, systemImage: s.symbol)
+                            .tag(s.rawValue)
+                            // A click on the section you're already in goes back to its first page.
+                            .simultaneousGesture(TapGesture().onEnded { go(to: s.rawValue) })
+                    }
                 }
                 Section("TVs", isExpanded: $showTVs) {
                     ForEach(fleet.tvs) { tv in
@@ -308,7 +322,9 @@ struct MacRoot: View {
                             if tv.needsAttention { Circle().fill(Palette.attention).frame(width: 7, height: 7) }
                         }
                         .foregroundStyle(tv.online ? .primary : .secondary)
+                        .contentShape(Rectangle())
                         .tag("tv:\(tv.id)")
+                        .simultaneousGesture(TapGesture().onEnded { go(to: "tv:\(tv.id)") })
                     }
                 }
                 if !home.speakers.isEmpty {
@@ -319,7 +335,9 @@ struct MacRoot: View {
                                 Spacer()
                                 if r.isPlaying { Image(systemName: "waveform").font(.caption).foregroundStyle(.secondary).symbolEffect(.variableColor.iterative) }
                             }
+                            .contentShape(Rectangle())
                             .tag("spk:\(r.id)")
+                            .simultaneousGesture(TapGesture().onEnded { go(to: "spk:\(r.id)") })
                         }
                     }
                 }
@@ -327,20 +345,26 @@ struct MacRoot: View {
                     Section("Lights", isExpanded: $showLights) {
                         ForEach(home.lights) { l in
                             Text(l.name)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .contentShape(Rectangle())
                                 .tag("light:\(l.id)")
+                                .simultaneousGesture(TapGesture().onEnded { go(to: "light:\(l.id)") })
                         }
                     }
                 }
             }
             .navigationSplitViewColumnWidth(min: 200, ideal: 220)
         } detail: {
-            NavigationStack {
-                if !query.isEmpty { LibrarySearchResults(query: query) }
-                // .id: a new item gets a fresh page (no name or level left over from the last one).
-                else if let d = deviceSelection, d.hasPrefix("spk:") { SpeakerDetailView(speakerID: String(d.dropFirst(4))).id(d) }
-                else if let d = deviceSelection, d.hasPrefix("light:") { LightDetailView(lightID: String(d.dropFirst(6))).id(d) }
-                else if let id = tvSelection { TVDetailView(tvID: id).id(id) } else { section.view }
+            NavigationStack(path: $nav.path) {
+                root
+                    .id(visit)
+                    .navigationDestination(for: PageRoute.self) { page in
+                        page.view.navigationBarBackButtonHidden(true)
+                    }
             }
+            .environment(\.macPageStack, true)
+            // Woodruff's own bar: the window's toolbar is hidden, so nothing in it can move about or be covered.
+            .safeAreaBar(edge: .top) { topBar }
             .background { AmbientArtwork() }
             // A clicked camera fills everything right of the sidebar (Esc or ✕ to close).
             .overlay {
@@ -350,7 +374,8 @@ struct MacRoot: View {
                         .transition(.opacity)
                 }
             }
-            .toolbar(camera == nil ? .automatic : .hidden, for: .windowToolbar)
+            .toolbar(.hidden, for: .windowToolbar)
+            .toolbar(removing: .title)
             .safeAreaInset(edge: .bottom) {
                 if tvSelection == nil && deviceSelection == nil && section != .home && !fleet.remotePanel {
                     NowPlayingBar().frame(maxWidth: 600).padding(.bottom, 8)
@@ -364,6 +389,10 @@ struct MacRoot: View {
         .background {
             Button("Command Palette") { palette = true }.keyboardShortcut("k", modifiers: .command).opacity(0).frame(width: 0, height: 0)
         }
+        // A search starts from the page you're on; going to another section (from here, a notification or a widget)
+        // starts it at its first page.
+        .onChange(of: query) { old, new in if old.isEmpty && !new.isEmpty { nav.reset() } }
+        .onChange(of: selection) { _, _ in nav.reset() }
         .onChange(of: fleet.tvs) { _, _ in NowPlayingBridge.shared.update(fleet); WidgetSync.update(fleet) }
         .onChange(of: fleet.selectedID) { _, _ in NowPlayingBridge.shared.update(fleet); WidgetSync.update(fleet) }
         .onAppear { SmartHome.shared.onChange = { WidgetSync.update(fleet) } }
@@ -377,28 +406,134 @@ struct MacRoot: View {
         .inspector(isPresented: $fleet.remotePanel) {
             RemoteView(embedded: true)
                 .inspectorColumnWidth(min: 300, ideal: 320, max: 380)
-                // Opened (the toolbar, ⌥⌘R, a TV's Remote button): the keyboard drives it straight away, without a
+                // Opened (the bar, ⌥⌘R, a TV's Remote button): the keyboard drives it straight away, without a
                 // click into it first.
                 .focused($remoteFocused)
                 .onAppear { remoteFocused = true }
         }
-        .toolbar {
-            // Left: the remote, Edit Home (on Home) and search, side by side.
-            ToolbarItemGroup(placement: .navigation) {
+    }
+
+    /// The page the sidebar picked (or the search's results), under anything opened from it.
+    @ViewBuilder private var root: some View {
+        if !query.isEmpty { LibrarySearchResults(query: query) }
+        // .id: a new item gets a fresh page (no name or level left over from the last one).
+        else if let d = deviceSelection, d.hasPrefix("spk:") { SpeakerDetailView(speakerID: String(d.dropFirst(4))).id(d) }
+        else if let d = deviceSelection, d.hasPrefix("light:") { LightDetailView(lightID: String(d.dropFirst(6))).id(d) }
+        else if let id = tvSelection { TVDetailView(tvID: id).id(id) }
+        else { section.view.id(section) }
+    }
+
+    /// Where the sidebar takes you, always: that section's (or TV's, speaker's, light's) first page, with the search
+    /// cleared, anything opened on top closed, and a camera filling the window put away.
+    private func go(to v: String) {
+        if CameraStreams.shared.full != nil { withAnimation(.smooth(duration: 0.25)) { CameraStreams.shared.full = nil } }
+        nav.reset()
+        if !query.isEmpty { query = "" }
+        layout.stopArranging()
+        visit += 1
+        if v.hasPrefix("tv:") { deviceSelection = nil; tvSelection = String(v.dropFirst(3)) }
+        else if v.hasPrefix("spk:") || v.hasPrefix("light:") { tvSelection = nil; deviceSelection = v }
+        else if let s = AppSection(rawValue: v) { tvSelection = nil; deviceSelection = nil; selection = s }
+    }
+
+    // MARK: The bar
+
+    /// The name of the page the sidebar picked (for Back).
+    private var rootTitle: String {
+        if let d = deviceSelection, d.hasPrefix("spk:") { return home.speaker(String(d.dropFirst(4)))?.name ?? "Speaker" }
+        if let d = deviceSelection, d.hasPrefix("light:") { return home.light(String(d.dropFirst(6)))?.name ?? "Light" }
+        if let id = tvSelection { return fleet.tv(id)?.name ?? "TV" }
+        return section.title
+    }
+
+    /// Back's label (where it goes) and the page you're on, when there's somewhere to go back to.
+    private var back: (to: String, here: String)? {
+        let path = nav.path
+        if let top = path.last {
+            let previous = path.count >= 2 ? path[path.count - 2].title : (query.isEmpty ? rootTitle : "Search")
+            return (previous, top.title)
+        }
+        if !query.isEmpty { return (rootTitle, "Search") }
+        return nil
+    }
+
+    private func goBack() {
+        withAnimation(.smooth(duration: 0.25)) {
+            if !nav.path.isEmpty { nav.pop() } else { query = "" }
+        }
+    }
+
+    /// Search on the left; the remote, Edit Home (on Home) and the thermostat on the right, at any window size;
+    /// Back under the search when there's somewhere to go back to.
+    private var topBar: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                if columns == .detailOnly {
+                    Button { withAnimation(.smooth) { columns = .all } } label: {
+                        Image(systemName: "sidebar.left")
+                            .font(.system(size: 14, weight: .semibold))
+                            .frame(width: 34, height: 34)
+                            .contentShape(Circle())
+                            .glass(Circle())
+                    }
+                    .buttonStyle(PressScale())
+                    .help("Show the Sidebar")
+                    .accessibilityLabel("Show the Sidebar")
+                    // Clear of the window's close, minimise and zoom buttons, which sit here with the sidebar hidden.
+                    .padding(.leading, 64)
+                }
+                MacSearchField(text: $query, prompt: narrow ? "Search" : "Search Movies and TV Shows")
+                    .frame(minWidth: 120, idealWidth: 300, maxWidth: 320)
+                Spacer(minLength: 8)
                 Button { withAnimation(.smooth) { fleet.remotePanel.toggle() } } label: {
                     Image(systemName: "appletvremote.gen4")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(fleet.remotePanel ? Color.white : .primary)
+                        .frame(width: 34, height: 34)
+                        .contentShape(Circle())
+                        .glass(Circle(), tint: fleet.remotePanel ? .accentColor : nil)
                 }
+                .buttonStyle(PressScale())
                 .help("Remote (⌥⌘R)")
+                .accessibilityLabel("Remote")
                 .keyboardShortcut("r", modifiers: [.command, .option])
-                if section == .home && tvSelection == nil && deviceSelection == nil && query.isEmpty {
-                    Button("Edit Home") { HomeLayout.shared.editing = true }
+                if onHome {
+                    if layout.arranging {
+                        Button("Done") { layout.stopArranging() }
+                            .buttonStyle(.glassProminent)
+                            .controlSize(.large)
+                    } else {
+                        Button("Edit Home") { layout.startArranging() }
+                            .buttonStyle(.glass)
+                            .controlSize(.large)
+                    }
                 }
-                ToolbarSearchField(text: $query, prompt: narrow ? "Search" : "Movies and TV Shows", width: narrow ? 170 : 260)
+                ThermostatChip(compact: narrow)
             }
-            ToolbarSpacer(.flexible)
-            // Right: the thermostat, always there.
-            ToolbarItem { ThermostatChip() }
+            if let back {
+                HStack(spacing: 12) {
+                    Button(action: goBack) {
+                        HStack(spacing: 5) {
+                            Image(systemName: "chevron.left").font(.body.weight(.semibold))
+                            Text(back.to).lineLimit(1)
+                        }
+                    }
+                    .buttonStyle(.glass)
+                    .controlSize(.large)
+                    .keyboardShortcut("[", modifiers: .command)
+                    .help("Back to \(back.to) (⌘[)")
+                    Text(back.here).font(.title2.bold()).lineLimit(1)
+                    Spacer(minLength: 0)
+                }
+                .transition(.move(edge: .top).combined(with: .opacity))
+            }
         }
+        .padding(.horizontal, 18)
+        .padding(.top, 4)
+        .padding(.bottom, 10)
+        .animation(.smooth(duration: 0.25), value: back?.here)
+        // Dragging the bar's empty space moves the window, like a title bar.
+        .background { Color.clear.contentShape(Rectangle()).gesture(WindowDragGesture()) }
     }
 }
 
@@ -428,12 +563,10 @@ enum SpaceKey {
 
 
 #if os(macOS)
-/// The Mac's search: a field in the toolbar beside Edit Home (⌘F to jump to it).
-struct ToolbarSearchField: View {
+/// The Mac's search, at the top left of Woodruff's bar (⌘F to jump to it; Esc clears it).
+struct MacSearchField: View {
     @Binding var text: String
     var prompt: String
-    /// Shorter when the window is narrow, so the toolbar's other items keep their place.
-    var width: CGFloat = 260
     @FocusState private var focused: Bool
 
     var body: some View {
@@ -446,10 +579,14 @@ struct ToolbarSearchField: View {
             if !text.isEmpty {
                 Button { text = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
                     .buttonStyle(.plain)
+                    .accessibilityLabel("Clear Search")
             }
         }
-        .padding(.horizontal, 10)
-        .frame(width: width, height: 28)
+        .padding(.horizontal, 12)
+        .frame(height: 34)
+        .glass(Capsule(), interactive: false)
+        .contentShape(Capsule())
+        .onTapGesture { focused = true }
         .background { Button("") { focused = true }.keyboardShortcut("f", modifiers: .command).opacity(0) }
     }
 }

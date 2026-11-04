@@ -397,21 +397,31 @@ extension View {
     /// A search field: the system one on iPhone; on the Mac one inside the page, because the window already has
     /// a search field in its toolbar and a second one crashes AppKit.
     @ViewBuilder func pageSearch(text: Binding<String>, prompt: String) -> some View {
+        pageSearch(text: text, prompt: prompt) { EmptyView() }
+    }
+
+    /// The same, with a page's own buttons beside the field on the Mac (they were in the window's toolbar; on iPhone
+    /// they stay in the toolbar, so [trailing] isn't shown there).
+    @ViewBuilder func pageSearch<Trailing: View>(text: Binding<String>, prompt: String, @ViewBuilder trailing: () -> Trailing) -> some View {
         #if os(iOS)
         self.searchable(text: text, prompt: prompt)
         #else
         self.safeAreaInset(edge: .top, spacing: 0) {
-            HStack(spacing: 8) {
-                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                TextField(prompt, text: text).textFieldStyle(.plain)
-                if !text.wrappedValue.isEmpty {
-                    Button { text.wrappedValue = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
-                        .buttonStyle(.plain)
+            HStack(spacing: 10) {
+                HStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                    TextField(prompt, text: text).textFieldStyle(.plain)
+                    if !text.wrappedValue.isEmpty {
+                        Button { text.wrappedValue = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
+                            .buttonStyle(.plain)
+                    }
                 }
+                .padding(.horizontal, 12).padding(.vertical, 8)
+                .glass(Capsule(), interactive: false)
+                .frame(maxWidth: 420)
+                Spacer(minLength: 0)
+                trailing()
             }
-            .padding(.horizontal, 12).padding(.vertical, 8)
-            .glass(Capsule(), interactive: false)
-            .frame(maxWidth: 420)
             .padding(.horizontal, 16).padding(.vertical, 8)
         }
         #endif
@@ -429,8 +439,7 @@ extension View {
     }
 }
 
-#if os(macOS)
-/// An iPad-style corner grip: a soft curved stroke in the sheet's corner, bright white under the pointer.
+/// An iPad-style corner grip: a soft curved stroke in a tile's corner, bright white under the pointer or finger.
 struct ResizeGrip: View {
     var trailing: Bool
     /// Faintly visible (the pointer is over the tile); fully white when the pointer is on the grip itself.
@@ -440,12 +449,19 @@ struct ResizeGrip: View {
 
     var body: some View {
         CornerCurve(trailing: trailing)
-            .stroke(.white.opacity(hovering || active ? 1 : (shown ? 0.45 : 0)), style: StrokeStyle(lineWidth: hovering || active ? 5 : 4, lineCap: .round))
-            .shadow(color: .black.opacity(0.35), radius: 2)
+            .stroke(.white.opacity(hovering || active ? 1 : (shown ? 0.8 : 0)), style: StrokeStyle(lineWidth: hovering || active ? 5 : 4, lineCap: .round))
+            .shadow(color: .black.opacity(0.45), radius: 2)
             .frame(width: 22, height: 22)
+            #if os(iOS)
+            // A finger-sized target.
+            .padding(11)
+            #else
             .padding(7)
+            #endif
             .contentShape(Rectangle())
+            #if os(macOS)
             .pointerStyle(.frameResize(position: trailing ? .bottomTrailing : .bottomLeading))
+            #endif
             .onHover { h in withAnimation(.easeOut(duration: 0.15)) { hovering = h } }
             .help("Drag to resize")
     }
@@ -465,4 +481,3 @@ struct CornerCurve: Shape {
         return p
     }
 }
-#endif

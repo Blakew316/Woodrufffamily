@@ -45,15 +45,14 @@ final class SettingsSync {
     /// Saved settings that travel (JSON in UserDefaults).
     static let dataKeys = ["smartNames", "smartRooms", "smartExtraRooms", "goveeManualIPs", "homeLayout", "extras", "hiddenAlerts", "pushTokens",
                            "familyPairings"]
-    /// Plain preferences that travel (property-list values in UserDefaults): alert choices, the remote's click, Now
-    /// Playing on the Lock Screen, and the Macs' Favorites tile sizes (tile id → width).
-    static let valueKeys = ["nest.alert.person", "nest.alert.motion", "nest.alert.doorbell", "notifyFleet", "liveActivity", "remoteClick",
-                            "tileWidths"]
+    /// Plain preferences that travel (property-list values in UserDefaults): alert choices, the remote's click, and
+    /// Now Playing on the Lock Screen. (Home's tile sizes travel with the Home layout.)
+    static let valueKeys = ["nest.alert.person", "nest.alert.motion", "nest.alert.doorbell", "notifyFleet", "liveActivity", "remoteClick"]
 
     /// Saved settings kept entry by entry (one TV's name, one light's room, one paired TV, one tile's size; the Home
     /// layout part by part), so two devices changing different entries at the same time both keep their change.
     static let entryKeys: Set<String> = ["ud:smartNames", "ud:smartRooms", "ud:extras", "ud:hiddenAlerts", "ud:pushTokens", "ud:homeLayout",
-                                         "ud:familyPairings", "uv:tileWidths"]
+                                         "ud:familyPairings"]
     /// Kept whole before they were kept part by part: a copy from then counts each part as old as the whole was.
     static let wholeBefore: Set<String> = ["ud:homeLayout"]
 
@@ -495,14 +494,6 @@ final class SettingsSync {
         if any(["ud:extras", "ud:hiddenAlerts", "kc:lg."]) { fleet?.reloadSynced() }
         if keys.contains("ud:pushTokens") { PushRelay.shared.reloadTokens() }
         if any(["kc:apns."]) { PushRelay.shared.keysChanged() }
-        #if os(macOS)
-        // The Favorites tile sizes, live: TileSizes keeps its own copy and writes all of it back on the next resize,
-        // so a size from another Mac has to reach that copy too (or the next resize here would undo it).
-        if keys.contains("uv:tileWidths") {
-            let synced = (UserDefaults.standard.dictionary(forKey: "tileWidths") as? [String: Double]) ?? [:]
-            for (id, w) in synced where TileSizes.shared.widths[id] != CGFloat(w) { TileSizes.shared.set(id, CGFloat(w)) }
-        }
-        #endif
         // What the reloads saved back is the same settings (anything else they changed counts as a change made here).
         for k in keys { if let v = canonical(k) { last[k] = v } }
         NotificationCenter.default.post(name: .woodruffSettingsSynced, object: nil, userInfo: ["keys": keys.map { String($0.dropFirst(3)) }.sorted()])

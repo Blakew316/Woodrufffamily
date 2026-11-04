@@ -132,7 +132,7 @@ struct DeviceTile: View {
         }
         .foregroundStyle(lit ? Color.black : .primary)
         .padding(.horizontal, 12).padding(.vertical, 10)
-        .frame(maxWidth: .infinity, minHeight: 64, alignment: .leading)
+        .frame(maxWidth: .infinity, minHeight: 64, maxHeight: .infinity, alignment: .leading)
         .background {
             if lit { RoundedRectangle(cornerRadius: 20, style: .continuous).fill(.white.opacity(0.94)) }
         }
@@ -140,13 +140,10 @@ struct DeviceTile: View {
         .modifier(DeviceGlass(on: lit))
         .opacity(device.reachable ? 1 : 0.6)
         .animation(.smooth(duration: 0.25), value: lit)
-        .onTapGesture { tap() }
-        #if os(macOS)
-        // Press and hold for the controls (right-click has the menu). Not on iPhone: there touch and hold is the menu
-        // below, and a second hold here fought it for the same touch (both fired).
-        .onLongPressGesture(minimumDuration: 0.35, perform: openControls)
-        #endif
+        .onTapGesture { if HomeLayout.shared.tapsAllowed { tap() } }
+        // Press and hold arranges Home's tiles (on the Mac too); the controls are in the menu.
         .contextMenu {
+            ArrangeHomeButton()
             if let quick = quickAction { Button(quick) { tap() } }
             Button("Controls…", action: openControls)
             FavoriteButton(id: device.id)
@@ -361,7 +358,7 @@ struct DevicesListView: View {
                 if let problem = store.homeProblem { Text(problem).font(.footnote).foregroundStyle(Palette.attention) }
                 if store.all.isEmpty { Text("No devices yet.").foregroundStyle(.secondary) }
                 ForEach(store.all) { d in
-                    NavigationLink { DeviceDetailView(deviceID: d.id) } label: {
+                    PageLink(d.name) { DeviceDetailView(deviceID: d.id) } label: {
                         IconRow(symbol: "", color: .clear, title: d.name, subtitle: "\(d.sourceName) · \(d.reachable ? d.status : "Not Responding")",
                                 value: SmartHome.shared.room(of: d.id))
                     }
@@ -661,10 +658,8 @@ struct ThermostatChip: View {
             }
         }
         .fixedSize()
-        #if os(iOS)
         // Plain glass behind it (the button inside takes the taps).
         .glass(Capsule(), interactive: false)
-        #endif
         .opacity(t?.reachable == false ? 0.6 : 1)
         .scaleEffect(hovering ? 1.02 : 1)
         .animation(.spring(response: 0.3, dampingFraction: 0.8), value: hovering)

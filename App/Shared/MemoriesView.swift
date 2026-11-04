@@ -56,6 +56,25 @@ struct MemoriesView: View {
         #endif
     }
 
+    /// The slideshow, add photos and (Mac) add from a folder.
+    @ViewBuilder private var pageButtons: some View {
+        Button {
+            act { c in
+                try await c.slideshow(folder: memories?.folder, start: true)
+                fleet.say("Slideshow", "Family Memories is playing on \(c.hub.name).")
+            }
+        } label: { Image(systemName: "play.rectangle.on.rectangle") }
+        .disabled(memories?.items.contains { !$0.video } != true)
+        .accessibilityLabel("Slideshow on TV")
+        PhotosPicker(selection: $picks, matching: .any(of: [.images, .videos])) { Image(systemName: "plus") }
+            .disabled(uploading != nil)
+            .accessibilityLabel("Add Photos")
+        #if os(macOS)
+        Button { importing = true } label: { Image(systemName: "folder.badge.plus") }
+            .accessibilityLabel("Add from a Folder")
+        #endif
+    }
+
     var body: some View {
         ScrollView {
             if let m = memories {
@@ -140,23 +159,12 @@ struct MemoriesView: View {
         .dropDestination(for: URL.self) { urls, _ in Task { await addFiles(urls) }; return true }
         #endif
         .refreshable { await load() }
-        .toolbar {
-            ToolbarItemGroup(placement: .primaryAction) {
-                Button {
-                    act { c in
-                        try await c.slideshow(folder: memories?.folder, start: true)
-                        fleet.say("Slideshow", "Family Memories is playing on \(c.hub.name).")
-                    }
-                } label: { Image(systemName: "play.rectangle.on.rectangle") }
-                .disabled(memories?.items.contains { !$0.video } != true)
-                .accessibilityLabel("Slideshow on TV")
-                PhotosPicker(selection: $picks, matching: .any(of: [.images, .videos])) { Image(systemName: "plus") }
-                    .disabled(uploading != nil)
-                #if os(macOS)
-                Button { importing = true } label: { Image(systemName: "folder.badge.plus") }
-                #endif
-            }
-        }
+        #if os(iOS)
+        .toolbar { ToolbarItemGroup(placement: .primaryAction) { pageButtons } }
+        #else
+        // The window draws its own bar on the Mac: these sit at the top of the page.
+        .macPageBar { pageButtons.buttonStyle(.glass) }
+        #endif
         .onChange(of: picks) { _, new in if !new.isEmpty { Task { await add(new) } } }
         .fileImporter(isPresented: $importing, allowedContentTypes: [.image, .movie], allowsMultipleSelection: true) { r in
             if case .success(let urls) = r { Task { await addFiles(urls) } }

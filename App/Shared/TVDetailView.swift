@@ -228,7 +228,7 @@ struct TVDetailView: View {
             Button("Rename…") { newName = tv.name; renaming = true }
             Button(onRemote ? "Open the Remote" : "Use This TV for the Remote") { openRemote(tv) }
             if tv.isHub || fleet.hub(tv.id) != nil {
-                NavigationLink("Smoothness Report") { DiagnosticsView(tv: tv) }
+                PageLink("Smoothness Report") { DiagnosticsView(tv: tv) }
             }
             if fleet.extras[tv.id]?.mac != nil {
                 Button(waking ? "Turning On…" : "Turn On (Wake-on-LAN)") { waking = true; fleet.wake(tv) }
@@ -419,6 +419,22 @@ struct DiagnosticsView: View {
     /// The report is the TV's own (`/api/diagnostics` has no relay): always asked of the TV itself.
     private var client: TVClient? { fleet.hub(tv.id).map { TVClient(hub: $0, routeID: "this") } }
 
+    /// Record three minutes, and copy the report.
+    @ViewBuilder private var reportButtons: some View {
+        Button(left > 0 ? "Recording · \(left)s" : "Record 3 Min") {
+            Task {
+                do {
+                    guard let c = client else { throw TVError.notPaired }
+                    left = try await c.recordDiagnostics()
+                } catch { fleet.show(error) }
+            }
+        }
+        .disabled(left > 0)
+        Button { copyToClipboard(text) } label: { Image(systemName: "doc.on.doc") }
+            .disabled(text.isEmpty)
+            .accessibilityLabel("Copy Report")
+    }
+
     var body: some View {
         ScrollView {
             Text(text.isEmpty ? (problem ?? "Loading…") : text).font(.caption.monospaced()).textSelection(.enabled)
@@ -426,22 +442,11 @@ struct DiagnosticsView: View {
                 .frame(maxWidth: .infinity, alignment: .leading).padding()
         }
         .navigationTitle("Smoothness Report").inlineTitle()
-        .toolbar {
-            ToolbarItemGroup(placement: .primaryAction) {
-                Button(left > 0 ? "Recording · \(left)s" : "Record 3 Min") {
-                    Task {
-                        do {
-                            guard let c = client else { throw TVError.notPaired }
-                            left = try await c.recordDiagnostics()
-                        } catch { fleet.show(error) }
-                    }
-                }
-                .disabled(left > 0)
-                Button { copyToClipboard(text) } label: { Image(systemName: "doc.on.doc") }
-                    .disabled(text.isEmpty)
-                    .accessibilityLabel("Copy Report")
-            }
-        }
+        #if os(iOS)
+        .toolbar { ToolbarItemGroup(placement: .primaryAction) { reportButtons } }
+        #else
+        .macPageBar { reportButtons.buttonStyle(.glass) }
+        #endif
         .task {
             while !Task.isCancelled {
                 if let c = client {

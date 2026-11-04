@@ -5,8 +5,31 @@ import WoodruffKit
 @Observable @MainActor
 final class HomeLayout {
     static let shared = HomeLayout()
-    /// Edit Home is open (from Home's Edit button, or the Mac's toolbar).
+    /// The Rooms & Sections sheet is open (from the room bar's More menu).
     var editing = false
+    /// Home's tiles are being arranged, like app icons: they jiggle, drag one to move it (the rest move out of its
+    /// way), drag its corner to resize it. Not saved: it's just this moment on this device.
+    var arranging = false
+    /// The tile being dragged right now (Home's scrolling holds still meanwhile).
+    var draggingTile: String?
+    /// A press and hold just started arranging: the release that ends that same press isn't also a tap on the tile.
+    @ObservationIgnored private var quietUntil = Date.distantPast
+    /// A tap on a tile does its action (not while arranging, nor as the end of the hold that started arranging).
+    var tapsAllowed: Bool { !arranging && Date() > quietUntil }
+
+    func startArranging() {
+        guard !arranging else { return }
+        quietUntil = Date().addingTimeInterval(0.8)
+        withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) { arranging = true }
+    }
+
+    func stopArranging() {
+        guard arranging || draggingTile != nil else { return }
+        withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
+            arranging = false
+            draggingTile = nil
+        }
+    }
     /// Taking in a layout another device saved: nothing is written back meanwhile (it's already saved as it is).
     @ObservationIgnored private var applying = false
 
@@ -52,6 +75,10 @@ final class HomeLayout {
     func isFavorite(_ id: String) -> Bool { favorites.contains(id) }
     /// When each favourite was last added (positive) or removed (negative), so devices merge them one by one.
     var favoriteStamps: [String: Double] { didSet { save() } }
+    /// Each Home tab's tiles (Favorites, a room) in the order they were arranged.
+    var boards: [String: [String]] { didSet { save() } }
+    /// Each tile's size on each tab: "tab|tile" → [columns, rows].
+    var spans: [String: [Int]] { didSet { save() } }
 
     func toggleFavorite(_ id: String) {
         let now = SyncMerge.stampNow()
@@ -73,6 +100,8 @@ final class HomeLayout {
         var favorites: [String]?
         var pinnedRooms: [String]?
         var favoriteStamps: [String: Double]?
+        var boards: [String: [String]]?
+        var spans: [String: [Int]]?
     }
 
     init() {
@@ -93,6 +122,8 @@ final class HomeLayout {
         favorites = s?.favorites ?? []
         pinnedRooms = s?.pinnedRooms ?? ["Kitchen", "Front Yard", "Living Room", "Backyard"]
         favoriteStamps = s?.favoriteStamps ?? [:]
+        boards = s?.boards ?? [:]
+        spans = s?.spans ?? [:]
         if (s?.version ?? 1) < 2 { save() }
     }
 
@@ -112,11 +143,13 @@ final class HomeLayout {
         if let f = s.favorites, f != favorites { favorites = f }
         if let p = s.pinnedRooms, p != pinnedRooms { pinnedRooms = p }
         if let fs = s.favoriteStamps, fs != favoriteStamps { favoriteStamps = fs }
+        if let b = s.boards, b != boards { boards = b }
+        if let sp = s.spans, sp != spans { spans = sp }
     }
 
     private func save() {
         guard !applying else { return }
-        Saved.save("homeLayout", Stored(sections: sections, hiddenSections: hiddenSections.sorted(), order: order, hiddenItems: hiddenItems.sorted(), version: 2, groupByRoom: groupByRoom, favorites: favorites, pinnedRooms: pinnedRooms, favoriteStamps: favoriteStamps))
+        Saved.save("homeLayout", Stored(sections: sections, hiddenSections: hiddenSections.sorted(), order: order, hiddenItems: hiddenItems.sorted(), version: 2, groupByRoom: groupByRoom, favorites: favorites, pinnedRooms: pinnedRooms, favoriteStamps: favoriteStamps, boards: boards, spans: spans))
     }
 
     var visibleSections: [String] { sections.filter { !hiddenSections.contains($0) } }
@@ -144,6 +177,52 @@ final class HomeLayout {
         order = [:]
         hiddenItems = []
         groupByRoom = true
+        boards = [:]
+        spans = [:]
+    }
+
+    // MARK: Arranged tabs
+
+    /// [ids] (what a tab shows, in its usual order) in the order arranged on [page]; anything new goes at the end.
+    func boardOrder(_ page: String, _ ids: [String]) -> [String] {
+        guard let saved = boards[page], !saved.isEmpty else { return ids }
+        let present = Set(ids)
+        var seen = Set<String>()
+        var out = saved.filter { present.contains($0) && seen.insert($0).inserted }
+        for id in ids where seen.insert(id).inserted { out.append(id) }
+        return out
+    }
+
+    /// Keeps a tab's new order. Tiles not on it just now (a camera still loading) keep their place after them, and
+    /// Favorites' own list follows, so Rooms & Sections shows the same order.
+    func setBoard(_ page: String, _ shown: [String]) {
+        let on = Set(shown)
+        let new = shown + (boards[page] ?? []).filter { !on.contains($0) }
+        if boards[page] != new { boards[page] = new }
+        if page == favoritesKey {
+            let ordered = shown.filter { favorites.contains($0) } + favorites.filter { !on.contains($0) }
+            if ordered != favorites { favorites = ordered }
+        }
+    }
+
+    /// The size chosen for a tile on a tab ([columns, rows]), if one was.
+    func span(_ page: String, _ id: String) -> [Int]? { spans["\(page)|\(id)"] }
+
+    func setSpan(_ page: String, _ id: String, _ span: [Int]) {
+        let key = "\(page)|\(id)"
+        if spans[key] != span { spans[key] = span }
+    }
+
+    /// The − on a tile while arranging: off Favorites (it stays in its room), or hidden from Home (Rooms & Sections
+    /// brings it back).
+    func removeFromBoard(_ page: String, _ id: String) {
+        withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
+            if page == favoritesKey {
+                if isFavorite(id) { toggleFavorite(id) }
+            } else {
+                hiddenItems.insert(id)
+            }
+        }
     }
 
     /// Rooms in the order chosen (new ones after, alphabetically).
@@ -191,7 +270,8 @@ func roomMatches(_ actual: String?, _ wanted: String) -> Bool {
     wanted == noRoom ? (actual ?? "").isEmpty : actual == wanted
 }
 
-/// Edit Home: drag sections and tiles into the order you want, and turn off what you don't want on Home.
+/// Rooms & Sections: which sections and rooms Home shows and in what order, the room bar, and what's hidden. (Moving
+/// and resizing the tiles themselves is done right on Home: Edit, or press and hold.)
 struct EditHomeView: View {
     @Environment(Fleet.self) private var fleet
     @Environment(\.dismiss) private var dismiss
@@ -216,10 +296,14 @@ struct EditHomeView: View {
                         Text("Touch and hold anything on Home and choose Add to Favorites.").foregroundStyle(.secondary)
                     }
                     ForEach(layout.favorites, id: \.self) { id in Text(favoriteName(id)) }
-                        .onMove { layout.favorites.move(fromOffsets: $0, toOffset: $1) }
+                        .onMove {
+                            layout.favorites.move(fromOffsets: $0, toOffset: $1)
+                            // Home's Favorites tab follows this order.
+                            layout.boards[favoritesKey] = layout.favorites
+                        }
                         .onDelete { offsets in for i in offsets.sorted(by: >) { layout.toggleFavorite(layout.favorites[i]) } }
                 } header: { Text("Favorites") } footer: {
-                    Text("Favorites come first on Home. Drag to reorder; swipe to remove.")
+                    Text("Favorites come first on Home. Drag to reorder; swipe to remove. On Home itself, Edit lets you drag and resize every tile.")
                 }
 
                 Section {
@@ -290,7 +374,7 @@ struct EditHomeView: View {
             #if os(iOS)
             .environment(\.editMode, .constant(.active))
             #endif
-            .navigationTitle("Edit Home")
+            .navigationTitle("Rooms & Sections")
             .inlineTitle()
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }

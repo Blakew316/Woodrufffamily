@@ -45,13 +45,13 @@ struct SendView: View {
                     .accessibilityLabel("Send")
                     .animation(.snappy, value: canSend)
                 }
-                NavigationLink { SendToView(to: to) } label: {
+                PageLink("To") { SendToView(to: to) } label: {
                     LabeledContent("To", value: toSummary)
                 }
             }
             Section {
-                NavigationLink { FilesView() } label: { IconRow(symbol: "folder.fill", color: .blue, title: "Photos & Files") }
-                NavigationLink { OpenLinkView() } label: { IconRow(symbol: "link", color: .indigo, title: "Open a Link") }
+                PageLink("Photos & Files") { FilesView() } label: { IconRow(symbol: "folder.fill", color: .blue, title: "Photos & Files") }
+                PageLink("Open a Link") { OpenLinkView() } label: { IconRow(symbol: "link", color: .indigo, title: "Open a Link") }
                 Button { startSlideshow() } label: {
                     HStack {
                         IconRow(symbol: "photo.fill", color: .orange, title: "Start Photo Slideshow", subtitle: slideshowTV.map { "On \($0.hub.name)" })
@@ -248,14 +248,18 @@ struct OpenLinkView: View {
         .formStyle(.grouped)
         .navigationTitle("Open a Link")
         .inlineTitle()
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Button { open() } label: { if opening { ProgressView() } else { Text("Open") } }
-                    .buttonStyle(.glassProminent)
-                    .disabled(address.isEmpty || opening)
-            }
-        }
+        #if os(iOS)
+        .toolbar { ToolbarItem(placement: .primaryAction) { openButton } }
+        #else
+        .macPageBar { openButton }
+        #endif
         .onAppear { focused = true }
+    }
+
+    private var openButton: some View {
+        Button { open() } label: { if opening { ProgressView() } else { Text("Open") } }
+            .buttonStyle(.glassProminent)
+            .disabled(address.isEmpty || opening)
     }
 
     private func open() {
@@ -330,6 +334,23 @@ struct FilesView: View {
         }
     }
 
+    /// Upload, or a new folder.
+    private var addMenu: some View {
+        Menu {
+            Button { importing = true } label: { Label("Upload", systemImage: "square.and.arrow.up") }
+            Button { askFolder = true } label: { Label("New Folder", systemImage: "folder.badge.plus") }
+        } label: { Image(systemName: "plus") }
+        .disabled(listing == nil)
+    }
+
+    #if os(macOS)
+    /// The Mac: the view options and Add beside the search field (the window draws its own bar).
+    @ViewBuilder private var filesButtons: some View {
+        optionsMenu
+        addMenu
+    }
+    #endif
+
     var body: some View {
         Group {
             if listing == nil, let failed {
@@ -355,19 +376,19 @@ struct FilesView: View {
                 listView
             }
         }
+        #if os(macOS)
+        .pageSearch(text: $filter, prompt: "Search") { filesButtons }
+        #else
         .pageSearch(text: $filter, prompt: "Search")
+        #endif
         .navigationTitle(listing.map { $0.path == root?.path ? (root?.name ?? "Photos & Files") : ($0.path as NSString).lastPathComponent } ?? "Photos & Files")
         .screenTitle(listing.map { $0.path == root?.path ? (root?.name ?? "Photos & Files") : ($0.path as NSString).lastPathComponent } ?? "Photos & Files")
+        #if os(iOS)
         .toolbar {
             ToolbarItem(placement: .primaryAction) { optionsMenu }
-            ToolbarItem(placement: .primaryAction) {
-                Menu {
-                    Button { importing = true } label: { Label("Upload", systemImage: "square.and.arrow.up") }
-                    Button { askFolder = true } label: { Label("New Folder", systemImage: "folder.badge.plus") }
-                } label: { Image(systemName: "plus") }
-                .disabled(listing == nil)
-            }
+            ToolbarItem(placement: .primaryAction) { addMenu }
         }
+        #endif
         .fileImporter(isPresented: $importing, allowedContentTypes: [.item], allowsMultipleSelection: true) { r in
             if case .success(let urls) = r { upload(urls) }
         }

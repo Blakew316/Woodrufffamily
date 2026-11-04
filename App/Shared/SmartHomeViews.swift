@@ -74,11 +74,12 @@ struct SpeakerTile: View {
             }
         }
         .padding(.horizontal, 10).padding(.vertical, 10)
-        .frame(maxWidth: .infinity, minHeight: 64, alignment: .leading)
+        .frame(maxWidth: .infinity, minHeight: 64, maxHeight: .infinity, alignment: .leading)
         .contentShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         .glass(RoundedRectangle(cornerRadius: 20, style: .continuous))
-        .onTapGesture(perform: openControls)
+        .onTapGesture { if HomeLayout.shared.tapsAllowed { openControls() } }
         .contextMenu {
+            ArrangeHomeButton()
             if !room.isOffline {
                 if room.canPlay {
                     Button(room.isPlaying ? "Pause" : "Play") {
@@ -135,75 +136,6 @@ struct SpeakerArt: View {
             }
             .frame(width: size, height: size)
             .clipShape(RoundedRectangle(cornerRadius: size * 0.18, style: .continuous))
-    }
-}
-
-// MARK: - A room's small tiles, together
-
-/// Everything small in a room (speakers, lights, devices) in one even grid, two across on iPhone, rather than
-/// a short grid per kind.
-struct RoomTiles: View {
-    var room: String? = nil
-    var favorites = false
-    private let home = SmartHome.shared
-    private let layout = HomeLayout.shared
-    @State private var openSpeaker: SonosRoom?
-    @State private var openLight: GoveeLight?
-    @State private var openDevice: HomeDevice?
-
-    private enum Item: Identifiable {
-        case speaker(SonosRoom), light(GoveeLight), device(HomeDevice)
-        var id: String {
-            switch self {
-            case .speaker(let r): return r.id
-            case .light(let l): return l.id
-            case .device(let d): return d.id
-            }
-        }
-    }
-
-    private func pick<T: Identifiable>(_ list: [T], _ kind: String, room id: (T) -> String) -> [T] where T.ID == String {
-        if favorites { return layout.favoritesOnly(list) }
-        guard !layout.hiddenSections.contains(kind) else { return [] }
-        let inRoom = room.map { r in list.filter { roomMatches(home.room(of: id($0)), r) } } ?? list
-        return layout.arrange(inRoom, in: kind)
-    }
-
-    private var items: [Item] {
-        let all = pick(home.speakers, "speakers", room: \.id).map(Item.speaker)
-            + pick(home.lights, "lights", room: \.id).map(Item.light)
-            + pick(AccessoryStore.shared.all, "devices", room: \.id).map(Item.device)
-        // Each thing once (a light found twice would otherwise upset the grid).
-        var seen = Set<String>()
-        return all.filter { seen.insert($0.id).inserted }
-    }
-
-    var body: some View {
-        let list = items
-        if !list.isEmpty {
-            LazyVGrid(columns: columns, spacing: 10) {
-                ForEach(list) { item in
-                    switch item {
-                    case .speaker(let r): SpeakerTile(room: r) { openSpeaker = r }
-                    case .light(let l): LightTile(light: l) { openLight = l }
-                    case .device(let d): DeviceTile(device: d) { openDevice = d }
-                    }
-                }
-            }
-            .sheet(item: $openSpeaker) { r in
-                NavigationStack { SpeakerDetailView(speakerID: r.id, inSheet: true) }.presentationBackground(.clear).macResizable()
-            }
-            .sheet(item: $openLight) { l in LightSheet(lightID: l.id).macResizable(width: 520, height: 640) }
-            .sheet(item: $openDevice) { d in NavigationStack { DeviceDetailView(deviceID: d.id, inSheet: true) }.macResizable() }
-        }
-    }
-
-    private var columns: [GridItem] {
-        #if os(iOS)
-        [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)]
-        #else
-        [GridItem(.adaptive(minimum: 260), spacing: 14)]
-        #endif
     }
 }
 
@@ -290,7 +222,7 @@ struct LightTile: View {
         .foregroundStyle(lit ? Color.black : .primary)
         .opacity(light.isOffline ? 0.6 : 1)
         .padding(.horizontal, 12).padding(.vertical, 10)
-        .frame(maxWidth: .infinity, minHeight: 64, alignment: .leading)
+        .frame(maxWidth: .infinity, minHeight: 64, maxHeight: .infinity, alignment: .leading)
         .background {
             if lit {
                 RoundedRectangle(cornerRadius: 20, style: .continuous)
@@ -302,18 +234,17 @@ struct LightTile: View {
         .modifier(OffGlass(on: lit))
         .animation(.smooth(duration: 0.25), value: lit)
         .onTapGesture {
+            guard HomeLayout.shared.tapsAllowed else { return }
             guard !light.isOffline else { openControls(); return }
             #if os(iOS)
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
             #endif
             SmartHome.shared.setOn(light, !light.on)
         }
-        #if os(macOS)
-        // Press and hold for the controls (right-click has the menu). Not on iPhone: there touch and hold is the
-        // menu below (Controls…, Add to Favorites), and a second hold here fought it for the same touch.
-        .onLongPressGesture(minimumDuration: 0.35, perform: openControls)
-        #endif
+        // Press and hold arranges Home's tiles (on the Mac too); the controls are in the menu (touch and hold on
+        // iPhone, right-click on the Mac).
         .contextMenu {
+            ArrangeHomeButton()
             if !light.isOffline {
                 Button(light.on ? "Turn Off" : "Turn On") { SmartHome.shared.setOn(light, !light.on) }
             }
@@ -479,7 +410,7 @@ struct SpeakersListView: View {
                     Text("Looking for Sonos speakers on your Wi‑Fi…").foregroundStyle(.secondary)
                 }
                 ForEach(home.speakers) { r in
-                    NavigationLink { SpeakerDetailView(speakerID: r.id) } label: {
+                    PageLink(r.name) { SpeakerDetailView(speakerID: r.id) } label: {
                         IconRow(symbol: "", color: .clear, title: r.name,
                                 subtitle: status(r),
                                 value: home.room(of: r.id))
@@ -517,7 +448,7 @@ struct LightsListView: View {
                     Text("No lights found yet.").foregroundStyle(.secondary)
                 }
                 ForEach(home.lights) { l in
-                    NavigationLink { LightDetailView(lightID: l.id) } label: {
+                    PageLink(l.name) { LightDetailView(lightID: l.id) } label: {
                         HStack(spacing: 12) {
                             Circle().fill(l.isLit ? l.shade : Color.secondary.opacity(0.3)).frame(width: 12, height: 12)
                             IconRow(symbol: "", color: .clear, title: l.name,

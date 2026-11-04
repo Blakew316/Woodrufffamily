@@ -46,12 +46,17 @@ struct WatchView: View {
         // The billboard runs under the top bar, edge to edge, like the Apple TV app.
         .ignoresSafeArea(edges: .top)
         #endif
+        #if os(iOS)
         .toolbar {
             ToolbarItem(placement: .principal) { TVPicker() }.sharedBackgroundVisibility(.hidden)
             ToolbarItem(placement: .primaryAction) {
                 NavigationLink { SearchPage() } label: { Image(systemName: "magnifyingglass") }
             }
         }
+        #else
+        // The window's own bar has the search; the TV that plays is picked at the top of the page.
+        .macPageBar { TVPicker() }
+        #endif
         .inlineTitle()
         #if os(macOS)
         .navigationTitle("Watch")
@@ -280,17 +285,25 @@ struct ShelfRow<Content: View>: View {
     init(_ title: String, all: LibraryRef? = nil, @ViewBuilder content: () -> Content) {
         self.title = title; self.all = all; self.content = content()
     }
+    /// The shelf's name, with a chevron when it opens everything in it.
+    private var heading: some View {
+        HStack(spacing: 4) {
+            Text(title).font(.title2.bold())
+            Image(systemName: "chevron.right").font(.headline.weight(.bold)).foregroundStyle(.secondary)
+        }
+    }
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Group {
                 if let all {
-                    NavigationLink(value: all) {
-                        HStack(spacing: 4) {
-                            Text(title).font(.title2.bold())
-                            Image(systemName: "chevron.right").font(.headline.weight(.bold)).foregroundStyle(.secondary)
-                        }
-                    }
-                    .buttonStyle(.plain)
+                    #if os(macOS)
+                    // On the Mac's own page stack, so Woodruff's Back button returns from it.
+                    PageLink(title) { LibraryGrid(place: all.place) } label: { heading }
+                        .buttonStyle(.plain)
+                    #else
+                    NavigationLink(value: all) { heading }
+                        .buttonStyle(.plain)
+                    #endif
                 } else {
                     Text(title).font(.title2.bold())
                 }
@@ -815,7 +828,11 @@ struct LibraryGrid: View {
             if loading { ProgressView().padding() }
         }
         .navigationTitle(heading)
+        #if os(macOS)
+        .pageSearch(text: $query, prompt: heading) { filterMenu }
+        #else
         .pageSearch(text: $query, prompt: heading)
+        #endif
         .environment(\.openTitle, OpenTitleAction { openTitle = $0 })
         // Marked watched here: the checkmarks (and an Unwatched list) follow at once, and so does Watch.
         .environment(\.watchChanged, WatchChanged { key in
@@ -823,19 +840,9 @@ struct LibraryGrid: View {
             Task { await reloadShown() }
         })
         .sheet(item: Binding(get: { openTitle.map { TitleRef(id: $0) } }, set: { openTitle = $0?.id })) { TitleSheet(id: $0.id).macResizable(width: 760, height: 820, minWidth: 520, minHeight: 500) }
-        .toolbar {
-            Menu {
-                Picker("Show", selection: $unwatched) { Text("All").tag(false); Text("Unwatched").tag(true) }
-                Picker("Sort By", selection: $sort) {
-                    Text("A–Z").tag("az"); Text("Recently Added").tag("recent"); Text("Newest").tag("newest")
-                    if rated { Text("Top Rated").tag("rated") }
-                }
-                Picker("Genre", selection: $genre) {
-                    Text("All Genres").tag(String?.none)
-                    ForEach(genres, id: \.self) { Text($0).tag(String?.some($0)) }
-                }
-            } label: { Image(systemName: "line.3.horizontal.decrease") }
-        }
+        #if os(iOS)
+        .toolbar { filterMenu }
+        #endif
         .task(id: "\(sort)|\(unwatched)|\(genre ?? "")|\(query)") {
             try? await Task.sleep(nanoseconds: 200_000_000)
             // Changed again while waiting (typing): only the newest choice is asked for.
@@ -867,6 +874,21 @@ struct LibraryGrid: View {
             guard gen == generation, !Task.isCancelled else { return }
             if items.isEmpty { failed = error.localizedDescription } else { fleet.show(error) }
         }
+    }
+
+    /// Show (all or unwatched), sort and genre.
+    private var filterMenu: some View {
+        Menu {
+            Picker("Show", selection: $unwatched) { Text("All").tag(false); Text("Unwatched").tag(true) }
+            Picker("Sort By", selection: $sort) {
+                Text("A–Z").tag("az"); Text("Recently Added").tag("recent"); Text("Newest").tag("newest")
+                if rated { Text("Top Rated").tag("rated") }
+            }
+            Picker("Genre", selection: $genre) {
+                Text("All Genres").tag(String?.none)
+                ForEach(genres, id: \.self) { Text($0).tag(String?.some($0)) }
+            }
+        } label: { Image(systemName: "line.3.horizontal.decrease") }
     }
 
     /// Asks again for everything shown (a title was just marked watched), keeping the place in the list.

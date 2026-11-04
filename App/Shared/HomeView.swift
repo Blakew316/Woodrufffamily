@@ -1,8 +1,9 @@
 import SwiftUI
 import WoodruffKit
 
-/// Home (Mac), like Apple's Home app: what's going on across the house at a glance, a large tile for every TV
-/// with what it's playing and its controls, and actions for all of them. The remote slides out on the right.
+/// Home, like Apple's Home app: a tab for Favorites and for each room, each a grid of tiles (cameras live, TVs with
+/// what they're playing, speakers, lights and devices) arranged and sized the way the family likes. Edit (or press
+/// and hold) and the tiles jiggle: drag them anywhere, drag a corner to resize. The remote slides out on the right.
 struct HomeView: View {
     @Environment(Fleet.self) private var fleet
     @State private var openTV: String?
@@ -10,6 +11,8 @@ struct HomeView: View {
     @AppStorage("home.room2") private var picked = favoritesKey
     /// The TV whose player is open (iPhone: tapping a TV opens straight into what it's playing).
     @State private var playerTV: String?
+    /// The page's scrolling, so a tile dragged to an edge scrolls the page under it.
+    @State private var scroller = HomeScroller()
     @Namespace private var zoom
     private let layout = HomeLayout.shared
 
@@ -28,19 +31,25 @@ struct HomeView: View {
     #endif
 
     var body: some View {
-        // Read here, so Home redraws the moment either changes (Edit Home from the Mac's toolbar, a tapped TV).
+        // Read here, so Home redraws the moment any of these changes (Rooms & Sections, a tapped TV, Edit).
         let editing = layout.editing
+        let arranging = layout.arranging
         let player = playerTV
+        @Bindable var scroller = scroller
         ScrollView {
             VStack(alignment: .leading, spacing: 30) {
                 #if os(iOS)
-                // Home and Edit on the left; the thermostat on the right.
+                // Home and Edit on the left; the thermostat on the right. (While arranging, Done stays pinned at the
+                // top right instead, however far down the page is.)
                 HStack(alignment: .center, spacing: 12) {
                     Text("Home").font(.largeTitle.bold())
-                    Button("Edit") { layout.editing = true }.buttonStyle(.glass).controlSize(.small)
+                    if !arranging {
+                        Button("Edit") { layout.startArranging() }.buttonStyle(.glass).controlSize(.small)
+                    }
                     Spacer()
-                    ThermostatChip(compact: true)
+                    if !arranging { ThermostatChip(compact: true) }
                 }
+                .frame(minHeight: 40)
                 .padding(.bottom, -14)
                 #endif
                 ForEach(layout.visibleSections.filter { $0 == "status" || $0 == "rooms" }, id: \.self) { key in
@@ -50,10 +59,13 @@ struct HomeView: View {
                     favoritesGroup
                 }
                 if room != favoritesKey {
-                    if layout.groupByRoom {
+                    if !room.isEmpty {
+                        // One room picked in the room bar: its tiles, to arrange as you like.
+                        if hasThings(room) { roomGroup(room) }
+                    } else if layout.groupByRoom {
                         // Like the Home app: each room with everything in it.
                         ForEach(roomGroups, id: \.self) { r in roomGroup(r) }
-                        if room.isEmpty && !layout.hiddenSections.contains("wifi") { WifiSection() }
+                        if !layout.hiddenSections.contains("wifi") { WifiSection() }
                     } else {
                         ForEach(layout.visibleSections.filter { $0 != "status" && $0 != "rooms" }, id: \.self) { key in
                             section(key)
@@ -70,6 +82,12 @@ struct HomeView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .frame(maxWidth: .infinity)
         }
+        .scrollPosition($scroller.position)
+        .onScrollGeometryChange(for: HomeScrollSpot.self) { HomeScrollSpot($0) } action: { _, spot in scroller.take(spot) }
+        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { f in scroller.frame = f }
+        // A tile being dragged holds the page still (it scrolls by itself at the edges).
+        .scrollDisabled(layout.draggingTile != nil)
+        .environment(scroller)
         .blur(radius: openTV == nil ? 0 : 8)
         .overlay { if openTV != nil { Color.black.opacity(0.25).ignoresSafeArea().onTapGesture { close() } } }
         .overlay {
@@ -98,6 +116,16 @@ struct HomeView: View {
                     .transition(.asymmetric(insertion: .identity, removal: .opacity))
             }
         }
+        #if os(iOS)
+        .overlay(alignment: .topTrailing) {
+            if arranging {
+                Button("Done") { layout.stopArranging() }
+                    .buttonStyle(.glassProminent)
+                    .padding(.trailing, 16).padding(.top, 8)
+                    .transition(.scale(scale: 0.8).combined(with: .opacity))
+            }
+        }
+        #endif
         .background { HomeBackdrop(playing: featuredTV?.playing) }
         // Home is always the dark, cinematic room: its glass and text read over the backdrop.
         .environment(\.colorScheme, .dark)
@@ -106,7 +134,7 @@ struct HomeView: View {
         // The title sits in the page itself, right under the status bar.
         .toolbar(.hidden, for: .navigationBar)
         #else
-        // No title strip: the room bar and tiles run right up under the window's buttons, over the backdrop.
+        // No title strip: the room bar and tiles run right up under Woodruff's own bar, over the backdrop.
         .toolbar(removing: .title)
         .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
         // Everything a size up on the Mac's big screens.
@@ -115,6 +143,8 @@ struct HomeView: View {
         .sheet(isPresented: Binding(get: { editing }, set: { layout.editing = $0 })) { EditHomeView().macResizable(width: 520, height: 720) }
         .sheet(item: Binding(get: { player.map { TitleRef(id: $0) } }, set: { playerTV = $0?.id })) { NowPlayingSheet(tvID: $0.id).sheetBanner().macResizable(width: 560, height: 780) }
         .refreshable { await refreshEverything() }
+        // Leaving Home (another tab, another page) finishes arranging.
+        .onDisappear { layout.stopArranging() }
     }
 
     @ViewBuilder private func section(_ key: String) -> some View {
@@ -173,29 +203,58 @@ struct HomeView: View {
 
     /// Favorites: everything starred, whatever room it's in.
     private var favoritesGroup: some View {
-        let favTVs = layout.favoritesOnly(fleet.tvs)
-        return VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 16) {
             if layout.favorites.isEmpty {
                 Text("Touch and hold anything on Home (a camera, TV, speaker, light or device) and choose Add to Favorites. It shows up here.")
                     .font(.subheadline).foregroundStyle(.secondary)
                     .padding(16).frame(maxWidth: .infinity, alignment: .leading)
                     .glass(RoundedRectangle(cornerRadius: 20, style: .continuous), interactive: false)
             }
-            #if os(macOS)
-            MacFavoriteTiles(open: { open($0) })
-            #else
-            CamerasSection(favorites: true, compact: true, titled: false)
-            if !favTVs.isEmpty {
-                LazyVGrid(columns: columns, spacing: 18) {
-                    ForEach(favTVs) { tv in
-                        // The same TV may also sit in its room below; only that one zooms.
-                        HomeTVTile(tv: tv) { open(tv.id) }
-                    }
-                }
-            }
-            #endif
-            RoomTiles(favorites: true)
+            // The same TV may also sit in its room below; only that one zooms.
+            HomeBoard(page: favoritesKey, tiles: favoriteTiles, openTV: { open($0) })
         }
+    }
+
+    /// Every favourite there is, cameras first, then TVs, then the rest, until they're arranged by hand.
+    private var favoriteTiles: [HomeTile] {
+        let h = SmartHome.shared
+        let cams = NestCameras.shared.cameras
+        var cameras: [HomeTile] = [], tvs: [HomeTile] = [], small: [HomeTile] = []
+        for id in layout.favorites {
+            if let c = cams.first(where: { $0.id == id }) { cameras.append(.camera(c)) }
+            else if let t = fleet.tv(id) { tvs.append(.tv(t)) }
+            else if let r = h.speaker(id) { small.append(.speaker(r)) }
+            else if let l = h.light(id) { small.append(.light(l)) }
+            else if let d = AccessoryStore.shared.device(id) { small.append(.device(d)) }
+        }
+        return cameras + tvs + small
+    }
+
+    /// Everything in room [r] Home shows: its cameras, TVs, speakers, lights and devices (not ones hidden, nor kinds
+    /// turned off in Rooms & Sections).
+    private func roomTiles(_ r: String) -> [HomeTile] {
+        let h = SmartHome.shared
+        let shown = { (k: String) in !layout.hiddenSections.contains(k) }
+        // Every room listed: a favourite camera is already playing under Favorites (one live picture, one place).
+        let everyRoom = room.isEmpty
+        var out: [HomeTile] = []
+        if shown("cameras") {
+            let cams = NestCameras.shared.cameras.filter { roomMatches(h.rooms[$0.id] ?? $0.room, r) && !(everyRoom && layout.favorites.contains($0.id)) }
+            out += layout.arrange(cams, in: "cameras").map { HomeTile.camera($0) }
+        }
+        if shown("tvs") { out += tvs(in: r).map { HomeTile.tv($0) } }
+        if shown("speakers") {
+            out += layout.arrange(h.speakers.filter { roomMatches(h.room(of: $0.id), r) }, in: "speakers").map { HomeTile.speaker($0) }
+        }
+        if shown("lights") {
+            out += layout.arrange(h.lights.filter { roomMatches(h.room(of: $0.id), r) }, in: "lights").map { HomeTile.light($0) }
+        }
+        if shown("devices") {
+            out += layout.arrange(AccessoryStore.shared.all.filter { roomMatches(h.room(of: $0.id), r) }, in: "devices").map { HomeTile.device($0) }
+        }
+        // Each thing once (a light found twice would otherwise upset the grid).
+        var seen = Set<String>()
+        return out.filter { seen.insert($0.id).inserted }
     }
 
     private func tvs(in r: String) -> [FleetTV] {
@@ -216,25 +275,14 @@ struct HomeView: View {
     }
 
     private func roomGroup(_ r: String) -> some View {
-        let shown = { (k: String) in !layout.hiddenSections.contains(k) }
-        return VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 10) {
             // The room picked in the room bar is already its title; names only when every room is listed.
             if room.isEmpty { Text(r == noRoom ? "Other" : r).font(.title3.bold()) }
-            // A favourite camera already playing under Favorites isn't repeated here (one picture, one place).
-            if shown("cameras") { CamerasSection(room: r, compact: true, titled: false, excluding: room.isEmpty ? Set(layout.favorites) : []) }
-            if shown("tvs") {
-                let list = tvs(in: r)
-                if !list.isEmpty {
-                    LazyVGrid(columns: columns, spacing: 18) {
-                        ForEach(list) { tv in
-                            HomeTVTile(tv: tv) { open(tv.id) }
-                                .matchedGeometryEffect(id: tv.id, in: zoom, isSource: openTV != tv.id)
-                                .opacity(openTV == tv.id ? 0 : 1)
-                        }
-                    }
-                }
-            }
-            RoomTiles(room: r)
+            #if os(macOS)
+            HomeBoard(page: r, tiles: roomTiles(r), openTV: { open($0) }, zoom: zoom, zoomed: openTV)
+            #else
+            HomeBoard(page: r, tiles: roomTiles(r), openTV: { open($0) })
+            #endif
         }
     }
 
@@ -271,7 +319,7 @@ struct HomeView: View {
                         }
                     }
                     Divider()
-                    Button("Choose Rooms for This Bar…") { layout.editing = true }
+                    Button("Rooms & Sections…") { layout.editing = true }
                 } label: {
                     // Shows the room picked from here, so it's clear where you are.
                     chip(inMore ? (room.isEmpty ? "All Rooms" : room) + " ▾" : "More ▾", selected: inMore)
@@ -305,6 +353,7 @@ struct HomeView: View {
     }
 
     private func open(_ id: String) {
+        guard layout.tapsAllowed else { return }
         #if os(macOS)
         MacFeedback.snap()
         #else
@@ -340,8 +389,8 @@ struct HomeTVTile: View {
     static let macBig = false
     #endif
     @Environment(Fleet.self) private var fleet
-    /// Its corner is being dragged (Mac Favorites): the hover lift and tilt rest so the tile follows the pointer.
-    @Environment(\.tileResizing) private var resizing
+    /// Home's tiles are being arranged: the hover lift and tilt rest (the tile is being moved or resized).
+    @Environment(\.homeArranging) private var arranging
     var tv: FleetTV
     var height: CGFloat = 230
     var open: () -> Void
@@ -382,8 +431,8 @@ struct HomeTVTile: View {
         // A TV that stopped keeps the picture of what it last played, dimmed, so the grid stays rich.
         let art = p ?? (tv.isUnpaired ? nil : fleet.lastPlaying[tv.id])
         let pictured = hasPicture(fleet, art)
-        // Lifted under the pointer, but not while its corner is being dragged.
-        let hot = hovering && !resizing
+        // Lifted under the pointer, but not while the tiles are being arranged.
+        let hot = hovering && !arranging
         ZStack(alignment: .bottomLeading) {
             if pictured {
                 Color.clear
@@ -453,7 +502,7 @@ struct HomeTVTile: View {
         .animation(.spring(response: 0.3, dampingFraction: 0.8), value: hot)
         .contentShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
         #if os(macOS)
-        .modifier(TileTilt(enabled: !resizing))
+        .modifier(TileTilt(enabled: !arranging))
         .dropDestination(for: URL.self) { urls, _ in
             dropped(urls)
             return true
@@ -465,7 +514,7 @@ struct HomeTVTile: View {
             }
         }
         #endif
-        .onTapGesture(perform: open)
+        .onTapGesture { if HomeLayout.shared.tapsAllowed { open() } }
         .onHover { hovering = $0 }
         .alert("Rename TV", isPresented: $renaming) {
             TextField("Name", text: $newName)
@@ -473,6 +522,7 @@ struct HomeTVTile: View {
             Button("Cancel", role: .cancel) {}
         }
         .contextMenu {
+            ArrangeHomeButton()
             Button("Open") { open() }
             Button("Rename…") { newName = tv.name; renaming = true }
             Button("Use for the Remote") {
@@ -687,135 +737,7 @@ struct NowPlayingBanner: View {
     }
 }
 
-private struct TileResizingKey: EnvironmentKey { static let defaultValue = false }
-extension EnvironmentValues {
-    /// A tile's corner is being dragged (Mac Favorites): its hover effects rest so it follows the pointer cleanly.
-    var tileResizing: Bool {
-        get { self[TileResizingKey.self] }
-        set { self[TileResizingKey.self] = newValue }
-    }
-}
-
 #if os(macOS)
-/// Each tile's chosen width on this Mac.
-@Observable @MainActor
-final class TileSizes {
-    static let shared = TileSizes()
-    private(set) var widths: [String: CGFloat] =
-        ((UserDefaults.standard.dictionary(forKey: "tileWidths") as? [String: Double]) ?? [:]).mapValues { CGFloat($0) }
-    func set(_ id: String, _ w: CGFloat) {
-        widths[id] = w
-        UserDefaults.standard.set(widths.mapValues { Double($0) }, forKey: "tileWidths")
-    }
-}
-
-/// A tile sized by dragging its bottom-right corner. While dragging, only this tile's width changes (no
-/// animation, no saving) so it follows the pointer exactly; it's saved when let go.
-struct ResizableTile<Content: View>: View {
-    let id: String
-    let defaultWidth: CGFloat
-    let minWidth: CGFloat
-    var maxWidth: CGFloat
-    var heightFor: (CGFloat) -> CGFloat
-    @ViewBuilder var content: (CGFloat) -> Content
-    /// The width while the corner is being dragged (nil otherwise).
-    @State private var live: CGFloat?
-    @State private var start: CGFloat = 0
-    /// Width over height when the drag began: the corner moves along that diagonal, staying as close to the
-    /// pointer as the tile's shape allows whichever way it's dragged (across, down, or both).
-    @State private var aspect: CGFloat = 1
-    @State private var hovering = false
-    /// Goes back to false by itself if a drag is cut short (the window loses focus mid-drag), so the new width
-    /// is still kept and the grip never stays lit.
-    @GestureState private var dragging = false
-
-    private var width: CGFloat {
-        let w = live ?? TileSizes.shared.widths[id] ?? defaultWidth
-        return min(max(minWidth, w), max(minWidth, maxWidth))
-    }
-
-    var body: some View {
-        let w = width
-        content(w)
-            .frame(width: w, height: heightFor(w))
-            // The tile's own hover lift and tilt rest while it's being resized (they'd fight the pointer).
-            .environment(\.tileResizing, live != nil)
-            .overlay(alignment: .bottomTrailing) {
-                // In the overlay, apart from the tile: dragging it never counts as a click on the tile.
-                ResizeGrip(trailing: true, shown: hovering, active: live != nil)
-                    .gesture(
-                        DragGesture(minimumDistance: 1, coordinateSpace: .global)
-                            .updating($dragging) { _, state, _ in state = true }
-                            .onChanged { g in
-                                still {
-                                    // The width and shape when this drag began.
-                                    var s = start, r = aspect
-                                    if live == nil {
-                                        s = width
-                                        r = s / max(1, heightFor(s))
-                                        start = s
-                                        aspect = r
-                                    }
-                                    // The point on the tile's diagonal nearest the pointer.
-                                    let grow = (r * r * g.translation.width + r * g.translation.height) / (r * r + 1)
-                                    live = min(max(minWidth, (s + grow).rounded()), max(minWidth, maxWidth))
-                                }
-                            }
-                            .onEnded { _ in commit() }
-                    )
-            }
-            .onChange(of: dragging) { _, now in if !now { commit() } }
-            .onHover { h in withAnimation(.easeOut(duration: 0.15)) { hovering = h } }
-    }
-
-    /// Keeps the dragged width (once, however the drag ended).
-    private func commit() {
-        still {
-            if let w = live { TileSizes.shared.set(id, w) }
-            live = nil
-        }
-    }
-
-    /// A change with no animation at all, so the tile and the tiles flowing around it move with the pointer.
-    private func still(_ change: () -> Void) {
-        var t = Transaction()
-        t.disablesAnimations = true
-        withTransaction(t, change)
-    }
-}
-
-/// Favourite cameras and TVs, each sized by dragging its bottom-right corner; the rest flow around it. A view of
-/// its own (with its own width), so resizing the window or a tile never re-runs the rest of Home.
-private struct MacFavoriteTiles: View {
-    @Environment(Fleet.self) private var fleet
-    var open: (String) -> Void
-    /// How wide Favorites is: a tile can't be dragged wider, and shrinks with the window.
-    @State private var width: CGFloat = 1200
-    private let layout = HomeLayout.shared
-
-    var body: some View {
-        let cams = NestCameras.shared.cameras
-        let ids = layout.favorites.filter { id in cams.contains { $0.id == id } || fleet.tv(id) != nil }
-        FlowLayout(spacing: 14) {
-            ForEach(ids, id: \.self) { id in
-                if let cam = cams.first(where: { $0.id == id }) {
-                    ResizableTile(id: id, defaultWidth: 340, minWidth: 220, maxWidth: width, heightFor: { $0 * 3 / 4 }) { _ in
-                        LiveCameraTile(camera: cam, compact: true) {
-                            if cam.webRTC && cam.online { withAnimation(.smooth(duration: 0.25)) { CameraStreams.shared.full = cam.id } }
-                        }
-                    }
-                } else if let tv = fleet.tv(id) {
-                    ResizableTile(id: id, defaultWidth: 400, minWidth: 300, maxWidth: width, heightFor: { max(210, $0 * 9 / 16) }) { w in
-                        HomeTVTile(tv: tv, height: max(210, w * 9 / 16)) { open(tv.id) }
-                    }
-                }
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
-    }
-}
-
 /// The Mac's hover tilt (as `hoverTilt()`), resting while the tile is being resized, so the corner grip never
 /// fights a tile that's turning under the pointer.
 private struct TileTilt: ViewModifier {
@@ -851,32 +773,4 @@ private struct TileTilt: ViewModifier {
     }
 }
 
-/// Lays tiles out left to right, wrapping to a new row when one doesn't fit.
-struct FlowLayout: Layout {
-    var spacing: CGFloat = 14
-
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        let maxW = proposal.width ?? .infinity
-        var x: CGFloat = 0, y: CGFloat = 0, rowH: CGFloat = 0, widest: CGFloat = 0
-        for s in subviews {
-            let size = s.sizeThatFits(.unspecified)
-            if x > 0 && x + size.width > maxW { y += rowH + spacing; x = 0; rowH = 0 }
-            x += size.width + spacing
-            rowH = max(rowH, size.height)
-            widest = max(widest, x - spacing)
-        }
-        return CGSize(width: proposal.width ?? widest, height: y + rowH)
-    }
-
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        var x: CGFloat = 0, y: CGFloat = 0, rowH: CGFloat = 0
-        for s in subviews {
-            let size = s.sizeThatFits(.unspecified)
-            if x > 0 && x + size.width > bounds.width { y += rowH + spacing; x = 0; rowH = 0 }
-            s.place(at: CGPoint(x: bounds.minX + x, y: bounds.minY + y), proposal: ProposedViewSize(size))
-            x += size.width + spacing
-            rowH = max(rowH, size.height)
-        }
-    }
-}
 #endif
