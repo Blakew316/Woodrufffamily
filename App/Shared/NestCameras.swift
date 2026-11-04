@@ -419,18 +419,6 @@ struct LiveCameraTile: View {
                 Text(camera.name).font(compact ? .footnote.weight(.semibold) : .subheadline.weight(.semibold))
                     .foregroundStyle(.white).lineLimit(1).minimumScaleFactor(0.85)
                 Spacer()
-                if status == "Live" {
-                    if compact {
-                        Circle().fill(.red).frame(width: 8, height: 8).shadow(color: .red.opacity(0.8), radius: 3)
-                    } else {
-                        HStack(spacing: 5) {
-                            Circle().fill(.red).frame(width: 7, height: 7)
-                            Text("LIVE").font(.caption2.weight(.heavy)).foregroundStyle(.white)
-                        }
-                        .padding(.horizontal, 8).padding(.vertical, 4)
-                        .background(Capsule().fill(.black.opacity(0.45)))
-                    }
-                }
             }
             .padding(compact ? 10 : 12)
         }
