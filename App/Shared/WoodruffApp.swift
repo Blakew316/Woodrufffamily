@@ -56,6 +56,9 @@ struct WoodruffApp: App {
                     SettingsSync.shared.start(fleet)
                     #if os(iOS)
                     HomeKitLights.shared.start()
+                    #else
+                    // Apple Home on the Mac, through Woodruff Home Helper.
+                    HomeBridgeClient.shared.start()
                     #endif
                     await fleet.start()
                     #if os(iOS)

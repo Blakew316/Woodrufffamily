@@ -370,7 +370,11 @@ struct DevicesListView: View {
                 #if os(iOS)
                 Text("Everything in Apple Home (plugs, locks, thermostats, sensors, blinds, HomePod temperature) shows here, plus Samsung appliances once SmartThings is connected. Tap one to rename it or choose its room.")
                 #else
-                Text("Samsung appliances show here once SmartThings is connected. Apple Home accessories show in Woodruff on iPhone. An ecobee thermostat shows here once it's added to the SmartThings app (on iPhone it also comes in through Apple Home).")
+                VStack(alignment: .leading, spacing: 6) {
+                    // Apple Home (the ecobee, Cync lights, locks…) through Woodruff Home Helper.
+                    HomeBridgeStatusView()
+                    Text("Samsung appliances show here once SmartThings is connected.")
+                }
                 #endif
             }
             SmartThingsSection()
@@ -846,19 +850,12 @@ private struct ThermostatSetup: View {
             }
             lookAgain
             #else
-            Text(st.connected
-                 ? "SmartThings is connected but doesn’t list a thermostat. Add your ecobee in the SmartThings app (Add Device → Thermostat → ecobee), then look again."
-                 : "On the Mac, Woodruff reaches the ecobee through Samsung SmartThings. Add it in the SmartThings app on your phone (Add Device → Thermostat → ecobee), then connect SmartThings here.")
-                .font(.callout).foregroundStyle(.secondary)
+            // On the Mac the ecobee comes from Apple Home through Woodruff Home Helper (or from SmartThings).
+            HomeBridgeStatusView()
+            Text("It can also come in through Samsung SmartThings: add the ecobee in the SmartThings app (Add Device → Thermostat → ecobee) and connect SmartThings in Settings → Devices.")
+                .font(.footnote).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            if st.connected {
-                lookAgain
-            } else {
-                Form { SmartThingsSection() }
-                    .formStyle(.grouped)
-                    .scrollContentBackground(.hidden)
-                    .frame(height: 330)
-            }
+            if st.connected { lookAgain }
             #endif
             if let e = st.error, st.connected {
                 Text(e).font(.footnote).foregroundStyle(Palette.attention)

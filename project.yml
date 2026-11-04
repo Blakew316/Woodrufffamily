@@ -110,6 +110,7 @@ targets:
       - App/Shared
       - App/macOS
       - App/MacCommon
+      - App/HomeBridge
       - App/Resources
     dependencies:
       - package: WoodruffKit
@@ -140,6 +141,41 @@ targets:
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
           NSAllowsLocalNetworking: true
+
+  # Mac only: Apple Home for Woodruff on the Mac. Apple lets only iPad-style (Mac Catalyst) apps use Apple Home
+  # on a Mac, so this small helper reads it (with the iPhone app's HomeKit code) and hands it to Woodruff Family
+  # for Mac over a private connection on that Mac. Build with -destination 'platform=macOS,variant=Mac Catalyst'.
+  WoodruffHomeHelper:
+    type: application
+    platform: iOS
+    sources:
+      - App/HomeHelper
+      - App/HomeBridge
+      - path: App/iOS/HomeKitLights.swift
+      - path: App/Shared/HomeDeviceModel.swift
+    dependencies:
+      - package: WoodruffKit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.blakew316.woodruff.homehelper
+        PRODUCT_NAME: Woodruff Home Helper
+        SUPPORTS_MACCATALYST: YES
+        DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER: NO
+        SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: NO
+        TARGETED_DEVICE_FAMILY: "2,6"
+        CODE_SIGN_ENTITLEMENTS: App/HomeHelper/WoodruffHomeHelper.entitlements
+        ENABLE_HARDENED_RUNTIME: NO
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+    info:
+      path: App/HomeHelper/Info.plist
+      properties:
+        CFBundleDisplayName: Woodruff Home Helper
+        LSApplicationCategoryType: public.app-category.utilities
+        # No Dock icon: it runs in the background for Woodruff.
+        LSUIElement: true
+        NSHomeKitUsageDescription: Woodruff on this Mac shows and controls your Apple Home thermostat, lights, locks, plugs and sensors.
+        WoodruffHomeKit: "YES"
+        UILaunchScreen: {}
 
   # Desktop and Notification Center widgets for the Mac.
   WoodruffMacWidgets:
@@ -177,3 +213,7 @@ schemes:
     build:
       targets:
         WoodruffFamilyMac: all
+  WoodruffHomeHelper:
+    build:
+      targets:
+        WoodruffHomeHelper: all

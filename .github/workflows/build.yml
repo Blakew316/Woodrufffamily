@@ -48,6 +48,12 @@ jobs:
             -destination 'platform=macOS' -configuration Release \
             -derivedDataPath build CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=NO build | xcbeautify
           (cd build/Build/Products/Release && ditto -c -k --keepParent "Woodruff Family.app" "$GITHUB_WORKSPACE/out/WoodruffFamily-mac.zip")
+      - name: Build Mac Apple Home helper (Mac Catalyst)
+        run: |
+          set -o pipefail
+          xcodebuild -project WoodruffFamily.xcodeproj -scheme WoodruffHomeHelper \
+            -destination 'generic/platform=macOS,variant=Mac Catalyst' -configuration Release \
+            -derivedDataPath build-helper CODE_SIGNING_ALLOWED=NO build | xcbeautify
       - uses: actions/upload-artifact@v4
         with:
           name: WoodruffFamily-apps
