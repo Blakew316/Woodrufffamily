@@ -12,7 +12,11 @@ struct HomeView: View {
     @Namespace private var zoom
     private let layout = HomeLayout.shared
 
+    #if os(macOS)
+    private let columns = [GridItem(.adaptive(minimum: 400), spacing: 22)]
+    #else
     private let columns = [GridItem(.adaptive(minimum: 320), spacing: 18)]
+    #endif
 
     var body: some View {
         ScrollView {
@@ -86,6 +90,11 @@ struct HomeView: View {
         .toolbar {
             ToolbarItem(placement: .automatic) { Button("Edit Home") { editing = true } }
         }
+        // No title strip: the room bar and tiles run right up under the window's buttons, over the backdrop.
+        .toolbar(removing: .title)
+        .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
+        // Everything a size up on the Mac's big screens.
+        .dynamicTypeSize(.xxLarge)
         #endif
         .sheet(isPresented: $editing) { EditHomeView() }
         // With the room bar hidden there's no way to pick a room: show everything.
@@ -255,8 +264,13 @@ struct HomeView: View {
 
     private func chip(_ title: String, selected: Bool) -> some View {
         Text(title)
+            #if os(macOS)
+            .font(.title3.weight(.semibold))
+            .padding(.horizontal, 20).padding(.vertical, 10)
+            #else
             .font(.subheadline.weight(.semibold))
             .padding(.horizontal, 14).padding(.vertical, 8)
+            #endif
             .foregroundStyle(selected ? Color.black : .primary)
             .background { if selected { Capsule().fill(.white) } }
     }
@@ -294,6 +308,11 @@ struct StatusPill: View {
 /// One TV, as a Home app tile: its name and state, what it's playing over the title's artwork, the transport,
 /// and the remote.
 struct HomeTVTile: View {
+    #if os(macOS)
+    static let macBig = true
+    #else
+    static let macBig = false
+    #endif
     @Environment(Fleet.self) private var fleet
     var tv: FleetTV
     var open: () -> Void
@@ -334,7 +353,7 @@ struct HomeTVTile: View {
             }
             VStack(alignment: .leading, spacing: 0) {
                 HStack(alignment: .center) {
-                    Text(tv.name).font(.title3.bold())
+                    Text(tv.name).font(Self.macBig ? .title2.bold() : .title3.bold())
                     if tv.needsAttention { Circle().fill(Palette.attention).frame(width: 8, height: 8) }
                     Spacer()
                     Text(state).font(.caption.weight(.semibold))
@@ -342,12 +361,12 @@ struct HomeTVTile: View {
                 }
                 Spacer(minLength: 12)
                 if let p {
-                    Text(p.title).font(.headline).lineLimit(1)
+                    Text(p.title).font(Self.macBig ? .title3.weight(.semibold) : .headline).lineLimit(1)
                     Text([p.subtitle, p.app].compactMap { $0?.isEmpty == false ? $0 : nil }.joined(separator: " · "))
                         .font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
                     LiveProgress(playing: p, times: false, tint: .white).padding(.top, 10)
                 } else {
-                    Text(idleLine).font(.headline).foregroundStyle(tv.online ? .primary : .secondary)
+                    Text(idleLine).font(Self.macBig ? .title3.weight(.semibold) : .headline).foregroundStyle(tv.online ? .primary : .secondary)
                 }
                 HStack(spacing: 8) {
                     if let p { Transport(tv: tv, playing: p, compact: true) }

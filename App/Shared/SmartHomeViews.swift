@@ -201,7 +201,7 @@ struct RoomTiles: View {
         #if os(iOS)
         [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)]
         #else
-        [GridItem(.adaptive(minimum: 210), spacing: 10)]
+        [GridItem(.adaptive(minimum: 260), spacing: 14)]
         #endif
     }
 }

@@ -264,7 +264,7 @@ final class NestCameras {
 struct CamerasSection: View {
     /// Two across on iPhone; on the Mac, as many as fit at a comfortable size.
     #if os(macOS)
-    static let compactWidth: CGFloat = 260
+    static let compactWidth: CGFloat = 340
     #else
     static let compactWidth: CGFloat = 160
     #endif
@@ -392,6 +392,13 @@ final class CameraStreams {
 
 /// A camera on Home: its live picture right in the tile (muted), its name over it. Tap for the big view.
 struct LiveCameraTile: View {
+    static func nameFont(_ compact: Bool) -> Font {
+        #if os(macOS)
+        compact ? .headline : .title3.weight(.semibold)
+        #else
+        compact ? .footnote.weight(.semibold) : .subheadline.weight(.semibold)
+        #endif
+    }
     var camera: NestCameras.Camera
     /// Two across: taller (4:3) so the picture isn't small, and a smaller LIVE mark so the name fits.
     var compact = false
@@ -416,7 +423,7 @@ struct LiveCameraTile: View {
             LinearGradient(colors: [.clear, .black.opacity(0.65)], startPoint: .center, endPoint: .bottom)
                 .allowsHitTesting(false)
             HStack(alignment: .bottom) {
-                Text(camera.name).font(compact ? .footnote.weight(.semibold) : .subheadline.weight(.semibold))
+                Text(camera.name).font(Self.nameFont(compact))
                     .foregroundStyle(.white).lineLimit(1).minimumScaleFactor(0.85)
                 Spacer()
             }
