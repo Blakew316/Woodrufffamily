@@ -32,8 +32,11 @@
 # (CURRENT_PROJECT_VERSION, the commit count). To quit the running Mac app it posts the Darwin notification
 # com.woodruff.family.mac.quit-for-update (the app quits itself), then asks with AppleScript, then sends SIGTERM.
 #
-# It never runs -allowProvisioningUpdates or -authenticationKey*, never contacts Apple's developer services,
-# never asks for an Apple ID (or anything else), and never creates, imports, revokes, deletes or changes a
+# With --xcode-signing (the Mac Studio, the one Mac that signs since the team became a paid account) Xcode signs both
+# apps itself with its signed-in account (-allowProvisioningUpdates): it renews a revoked or expired certificate and
+# the profiles on its own. Without it, it never runs -allowProvisioningUpdates or -authenticationKey*, never contacts
+# Apple's developer services, never asks for an Apple ID (or anything else), and never creates, imports, revokes,
+# deletes or changes a
 # certificate, key, profile, keychain or keychain search list. When the iPhone profiles or a signing certificate
 # expire (or a certificate is revoked) it says so and skips what can't be signed; only then does someone need to
 # sign in to Xcode once on this Mac. It warns 30 days ahead.
@@ -65,6 +68,7 @@ QUIT_NOTIFICATION="com.woodruff.family.mac.quit-for-update"   # the Mac app quit
 DETACH=0          # --branch: check out origin/$BRANCH detached instead of pulling claude/native-apps
 BRANCH_OPT=""     # "--branch <name> " for the commands this suggests
 KEEP_IPHONE=""    # --keep-iphone
+XCODE_SIGNING=0   # --xcode-signing: Xcode's automatic signing with its signed-in (paid) account
 LAUNCH_IPHONE=1   # 0 with --no-launch
 RESULTS=""        # --results
 EXPECT=""         # --expect
@@ -110,6 +114,7 @@ Usage: scripts/deploy.sh [options] [mac] [share] [mac-shared] [iphone]      (no 
   --wait <seconds>    mac-shared: how long to wait for the shared build (default 1200; 0 looks once)
   --keep-iphone <dir> iphone: keep the signed app as <dir>/Woodruff Family.app, with <dir>/build.json
   --no-launch         iphone: don't open the app on the iPhones after installing it
+  --xcode-signing     let Xcode sign with its signed-in account (renews revoked certificates and profiles)
   --results <file>    append one tab-separated line per outcome: part, status, target, detail
 It uses only the certificates and profiles already on this Mac; it never asks for an Apple ID.
 EOF
@@ -371,30 +376,39 @@ remove_stale_mac_product() {
 deploy_mac() {
   local pick="$LOGDIR/mac-identity.json" product="$ROOT/build/Build/Products/Release/$APP_NAME.app"
   local identity name why cert_expires cert_days attempt=1 log vlog status built sha12
+  local -a sign
 
   MAC_PART="mac"
-  step "Mac: choosing the signing identity"
-  if ! signing pick-mac --team "$TEAM" --app "$MAC_INSTALLED" >"$pick" 2>"$LOGDIR/mac-identity.log"; then
-    indent <"$pick"
-    indent <"$LOGDIR/mac-identity.log"
-    mac_failed "no signing identity for the Mac app on this Mac (nothing was changed)"
-    return 1
+  if [ "$XCODE_SIGNING" -eq 1 ]; then
+    identity="Xcode automatic signing"
+    name="team $TEAM"
+    cert_expires=""
+    sign=(CODE_SIGN_STYLE=Automatic -allowProvisioningUpdates)
+    step "Mac: signing with Xcode's account (team $TEAM)"
+  else
+    step "Mac: choosing the signing identity"
+    if ! signing pick-mac --team "$TEAM" --app "$MAC_INSTALLED" >"$pick" 2>"$LOGDIR/mac-identity.log"; then
+      indent <"$pick"
+      indent <"$LOGDIR/mac-identity.log"
+      mac_failed "no signing identity for the Mac app on this Mac (nothing was changed)"
+      return 1
+    fi
+    identity=$(signing get "$pick" identity)
+    name=$(signing get "$pick" name)
+    why=$(signing get "$pick" reason)
+    cert_expires=$(signing get "$pick" identity_expires 2>/dev/null)
+    cert_days=$(signing get "$pick" identity_days_left 2>/dev/null)
+    say "    $identity  $name ($why)"
+    say "    certificate $(valid_until "$cert_expires")"
+    certificate_warning "this Mac's" "$cert_expires" "$cert_days"
+    sign=(CODE_SIGN_STYLE=Manual "CODE_SIGN_IDENTITY=$identity" "PROVISIONING_PROFILE_SPECIFIER=")
   fi
-  identity=$(signing get "$pick" identity)
-  name=$(signing get "$pick" name)
-  why=$(signing get "$pick" reason)
-  cert_expires=$(signing get "$pick" identity_expires 2>/dev/null)
-  cert_days=$(signing get "$pick" identity_days_left 2>/dev/null)
-  say "    $identity  $name ($why)"
-  say "    certificate $(valid_until "$cert_expires")"
-  certificate_warning "this Mac's" "$cert_expires" "$cert_days"
 
   while :; do
     log="$LOGDIR/mac-build-$attempt.log"
     step "Mac: building (Release)"
     xcodebuild -project WoodruffFamily.xcodeproj -scheme WoodruffFamilyMac -destination 'platform=macOS' \
-      -configuration Release -derivedDataPath build DEVELOPMENT_TEAM="$TEAM" CODE_SIGN_STYLE=Manual \
-      CODE_SIGN_IDENTITY="$identity" "PROVISIONING_PROFILE_SPECIFIER=" \
+      -configuration Release -derivedDataPath build DEVELOPMENT_TEAM="$TEAM" "${sign[@]}" \
       ${VERSION_SETTINGS[@]+"${VERSION_SETTINGS[@]}"} build </dev/null >"$log" 2>&1
     status=$?
     show_build "$log"
@@ -782,7 +796,7 @@ sign_frameworks() {  # $1 = .app or .appex, $2 = identity, $3 = log
 
 deploy_iphone() {
   local devs="$LOGDIR/iphones.json" pick="$LOGDIR/iphone-signing.json" plog="$LOGDIR/iphone-signing.log"
-  local -a targets usable
+  local -a targets usable sign
   local udid name i status identity identity_name cert_expires cert_days app_profile app_uuid app_expires app_days
   local widgets_profile widgets_uuid widgets_expires widgets_days log product copy appex slog vlog
   local bid item ilog llog installed=0 kept why
@@ -813,75 +827,91 @@ deploy_iphone() {
   done
   targets=("${IPHONE_UDIDS[@]}")
 
-  step "iPhone: choosing the signing identity and profiles"
-  signing pick-ios --team "$TEAM" --app-id "$IPHONE_BUNDLE_ID" --widgets-id "$IPHONE_WIDGETS_ID" \
-    --need-entitlement "$HOMEKIT" --device "${targets[@]}" >"$pick" 2>"$plog"
-  status=$?
-  if [ "$status" -ne 0 ]; then
-    problem "$(signing get "$pick" problem 2>/dev/null || echo "signing.py pick-ios failed (log $plog)")"
-    indent <"$pick"
-    indent <"$plog"
-    set -f
-    IFS=$'\n'
-    # shellcheck disable=SC2207
-    usable=($(signing get "$pick" 'usable_devices.*' 2>/dev/null))
-    IFS=$' \t\n'
-    set +f
-    if [ "$status" -ne 2 ] || [ "${#usable[@]}" -eq 0 ]; then
-      note "iPhone: NOT installed: $(signing get "$pick" problem 2>/dev/null || echo "see $plog")"
-      result iphone-build failed "" "$(signing get "$pick" problem 2>/dev/null || echo "signing.py pick-ios failed (log $plog)")"
-      return 1
-    fi
-    for udid in "${IPHONE_UDIDS[@]}"; do
-      case " ${usable[*]} " in
-        *" $udid "*) ;;
-        *)
-          note "iPhone: NOT installed on $(device_name "$udid") ($udid): the provisioning profiles don't list it"
-          result iphone skipped "$udid" "$(device_name "$udid"): not installed, the provisioning profiles don't list it"
-          ;;
-      esac
-    done
-    say "    Going on with the iPhones the profiles do list: ${usable[*]}"
-    if ! signing pick-ios --team "$TEAM" --app-id "$IPHONE_BUNDLE_ID" --widgets-id "$IPHONE_WIDGETS_ID" \
-      --need-entitlement "$HOMEKIT" --device "${usable[@]}" >"$pick" 2>"$plog"; then
+  if [ "$XCODE_SIGNING" -eq 1 ]; then
+    identity="Xcode automatic signing"
+    identity_name="team $TEAM"
+    cert_expires=""
+    app_uuid="managed by Xcode"
+    app_expires=""
+    widgets_uuid="managed by Xcode"
+    widgets_expires=""
+  else
+    step "iPhone: choosing the signing identity and profiles"
+    signing pick-ios --team "$TEAM" --app-id "$IPHONE_BUNDLE_ID" --widgets-id "$IPHONE_WIDGETS_ID" \
+      --need-entitlement "$HOMEKIT" --device "${targets[@]}" >"$pick" 2>"$plog"
+    status=$?
+    if [ "$status" -ne 0 ]; then
+      problem "$(signing get "$pick" problem 2>/dev/null || echo "signing.py pick-ios failed (log $plog)")"
       indent <"$pick"
-      iphone_failed "no identity and profiles fit even those iPhones"
+      indent <"$plog"
+      set -f
+      IFS=$'\n'
+      # shellcheck disable=SC2207
+      usable=($(signing get "$pick" 'usable_devices.*' 2>/dev/null))
+      IFS=$' \t\n'
+      set +f
+      if [ "$status" -ne 2 ] || [ "${#usable[@]}" -eq 0 ]; then
+        note "iPhone: NOT installed: $(signing get "$pick" problem 2>/dev/null || echo "see $plog")"
+        result iphone-build failed "" "$(signing get "$pick" problem 2>/dev/null || echo "signing.py pick-ios failed (log $plog)")"
+        return 1
+      fi
+      for udid in "${IPHONE_UDIDS[@]}"; do
+        case " ${usable[*]} " in
+          *" $udid "*) ;;
+          *)
+            note "iPhone: NOT installed on $(device_name "$udid") ($udid): the provisioning profiles don't list it"
+            result iphone skipped "$udid" "$(device_name "$udid"): not installed, the provisioning profiles don't list it"
+            ;;
+        esac
+      done
+      say "    Going on with the iPhones the profiles do list: ${usable[*]}"
+      if ! signing pick-ios --team "$TEAM" --app-id "$IPHONE_BUNDLE_ID" --widgets-id "$IPHONE_WIDGETS_ID" \
+        --need-entitlement "$HOMEKIT" --device "${usable[@]}" >"$pick" 2>"$plog"; then
+        indent <"$pick"
+        iphone_failed "no identity and profiles fit even those iPhones"
+        return 1
+      fi
+      targets=("${usable[@]}")
+    fi
+    identity=$(signing get "$pick" identity)
+    identity_name=$(signing get "$pick" identity_name)
+    cert_expires=$(signing get "$pick" identity_expires 2>/dev/null)
+    cert_days=$(signing get "$pick" identity_days_left 2>/dev/null)
+    app_profile=$(signing get "$pick" app.path)
+    app_uuid=$(signing get "$pick" app.uuid)
+    app_expires=$(signing get "$pick" app.expires)
+    app_days=$(signing get "$pick" app.days_left)
+    widgets_profile=$(signing get "$pick" widgets.path)
+    widgets_uuid=$(signing get "$pick" widgets.uuid)
+    widgets_expires=$(signing get "$pick" widgets.expires)
+    widgets_days=$(signing get "$pick" widgets.days_left)
+    if [ -z "$identity" ] || [ ! -f "$app_profile" ] || [ ! -f "$widgets_profile" ]; then
+      iphone_failed "signing.py pick-ios gave an incomplete answer (see $pick)"
       return 1
     fi
-    targets=("${usable[@]}")
+    say "    identity:        $identity  $identity_name"
+    say "                     certificate $(valid_until "$cert_expires")"
+    say "    app profile:     $app_uuid (expires ${app_expires%%T*})"
+    say "    widgets profile: $widgets_uuid (expires ${widgets_expires%%T*})"
+    if [ "${app_days:-0}" -lt 30 ] || [ "${widgets_days:-0}" -lt 30 ]; then
+      warn "the iPhone profiles expire soon (${app_expires%%T*} / ${widgets_expires%%T*}). After that someone needs to"
+      warn "sign in to Xcode once on this Mac to renew them; until then this keeps working."
+    fi
+    certificate_warning "the iPhone profiles'" "$cert_expires" "$cert_days"
   fi
-  identity=$(signing get "$pick" identity)
-  identity_name=$(signing get "$pick" identity_name)
-  cert_expires=$(signing get "$pick" identity_expires 2>/dev/null)
-  cert_days=$(signing get "$pick" identity_days_left 2>/dev/null)
-  app_profile=$(signing get "$pick" app.path)
-  app_uuid=$(signing get "$pick" app.uuid)
-  app_expires=$(signing get "$pick" app.expires)
-  app_days=$(signing get "$pick" app.days_left)
-  widgets_profile=$(signing get "$pick" widgets.path)
-  widgets_uuid=$(signing get "$pick" widgets.uuid)
-  widgets_expires=$(signing get "$pick" widgets.expires)
-  widgets_days=$(signing get "$pick" widgets.days_left)
-  if [ -z "$identity" ] || [ ! -f "$app_profile" ] || [ ! -f "$widgets_profile" ]; then
-    iphone_failed "signing.py pick-ios gave an incomplete answer (see $pick)"
-    return 1
-  fi
-  say "    identity:        $identity  $identity_name"
-  say "                     certificate $(valid_until "$cert_expires")"
-  say "    app profile:     $app_uuid (expires ${app_expires%%T*})"
-  say "    widgets profile: $widgets_uuid (expires ${widgets_expires%%T*})"
-  if [ "${app_days:-0}" -lt 30 ] || [ "${widgets_days:-0}" -lt 30 ]; then
-    warn "the iPhone profiles expire soon (${app_expires%%T*} / ${widgets_expires%%T*}). After that someone needs to"
-    warn "sign in to Xcode once on this Mac to renew them; until then this keeps working."
-  fi
-  certificate_warning "the iPhone profiles'" "$cert_expires" "$cert_days"
 
-  step "iPhone: building (Release, unsigned)"
+  if [ "$XCODE_SIGNING" -eq 1 ]; then
+    step "iPhone: building (Release, signed by Xcode's account, team $TEAM)"
+    sign=(CODE_SIGN_STYLE=Automatic -allowProvisioningUpdates)
+  else
+    step "iPhone: building (Release, unsigned)"
+    sign=(CODE_SIGNING_ALLOWED=NO)
+  fi
   log="$LOGDIR/iphone-build.log"
   product="$ROOT/build/Build/Products/Release-iphoneos/$APP_NAME.app"
   xcodebuild -project WoodruffFamily.xcodeproj -scheme WoodruffFamily -destination 'generic/platform=iOS' \
     -configuration Release -derivedDataPath build DEVELOPMENT_TEAM="$TEAM" \
-    WOODRUFF_BUNDLE_ID="$IPHONE_BUNDLE_ID" CODE_SIGNING_ALLOWED=NO \
+    WOODRUFF_BUNDLE_ID="$IPHONE_BUNDLE_ID" "${sign[@]}" \
     ${VERSION_SETTINGS[@]+"${VERSION_SETTINGS[@]}"} build </dev/null >"$log" 2>&1
   status=$?
   show_build "$log"
@@ -893,70 +923,74 @@ deploy_iphone() {
     return 1
   fi
 
-  step "iPhone: signing a copy"
-  WORK=$(mktemp -d "$TMPROOT/woodruff-iphone.XXXXXX") || WORK=""
-  if [ -z "$WORK" ]; then
-    iphone_failed "couldn't make a temporary folder in $TMPROOT"
-    return 1
-  fi
-  copy="$WORK/$APP_NAME.app"
-  appex="$copy/PlugIns/WoodruffWidgets.appex"
-  slog="$LOGDIR/iphone-sign.log"
-  if ! ditto "$product" "$copy" </dev/null >>"$slog" 2>&1; then
-    iphone_failed "copying the build to $WORK failed" "$slog"
-    return 1
-  fi
-  bid=$(signing bundle-id "$copy" 2>>"$slog")
-  if [ "$bid" != "$IPHONE_BUNDLE_ID" ]; then
-    iphone_failed "the built app is '$bid', not $IPHONE_BUNDLE_ID"
-    return 1
-  fi
-  if [ ! -d "$appex" ]; then
-    iphone_failed "the built app has no PlugIns/WoodruffWidgets.appex"
-    return 1
-  fi
-  bid=$(signing bundle-id "$appex" 2>>"$slog")
-  if [ "$bid" != "$IPHONE_WIDGETS_ID" ]; then
-    iphone_failed "the built widgets are '$bid', not $IPHONE_WIDGETS_ID"
-    return 1
-  fi
-  for item in "$copy/PlugIns/"*; do
-    if [ -e "$item" ] && [ "$item" != "$appex" ]; then
-      iphone_failed "the built app has PlugIns/$(basename "$item"), which no profile here can sign"
+  if [ "$XCODE_SIGNING" -eq 1 ]; then
+    copy=$product   # Xcode signed it already
+  else
+    step "iPhone: signing a copy"
+    WORK=$(mktemp -d "$TMPROOT/woodruff-iphone.XXXXXX") || WORK=""
+    if [ -z "$WORK" ]; then
+      iphone_failed "couldn't make a temporary folder in $TMPROOT"
       return 1
     fi
-  done
-  say "    $IPHONE_BUNDLE_ID with $IPHONE_WIDGETS_ID"
+    copy="$WORK/$APP_NAME.app"
+    appex="$copy/PlugIns/WoodruffWidgets.appex"
+    slog="$LOGDIR/iphone-sign.log"
+    if ! ditto "$product" "$copy" </dev/null >>"$slog" 2>&1; then
+      iphone_failed "copying the build to $WORK failed" "$slog"
+      return 1
+    fi
+    bid=$(signing bundle-id "$copy" 2>>"$slog")
+    if [ "$bid" != "$IPHONE_BUNDLE_ID" ]; then
+      iphone_failed "the built app is '$bid', not $IPHONE_BUNDLE_ID"
+      return 1
+    fi
+    if [ ! -d "$appex" ]; then
+      iphone_failed "the built app has no PlugIns/WoodruffWidgets.appex"
+      return 1
+    fi
+    bid=$(signing bundle-id "$appex" 2>>"$slog")
+    if [ "$bid" != "$IPHONE_WIDGETS_ID" ]; then
+      iphone_failed "the built widgets are '$bid', not $IPHONE_WIDGETS_ID"
+      return 1
+    fi
+    for item in "$copy/PlugIns/"*; do
+      if [ -e "$item" ] && [ "$item" != "$appex" ]; then
+        iphone_failed "the built app has PlugIns/$(basename "$item"), which no profile here can sign"
+        return 1
+      fi
+    done
+    say "    $IPHONE_BUNDLE_ID with $IPHONE_WIDGETS_ID"
 
-  if ! signing entitlements --profile "$app_profile" --kind app --bundle-id "$IPHONE_BUNDLE_ID" \
-    --out "$WORK/APP.plist" 2>>"$slog"; then
-    iphone_failed "the app's entitlements aren't allowed by profile $app_uuid" "$slog"
-    return 1
-  fi
-  if ! signing entitlements --profile "$widgets_profile" --kind widget --bundle-id "$IPHONE_WIDGETS_ID" \
-    --out "$WORK/WIDGET.plist" 2>>"$slog"; then
-    iphone_failed "the widgets' entitlements aren't allowed by profile $widgets_uuid" "$slog"
-    return 1
-  fi
-  # Copies of the profiles go into the signed copy; the profile folders are only read.
-  if ! cp "$widgets_profile" "$appex/embedded.mobileprovision" 2>>"$slog" ||
-    ! cp "$app_profile" "$copy/embedded.mobileprovision" 2>>"$slog"; then
-    iphone_failed "couldn't copy the profiles into the app" "$slog"
-    return 1
-  fi
-  if ! sign_frameworks "$appex" "$identity" "$slog" || ! sign_frameworks "$copy" "$identity" "$slog"; then
-    iphone_failed "signing the frameworks failed" "$slog"
-    return 1
-  fi
-  if ! codesign --force --sign "$identity" --entitlements "$WORK/WIDGET.plist" --generate-entitlement-der \
-    --timestamp=none "$appex" </dev/null >>"$slog" 2>&1; then
-    iphone_failed "signing WoodruffWidgets.appex failed" "$slog"
-    return 1
-  fi
-  if ! codesign --force --sign "$identity" --entitlements "$WORK/APP.plist" --generate-entitlement-der \
-    --timestamp=none "$copy" </dev/null >>"$slog" 2>&1; then
-    iphone_failed "signing the app failed" "$slog"
-    return 1
+    if ! signing entitlements --profile "$app_profile" --kind app --bundle-id "$IPHONE_BUNDLE_ID" \
+      --out "$WORK/APP.plist" 2>>"$slog"; then
+      iphone_failed "the app's entitlements aren't allowed by profile $app_uuid" "$slog"
+      return 1
+    fi
+    if ! signing entitlements --profile "$widgets_profile" --kind widget --bundle-id "$IPHONE_WIDGETS_ID" \
+      --out "$WORK/WIDGET.plist" 2>>"$slog"; then
+      iphone_failed "the widgets' entitlements aren't allowed by profile $widgets_uuid" "$slog"
+      return 1
+    fi
+    # Copies of the profiles go into the signed copy; the profile folders are only read.
+    if ! cp "$widgets_profile" "$appex/embedded.mobileprovision" 2>>"$slog" ||
+      ! cp "$app_profile" "$copy/embedded.mobileprovision" 2>>"$slog"; then
+      iphone_failed "couldn't copy the profiles into the app" "$slog"
+      return 1
+    fi
+    if ! sign_frameworks "$appex" "$identity" "$slog" || ! sign_frameworks "$copy" "$identity" "$slog"; then
+      iphone_failed "signing the frameworks failed" "$slog"
+      return 1
+    fi
+    if ! codesign --force --sign "$identity" --entitlements "$WORK/WIDGET.plist" --generate-entitlement-der \
+      --timestamp=none "$appex" </dev/null >>"$slog" 2>&1; then
+      iphone_failed "signing WoodruffWidgets.appex failed" "$slog"
+      return 1
+    fi
+    if ! codesign --force --sign "$identity" --entitlements "$WORK/APP.plist" --generate-entitlement-der \
+      --timestamp=none "$copy" </dev/null >>"$slog" 2>&1; then
+      iphone_failed "signing the app failed" "$slog"
+      return 1
+    fi
   fi
   vlog="$LOGDIR/iphone-verify.log"
   if ! codesign --verify --deep --strict --verbose=2 "$copy" </dev/null >"$vlog" 2>&1; then
@@ -1057,6 +1091,7 @@ main() {
         value=$RESULTS
         ;;
       --no-launch) LAUNCH_IPHONE=0 ;;
+      --xcode-signing) XCODE_SIGNING=1 ;;
       mac) DO_MAC=1 ;;
       share) DO_MAC=1; DO_SHARE=1 ;;
       mac-shared) DO_MAC_SHARED=1 ;;

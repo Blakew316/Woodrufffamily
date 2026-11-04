@@ -1003,7 +1003,7 @@ class Updater(object):
             if phone.get("commit") != release and phone.get("retry", True):
                 phone.update(state="pending", detail="Building the iPhone app.")
         self.save(True)
-        status, rows, log = self.deploy(["--branch", self.branch, "--expect", release, "iphone", "--keep-iphone",
+        status, rows, log = self.deploy(["--branch", self.branch, "--expect", release, "--xcode-signing", "iphone", "--keep-iphone",
                                          folder, "--no-launch"])
         self.apply_iphones(release, rows, status, log)
 
@@ -1034,7 +1034,8 @@ class Updater(object):
         st = self.state
         with_iphone = (self.kept_build(release) is None and self.iphone_build_needed(release) and
                        due(st["iphone_build"], self.now))
-        args = ["--branch", self.branch, "--expect", release, "mac", "share"]
+        # The hub is the one Mac that signs: Xcode's automatic signing with the team's (paid) account.
+        args = ["--branch", self.branch, "--expect", release, "--xcode-signing", "mac", "share"]
         if with_iphone:
             args += ["iphone", "--keep-iphone", os.path.join(self.files["builds"], release), "--no-launch"]
             for phone in st["iphones"]:

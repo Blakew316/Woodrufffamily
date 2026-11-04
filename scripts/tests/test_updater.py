@@ -273,7 +273,7 @@ class UpdaterTest(unittest.TestCase):
         return list(middle) + ["--results", self.results]
 
     def hub_args(self, commit=NEW, iphone=True):
-        args = ["--branch", "release", "--expect", commit, "mac", "share"]
+        args = ["--branch", "release", "--expect", commit, "--xcode-signing", "mac", "share"]
         if iphone:
             args += ["iphone", "--keep-iphone", os.path.join(self.builds, commit), "--no-launch"]
         return self.deploy_args(*args)
@@ -420,7 +420,7 @@ class Hub(UpdaterTest):
         doc = self.run_once()
         self.assertEqual(len(self.env.deploys), 1)
         call = [c for c in self.env.calls if c["argv"][0] == self.deploy_sh][0]
-        self.assertEqual(call["argv"], [self.deploy_sh, "--branch", "release", "--expect", NEW, "mac", "share",
+        self.assertEqual(call["argv"], [self.deploy_sh, "--branch", "release", "--expect", NEW, "--xcode-signing", "mac", "share",
                                         "iphone", "--keep-iphone", os.path.join(self.builds, NEW), "--no-launch",
                                         "--results", self.results])
         self.assertEqual(call["cwd"], self.env.repo)
@@ -582,7 +582,7 @@ class Hub(UpdaterTest):
         shutil.rmtree(os.path.join(self.builds, NEW))
         self.env.deploy = all_ok
         doc = self.run_once(5)
-        self.assertEqual(self.env.deploys[-1], self.deploy_args("--branch", "release", "--expect", NEW, "iphone",
+        self.assertEqual(self.env.deploys[-1], self.deploy_args("--branch", "release", "--expect", NEW, "--xcode-signing", "iphone",
                                                                 "--keep-iphone", os.path.join(self.builds, NEW),
                                                                 "--no-launch"))
         self.assertEqual(self.phone(doc, P2)["state"], "current")
@@ -605,7 +605,7 @@ class Hub(UpdaterTest):
         self.run_once(14)
         self.assertEqual(len(self.env.deploys), 1)
         self.run_once(15)
-        self.assertEqual(self.env.deploys[-1][3:5], [NEW, "iphone"])
+        self.assertEqual(self.env.deploys[-1][3:6], [NEW, "--xcode-signing", "iphone"])
         self.run_once(44)
         self.assertEqual(len(self.env.deploys), 2)
         self.run_once(45)
@@ -648,7 +648,7 @@ class Hub(UpdaterTest):
         self.configure("hub")
         self.busy()
         doc = self.run_once()
-        self.assertEqual(self.env.deploys, [self.deploy_args("--branch", "release", "--expect", NEW, "iphone",
+        self.assertEqual(self.env.deploys, [self.deploy_args("--branch", "release", "--expect", NEW, "--xcode-signing", "iphone",
                                                              "--keep-iphone", os.path.join(self.builds, NEW),
                                                              "--no-launch")])
         self.assertEqual(doc["mac"]["state"], "postponed")
@@ -969,7 +969,7 @@ class Logs(UpdaterTest):
             self.assertRegex(line, r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ \S")
         text = "\n".join(lines)
         self.assertIn("new release %s (build 1234): Pictures load once" % NEW[:12], text)
-        self.assertIn("running deploy.sh --branch release --expect %s mac share iphone" % NEW, text)
+        self.assertIn("running deploy.sh --branch release --expect %s --xcode-signing mac share iphone" % NEW, text)
 
     def test_keeps_the_newest_ten_deploy_logs(self):
         self.configure("follower")
@@ -1204,7 +1204,7 @@ class Helpers(unittest.TestCase):
             source = handle.read()
         self.assertNotIn("shell=True", source)
         self.assertNotIn("os.system(", source)
-        self.assertNotIn("-allowProvisioningUpdates", source)
+        self.assertNotIn("-allowProvisioningUpdates", source)   # only deploy.sh --xcode-signing, on the hub
 
 
 if __name__ == "__main__":

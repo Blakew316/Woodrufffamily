@@ -33,10 +33,10 @@ Every feature request or bug fix ends with exactly one release:
 
 ## Rules
 
-- Never run `-allowProvisioningUpdates` or `-authenticationKey*`, sign in to an Apple ID or contact Apple's
-  developer services, and never create, revoke, delete, import or export a certificate, key, profile or keychain
-  item, or add `keychain-access-groups`. Xcode's automatic signing once made new certificates and revoked another
-  Mac's; every build signs only with what that Mac already has.
+- The team (D8D94SXAG6) is a paid Apple Developer account. Only the Mac Studio signs: `scripts/deploy.sh
+  --xcode-signing` (which its updater uses) lets Xcode's signed-in account sign both apps and renew a revoked or
+  expired certificate and the profiles by itself. No other Mac signs with `-allowProvisioningUpdates`, and nothing
+  creates, revokes, imports or exports certificates or keychain items by hand or adds `keychain-access-groups`.
 - The iPhone app's bundle id is always `com.blakew316.woodruff` (`scripts/deploy.sh` sets it). Another id loses
   the TVs' pairings.
 - Swift 5.10 with `SWIFT_STRICT_CONCURRENCY: minimal`, iOS 26 and macOS 26 SDKs. Parse-check every changed Swift
