@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Fallback while Push isn't on the signing profile yet: build with
+	     WOODRUFF_ENTITLEMENTS=App/iOS/WoodruffFamily-NoPush.entitlements (everything else works; no instant alerts). -->
+	<key>com.apple.developer.homekit</key>
+	<true/>
+</dict>
+</plist>
