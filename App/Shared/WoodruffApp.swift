@@ -97,6 +97,9 @@ struct WoodruffApp: App {
             }
             if phase == .active {
                 CameraStreams.shared.foreground()
+                // Back in the app: Home's weather if it's been a while, and a new one-liner.
+                HomeWeather.shared.refresh()
+                HomeGreeting.shared.refresh()
                 SmartHome.shared.wake()
                 SettingsSync.shared.wake()
                 PushRelay.shared.wake()
@@ -277,8 +280,10 @@ struct MacRoot: View {
     @State private var palette = false
     @State private var query = ""
     @State private var columns: NavigationSplitViewVisibility = .all
-    /// The page area is narrow: the search field and the thermostat get shorter so everything stays in one row.
-    @State private var narrow = false
+    /// How wide the page area is: the search field, the greeting and the thermostat get shorter as it narrows so
+    /// everything stays in one row.
+    @State private var width: CGFloat = 1000
+    private var narrow: Bool { width < 760 }
     /// Bumped by every click in the sidebar, so the page it opens starts fresh (Home's open TV closes, and so on).
     @State private var visit = 0
     /// The remote's sidebar has the keyboard (arrows, Return, Esc, H, M, + and − go to the TV).
@@ -358,6 +363,7 @@ struct MacRoot: View {
             NavigationStack(path: $nav.path) {
                 root
                     .id(visit)
+                    .environment(\.macPageTitle, query.isEmpty ? rootTitle : "Search")
                     .navigationDestination(for: PageRoute.self) { page in
                         page.view.navigationBarBackButtonHidden(true)
                     }
@@ -383,7 +389,7 @@ struct MacRoot: View {
             }
             // Never narrower than Home's tiles: the window stops shrinking before anything is clipped.
             .frame(minWidth: 480)
-            .onGeometryChange(for: Bool.self) { $0.size.width < 760 } action: { narrow = $0 }
+            .onGeometryChange(for: CGFloat.self) { ($0.size.width / 20).rounded() * 20 } action: { width = $0 }
         }
         .sheet(isPresented: $palette) { CommandPalette().sheetBanner().macResizable(width: 620, height: 480) }
         .background {
@@ -415,7 +421,12 @@ struct MacRoot: View {
 
     /// The page the sidebar picked (or the search's results), under anything opened from it.
     @ViewBuilder private var root: some View {
-        if !query.isEmpty { LibrarySearchResults(query: query) }
+        if !query.isEmpty {
+            LibrarySearchResults(query: query)
+                .safeAreaInset(edge: .top, spacing: 0) {
+                    MacBackRow(title: "Search", backTo: rootTitle) { withAnimation(.smooth(duration: 0.25)) { query = "" } }
+                }
+        }
         // .id: a new item gets a fresh page (no name or level left over from the last one).
         else if let d = deviceSelection, d.hasPrefix("spk:") { SpeakerDetailView(speakerID: String(d.dropFirst(4))).id(d) }
         else if let d = deviceSelection, d.hasPrefix("light:") { LightDetailView(lightID: String(d.dropFirst(6))).id(d) }
@@ -446,27 +457,11 @@ struct MacRoot: View {
         return section.title
     }
 
-    /// Back's label (where it goes) and the page you're on, when there's somewhere to go back to.
-    private var back: (to: String, here: String)? {
-        let path = nav.path
-        if let top = path.last {
-            let previous = path.count >= 2 ? path[path.count - 2].title : (query.isEmpty ? rootTitle : "Search")
-            return (previous, top.title)
-        }
-        if !query.isEmpty { return (rootTitle, "Search") }
-        return nil
-    }
-
-    private func goBack() {
-        withAnimation(.smooth(duration: 0.25)) {
-            if !nav.path.isEmpty { nav.pop() } else { query = "" }
-        }
-    }
-
-    /// Search on the left; the remote, Edit Home (on Home) and the thermostat on the right, at any window size;
-    /// Back under the search when there's somewhere to go back to.
+    /// Search on the left; on Home, the greeting with the weather in the middle; the remote, Edit Home (on Home)
+    /// and the thermostat on the right, at any window size. (Back sits at the top of each opened page, under this.)
     private var topBar: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        let greeting = onHome && width >= 900
+        return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 10) {
                 if columns == .detailOnly {
                     Button { withAnimation(.smooth) { columns = .all } } label: {
@@ -482,9 +477,14 @@ struct MacRoot: View {
                     // Clear of the window's close, minimise and zoom buttons, which sit here with the sidebar hidden.
                     .padding(.leading, 64)
                 }
-                MacSearchField(text: $query, prompt: narrow ? "Search" : "Search Movies and TV Shows")
-                    .frame(minWidth: 120, idealWidth: 300, maxWidth: 320)
+                MacSearchField(text: $query, prompt: narrow || greeting ? "Search" : "Search Movies and TV Shows")
+                    .frame(minWidth: 120, idealWidth: greeting ? 240 : 300, maxWidth: 320)
                 Spacer(minLength: 8)
+                if greeting {
+                    MacGreetingPill(compact: width < 1150)
+                        .transition(.opacity.combined(with: .scale(scale: 0.96)))
+                    Spacer(minLength: 8)
+                }
                 Button { withAnimation(.smooth) { fleet.remotePanel.toggle() } } label: {
                     Image(systemName: "appletvremote.gen4")
                         .font(.system(size: 14, weight: .semibold))
@@ -508,30 +508,20 @@ struct MacRoot: View {
                             .controlSize(.large)
                     }
                 }
-                ThermostatChip(compact: narrow)
+                ThermostatChip(compact: narrow || (greeting && width < 1150))
             }
-            if let back {
-                HStack(spacing: 12) {
-                    Button(action: goBack) {
-                        HStack(spacing: 5) {
-                            Image(systemName: "chevron.left").font(.body.weight(.semibold))
-                            Text(back.to).lineLimit(1)
-                        }
-                    }
-                    .buttonStyle(.glass)
-                    .controlSize(.large)
-                    .keyboardShortcut("[", modifiers: .command)
-                    .help("Back to \(back.to) (⌘[)")
-                    Text(back.here).font(.title2.bold()).lineLimit(1)
-                    Spacer(minLength: 0)
-                }
-                .transition(.move(edge: .top).combined(with: .opacity))
-            }
+            // Always the same height, so the pages below never jump as the bar's contents change.
+            .frame(height: 46)
         }
         .padding(.horizontal, 18)
         .padding(.top, 4)
-        .padding(.bottom, 10)
-        .animation(.smooth(duration: 0.25), value: back?.here)
+        .padding(.bottom, 8)
+        .animation(.smooth(duration: 0.3), value: greeting)
+        .task(id: onHome) {
+            guard onHome else { return }
+            HomeWeather.shared.refresh()
+            HomeGreeting.shared.refresh()
+        }
         // Dragging the bar's empty space moves the window, like a title bar.
         .background { Color.clear.contentShape(Rectangle()).gesture(WindowDragGesture()) }
     }

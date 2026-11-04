@@ -19,8 +19,8 @@ final class MacNav {
     static let shared = MacNav()
     var path: [PageRoute] = []
 
-    func push(_ title: String, _ view: some View) {
-        path.append(PageRoute(title: title, view: AnyView(view)))
+    func push(_ title: String, backTo: String = "Back", _ view: some View) {
+        path.append(PageRoute(title: title, view: AnyView(MacPage(title: title, backTo: backTo) { view }.environment(\.macPageTitle, title))))
     }
 
     func pop() {
@@ -34,11 +34,17 @@ final class MacNav {
 #endif
 
 private struct MacPageStackKey: EnvironmentKey { static let defaultValue = false }
+private struct MacPageTitleKey: EnvironmentKey { static let defaultValue = "Back" }
 extension EnvironmentValues {
     /// Inside the Mac window's page stack (not a sheet with a stack of its own).
     var macPageStack: Bool {
         get { self[MacPageStackKey.self] }
         set { self[MacPageStackKey.self] = newValue }
+    }
+    /// The name of the page you're on (a page opened from it says "‹ <this>" on its Back button).
+    var macPageTitle: String {
+        get { self[MacPageTitleKey.self] }
+        set { self[MacPageTitleKey.self] = newValue }
     }
 }
 
@@ -49,6 +55,7 @@ struct PageLink<Label: View, Destination: View>: View {
     var destination: () -> Destination
     var label: () -> Label
     @Environment(\.macPageStack) private var onStack
+    @Environment(\.macPageTitle) private var here
 
     init(_ title: String, @ViewBuilder destination: @escaping () -> Destination, @ViewBuilder label: @escaping () -> Label) {
         self.title = title
@@ -58,15 +65,23 @@ struct PageLink<Label: View, Destination: View>: View {
 
     var body: some View {
         #if os(macOS)
+        // The page opened carries its own Back button (under the search field), however it was opened.
         if onStack {
-            NavigationLink(value: PageRoute(title: title, view: AnyView(destination()))) { label() }
+            NavigationLink(value: PageRoute(title: title, view: AnyView(page))) { label() }
         } else {
-            NavigationLink { destination() } label: { label() }
+            NavigationLink { page } label: { label() }
         }
         #else
         NavigationLink { destination() } label: { label() }
         #endif
     }
+
+    #if os(macOS)
+    private var page: some View {
+        MacPage(title: title, backTo: here) { destination() }
+            .environment(\.macPageTitle, title)
+    }
+    #endif
 }
 
 extension PageLink where Label == Text {
@@ -94,3 +109,51 @@ extension View {
         #endif
     }
 }
+
+#if os(macOS)
+/// A page opened from another on the Mac: its Back button ("‹ Settings") and its name at the top left, right under
+/// the search field. Back closes just this page (⌘[ too).
+struct MacPage<Content: View>: View {
+    var title: String
+    var backTo: String
+    @ViewBuilder var content: () -> Content
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        content()
+            .safeAreaInset(edge: .top, spacing: 0) {
+                MacBackRow(title: title, backTo: backTo) { dismiss() }
+            }
+    }
+}
+
+/// "‹ Settings   TVs": the way back, and where you are.
+struct MacBackRow: View {
+    var title: String
+    var backTo: String
+    var back: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Button(action: back) {
+                HStack(spacing: 5) {
+                    Image(systemName: "chevron.left").font(.body.weight(.semibold))
+                    Text(backTo).lineLimit(1)
+                }
+                .padding(.horizontal, 4)
+            }
+            .buttonStyle(.glass)
+            .controlSize(.large)
+            .keyboardShortcut("[", modifiers: .command)
+            .help("Back to \(backTo) (⌘[)")
+            Text(title)
+                .font(.title2.bold())
+                .lineLimit(1)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 18)
+        .padding(.top, 2)
+        .padding(.bottom, 10)
+    }
+}
+#endif

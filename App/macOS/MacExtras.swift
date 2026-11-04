@@ -9,7 +9,8 @@ struct MenuBarFleetView: View {
 
     var body: some View {
         let tv = fleet.selected
-        let p = tv?.playing
+        // What's on now only (no picture of the last thing it played once it's stopped or off).
+        let p = tv?.online == true ? tv?.playing : nil
         VStack(alignment: .leading, spacing: 14) {
             Menu {
                 ForEach(fleet.tvs.filter { !$0.isUnpaired }) { t in
@@ -26,8 +27,7 @@ struct MenuBarFleetView: View {
             .menuStyle(.button).buttonStyle(.plain).fixedSize()
 
             ZStack(alignment: .bottomLeading) {
-                Color.clear.overlay { NowPlayingArt(playing: p ?? tv.flatMap { fleet.lastPlaying[$0.id] }, backdrop: true) }.clipped()
-                    .opacity(p == nil ? 0.5 : 1)
+                Color.clear.overlay { NowPlayingArt(playing: p, backdrop: true) }.clipped()
                 LinearGradient(colors: [.clear, .black.opacity(0.8)], startPoint: .center, endPoint: .bottom)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(p?.title ?? "Nothing Playing").font(.headline).lineLimit(1)

@@ -39,18 +39,24 @@ struct HomeView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 30) {
                 #if os(iOS)
-                // Home and Edit on the left; the thermostat on the right. (While arranging, Done stays pinned at the
-                // top right instead, however far down the page is.)
-                HStack(alignment: .center, spacing: 12) {
-                    Text("Home").font(.largeTitle.bold())
-                    if !arranging {
-                        Button("Edit") { layout.startArranging() }.buttonStyle(.glass).controlSize(.small)
+                // The weather and Edit on the left, the thermostat on the right, and the greeting with its one-liner
+                // in the middle under them. (While arranging, Done stays pinned at the top right instead.)
+                VStack(spacing: 14) {
+                    HStack(alignment: .center, spacing: 10) {
+                        WeatherPill()
+                        if !arranging {
+                            Button("Edit") { layout.startArranging() }.buttonStyle(.glass).controlSize(.small)
+                        }
+                        Spacer()
+                        if !arranging { ThermostatChip(compact: true) }
                     }
-                    Spacer()
-                    if !arranging { ThermostatChip(compact: true) }
+                    .frame(minHeight: 40)
+                    GreetingText()
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14).padding(.horizontal, 16)
+                        .glass(RoundedRectangle(cornerRadius: 22, style: .continuous), interactive: false)
                 }
-                .frame(minHeight: 40)
-                .padding(.bottom, -14)
+                .padding(.bottom, -10)
                 #endif
                 ForEach(layout.visibleSections.filter { $0 == "status" || $0 == "rooms" }, id: \.self) { key in
                     section(key)
@@ -150,6 +156,11 @@ struct HomeView: View {
         .sheet(isPresented: Binding(get: { editing }, set: { layout.editing = $0 })) { EditHomeView().macResizable(width: 520, height: 720) }
         .sheet(item: Binding(get: { player.map { TitleRef(id: $0) } }, set: { playerTV = $0?.id })) { NowPlayingSheet(tvID: $0.id).sheetBanner().macResizable(width: 560, height: 780) }
         .refreshable { await refreshEverything() }
+        // Each time Home opens: a fresh one-liner, and the weather if it's been a while.
+        .onAppear {
+            HomeWeather.shared.refresh()
+            HomeGreeting.shared.refresh()
+        }
         // Leaving Home (another tab, another page) finishes arranging.
         .onDisappear { layout.stopArranging() }
     }
@@ -353,10 +364,11 @@ struct HomeView: View {
             .background { if selected { Capsule().fill(.white) } }
     }
 
-    /// The TV the banner shows: the remote's, if it's playing, else any that is.
+    /// The TV whose picture warms Home's backdrop: the remote's, if it's playing right now, else any that is. None
+    /// while nothing plays (no picture of something that's stopped or paused).
     private var featuredTV: FleetTV? {
-        if let s = fleet.selected, s.playing != nil { return s }
-        return fleet.tvs.first { $0.playing?.isPlaying == true } ?? fleet.tvs.first { $0.playing != nil }
+        if let s = fleet.selected, s.online, s.playing?.isPlaying == true { return s }
+        return fleet.tvs.first { $0.online && $0.playing?.isPlaying == true }
     }
 
     private func open(_ id: String) {
@@ -444,9 +456,10 @@ struct HomeTVTile: View {
     @State private var newName = ""
 
     var body: some View {
-        let p = tv.playing
-        // A TV that stopped keeps the picture of what it last played, dimmed, so the grid stays rich.
-        let art = p ?? (tv.isUnpaired ? nil : fleet.lastPlaying[tv.id])
+        // Only what's on the TV right now: a TV that's off, or has stopped, shows no picture (never the last thing it
+        // played).
+        let p = tv.online ? tv.playing : nil
+        let art = p
         let pictured = hasPicture(fleet, art)
         // Lifted under the pointer, but not while the tiles are being arranged.
         let hot = hovering && !arranging

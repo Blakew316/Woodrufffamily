@@ -22,7 +22,9 @@ final class LocationWeather: NSObject, CLLocationManagerDelegate {
         case .notDetermined: manager.requestWhenInUseAuthorization()
         case .authorizedAlways, .authorizedWhenInUse:
             let last = UserDefaults.standard.double(forKey: "weatherCheckedAt")
-            if Date().timeIntervalSince1970 - last > 12 * 3600 { manager.requestLocation() }
+            // Also when Home's own weather has no spot yet (it reads the place found here).
+            let noSpot = UserDefaults.standard.object(forKey: "weatherLat") == nil
+            if noSpot || Date().timeIntervalSince1970 - last > 12 * 3600 { manager.requestLocation() }
         default: break
         }
     }
@@ -39,6 +41,10 @@ final class LocationWeather: NSObject, CLLocationManagerDelegate {
     nonisolated func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {}
 
     private func apply(_ loc: CLLocation) async {
+        // Home's greeting shows the weather here too.
+        UserDefaults.standard.set(loc.coordinate.latitude, forKey: "weatherLat")
+        UserDefaults.standard.set(loc.coordinate.longitude, forKey: "weatherLon")
+        HomeWeather.shared.refresh(force: true)
         guard let mark = try? await CLGeocoder().reverseGeocodeLocation(loc).first,
               let city = mark.locality else { return }
         let place = [city, mark.administrativeArea].compactMap { $0 }.joined(separator: ", ")

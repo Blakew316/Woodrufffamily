@@ -78,9 +78,10 @@ struct MiniPlayerView: View {
 
     var body: some View {
         let tv = fleet.selected
-        let p = tv?.playing
+        // What's on now only (no picture of the last thing it played once it's stopped or off).
+        let p = tv?.online == true ? tv?.playing : nil
         HStack(spacing: 14) {
-            NowPlayingArt(playing: p ?? tv.flatMap { fleet.lastPlaying[$0.id] })
+            NowPlayingArt(playing: p)
                 .frame(width: 64, height: 64)
                 .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                 .shadow(color: .black.opacity(0.3), radius: 8, y: 4)
