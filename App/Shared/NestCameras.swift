@@ -15,6 +15,9 @@ final class NestCameras {
         var room: String?
         var doorbell: Bool
         var webRTC: Bool
+        /// Google can reach it, by its Connectivity trait (or a Pub/Sub update of it). Cameras without the
+        /// trait count as online; a stream refused as offline shows "Offline" on the player instead.
+        var online = true
     }
 
     private(set) var cameras: [Camera] = []
@@ -23,6 +26,7 @@ final class NestCameras {
     /// Signed in (kept in memory; the Keychain is only read when it changes).
     private(set) var connected = Keychain.get("nest.refresh") != nil
     @ObservationIgnored private var refreshing: Task<String, Error>?
+    @ObservationIgnored private var poll: Task<Void, Never>?
 
     private var project: String? { Keychain.get("nest.project") }
     private var clientID: String? { Keychain.get("nest.client") }
@@ -31,7 +35,31 @@ final class NestCameras {
         connected = Keychain.get("nest.refresh") != nil
         canAlert = (Keychain.get("nest.scopes") ?? "").contains("pubsub")
         guard connected, !Demo.isOn else { return }
-        Task { await load() }
+        if poll == nil { startPolling(now: true) } else { Task { await load() } }
+    }
+
+    /// Now (or after the first wait), then every five minutes: a camera going offline (or coming back)
+    /// shows without a manual refresh.
+    private func startPolling(now: Bool) {
+        poll?.cancel()
+        poll = Task { [weak self] in
+            var first = now
+            while !Task.isCancelled {
+                if !first { try? await Task.sleep(nanoseconds: 300_000_000_000) }
+                first = false
+                guard !Task.isCancelled, let self, self.connected else { break }
+                await self.load()
+            }
+            // Stopped by itself (signed out elsewhere, sign-in revoked): a later start begins it again.
+            if !Task.isCancelled { self?.poll = nil }
+        }
+    }
+
+    /// Google said a camera went offline or came back (a Pub/Sub Connectivity update).
+    func setOnline(_ id: String, _ online: Bool) {
+        guard let i = cameras.firstIndex(where: { $0.id == id }), cameras[i].online != online else { return }
+        cameras[i].online = online
+        CameraStreams.shared.availability(cameras)
     }
 
     /// Signs in with Google using the TVs' Device Access project and Google app (Client ID from the TV;
@@ -63,12 +91,14 @@ final class NestCameras {
             Keychain.set(sec, for: "nest.secret")
             store(t)
             await load()
+            startPolling(now: false)
         } catch { self.error = error.localizedDescription }
     }
 
     func signOut() {
         for k in ["nest.refresh", "nest.access", "nest.expires"] { Keychain.set(nil, for: k) }
         connected = false
+        poll?.cancel(); poll = nil
         cameras = []
         CameraStreams.shared.reset()
     }
@@ -130,6 +160,11 @@ final class NestCameras {
             // Google's own hiccups ("Internal error encountered", unavailable): try again, quietly.
             if code >= 500 { throw Busy() }
             let msg = ((json["error"] as? [String: Any])?["message"] as? String) ?? "Google answered \(code)."
+            // A stream asked of a camera that's off or off the Wi‑Fi.
+            let lower = msg.lowercased()
+            if path.hasSuffix(":executeCommand"), lower.contains("offline") || lower.contains("not online") || lower.contains("unavailable") || lower.contains("not reachable") || lower.contains("unreachable") {
+                throw Offline()
+            }
             throw OAuthRelay.Failure.refused(code == 403 ? "Google refused access: \(msg)" : msg)
         }
         return json
@@ -151,9 +186,14 @@ final class NestCameras {
                 let doorbell = type.hasSuffix("DOORBELL")
                 let label = custom ?? room.map { "\($0) \(doorbell ? "Doorbell" : "Camera")" } ?? (doorbell ? "Doorbell" : "Camera")
                 let webRTC = (live["supportedProtocols"] as? [String] ?? []).contains("WEB_RTC")
-                return Camera(id: name, name: label, room: room, doorbell: doorbell, webRTC: webRTC)
+                var cam = Camera(id: name, name: label, room: room, doorbell: doorbell, webRTC: webRTC)
+                if let status = (traits["sdm.devices.traits.Connectivity"] as? [String: Any])?["status"] as? String {
+                    cam.online = status.uppercased() != "OFFLINE"
+                }
+                return cam
             }
             .sorted { ($0.doorbell ? 0 : 1, $0.name) < ($1.doorbell ? 0 : 1, $1.name) }
+            CameraStreams.shared.availability(cameras)
             error = nil
         } catch { self.error = error.localizedDescription }
     }
@@ -162,6 +202,7 @@ final class NestCameras {
 
     struct RateLimited: Error {}
     struct Busy: Error {}
+    struct Offline: Error {}
 
     /// Google allows only so many camera commands a minute. Commands wait their turn: a few seconds apart
     /// overall, longer for the same camera, and a refusal just means waiting longer and trying again,
@@ -296,7 +337,25 @@ final class CameraStreams {
     func show(_ cam: NestCameras.Camera) {
         watching += 1
         idle?.cancel(); idle = nil
-        player(cam).start()
+        let p = player(cam)
+        p.camera = cam
+        if cam.online { p.start() } else { p.pause(); status[cam.id] = "Offline" }
+    }
+
+    /// The cameras as Google last described them: an offline one stops trying (and says Offline, not a
+    /// spinner); one back online starts again if it's on screen.
+    func availability(_ cams: [NestCameras.Camera]) {
+        for c in cams {
+            guard let p = players[c.id] else { continue }
+            let was = p.camera.online
+            p.camera = c
+            if !c.online {
+                p.pause()
+                status[c.id] = "Offline"
+            } else if !was {
+                if watching > 0 { p.start() } else { status[c.id] = "Paused" }
+            }
+        }
     }
 
     /// One went off screen; if nothing is watched for two minutes, the streams are let go.
@@ -315,7 +374,7 @@ final class CameraStreams {
         let long = backgroundAt.map { $0.timeIntervalSinceNow < -60 } ?? false
         backgroundAt = nil
         guard watching > 0 else { return }
-        for p in players.values { if long { p.restart() } else { p.start() } }
+        for p in players.values where p.camera.online { if long { p.restart() } else { p.start() } }
     }
 
     private func letGoSoon(after seconds: Double) {
@@ -324,7 +383,7 @@ final class CameraStreams {
             try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
             guard !Task.isCancelled, let self else { return }
             for p in self.players.values { p.pause() }
-            for k in self.status.keys { self.status[k] = "Paused" }
+            for k in self.status.keys where self.status[k] != "Offline" { self.status[k] = "Paused" }
         }
     }
 }
@@ -338,7 +397,7 @@ struct LiveCameraTile: View {
     private let streams = CameraStreams.shared
 
     var body: some View {
-        let status = streams.status[camera.id] ?? "Starting…"
+        let status = camera.online ? (streams.status[camera.id] ?? "Starting…") : "Offline"
         ZStack(alignment: .bottomLeading) {
             Color.black
             if camera.webRTC && streams.expanded != camera.id {
@@ -347,7 +406,7 @@ struct LiveCameraTile: View {
             if status != "Live" || streams.expanded == camera.id {
                 VStack(spacing: 8) {
                     if camera.webRTC && status.hasSuffix("…") && streams.expanded != camera.id { ProgressView().tint(.white) }
-                    Text(!camera.webRTC ? "Live view not supported" : streams.expanded == camera.id ? "Open in the big view" : status)
+                    Text(!camera.online ? "Offline" : !camera.webRTC ? "Live view not supported" : streams.expanded == camera.id ? "Open in the big view" : status)
                         .font(.caption).foregroundStyle(.white.opacity(0.75)).multilineTextAlignment(.center).padding(.horizontal)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -377,9 +436,9 @@ struct LiveCameraTile: View {
         .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).strokeBorder(.white.opacity(0.08)))
         .contentShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-        .onTapGesture { if camera.webRTC { streams.expanded = camera.id; open() } }
+        .onTapGesture { if camera.webRTC && camera.online { streams.expanded = camera.id; open() } }
         .contextMenu {
-            if camera.webRTC { Button("Open") { streams.expanded = camera.id; open() } }
+            if camera.webRTC && camera.online { Button("Open") { streams.expanded = camera.id; open() } }
             FavoriteButton(id: camera.id)
         }
         .onAppear { if camera.webRTC { streams.show(camera) } }
@@ -402,7 +461,7 @@ struct CameraLiveView: View {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(camera.name).font(.title3.bold())
-                    Text(streams.status[camera.id] ?? "Starting…").font(.subheadline).foregroundStyle(.secondary)
+                    Text(camera.online ? (streams.status[camera.id] ?? "Starting…") : "Offline").font(.subheadline).foregroundStyle(.secondary)
                 }
                 Spacer()
                 GlassCircle(symbol: muted ? "speaker.slash.fill" : "speaker.wave.2.fill", size: 40) {
@@ -433,7 +492,8 @@ struct CameraLiveView: View {
 @MainActor
 final class LivePlayer: NSObject, WKNavigationDelegate {
     let web: WKWebView
-    let camera: NestCameras.Camera
+    /// Kept current by CameraStreams (name, and whether Google can reach it).
+    var camera: NestCameras.Camera
     var onStatus: ((String) -> Void)?
     private var session: String?
     private var running = false
@@ -443,6 +503,8 @@ final class LivePlayer: NSObject, WKNavigationDelegate {
     private var retry: Task<Void, Never>?
     private var watchdog: Task<Void, Never>?
     private var failures = 0
+    /// Google's last answer was that the camera is offline (it's tried again every minute, quietly).
+    private var offline = false
 
     init(camera: NestCameras.Camera) {
         self.camera = camera
@@ -471,7 +533,7 @@ final class LivePlayer: NSObject, WKNavigationDelegate {
         retry?.cancel(); retry = nil
         running = true
         live = false
-        onStatus?("Starting…")
+        onStatus?(offline ? "Offline" : "Starting…")
         web.loadHTMLString(Self.page, baseURL: URL(string: "https://localhost/"))
     }
 
@@ -499,15 +561,15 @@ final class LivePlayer: NSObject, WKNavigationDelegate {
 
     func setMuted(_ m: Bool) { web.evaluateJavaScript("setMuted(\(m))") }
 
-    /// Dropped: try again after a wait that grows each time it fails (5 s up to a minute).
-    private func reconnect() {
+    /// Dropped: try again after a wait that grows each time it fails (5 s up to a minute), or a set wait.
+    private func reconnect(after fixed: UInt64? = nil) {
         guard running else { return }
         running = false
         live = false
         work?.cancel(); renew?.cancel(); watchdog?.cancel()
         session = nil
         failures += 1
-        let wait = UInt64(min(60, 5 * (1 << min(failures - 1, 4))))
+        let wait = fixed ?? UInt64(min(60, 5 * (1 << min(failures - 1, 4))))
         retry?.cancel()
         retry = Task { [weak self] in
             try? await Task.sleep(nanoseconds: wait * 1_000_000_000)
@@ -527,8 +589,22 @@ final class LivePlayer: NSObject, WKNavigationDelegate {
 
     func received(_ name: String, _ body: String) {
         if name == "state" {
+            // A page being let go still reports ("closed"…): only a running stream speaks.
+            guard running else { return }
             if body == "failed" { onStatus?("Reconnecting…"); reconnect(); return }
-            if body == "Live" { live = true; failures = 0; watchdog?.cancel() }
+            if body == "Live" { live = true; failures = 0; offline = false; watchdog?.cancel() }
+            // While it's known offline, the page's "Starting…" doesn't replace "Offline".
+            if offline && body == "Starting…" { return }
+            if body == "Reconnecting…", live {
+                // Was live and dropped ("disconnected"): WebRTC may come back by itself; if not in 20 s, start over.
+                live = false
+                watchdog?.cancel()
+                watchdog = Task { [weak self] in
+                    try? await Task.sleep(nanoseconds: 20_000_000_000)
+                    guard let self, !Task.isCancelled, self.running, !self.live else { return }
+                    self.reconnect()
+                }
+            }
             onStatus?(body)
             return
         }
@@ -537,9 +613,11 @@ final class LivePlayer: NSObject, WKNavigationDelegate {
         work = Task { [weak self] in
             guard let self else { return }
             do {
-                self.onStatus?("Starting…")
+                if !self.offline { self.onStatus?("Starting…") }
                 let (answer, s) = try await NestCameras.shared.startStream(self.camera, offer: body)
                 guard self.running, !Task.isCancelled else { return }
+                self.offline = false
+                self.onStatus?("Starting…")
                 self.session = s
                 let js = (try? String(data: JSONSerialization.data(withJSONObject: [answer]), encoding: .utf8)) ?? "[\"\"]"
                 _ = try? await self.web.evaluateJavaScript("answer(\(js)[0])")
@@ -553,6 +631,11 @@ final class LivePlayer: NSObject, WKNavigationDelegate {
                     self.reconnect()
                 }
             } catch is CancellationError {
+            } catch is NestCameras.Offline {
+                // Off or off the Wi‑Fi: say so (no spinner) and look again in a minute.
+                self.offline = true
+                self.onStatus?("Offline")
+                self.reconnect(after: 60)
             } catch {
                 // Only a sign-in problem is worth words; anything else (Google busy, no internet) just retries.
                 let m = error.localizedDescription
@@ -646,10 +729,10 @@ struct CamerasPhoneView: View {
                     if nest.cameras.isEmpty { Text("No cameras found yet.").foregroundStyle(.secondary) }
                     ForEach(nest.cameras) { cam in
                         Button { open = cam } label: {
-                            IconRow(symbol: "", color: .clear, title: cam.name, subtitle: cam.webRTC ? "Live" : "Live view not supported", value: cam.room)
+                            IconRow(symbol: "", color: .clear, title: cam.name, subtitle: !cam.online ? "Offline" : cam.webRTC ? (cam.doorbell ? "Doorbell · Live" : "Live") : "Live view not supported", value: cam.room)
                         }
                         .buttonStyle(.plain)
-                        .disabled(!cam.webRTC)
+                        .disabled(!cam.webRTC || !cam.online)
                     }
                 } footer: { Text("Tap a camera to watch it live. They also sit on Home.") }
                 AlertsSection()

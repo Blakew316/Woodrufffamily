@@ -40,18 +40,25 @@ struct SpeakersSection: View {
 struct SpeakerTile: View {
     var room: SonosRoom
     var openControls: () -> Void
+    var home = SmartHome.shared
 
     var body: some View {
         HStack(spacing: 10) {
             SpeakerArt(url: room.art, size: 38)
+                .opacity(room.isOffline ? 0.45 : 1)
             VStack(alignment: .leading, spacing: 1) {
                 Text(room.name).font(.footnote.weight(.semibold)).lineLimit(1)
-                Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                if let e = home.speakerErrors[room.id] {
+                    Text(e).font(.caption).foregroundStyle(Palette.attention).lineLimit(1)
+                } else {
+                    Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                }
             }
             Spacer(minLength: 4)
-            if room.title != nil {
+            if room.canPlay {
                 Button {
-                    Task { await SmartHome.shared.sonos(room) { room.isPlaying ? try await Sonos.pause($0) : try await Sonos.play($0) } }
+                    let r = room
+                    Task { await SmartHome.shared.playPause(r) }
                 } label: {
                     Image(systemName: room.isPlaying ? "pause.fill" : "play.fill")
                         .font(.system(size: 13, weight: .semibold))
@@ -60,6 +67,9 @@ struct SpeakerTile: View {
                 }
                 .buttonStyle(.plain)
                 .glass(Circle())
+            } else if room.isOffline {
+                Image(systemName: "wifi.slash").font(.caption).foregroundStyle(.secondary)
+                    .accessibilityLabel("Offline")
             }
         }
         .padding(.horizontal, 10).padding(.vertical, 10)
@@ -68,20 +78,44 @@ struct SpeakerTile: View {
         .glass(RoundedRectangle(cornerRadius: 20, style: .continuous))
         .onTapGesture(perform: openControls)
         .contextMenu {
-            Button(room.isPlaying ? "Pause" : "Play") {
-                Task { await SmartHome.shared.sonos(room) { room.isPlaying ? try await Sonos.pause($0) : try await Sonos.play($0) } }
+            if !room.isOffline {
+                if room.canPlay {
+                    Button(room.isPlaying ? "Pause" : "Play") {
+                        let r = room
+                        Task { await SmartHome.shared.playPause(r) }
+                    }
+                }
+                if room.canPlay && !room.isTV {
+                    Button("Next Track") { Task { await SmartHome.shared.sonos(room) { try await Sonos.next($0) } } }
+                }
+                Button(room.muted ? "Unmute" : "Mute") {
+                    let r = room, mute = !room.muted
+                    Task { await SmartHome.shared.setMute(r, mute) }
+                }
+                if room.hasTVInput && !room.isTV {
+                    Button("Switch to TV Sound") {
+                        let r = room
+                        Task { await SmartHome.shared.playTV(r) }
+                    }
+                }
             }
-            Button("Next Track") { Task { await SmartHome.shared.sonos(room) { try await Sonos.next($0) } } }
-            Button(room.muted ? "Unmute" : "Mute") { Task { await SmartHome.shared.sonos(room) { try await Sonos.setMute($0, !room.muted) } } }
             FavoriteButton(id: room.id)
         }
     }
 
+    /// "Playing" shows just what; paused, stopped, grouped and offline say so.
     private var detail: String {
-        if room.isTV { return room.isPlaying ? "TV" : "TV · Paused" }
-        guard let t = room.title, !t.isEmpty else { return room.setupSummary ?? "Not Playing" }
+        if room.isOffline { return "Offline" }
+        let others = room.groupNames.filter { $0 != room.name && $0 != room.zone }
+        let group: String? = others.isEmpty ? nil : "+ " + (others.count == 1 ? others[0] : "\(others.count) rooms")
+        if room.isTV {
+            return [room.isPlaying ? "TV" : "TV · \(room.stateName)", group].compactMap { $0 }.joined(separator: " · ")
+        }
+        guard let t = room.title, !t.isEmpty else {
+            return [room.state == "STOPPED" ? "Stopped" : (room.setupSummary ?? "Not Playing"), group].compactMap { $0 }.joined(separator: " · ")
+        }
         let what = [t, room.artist].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
-        return room.isPlaying ? what : "Paused · " + what
+        return room.isPlaying ? what : room.stateName + " · " + what
     }
 }
 
@@ -194,8 +228,8 @@ struct LightsSection: View {
                 HStack(alignment: .firstTextBaseline) {
                     if titled { Text("Lights").font(.title2.bold()) }
                     Spacer()
-                    if shown.contains(where: \.on) {
-                        Button("All Off") { for l in shown where l.on { home.setOn(l, false) } }
+                    if shown.contains(where: \.isLit) {
+                        Button("All Off") { for l in shown where l.isLit { home.setOn(l, false) } }
                             .buttonStyle(.glass)
                     }
                 }
@@ -233,33 +267,41 @@ struct LightTile: View {
     var openControls: () -> Void
 
     var body: some View {
+        // Unreachable (unplugged, off at the wall): never shown lit, and tapping opens its page rather than
+        // sending a change that can't arrive.
+        let lit = light.isLit
         // Compact, like the Home app: the light's colour on the left, its name and state beside it.
         HStack(spacing: 10) {
             Circle()
-                .fill(light.on ? light.shade : .white.opacity(0.18))
+                .fill(lit ? light.shade : .white.opacity(0.18))
                 .frame(width: 24, height: 24)
-                .shadow(color: light.on ? light.shade.opacity(0.9) : .clear, radius: 8)
+                .shadow(color: lit ? light.shade.opacity(0.9) : .clear, radius: 8)
+                .overlay {
+                    if light.isOffline { Image(systemName: "wifi.slash").font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary) }
+                }
             VStack(alignment: .leading, spacing: 1) {
                 Text(light.name).font(.footnote.weight(.semibold)).lineLimit(2)
-                Text(light.on ? "\(light.brightness)%" : "Off").font(.caption)
-                    .foregroundStyle(light.on ? Color.black.opacity(0.55) : .secondary)
+                Text(light.isOffline ? "Offline" : lit ? "\(light.brightness)%" : "Off").font(.caption)
+                    .foregroundStyle(lit ? Color.black.opacity(0.55) : .secondary)
             }
             Spacer(minLength: 0)
         }
-        .foregroundStyle(light.on ? Color.black : .primary)
+        .foregroundStyle(lit ? Color.black : .primary)
+        .opacity(light.isOffline ? 0.6 : 1)
         .padding(.horizontal, 12).padding(.vertical, 10)
         .frame(maxWidth: .infinity, minHeight: 64, alignment: .leading)
         .background {
-            if light.on {
+            if lit {
                 RoundedRectangle(cornerRadius: 20, style: .continuous)
                     .fill(LinearGradient(colors: [.white.opacity(0.96), light.shade.opacity(0.55).mix(with: .white, by: 0.5)],
                                          startPoint: .topLeading, endPoint: .bottomTrailing))
             }
         }
         .contentShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-        .modifier(OffGlass(on: light.on))
-        .animation(.smooth(duration: 0.25), value: light.on)
+        .modifier(OffGlass(on: lit))
+        .animation(.smooth(duration: 0.25), value: lit)
         .onTapGesture {
+            guard !light.isOffline else { openControls(); return }
             #if os(iOS)
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
             #endif
@@ -267,10 +309,14 @@ struct LightTile: View {
         }
         .onLongPressGesture(minimumDuration: 0.35, perform: openControls)
         .contextMenu {
-            Button(light.on ? "Turn Off" : "Turn On") { SmartHome.shared.setOn(light, !light.on) }
+            if !light.isOffline {
+                Button(light.on ? "Turn Off" : "Turn On") { SmartHome.shared.setOn(light, !light.on) }
+            }
             Button("Controls…", action: openControls)
             FavoriteButton(id: light.id)
         }
+        .accessibilityElement(children: .combine)
+        .accessibilityValue(light.isOffline ? "Offline" : lit ? "On, \(light.brightness)%" : "Off")
     }
 }
 
@@ -299,6 +345,24 @@ struct LightSheet: View {
     ]
     static let whites = [2700, 4000, 5500, 6500]
 
+    /// Showing this white (within a little: Apple Home rounds through mireds, Govee to its own range).
+    static func isWhite(_ l: GoveeLight, _ k: Int) -> Bool {
+        guard l.color == nil, let lk = l.kelvin else { return false }
+        return abs(lk - (l.isHome ? k : l.clampKelvin(k))) < 80
+    }
+
+    /// Why an unreachable light might be, in a line.
+    static func offlineHint(_ l: GoveeLight) -> String {
+        if l.isHome {
+            #if os(iOS)
+            return "Not responding in Apple Home. Check it’s switched on at the wall."
+            #else
+            return "An Apple Home light: change it from Woodruff on iPhone."
+            #endif
+        }
+        return "Not answering. Check it’s plugged in and on the Wi‑Fi; it comes back here by itself."
+    }
+
     var body: some View {
         if let light {
             ScrollView {
@@ -306,20 +370,32 @@ struct LightSheet: View {
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(light.name).font(.title3.bold())
-                        Text(light.on ? "\(Int(level))%" : "Off").font(.subheadline).foregroundStyle(.secondary).monospacedDigit()
+                        Text(light.isOffline ? "Offline" : light.on ? "\(Int(level))%" : "Off")
+                            .font(.subheadline).foregroundStyle(.secondary).monospacedDigit()
                     }
                     Spacer()
                     GlassCircle(symbol: "xmark", size: 34) { dismiss() }
                 }
-                brightnessBar(light)
-                Button(light.on ? "Turn Off" : "Turn On") { home.setOn(light, !light.on) }
-                    .buttonStyle(.glass)
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("Colour").font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
-                    swatches(Self.colors.map { c in (c.color, light.color == c, { home.setColor(light, c) }) })
-                    Text("White").font(.subheadline.weight(.semibold)).foregroundStyle(.secondary).padding(.top, 4)
-                    swatches(Self.whites.map { k in (LightColor.kelvin(k), light.color == nil && light.kelvin == k, { home.setWhite(light, kelvin: k) }) })
+                if light.isOffline {
+                    Label(Self.offlineHint(light), systemImage: "wifi.slash")
+                        .font(.footnote).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                // An unreachable light can't take a change: its controls rest until it's back.
+                Group {
+                    brightnessBar(light)
+                        .allowsHitTesting(!light.isOffline)
+                    Button(light.on ? "Turn Off" : "Turn On") { home.setOn(light, !light.on) }
+                        .buttonStyle(.glass)
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Colour").font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
+                        swatches(Self.colors.map { c in (c.color, light.color == c, { home.setColor(light, c) }) })
+                        Text("White").font(.subheadline.weight(.semibold)).foregroundStyle(.secondary).padding(.top, 4)
+                        swatches(Self.whites.map { k in (LightColor.kelvin(k), Self.isWhite(light, k), { home.setWhite(light, kelvin: k) }) })
+                    }
+                }
+                .disabled(light.isOffline)
+                .opacity(light.isOffline ? 0.4 : 1)
                 HStack {
                     TextField("Name", text: $name)
                         .textFieldStyle(.plain)
@@ -345,8 +421,8 @@ struct LightSheet: View {
         GeometryReader { g in
             ZStack(alignment: .bottom) {
                 Rectangle().fill(.white.opacity(0.12))
-                Rectangle().fill(light.on ? light.shade : .white.opacity(0.3))
-                    .frame(height: g.size.height * (light.on ? level / 100 : 0))
+                Rectangle().fill(light.isLit ? light.shade : .white.opacity(0.3))
+                    .frame(height: g.size.height * (light.isLit ? level / 100 : 0))
             }
             .clipShape(RoundedRectangle(cornerRadius: 30, style: .continuous))
             .contentShape(Rectangle())
@@ -398,7 +474,7 @@ struct SpeakersListView: View {
                 ForEach(home.speakers) { r in
                     NavigationLink { SpeakerDetailView(speakerID: r.id) } label: {
                         IconRow(symbol: "", color: .clear, title: r.name,
-                                subtitle: r.title.map { [$0, r.artist].compactMap { $0 }.joined(separator: " · ") } ?? "Not Playing",
+                                subtitle: status(r),
                                 value: home.room(of: r.id))
                     }
                 }
@@ -410,6 +486,14 @@ struct SpeakersListView: View {
         .navigationTitle("Speakers")
         .inlineTitle()
         .refreshable { await home.findSonos(); await home.refreshSpeakers() }
+    }
+
+    private func status(_ r: SonosRoom) -> String {
+        if r.isOffline { return "Offline" }
+        if r.isTV { return r.isPlaying ? "TV" : "TV · " + r.stateName }
+        guard let t = r.title, !t.isEmpty else { return r.stateName }
+        let what = [t, r.artist ?? ""].filter { !$0.isEmpty }.joined(separator: " · ")
+        return r.isPlaying ? what : r.stateName + " · " + what
     }
 }
 
@@ -428,11 +512,14 @@ struct LightsListView: View {
                 ForEach(home.lights) { l in
                     NavigationLink { LightDetailView(lightID: l.id) } label: {
                         HStack(spacing: 12) {
-                            Circle().fill(l.on ? l.shade : Color.secondary.opacity(0.3)).frame(width: 12, height: 12)
-                            IconRow(symbol: "", color: .clear, title: l.name, subtitle: l.on ? "On · \(l.brightness)%" : "Off", value: home.room(of: l.id))
+                            Circle().fill(l.isLit ? l.shade : Color.secondary.opacity(0.3)).frame(width: 12, height: 12)
+                            IconRow(symbol: "", color: .clear, title: l.name,
+                                    subtitle: l.isOffline ? "Offline" : l.on ? "On · \(l.brightness)%" : "Off", value: home.room(of: l.id))
                         }
                     }
-                    .swipeActions { Button(l.on ? "Turn Off" : "Turn On") { home.setOn(l, !l.on) }.tint(l.on ? .gray : .yellow) }
+                    .swipeActions {
+                        if !l.isOffline { Button(l.on ? "Turn Off" : "Turn On") { home.setOn(l, !l.on) }.tint(l.on ? .gray : .yellow) }
+                    }
                 }
             } footer: {
                 Text("Govee lights answer on your Wi‑Fi once LAN Control is on for each one in the Govee app (the light’s settings). Tap a light to rename it or choose its room.")
@@ -559,20 +646,31 @@ struct LightDetailView: View {
                 Section {
                     VStack(spacing: 18) {
                         Circle()
-                            .fill(l.on ? l.shade : Color.secondary.opacity(0.25))
+                            .fill(l.isLit ? l.shade : Color.secondary.opacity(0.25))
                             .frame(width: 72, height: 72)
-                            .shadow(color: l.on ? l.shade.opacity(0.9) : .clear, radius: 24)
+                            .shadow(color: l.isLit ? l.shade.opacity(0.9) : .clear, radius: 24)
                             .overlay { Circle().strokeBorder(.white.opacity(0.25)) }
-                            .onTapGesture { home.setOn(l, !l.on) }
-                        Toggle(l.on ? "On" : "Off", isOn: Binding(get: { l.on }, set: { home.setOn(l, $0) }))
-                            .toggleStyle(.switch)
-                        HStack(spacing: 12) {
-                            Image(systemName: "sun.min").foregroundStyle(.secondary)
-                            Slider(value: $level, in: 1...100) { e in dragging = e; if !e { home.setBrightness(l, Int(level)) } }
-                            Image(systemName: "sun.max.fill").foregroundStyle(.secondary)
+                            .onTapGesture { if !l.isOffline { home.setOn(l, !l.on) } }
+                        if l.isOffline {
+                            Label(LightSheet.offlineHint(l), systemImage: "wifi.slash")
+                                .font(.footnote).foregroundStyle(.secondary)
                         }
-                        swatches(LightSheet.colors.map { c in (c.color, l.color == c, { home.setColor(l, c) }) })
-                        swatches(LightSheet.whites.map { k in (LightColor.kelvin(k), l.color == nil && l.kelvin == k, { home.setWhite(l, kelvin: k) }) })
+                        // An unreachable light can't take a change: its controls rest until it's back.
+                        Group {
+                            Toggle(l.isOffline ? "Offline" : l.on ? "On" : "Off", isOn: Binding(get: { l.isLit }, set: { home.setOn(l, $0) }))
+                                .toggleStyle(.switch)
+                            HStack(spacing: 12) {
+                                Image(systemName: "sun.min").foregroundStyle(.secondary)
+                                Slider(value: $level, in: 1...100) { e in dragging = e; if !e { home.setBrightness(l, Int(level)) } }
+                                Image(systemName: "sun.max.fill").foregroundStyle(.secondary)
+                            }
+                            swatches(LightSheet.colors.map { c in (c.color, l.color == c, { home.setColor(l, c) }) })
+                            swatches(LightSheet.whites.map { k in (LightColor.kelvin(k), LightSheet.isWhite(l, k), { home.setWhite(l, kelvin: k) }) })
+                        }
+                        .disabled(l.isOffline)
+                        if let e = home.goveeError {
+                            Text(e).font(.footnote).foregroundStyle(.secondary)
+                        }
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 10)
@@ -582,13 +680,13 @@ struct LightDetailView: View {
                     Section("Apple Home") {
                         LabeledContent("Maker", value: l.sku)
                         if let z = l.zone { LabeledContent("Apple Home Room", value: z) }
-                        LabeledContent("Connection", value: "Apple Home (Matter)")
+                        LabeledContent("Connection", value: l.isOffline ? "Apple Home · Not Responding" : "Apple Home (Matter)")
                     }
                 } else {
                     Section("Govee") {
                         LabeledContent("Model", value: l.sku)
                         LabeledContent("Device ID", value: l.id).font(.footnote.monospaced())
-                        LabeledContent("Connection", value: l.ip != nil ? "Wi‑Fi (\(l.ip!))" : (l.cloud ? "Govee Account" : "Not reachable"))
+                        LabeledContent("Connection", value: Self.connection(l))
                     }
                 }
             }
@@ -600,6 +698,17 @@ struct LightDetailView: View {
         } else {
             ContentUnavailableView("Light Not Found", systemImage: "lightbulb")
         }
+    }
+
+    /// How the app reaches a Govee light, and whether it can right now.
+    private static func connection(_ l: GoveeLight) -> String {
+        let twin = l.id.contains("@")
+        if let ip = l.ip {
+            if l.isOffline { return "Wi‑Fi (\(ip)) · Not Answering" }
+            return twin ? "Wi‑Fi (\(ip)) · Twin Lamp" : "Wi‑Fi (\(ip))"
+        }
+        if l.cloud && !twin { return l.isOffline ? "Govee Account · Offline" : "Govee Account" }
+        return "Not Reachable"
     }
 
     private func swatches(_ items: [(Color, Bool, () -> Void)]) -> some View {

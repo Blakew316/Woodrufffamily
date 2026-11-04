@@ -31,7 +31,7 @@ final class SmartThings {
         loop = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
-                if self.connected { await self.refresh(full: self.listedAt.map { $0.timeIntervalSinceNow < -600 } ?? true) }
+                if self.connected { await self.refresh(full: self.listedAt.map { $0.timeIntervalSinceNow < -300 } ?? true) }
                 try? await Task.sleep(nanoseconds: 30_000_000_000)
             }
         }
@@ -92,6 +92,11 @@ final class SmartThings {
     func signOut() {
         for k in ["st.access", "st.refresh", "st.expires", "st.token"] { Keychain.set(nil, for: k) }
         devices = []
+        raw = [:]
+        capabilities = [:]
+        lastMachine = [:]
+        commandError = [:]
+        listedAt = nil
         AccessoryStore.shared.fromSmartThings = []
     }
 
@@ -126,6 +131,13 @@ final class SmartThings {
         return Keychain.get("st.access") ?? ""
     }
 
+    /// SmartThings said no: the HTTP code and its words (with any details it gave).
+    struct APIError: LocalizedError {
+        var code: Int
+        var message: String
+        var errorDescription: String? { message }
+    }
+
     private func call(_ method: String, _ path: String, _ body: Any? = nil, retried: Bool = false) async throws -> [String: Any] {
         guard let url = URL(string: Self.api + path) else { throw OAuthRelay.Failure.refused("SmartThings answered oddly.") }
         var r = URLRequest(url: url, timeoutInterval: 20)
@@ -144,19 +156,59 @@ final class SmartThings {
                 return try await call(method, path, body, retried: true)
             }
             if code == 401 { throw OAuthRelay.Failure.refused(Keychain.get("st.token") != nil ? "The SmartThings token expired. Paste a new one or sign in." : "Sign in to SmartThings again.") }
-            let msg = ((json["error"] as? [String: Any])?["message"] as? String) ?? "SmartThings answered \(code)."
-            throw OAuthRelay.Failure.refused(msg)
+            throw APIError(code: code, message: Self.errorWords(json) ?? "SmartThings answered \(code).")
         }
         return json
     }
 
+    /// `{"error": {"message": "…", "details": [{"message": "…"}]}}` → "…: …".
+    nonisolated private static func errorWords(_ json: [String: Any]) -> String? {
+        guard let err = json["error"] as? [String: Any] else { return nil }
+        var parts: [String] = []
+        if let m = err["message"] as? String, !m.isEmpty { parts.append(m) }
+        for detail in err["details"] as? [[String: Any]] ?? [] {
+            if let m = detail["message"] as? String, !m.isEmpty, !parts.contains(m) { parts.append(m) }
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: ": ")
+    }
+
     // MARK: Devices
 
+    @ObservationIgnored private var refreshing: Task<Void, Never>?
+    @ObservationIgnored private var refreshingFull = false
+    @ObservationIgnored private var refreshGen = 0
+    /// After a command, the appliance's own re-read owns its tile for a few seconds (a poll that read it a moment
+    /// before the command landed would otherwise put the old state back).
+    @ObservationIgnored private var holdUntil: [String: Date] = [:]
+    /// When each appliance's tile was last updated outside the poll (a re-read or a tap).
+    @ObservationIgnored private var changedAt: [String: Date] = [:]
+    /// Cycles the family stopped from here (so stopping one isn't announced as "done").
+    @ObservationIgnored private var userStopped: [String: Date] = [:]
+
+    /// Reads everything again. Only one runs at a time; anyone else waits for it (and a full one asked for
+    /// while a quick one runs goes after it).
     func refresh(full: Bool) async {
         guard connected else { return }
-        do {
-            if full || devices.isEmpty {
-                devices = (try await call("GET", "/devices"))["items"] as? [[String: Any]] ?? []
+        if let running = refreshing {
+            let wasFull = refreshingFull
+            await running.value
+            if !full || wasFull { return }
+        }
+        refreshGen += 1
+        let gen = refreshGen
+        refreshingFull = full
+        let t = Task { await self.load(full: full) }
+        refreshing = t
+        await t.value
+        if refreshGen == gen { refreshing = nil }
+    }
+
+    private func load(full: Bool) async {
+        var listFailure: String?
+        if full || devices.isEmpty {
+            do {
+                let list = try await call("GET", "/devices")
+                devices = list["items"] as? [[String: Any]] ?? []
                 var rooms: [String: String] = [:]
                 // Rooms need r:locations:*; without it devices just have no room.
                 for loc in (try? await call("GET", "/locations"))?["items"] as? [[String: Any]] ?? [] {
@@ -167,34 +219,116 @@ final class SmartThings {
                 }
                 roomNames = rooms
                 listedAt = Date()
+            } catch {
+                // Keep the list it had; with none there's nothing to read.
+                listFailure = error.localizedDescription
+                if devices.isEmpty { self.error = listFailure; return }
             }
-            var out: [HomeDevice] = []
-            let before = AccessoryStore.shared.fromSmartThings
-            for dev in devices {
-                guard let id = dev["deviceId"] as? String else { continue }
-                capabilities["st:" + id] = allCaps(dev)
-                guard let status = try? await call("GET", "/devices/\(id)/status") else {
-                    // Couldn't read it this time: keep what it last said (never a false "done" or "Idle").
-                    if let old = before.first(where: { $0.id == "st:" + id }) { out.append(old) }
-                    continue
-                }
-                raw["st:" + id] = status
-                if let d = make(dev, status) { out.append(d) }
+        }
+        var out: [HomeDevice] = []
+        var readAt: [String: Date] = [:]
+        var failures = 0
+        var lastFailure: String?
+        let before = AccessoryStore.shared.fromSmartThings
+        for dev in devices {
+            guard let id = dev["deviceId"] as? String else { continue }
+            let key = "st:" + id
+            capabilities[key] = allCaps(dev)
+            readAt[key] = Date()
+            let online = await health(id)
+            let status: [String: Any]
+            do {
+                status = try await call("GET", "/devices/\(id)/status")
+            } catch {
+                // Couldn't read it this time: keep what it last said (never a false "done" or "Idle"),
+                // unless SmartThings says it has gone offline.
+                failures += 1
+                lastFailure = error.localizedDescription
+                if let old = before.first(where: { $0.id == key }) { out.append(online == false ? Self.offline(old) : old) }
+                continue
             }
-            error = nil
-            AccessoryStore.shared.fromSmartThings = out
-        } catch { self.error = error.localizedDescription }
+            if let until = holdUntil[key], until > .now, let current = before.first(where: { $0.id == key }) {
+                out.append(current)   // a command's re-read owns it right now
+                continue
+            }
+            raw[key] = status
+            if let d = make(dev, status, online: online) {
+                notifyIfFinished(d)
+                out.append(d)
+            }
+        }
+        // Anything a command's re-read updated while this went round keeps the newer word.
+        let latest = AccessoryStore.shared.fromSmartThings
+        out = out.map { d in
+            let held = (holdUntil[d.id].map { $0 > .now } ?? false)
+            let newer = (changedAt[d.id] ?? .distantPast) > (readAt[d.id] ?? .distantFuture)
+            guard held || newer, let current = latest.first(where: { $0.id == d.id }) else { return d }
+            return current
+        }
+        if let listFailure { error = listFailure }
+        else if failures > 0 && failures == devices.count { error = lastFailure }
+        else { error = nil }
+        AccessoryStore.shared.fromSmartThings = out
     }
 
-    /// Reads one appliance again (after a command), so its tile updates in a second.
-    func reread(_ id: String) async {
+    /// Whether SmartThings can reach the appliance right now (nil when it can't say).
+    private func health(_ id: String) async -> Bool? {
+        guard let h = try? await call("GET", "/devices/\(id)/health"), let s = h["state"] as? String else { return nil }
+        switch s.uppercased() {
+        case "ONLINE": return true
+        case "OFFLINE": return false
+        default: return nil
+        }
+    }
+
+    /// An appliance that has dropped off: nothing it last said about a cycle still holds.
+    private static func offline(_ d: HomeDevice) -> HomeDevice {
+        var d = d
+        d.reachable = false
+        d.machineState = nil
+        d.endsAt = nil
+        d.alert = false
+        d.status = "Offline"
+        return d
+    }
+
+    /// What a command should lead to, so its re-read can wait for the appliance to catch up.
+    enum Expect {
+        case nothing
+        case power(Bool)
+        case machine(String)
+        case attribute(cap: String, attr: String, component: String, value: String)
+    }
+
+    /// Reads one appliance again (after a command), so its tile updates in a second. With an expectation it
+    /// only takes the answer once the appliance agrees (or on the last try); says whether it agreed.
+    @discardableResult
+    func reread(_ id: String, expect: Expect = .nothing, last: Bool = true) async -> Bool {
+        let key = "st:" + id
         guard let dev = devices.first(where: { ($0["deviceId"] as? String) == id }),
-              let status = try? await call("GET", "/devices/\(id)/status") else { return }
-        raw["st:" + id] = status
-        guard let d = make(dev, status) else { return }
+              let status = try? await call("GET", "/devices/\(id)/status") else { return false }
+        let online = await health(id)
+        guard let d = make(dev, status, online: online) else { return false }
+        let agrees = matches(expect, d, status)
+        guard agrees || last else { return false }
+        raw[key] = status
+        changedAt[key] = Date()
+        notifyIfFinished(d)
         var list = AccessoryStore.shared.fromSmartThings
-        if let i = list.firstIndex(where: { $0.id == d.id }) { list[i] = d } else { list.append(d) }
+        if let i = list.firstIndex(where: { $0.id == key }) { list[i] = d } else { list.append(d) }
         AccessoryStore.shared.fromSmartThings = list
+        return agrees
+    }
+
+    private func matches(_ expect: Expect, _ d: HomeDevice, _ status: [String: Any]) -> Bool {
+        if !d.reachable { return true }
+        switch expect {
+        case .nothing: return true
+        case .power(let on): return d.isOn == on
+        case .machine(let m): return d.machineState == m
+        case .attribute(let cap, let attr, let component, let v):
+            return value(status, cap, attr, in: component).map { "\($0)" } == v
+        }
     }
 
     private func allCaps(_ dev: [String: Any]) -> Set<String> {
@@ -223,18 +357,28 @@ final class SmartThings {
         capabilities[deviceID]?.contains(component == "main" ? cap : "\(component)/\(cap)") == true
     }
 
-    /// Sends one command, then reads the appliance again.
-    func command(_ d: HomeDevice, _ cap: String, _ command: String, _ args: [Any] = [], component: String = "main") {
-        let id = String(d.id.dropFirst(3))
-        var c: [String: Any] = ["component": component, "capability": cap, "command": command]
-        if !args.isEmpty { c["arguments"] = args }
-        Task {
-            do {
-                _ = try await call("POST", "/devices/\(id)/commands", ["commands": [c]])
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
-                await reread(id)
-            } catch { self.error = error.localizedDescription }
-        }
+    /// Writes a value into the appliance's last status straight away (a tapped setting shows at once).
+    private func patch(_ deviceID: String, _ component: String, _ cap: String, _ attr: String, _ newValue: Any) {
+        guard var st = raw[deviceID] else { return }
+        var comps = st["components"] as? [String: Any] ?? [:]
+        var comp = comps[component] as? [String: Any] ?? [:]
+        var capability = comp[cap] as? [String: Any] ?? [:]
+        var attribute = capability[attr] as? [String: Any] ?? [:]
+        attribute["value"] = newValue
+        capability[attr] = attribute
+        comp[cap] = capability
+        comps[component] = comp
+        st["components"] = comps
+        raw[deviceID] = st
+    }
+
+    /// Changes the tile straight away, before the appliance answers.
+    private func updateLocal(_ key: String, _ change: (inout HomeDevice) -> Void) {
+        var list = AccessoryStore.shared.fromSmartThings
+        guard let i = list.firstIndex(where: { $0.id == key }) else { return }
+        change(&list[i])
+        changedAt[key] = Date()
+        AccessoryStore.shared.fromSmartThings = list
     }
 
     private func caps(_ dev: [String: Any]) -> Set<String> {
@@ -255,36 +399,105 @@ final class SmartThings {
         return (t["unit"] as? String) == "F" ? (v - 32) * 5 / 9 : v
     }
 
-    private func make(_ dev: [String: Any], _ st: [String: Any]) -> HomeDevice? {
+    /// Time left from a `remainingTime` attribute ({"value": 42, "unit": "min"}).
+    private func remaining(_ status: [String: Any], _ cap: String) -> TimeInterval? {
+        guard let t = (((status["components"] as? [String: Any])?["main"] as? [String: Any])?[cap] as? [String: Any])?["remainingTime"] as? [String: Any],
+              let v = (t["value"] as? NSNumber)?.doubleValue, v > 0 else { return nil }
+        let unit = (t["unit"] as? String)?.lowercased() ?? "min"
+        if unit.hasPrefix("s") { return v }
+        if unit.hasPrefix("h") { return v * 3600 }
+        return v * 60
+    }
+
+    /// A Samsung machine, in both of the ways SmartThings describes one: the original capability
+    /// (machineState run / pause / stop, completionTime) and Samsung's own newer one
+    /// (operatingState running / paused / ready, remainingTime).
+    struct Machine {
+        var legacy: String
+        var modern: String
+        var kind: HomeDevice.Kind
+        var word: String
+        var job: String
+    }
+
+    static let machines: [Machine] = [
+        Machine(legacy: "washerOperatingState", modern: "samsungce.washerOperatingState", kind: .washer, word: "Washing", job: "washerJobState"),
+        Machine(legacy: "dryerOperatingState", modern: "samsungce.dryerOperatingState", kind: .dryer, word: "Drying", job: "dryerJobState"),
+        Machine(legacy: "dishwasherOperatingState", modern: "samsungce.dishwasherOperation", kind: .dishwasher, word: "Washing", job: "dishwasherJobState"),
+        Machine(legacy: "ovenOperatingState", modern: "samsungce.ovenOperatingState", kind: .oven, word: "Cooking", job: "ovenJobState"),
+    ]
+
+    /// run / running → "run", pause / paused → "pause", stop / ready / anything else → "stop".
+    nonisolated static func normalize(_ s: String) -> String {
+        switch s.lowercased() {
+        case "run", "running": return "run"
+        case "pause", "paused": return "pause"
+        default: return "stop"
+        }
+    }
+
+    private static func date(_ iso: String) -> Date? {
+        ISO8601DateFormatter.withFraction.date(from: iso) ?? ISO8601DateFormatter().date(from: iso)
+    }
+
+    /// "weightSensing" → "Sensing Load", "rinse" → "Rinsing", "someNewState" → "Some New State".
+    nonisolated private static func jobWords(_ job: String) -> String {
+        let words = [
+            "wash": "Washing", "rinse": "Rinsing", "spin": "Spinning", "drying": "Drying", "cooling": "Cooling",
+            "weightSensing": "Sensing Load", "delayWash": "Delay Start", "preWash": "Pre-Wash", "airWash": "Air Wash",
+            "wrinklePrevent": "Wrinkle Prevent", "preheat": "Preheating", "cooking": "Cooking", "refreshing": "Refreshing",
+            "sanitizing": "Sanitizing", "freezeProtection": "Freeze Protection",
+        ]
+        if let w = words[job] { return w }
+        var out = ""
+        for ch in job.replacingOccurrences(of: "_", with: " ") {
+            if ch.isUppercase, let last = out.last, last.isLowercase { out.append(" ") }
+            out.append(ch)
+        }
+        return out.prefix(1).uppercased() + out.dropFirst()
+    }
+
+    private static func timeLeft(_ end: Date) -> String {
+        let mins = max(1, Int(ceil(end.timeIntervalSinceNow / 60)))
+        return mins >= 60 ? "\(mins / 60) h \(mins % 60) min left" : "\(mins) min left"
+    }
+
+    private func make(_ dev: [String: Any], _ st: [String: Any], online: Bool?) -> HomeDevice? {
         guard let id = dev["deviceId"] as? String else { return nil }
         let c = caps(dev)
         let name = (dev["label"] as? String) ?? (dev["name"] as? String) ?? "Samsung"
+        let ocfType = (dev["ocf"] as? [String: Any])?["ocfDeviceType"] as? String ?? ""
         var d = HomeDevice(id: "st:" + id, name: name, source: "smartthings", kind: .appliance, zone: (dev["roomId"] as? String).flatMap { roomNames[$0] }, status: "")
-        d.reachable = (value(st, "healthCheck", "DeviceWatch-DeviceStatus") as? String).map { $0 != "offline" } ?? true
-        d.remoteControl = (value(st, "remoteControlStatus", "remoteControlEnabled") as? String) == "true"
+        d.reachable = online ?? ((value(st, "healthCheck", "DeviceWatch-DeviceStatus") as? String).map { $0 != "offline" } ?? true)
+        // Without the capability there's nothing to switch on at the appliance: let it try (SmartThings will say if not).
+        if let rc = value(st, "remoteControlStatus", "remoteControlEnabled") {
+            d.remoteControl = "\(rc)" == "true" || (rc as? Bool) == true
+        } else {
+            d.remoteControl = !c.contains("remoteControlStatus")
+        }
         if let sw = value(st, "switch", "switch") as? String { d.isOn = sw == "on" }
 
-        let machines: [(String, HomeDevice.Kind, String)] = [
-            ("washerOperatingState", .washer, "Washing"), ("dryerOperatingState", .dryer, "Drying"),
-            ("dishwasherOperatingState", .dishwasher, "Washing"), ("ovenOperatingState", .oven, "Cooking"),
-        ]
-        if let m = machines.first(where: { c.contains($0.0) }) {
-            d.kind = m.1
-            let state = value(st, m.0, "machineState") as? String
+        if let m = Self.machines.first(where: { c.contains($0.legacy) || c.contains($0.modern) }) {
+            d.kind = m.kind
+            let reported = (value(st, m.legacy, "machineState") ?? value(st, m.modern, "operatingState") ?? value(st, m.modern, "machineState")) as? String
+            let state = reported.map { Self.normalize($0) }
             d.machineState = state
-            if let iso = value(st, m.0, "completionTime") as? String { d.endsAt = ISO8601DateFormatter.withFraction.date(from: iso) ?? ISO8601DateFormatter().date(from: iso) }
+            let job = (value(st, m.legacy, m.job) ?? value(st, m.modern, m.job)) as? String
+            if let iso = (value(st, m.legacy, "completionTime") ?? value(st, m.modern, "completionTime")) as? String { d.endsAt = Self.date(iso) }
+            if state == "run", (d.endsAt.map { $0 <= .now } ?? true), let left = remaining(st, m.modern) ?? remaining(st, m.legacy) {
+                d.endsAt = Date().addingTimeInterval(left)
+            }
+            let finished = job.map { ["finish", "finished"].contains($0) } ?? false
             switch state {
             case "run":
-                var s = m.2
-                if let job = (value(st, m.0, "washerJobState") ?? value(st, m.0, "dryerJobState") ?? value(st, m.0, "dishwasherJobState")) as? String,
-                   !["none", "finish", "finished"].contains(job) { s = job.capitalized }
-                if let end = d.endsAt, end > .now { s += " · \(Int(ceil(end.timeIntervalSinceNow / 60))) min left" }
+                var s = m.word
+                if let job, !["none", "finish", "finished"].contains(job) { s = Self.jobWords(job) }
+                if let end = d.endsAt, end > .now { s += " · " + Self.timeLeft(end) }
                 d.status = s
             case "pause": d.status = "Paused"
-            default: d.status = d.isOn == false ? "Off" : "Idle"
+            default: d.status = finished ? "Finished" : (d.isOn == false ? "Off" : "Idle")
             }
-            notifyIfFinished(d, name: name)
-        } else if c.contains("refrigeration") || c.contains("custom.fridgeMode") || dev["ocf"].flatMap({ ($0 as? [String: Any])?["ocfDeviceType"] as? String })?.contains("refrigerator") == true {
+        } else if c.contains("refrigeration") || c.contains("custom.fridgeMode") || ocfType.contains("refrigerator") {
             d.kind = .fridge
             var bits: [String] = []
             if let f = celsius(st, "cooler") ?? celsius(st, "main") { bits.append("Fridge \(temperatureText(f))") }
@@ -296,40 +509,51 @@ final class SmartThings {
             let move = value(st, "robotCleanerMovement", "robotCleanerMovement") as? String
             d.mode = move
             let battery = (value(st, "battery", "battery") as? NSNumber)?.intValue
-            let words = ["cleaning": "Cleaning", "homing": "Going Home", "charging": "Charging", "idle": "Docked", "pause": "Paused", "alarm": "Needs Help", "after": "Done"]
+            let words = ["cleaning": "Cleaning", "homing": "Going Home", "charging": "Charging", "idle": "Docked", "pause": "Paused", "alarm": "Needs Help", "after": "Done", "powerOff": "Off"]
             d.status = (move.flatMap { words[$0] } ?? "Ready") + (battery.map { " · \($0)%" } ?? "")
             d.alert = move == "alarm"
         } else if c.contains("airConditionerMode") {
             d.kind = .aircon
             let mode = value(st, "airConditionerMode", "airConditionerMode") as? String
             d.mode = mode
-            var bits: [String] = [d.isOn == true ? (mode?.capitalized ?? "On") : "Off"]
+            var bits: [String] = [d.isOn == true ? (mode.map { Self.jobWords($0) } ?? "On") : "Off"]
             if let t = celsius(st, "main") { d.temperature = t; bits.append(temperatureText(t)) }
             d.status = bits.joined(separator: " · ")
         } else if c.contains("airPurifierFanMode") {
             d.kind = .fan
-            d.status = d.isOn == true ? ((value(st, "airPurifierFanMode", "airPurifierFanMode") as? String)?.capitalized ?? "On") : "Off"
+            d.status = d.isOn == true ? ((value(st, "airPurifierFanMode", "airPurifierFanMode") as? String).map { Self.jobWords($0) } ?? "On") : "Off"
         } else if c.contains("switch") {
-            d.kind = .toggle
-            d.status = d.isOn == true ? "On" : "Off"
-        } else if let t = celsius(st, "main") {
+            d.kind = c.contains("powerMeter") || ocfType.contains("smartplug") ? .outlet : .toggle
+            var s = d.isOn == true ? "On" : "Off"
+            if d.isOn == true, let w = (value(st, "powerMeter", "power") as? NSNumber)?.doubleValue, w >= 1 { s += " · \(Int(w.rounded())) W" }
+            d.status = s
+        } else if ["contactSensor", "waterSensor", "motionSensor", "temperatureMeasurement", "relativeHumidityMeasurement", "smokeDetector"].contains(where: { c.contains($0) }) {
             d.kind = .sensor
-            d.temperature = t
-            d.status = temperatureText(t)
+            var bits: [String] = []
+            if (value(st, "waterSensor", "water") as? String) == "wet" { bits.append("Leak"); d.alert = true }
+            if (value(st, "smokeDetector", "smoke") as? String) == "detected" { bits.append("Smoke"); d.alert = true }
+            if let contact = value(st, "contactSensor", "contact") as? String { bits.append(contact == "open" ? "Open" : "Closed") }
+            if (value(st, "motionSensor", "motion") as? String) == "active" { bits.append("Motion") }
+            if let t = celsius(st, "main") { d.temperature = t; bits.append(temperatureText(t)) }
+            if let h = (value(st, "relativeHumidityMeasurement", "humidity") as? NSNumber)?.intValue { bits.append("\(h)%") }
+            d.status = bits.isEmpty ? "Connected" : bits.joined(separator: " · ")
         } else {
-            d.status = d.reachable ? "Connected" : "Offline"
+            d.status = "Connected"
         }
-        return d
+        // Offline: what it last said (a cycle "running") no longer holds.
+        return d.reachable ? d : Self.offline(d)
     }
 
     /// "The washer is done" when a cycle ends while the app is open.
-    private func notifyIfFinished(_ d: HomeDevice, name: String) {
-        guard let now = d.machineState else { return }   // not known this time: nothing has finished
+    private func notifyIfFinished(_ d: HomeDevice) {
+        guard let now = d.machineState else { return }   // not known this time (or offline): nothing has finished
         let was = lastMachine[d.id]
         lastMachine[d.id] = now
         guard was == "run", now == "stop" else { return }
+        // Stopped from here: not "done".
+        if let s = userStopped[d.id], s.timeIntervalSinceNow > -600 { userStopped[d.id] = nil; return }
         let c = UNMutableNotificationContent()
-        c.title = "\(name) is done"
+        c.title = "\(d.name) is done"
         c.body = d.kind == .dryer ? "The dryer has finished." : d.kind == .washer ? "The wash has finished. Time to move it to the dryer." : "It has finished."
         c.sound = .default
         Notifier.deliver(c, id: "st-\(d.id)-done")
@@ -337,28 +561,141 @@ final class SmartThings {
 
     // MARK: Commands
 
-    func send(_ d: HomeDevice, _ cmd: DeviceCommand) {
-        let id = String(d.id.dropFirst(3))
-        var command: [String: Any]
-        switch cmd {
-        case .power(let on): command = ["component": "main", "capability": "switch", "command": on ? "on" : "off"]
-        case .machine(let m):
-            let cap: String
-            switch d.kind {
-            case .dryer: cap = "dryerOperatingState"
-            case .dishwasher: cap = "dishwasherOperatingState"
-            case .oven: cap = "ovenOperatingState"
-            default: cap = "washerOperatingState"
+    /// Why the last command to each appliance failed, for its page (cleared by the next one).
+    private(set) var commandError: [String: String] = [:]
+    /// Appliances with a command on its way.
+    private(set) var pending: Set<String> = []
+
+    /// Sends one command, then reads the appliance again. With `sets`/`to`, the new value shows at once and
+    /// the re-read waits for the appliance to agree.
+    func command(_ d: HomeDevice, _ cap: String, _ command: String, _ args: [Any] = [], component: String = "main", sets attr: String? = nil, to newValue: Any? = nil) {
+        var c: [String: Any] = ["component": component, "capability": cap, "command": command]
+        if !args.isEmpty { c["arguments"] = args }
+        var expect = Expect.nothing
+        if let attr, let newValue, d.reachable {
+            patch(d.id, component, cap, attr, newValue)
+            expect = .attribute(cap: cap, attr: attr, component: component, value: "\(newValue)")
+        }
+        perform(d, c, expect: expect)
+    }
+
+    /// Switches the appliance (or one part of it) on or off.
+    func power(_ d: HomeDevice, _ on: Bool, component: String = "main") {
+        guard component == "main" else {
+            command(d, "switch", on ? "on" : "off", component: component, sets: "switch", to: on ? "on" : "off")
+            return
+        }
+        if d.reachable {
+            patch(d.id, "main", "switch", "switch", on ? "on" : "off")
+            updateLocal(d.id) { x in
+                x.isOn = on
+                if !on { x.status = "Off" } else if x.status == "Off" { x.status = x.machineState == nil ? "On" : "Idle" }
             }
-            command = ["component": "main", "capability": cap, "command": "setMachineState", "arguments": [m]]
+        }
+        perform(d, ["component": "main", "capability": "switch", "command": on ? "on" : "off"], expect: .power(on))
+    }
+
+    /// Starts ("run"), pauses ("pause") or stops ("stop") a washer, dryer, dishwasher or oven, with whichever
+    /// capability it has.
+    func machine(_ d: HomeDevice, _ action: String) {
+        guard let m = Self.machines.first(where: { $0.kind == d.kind }) else { return }
+        let hasLegacy = has(d.id, m.legacy)
+        var c: [String: Any] = ["component": "main"]
+        if d.kind == .oven {
+            // Ovens take start / stop (no pause), on either capability.
+            c["capability"] = hasLegacy ? m.legacy : m.modern
+            c["command"] = action == "stop" ? "stop" : "start"
+        } else if hasLegacy {
+            c["capability"] = m.legacy
+            c["command"] = "setMachineState"
+            c["arguments"] = [action]
+        } else {
+            c["capability"] = m.modern
+            switch action {
+            case "pause": c["command"] = "pause"
+            case "stop": c["command"] = "cancel"
+            default: c["command"] = d.kind == .dishwasher && d.machineState == "pause" ? "resume" : "start"
+            }
+        }
+        let canAct = d.reachable && d.remoteControl
+        if canAct {
+            updateLocal(d.id) { x in
+                x.status = action == "run" ? "Starting…" : action == "pause" ? "Pausing…" : "Stopping…"
+            }
+        }
+        perform(d, c, expect: .machine(action), stops: action == "stop")
+    }
+
+    func send(_ d: HomeDevice, _ cmd: DeviceCommand) {
+        switch cmd {
+        case .power(let on): power(d, on)
+        case .machine(let m): machine(d, m)
         default: return
         }
+    }
+
+    private func perform(_ d: HomeDevice, _ c: [String: Any], expect: Expect, stops: Bool = false) {
+        let key = d.id
+        let id = String(key.dropFirst(3))
+        guard d.reachable else {
+            commandError[key] = "\(d.name) is offline. Check it has power and is on Wi‑Fi, then try again."
+            return
+        }
+        commandError[key] = nil
+        pending.insert(key)
+        holdUntil[key] = Date().addingTimeInterval(15)
         Task {
             do {
-                _ = try await call("POST", "/devices/\(id)/commands", ["commands": [command]])
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
-                await reread(id)
-            } catch { self.error = error.localizedDescription }
+                let r = try await self.call("POST", "/devices/\(id)/commands", ["commands": [c]])
+                if let failed = (r["results"] as? [[String: Any]])?.first(where: { ($0["status"] as? String) == "FAILED" }) {
+                    throw APIError(code: 422, message: (failed["error"] as? [String: Any]).flatMap { Self.errorWords(["error": $0]) } ?? "The appliance refused it.")
+                }
+                if stops { self.userStopped[key] = Date() }
+                // Samsung takes a few seconds to show a change: look again until it does.
+                let delays: [Double] = [1.5, 2.5, 4]
+                for (n, delay) in delays.enumerated() {
+                    try? await Task.sleep(for: .seconds(delay))
+                    if await self.reread(id, expect: expect, last: n == delays.count - 1) { break }
+                }
+            } catch {
+                self.commandError[key] = self.describe(error, d, c)
+                self.holdUntil[key] = nil
+                await self.reread(id)   // put back what it really says
+            }
+            self.holdUntil[key] = nil
+            self.pending.remove(key)
+        }
+    }
+
+    /// A command's failure, in words that say what to do.
+    private func describe(_ error: Error, _ d: HomeDevice, _ c: [String: Any]) -> String {
+        guard let api = error as? APIError else { return error.localizedDescription }
+        let cap = c["capability"] as? String ?? ""
+        let machineKinds: [HomeDevice.Kind] = [.washer, .dryer, .dishwasher, .oven]
+        let kindName: String
+        switch d.kind {
+        case .washer: kindName = "washer"
+        case .dryer: kindName = "dryer"
+        case .dishwasher: kindName = "dishwasher"
+        case .oven: kindName = "oven"
+        default: kindName = "appliance"
+        }
+        let lowered = api.message.lowercased()
+        let remoteRefused = lowered.contains("remote") || (machineKinds.contains(d.kind) && cap != "switch" && !d.remoteControl)
+        if [400, 409, 422].contains(api.code) && remoteRefused {
+            return "\(d.name) didn't accept that because Remote Control is off. Press Remote Control (Smart Control) on the \(kindName), then try again."
+        }
+        switch api.code {
+        case 400, 409, 422:
+            return "\(d.name) didn't accept that: \(api.message)"
+        case 403:
+            return "SmartThings won't let this sign-in control \(d.name). Sign in again and allow control of devices (x:devices:*)."
+        case 404:
+            return "SmartThings can't find \(d.name) any more. Pull to refresh."
+        case 429:
+            return "SmartThings is busy. Try again in a minute."
+        default:
+            return "Couldn't change \(d.name): \(api.message)"
         }
     }
 }

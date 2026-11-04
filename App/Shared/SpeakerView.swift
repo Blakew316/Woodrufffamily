@@ -20,8 +20,8 @@ struct SpeakerDetailView: View {
             ScrollView {
                 VStack(spacing: 16) {
                     nowPlaying(r)
-                    if r.isHomeTheater { SurroundCard(room: r, sound: $sound) }
-                    if loaded { SoundCard(room: r, sound: $sound) }
+                    if r.parts.count > 1 { SurroundCard(room: r, sound: $sound).disabled(r.isOffline) }
+                    if loaded && !r.isOffline { SoundCard(room: r, sound: $sound) }
                     GroupCard(room: r)
                     NameRoomCard(id: r.id, current: r.name, original: r.zone)
                 }
@@ -39,13 +39,18 @@ struct SpeakerDetailView: View {
                     ToolbarItem(placement: .cancellationAction) { Button(role: .close) { dismiss() } }
                 }
             }
-            .task(id: r.id) {
+            // Asked again when the speaker comes back after being offline.
+            .task(id: "\(r.id)|\(r.isOffline)") {
+                guard !r.isOffline else { return }
                 sound = await Sonos.sound(r)
                 withAnimation(.smooth) { loaded = true }
             }
             .onAppear { volume = Double(r.volume) }
             .onChange(of: r.volume) { _, v in if !dragging { volume = Double(v) } }
-            .refreshable { await home.refreshSpeakers(); sound = await Sonos.sound(r) }
+            .refreshable {
+                await home.refreshSpeakers()
+                if let now = home.speaker(r.id), !now.isOffline { sound = await Sonos.sound(now) }
+            }
         } else {
             ContentUnavailableView("Speaker Not Found", systemImage: "hifispeaker")
         }
@@ -66,27 +71,41 @@ struct SpeakerDetailView: View {
             .frame(width: 220, height: 220)
             .shadow(color: .black.opacity(0.4), radius: 26, y: 14)
             .scaleEffect(r.isPlaying ? 1 : 0.92)
+            .opacity(r.isOffline ? 0.45 : 1)
             .animation(.spring(response: 0.45, dampingFraction: 0.75), value: r.isPlaying)
 
             VStack(spacing: 4) {
-                Text(r.isTV ? "TV Sound" : (r.title ?? "Not Playing")).font(.title3.weight(.semibold)).lineLimit(1)
+                Text(headline(r)).font(.title3.weight(.semibold)).lineLimit(1)
                 Text(subtitle(r)).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                if let e = home.speakerErrors[r.id] {
+                    Text(e).font(.footnote.weight(.medium)).foregroundStyle(Palette.attention).lineLimit(2)
+                        .multilineTextAlignment(.center)
+                        .transition(.opacity)
+                }
             }
+            .animation(.smooth, value: home.speakerErrors[r.id])
 
+            // Skipping isn't a thing on the TV's sound, a radio-less empty queue, or a speaker that's offline.
+            let canSkip = !r.isTV && !r.isOffline && r.canPlay
             HStack(spacing: 30) {
                 GlassCircle(symbol: "backward.fill", size: 52) { act(r) { try await Sonos.previous($0) } }
-                    .disabled(r.isTV).opacity(r.isTV ? 0.35 : 1)
+                    .disabled(!canSkip).opacity(canSkip ? 1 : 0.35)
                 GlassCircle(symbol: r.isPlaying ? "pause.fill" : "play.fill", size: 70) {
-                    let playing = r.isPlaying
-                    act(r) { playing ? try await Sonos.pause($0) : try await Sonos.play($0) }
+                    tap()
+                    Task { await home.playPause(r) }
                 }
+                .disabled(!r.canPlay).opacity(r.canPlay ? 1 : 0.35)
                 GlassCircle(symbol: "forward.fill", size: 52) { act(r) { try await Sonos.next($0) } }
-                    .disabled(r.isTV).opacity(r.isTV ? 0.35 : 1)
+                    .disabled(!canSkip).opacity(canSkip ? 1 : 0.35)
             }
             .glassGroup(spacing: 26)
 
             HStack(spacing: 12) {
-                Button { act(r) { try await Sonos.setMute($0, !r.muted) } } label: {
+                Button {
+                    tap()
+                    let mute = !r.muted
+                    Task { await home.setMute(r, mute) }
+                } label: {
                     Image(systemName: r.muted ? "speaker.slash.fill" : "speaker.fill").frame(width: 22)
                 }
                 .buttonStyle(.plain)
@@ -96,10 +115,15 @@ struct SpeakerDetailView: View {
                     .onChange(of: volume) { _, v in if dragging { home.setVolume(r, Int(v)) } }
                 Text("\(Int(volume))").font(.subheadline.monospacedDigit()).foregroundStyle(.secondary).frame(width: 28, alignment: .trailing)
             }
+            .disabled(r.isOffline)
+            .opacity(r.isOffline ? 0.45 : 1)
 
-            if r.isHomeTheater && !r.isTV {
-                Button("Switch to TV Sound") { act(r) { try await Sonos.playTV($0) } }
-                    .buttonStyle(.glass)
+            if r.hasTVInput && !r.isTV && !r.isOffline {
+                Button("Switch to TV Sound") {
+                    tap()
+                    Task { await home.playTV(r) }
+                }
+                .buttonStyle(.glass)
             }
         }
         .padding(20)
@@ -107,16 +131,34 @@ struct SpeakerDetailView: View {
         .glass(RoundedRectangle(cornerRadius: 28, style: .continuous), interactive: false)
     }
 
-    private func subtitle(_ r: SonosRoom) -> String {
-        if r.isTV { return r.setupSummary ?? r.name }
-        let s = [r.artist, r.album].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " — ")
-        return s.isEmpty ? (r.setupSummary ?? r.name) : s
+    private func headline(_ r: SonosRoom) -> String {
+        if r.isOffline { return "Offline" }
+        if r.isTV { return "TV Sound" }
+        if let t = r.title, !t.isEmpty { return t }
+        return r.state == "STOPPED" ? "Stopped" : "Not Playing"
     }
 
-    private func act(_ r: SonosRoom, _ op: @escaping @Sendable (SonosRoom) async throws -> Void) {
+    private func subtitle(_ r: SonosRoom) -> String {
+        if r.isOffline { return "\(r.name) isn't answering. Is it plugged in and on the Wi‑Fi?" }
+        let setup = r.setupSummary ?? r.name
+        // Paused, stopped or loading say so; playing just shows what.
+        var state: String? = nil
+        if r.state != "PLAYING" && (r.isTV || !(r.title ?? "").isEmpty) { state = r.stateName }
+        let others = r.groupNames.filter { $0 != r.name && $0 != r.zone }
+        let group: String? = others.isEmpty ? nil : "With " + others.joined(separator: ", ")
+        if r.isTV { return [state, group ?? setup].compactMap { $0 }.joined(separator: " · ") }
+        let s = [r.artist, r.album].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " — ")
+        return [state, s.isEmpty ? (group ?? setup) : s].compactMap { $0 }.joined(separator: " · ")
+    }
+
+    private func tap() {
         #if os(iOS)
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
         #endif
+    }
+
+    private func act(_ r: SonosRoom, _ op: @escaping @Sendable (SonosRoom) async throws -> Void) {
+        tap()
         Task { await home.sonos(r, op) }
     }
 }
@@ -214,14 +256,14 @@ struct SurroundCard: View {
                 Divider()
                 Toggle("Surrounds", isOn: Binding(get: { sound.surroundOn ?? true }, set: { on in
                     sound.surroundOn = on
-                    Task { try? await Sonos.setEQ(room, "SurroundEnable", on ? 1 : 0) }
+                    apply { try await Sonos.setEQ($0, "SurroundEnable", on ? 1 : 0) }
                 }))
                 if sound.surroundOn ?? true {
                     LevelRow(title: "TV Surround Level", range: -15...15, value: sound.surroundLevel) { v in
-                        sound.surroundLevel = v; Task { try? await Sonos.setEQ(room, "SurroundLevel", v) }
+                        sound.surroundLevel = v; apply { try await Sonos.setEQ($0, "SurroundLevel", v) }
                     }
                     LevelRow(title: "Music Surround Level", range: -15...15, value: sound.musicSurroundLevel) { v in
-                        sound.musicSurroundLevel = v; Task { try? await Sonos.setEQ(room, "MusicSurroundLevel", v) }
+                        sound.musicSurroundLevel = v; apply { try await Sonos.setEQ($0, "MusicSurroundLevel", v) }
                     }
                 }
             }
@@ -229,18 +271,18 @@ struct SurroundCard: View {
                 Divider()
                 Toggle("Sub", isOn: Binding(get: { sound.subOn ?? true }, set: { on in
                     sound.subOn = on
-                    Task { try? await Sonos.setEQ(room, "SubEnable", on ? 1 : 0) }
+                    apply { try await Sonos.setEQ($0, "SubEnable", on ? 1 : 0) }
                 }))
                 if sound.subOn ?? true {
                     LevelRow(title: "Sub Level", range: -15...15, value: sound.subLevel) { v in
-                        sound.subLevel = v; Task { try? await Sonos.setEQ(room, "SubGain", v) }
+                        sound.subLevel = v; apply { try await Sonos.setEQ($0, "SubGain", v) }
                     }
                 }
             }
             if sound.heightLevel != nil {
                 Divider()
                 LevelRow(title: "Height Level", range: -10...10, value: sound.heightLevel) { v in
-                    sound.heightLevel = v; Task { try? await Sonos.setEQ(room, "HeightChannelLevel", v) }
+                    sound.heightLevel = v; apply { try await Sonos.setEQ($0, "HeightChannelLevel", v) }
                 }
             }
         }
@@ -254,6 +296,18 @@ struct SurroundCard: View {
             }
             .padding(24)
             .presentationDetents([.height(220)])
+        }
+    }
+
+    /// Sends a setting; if the speaker says no, shows why and reads the real settings back (so the switch
+    /// doesn't stay in a position the speaker isn't in).
+    private func apply(_ op: @escaping @Sendable (SonosRoom) async throws -> Void) {
+        let r = room
+        Task {
+            do { try await op(r) } catch {
+                SmartHome.shared.report(r, error)
+                sound = await Sonos.sound(r)
+            }
         }
     }
 
@@ -325,25 +379,37 @@ struct SoundCard: View {
         GlassCard(title: "Sound") {
             if let n = sound.nightSound {
                 toggle("Night Sound", "Quieter loud parts, clearer quiet ones, for late at night.", n) { on in
-                    sound.nightSound = on; Task { try? await Sonos.setEQ(room, "NightMode", on ? 1 : 0) }
+                    sound.nightSound = on; apply { try await Sonos.setEQ($0, "NightMode", on ? 1 : 0) }
                 }
             }
             if let s = sound.speech {
                 toggle("Speech Enhancement", "Makes dialogue easier to hear.", s) { on in
-                    sound.speech = on; Task { try? await Sonos.setEQ(room, "DialogLevel", on ? 1 : 0) }
+                    sound.speech = on; apply { try await Sonos.setEQ($0, "DialogLevel", on ? 1 : 0) }
                 }
             }
             if let l = sound.loudness {
                 toggle("Loudness", "Fuller bass at low volume.", l) { on in
-                    sound.loudness = on; Task { try? await Sonos.setLoudness(room, on) }
+                    sound.loudness = on; apply { try await Sonos.setLoudness($0, on) }
                 }
             }
             if sound.bass != nil {
                 Divider()
-                LevelRow(title: "Bass", range: -10...10, value: sound.bass) { v in sound.bass = v; Task { try? await Sonos.setBass(room, v) } }
+                LevelRow(title: "Bass", range: -10...10, value: sound.bass) { v in sound.bass = v; apply { try await Sonos.setBass($0, v) } }
             }
             if sound.treble != nil {
-                LevelRow(title: "Treble", range: -10...10, value: sound.treble) { v in sound.treble = v; Task { try? await Sonos.setTreble(room, v) } }
+                LevelRow(title: "Treble", range: -10...10, value: sound.treble) { v in sound.treble = v; apply { try await Sonos.setTreble($0, v) } }
+            }
+        }
+    }
+
+    /// Sends a setting; if the speaker says no, shows why and reads the real settings back (so the switch
+    /// doesn't stay in a position the speaker isn't in).
+    private func apply(_ op: @escaping @Sendable (SonosRoom) async throws -> Void) {
+        let r = room
+        Task {
+            do { try await op(r) } catch {
+                SmartHome.shared.report(r, error)
+                sound = await Sonos.sound(r)
             }
         }
     }
@@ -371,18 +437,25 @@ struct GroupCard: View {
         if !others.isEmpty {
             GlassCard(title: "Play Together", footer: "Rooms you tick play what \(room.name) is playing.") {
                 ForEach(others) { o in
-                    let together = o.coordinatorHost == room.coordinatorHost
+                    let together = !o.isOffline && o.coordinatorHost == room.coordinatorHost
                     Button {
+                        let leader = room
                         Task {
-                            await home.regroup {
-                                if together { try await Sonos.leave(o) } else { try await Sonos.join(o, to: room) }
+                            await home.regroup(o.id) {
+                                if together { try await Sonos.leave(o) } else { try await Sonos.join(o, to: leader) }
                             }
                         }
                     } label: {
                         HStack {
                             VStack(alignment: .leading, spacing: 1) {
                                 Text(o.name)
-                                if let s = o.isTV ? "TV" : o.title { Text(s).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
+                                if let e = home.speakerErrors[o.id] {
+                                    Text(e).font(.caption).foregroundStyle(Palette.attention).lineLimit(1)
+                                } else if o.isOffline {
+                                    Text("Offline").font(.caption).foregroundStyle(.secondary)
+                                } else if let s = o.isTV ? "TV" : o.title {
+                                    Text(s).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                }
                             }
                             Spacer()
                             Image(systemName: together ? "checkmark.circle.fill" : "circle")
@@ -393,6 +466,8 @@ struct GroupCard: View {
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .disabled(o.isOffline || room.isOffline)
+                    .opacity(o.isOffline ? 0.5 : 1)
                 }
             }
         }

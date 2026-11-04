@@ -194,10 +194,17 @@ struct SonosPlayPauseIntent: AppIntent {
 
     @MainActor func perform() async throws -> some IntentResult & ProvidesDialog {
         guard let r0 = findSpeaker(speaker) else { return .result(dialog: "I can’t find a Sonos speaker.") }
-        let r = await Sonos.refresh(r0)
+        let p = await Sonos.poll(r0, leader: true)
+        guard p.answered || p.transportAnswered else { return .result(dialog: "\(r0.name) isn’t answering.") }
+        var r = p.room
+        r.unreachableSince = nil   // it just answered
         let playing = r.isPlaying
-        await SmartHome.shared.sonos(r) { playing ? try await Sonos.pause($0) : try await Sonos.play($0) }
-        return .result(dialog: "\(r.isPlaying ? "Paused" : "Playing") \(r.name).")
+        if !playing && !r.canPlay { return .result(dialog: "There’s nothing to play in \(r.name).") }
+        await SmartHome.shared.sonos(r, expect: playing ? "PAUSED_PLAYBACK" : "PLAYING") { room in
+            if playing { try await Sonos.pause(room) } else { try await Sonos.play(room) }
+        }
+        if let e = SmartHome.shared.speakerErrors[r.id] { return .result(dialog: "\(e)") }
+        return .result(dialog: "\(playing ? "Paused" : "Playing") \(r.name).")
     }
 }
 
@@ -208,8 +215,9 @@ struct SonosVolumeIntent: AppIntent {
 
     @MainActor func perform() async throws -> some IntentResult & ProvidesDialog {
         guard let r = findSpeaker(speaker) else { return .result(dialog: "I can’t find a Sonos speaker.") }
-        try? await Sonos.setVolume(r, volume)
-        SmartHome.shared.lastSpeakerID = r.id
+        let v = volume
+        await SmartHome.shared.sonos(r) { try await Sonos.setVolume($0, v) }
+        if let e = SmartHome.shared.speakerErrors[r.id] { return .result(dialog: "\(e)") }
         return .result(dialog: "\(r.name) is at \(volume).")
     }
 }
@@ -230,8 +238,12 @@ struct SonosWhatsPlayingIntent: AppIntent {
 
     @MainActor func perform() async throws -> some IntentResult & ProvidesDialog {
         guard let r0 = findSpeaker(speaker) else { return .result(dialog: "I can’t find a Sonos speaker.") }
-        let r = await Sonos.refresh(r0)
-        guard let t = r.title, !t.isEmpty else { return .result(dialog: "Nothing is playing in \(r.name).") }
+        let p = await Sonos.poll(r0, leader: true)
+        guard p.answered || p.transportAnswered else { return .result(dialog: "\(r0.name) isn’t answering.") }
+        var r = p.room
+        r.unreachableSince = nil   // it just answered
+        if r.isTV { return .result(dialog: "\(r.name) is playing the TV’s sound\(r.isPlaying ? "" : ", paused").") }
+        guard let t = r.title, !t.isEmpty, r.state != "STOPPED" else { return .result(dialog: "Nothing is playing in \(r.name).") }
         return .result(dialog: "\(t)\(r.artist.map { " by \($0)" } ?? "") in \(r.name)\(r.isPlaying ? "" : ", paused").")
     }
 }

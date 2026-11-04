@@ -16,6 +16,11 @@ final class HomeKitLights: NSObject, HMHomeManagerDelegate, HMAccessoryDelegate 
     private var accessories: [String: HMAccessory] = [:]
     private var others: [String: HMAccessory] = [:]
     private var pending: Task<Void, Never>?
+    /// Whether each light was last set to a white temperature (true) or a colour (false). HomeKit keeps both
+    /// hue/saturation and colour temperature, so which one the light shows is what was set last.
+    private var whiteMode: [String: Bool] = [:]
+    /// A change to an accessory that didn't go through (accessory id → what to say, until when).
+    private var failed: [String: (message: String, until: Date)] = [:]
 
     func start() {
         guard Self.enabled, manager == nil, !Demo.isOn else { return }
@@ -41,7 +46,14 @@ final class HomeKitLights: NSObject, HMHomeManagerDelegate, HMAccessoryDelegate 
     }
 
     nonisolated func accessory(_ accessory: HMAccessory, service: HMService, didUpdateValueFor characteristic: HMCharacteristic) {
-        Task { @MainActor in self.publishSoon() }
+        // Changed elsewhere (the Home app, Siri, the Cync app): note whether it went to a colour or a white.
+        let type = characteristic.characteristicType
+        let key = "home:" + accessory.uniqueIdentifier.uuidString
+        Task { @MainActor in
+            if type == HMCharacteristicTypeColorTemperature { self.whiteMode[key] = true }
+            else if type == HMCharacteristicTypeHue || type == HMCharacteristicTypeSaturation { self.whiteMode[key] = false }
+            self.publishSoon()
+        }
     }
 
     nonisolated func accessoryDidUpdateReachability(_ accessory: HMAccessory) {
@@ -61,7 +73,7 @@ final class HomeKitLights: NSObject, HMHomeManagerDelegate, HMAccessoryDelegate 
                     others[id(a)] = a
                     for sv in a.services where sv.serviceType != HMServiceTypeAccessoryInformation {
                         for c in sv.characteristics where c.properties.contains(HMCharacteristicPropertySupportsEventNotification) {
-                            c.enableNotification(true) { _ in }
+                            c.enableNotification(true) { @Sendable _ in }
                         }
                         read(sv)
                     }
@@ -72,7 +84,7 @@ final class HomeKitLights: NSObject, HMHomeManagerDelegate, HMAccessoryDelegate 
                 a.delegate = self
                 accessories[id(a)] = a
                 for c in s.characteristics where c.properties.contains(HMCharacteristicPropertySupportsEventNotification) {
-                    c.enableNotification(true) { _ in }
+                    c.enableNotification(true) { @Sendable _ in }
                 }
                 read(s)
             }
@@ -82,7 +94,7 @@ final class HomeKitLights: NSObject, HMHomeManagerDelegate, HMAccessoryDelegate 
 
     private func read(_ s: HMService) {
         for c in s.characteristics where c.properties.contains(HMCharacteristicPropertyReadable) {
-            c.readValue { [weak self] _ in Task { @MainActor in self?.publishSoon() } }
+            c.readValue { @Sendable _ in Task { @MainActor in HomeKitLights.shared.publishSoon() } }
         }
     }
 
@@ -101,18 +113,24 @@ final class HomeKitLights: NSObject, HMHomeManagerDelegate, HMAccessoryDelegate 
             guard let s = bulb(a) else { return nil }
             var l = GoveeLight(id: id(a), sku: a.manufacturer ?? "Apple Home", name: a.name, source: "home", zone: a.room?.name)
             l.on = (value(s, HMCharacteristicTypePowerState) as? NSNumber)?.boolValue ?? false
-            l.brightness = (value(s, HMCharacteristicTypeBrightness) as? NSNumber)?.intValue ?? (l.on ? 100 : 0)
+            // A light without dimming is at full when on; one that says 0 % while on shows 1 %.
+            l.brightness = max(1, min(100, (value(s, HMCharacteristicTypeBrightness) as? NSNumber)?.intValue ?? 100))
             let sat = (value(s, HMCharacteristicTypeSaturation) as? NSNumber)?.doubleValue
             let hue = (value(s, HMCharacteristicTypeHue) as? NSNumber)?.doubleValue
-            if let mired = (value(s, HMCharacteristicTypeColorTemperature) as? NSNumber)?.doubleValue, mired > 0, (sat ?? 0) < 10 {
-                l.kelvin = Int(1_000_000 / mired)
+            let mired = (value(s, HMCharacteristicTypeColorTemperature) as? NSNumber)?.doubleValue ?? 0
+            let white = whiteMode[l.id] ?? ((sat ?? 0) < 10)
+            if mired > 0, white || hue == nil {
+                l.kelvin = Int((1_000_000 / mired).rounded())
             } else if let hue, let sat, sat > 0 {
                 var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0
-                UIColor(hue: hue / 360, saturation: sat / 100, brightness: 1, alpha: 1).getRed(&r, green: &g, blue: &b, alpha: nil)
-                l.color = LightColor(r: Int(r * 255), g: Int(g * 255), b: Int(b * 255))
+                UIColor(hue: max(0, min(1, hue / 360)), saturation: max(0, min(1, sat / 100)), brightness: 1, alpha: 1)
+                    .getRed(&r, green: &g, blue: &b, alpha: nil)
+                l.color = LightColor(r: Int((r * 255).rounded()), g: Int((g * 255).rounded()), b: Int((b * 255).rounded()))
+            } else if mired > 0 {
+                l.kelvin = Int((1_000_000 / mired).rounded())
             }
-            // Off the network (bulb switched off at the wall): show it as off.
-            if !a.isReachable { l.on = false }
+            // Off the network (bulb switched off at the wall): shown as Offline, controls off, until it's back.
+            l.offline = a.isReachable ? nil : true
             return l
         }
         SmartHome.shared.setHomeLights(list)
@@ -149,15 +167,18 @@ final class HomeKitLights: NSObject, HMHomeManagerDelegate, HMAccessoryDelegate 
         switch p.serviceType {
         case HMServiceTypeLockMechanism:
             d.kind = .lock
-            let st = Int(num(a, HMCharacteristicTypeCurrentLockMechanismState) ?? 3)
+            let st = max(0, min(3, Int(num(a, HMCharacteristicTypeCurrentLockMechanismState) ?? 3)))
+            let target = num(a, HMCharacteristicTypeTargetLockMechanismState).map { Int($0) }
             d.locked = st == 1 ? true : st == 0 ? false : nil
-            d.status = ["Unlocked", "Locked", "Jammed", "Unknown"][min(st, 3)]
+            d.status = ["Unlocked", "Locked", "Jammed", "Unknown"][st]
+            // Asked to lock or unlock and still on its way there.
+            if st < 2, let target, target != st, target == 0 || target == 1 { d.status = target == 1 ? "Locking…" : "Unlocking…" }
             d.alert = st == 2
         case HMServiceTypeGarageDoorOpener:
             d.kind = .garage
-            let st = Int(num(a, HMCharacteristicTypeCurrentDoorState) ?? 1)
+            let st = max(0, min(4, Int(num(a, HMCharacteristicTypeCurrentDoorState) ?? 1)))
             d.doorOpen = st != 1
-            d.status = ["Open", "Closed", "Opening", "Closing", "Stopped"][min(st, 4)]
+            d.status = ["Open", "Closed", "Opening", "Closing", "Stopped"][st]
         case HMServiceTypeThermostat:
             d.kind = .thermostat
             d.temperature = num(a, HMCharacteristicTypeCurrentTemperature)
@@ -199,70 +220,150 @@ final class HomeKitLights: NSObject, HMHomeManagerDelegate, HMAccessoryDelegate 
             if let h = num(a, HMCharacteristicTypeCurrentRelativeHumidity) { bits.append("\(Int(h))% Humidity") }
             d.status = bits.isEmpty ? "Sensor" : bits.joined(separator: " · ")
         }
+        // A change that didn't go through, said for a few seconds where the accessory is.
+        if let f = failed[d.id] {
+            if f.until > Date() { d.status = f.message; d.alert = true } else { failed[d.id] = nil }
+        }
         return d
     }
 
     private func send(_ d: HomeDevice, _ command: DeviceCommand) {
         guard let a = others[d.id] else { return }
-        func write(_ type: String, _ v: Any) {
-            for s in a.services {
-                if let c = s.characteristics.first(where: { $0.characteristicType == type && $0.properties.contains(HMCharacteristicPropertyWritable) }) {
-                    c.writeValue(v) { [weak self] _ in Task { @MainActor in self?.publishSoon() } }
-                    return
-                }
-            }
-        }
+        let id = d.id
+        var steps: [(String, Any)] = []
         switch command {
         case .power(let on):
             if a.services.contains(where: { $0.characteristics.contains { $0.characteristicType == HMCharacteristicTypePowerState } }) {
-                write(HMCharacteristicTypePowerState, on)
+                steps = [(HMCharacteristicTypePowerState, on)]
             } else {
-                write(HMCharacteristicTypeActive, on ? 1 : 0)
+                steps = [(HMCharacteristicTypeActive, on ? 1 : 0)]
             }
-        case .lock(let lock): write(HMCharacteristicTypeTargetLockMechanismState, lock ? 1 : 0)
-        case .door(let open): write(HMCharacteristicTypeTargetDoorState, open ? 0 : 1)
-        case .position(let p): write(HMCharacteristicTypeTargetPosition, max(0, min(100, p)))
-        case .target(let t): write(HMCharacteristicTypeTargetTemperature, t)
+        case .lock(let lock): steps = [(HMCharacteristicTypeTargetLockMechanismState, lock ? 1 : 0)]
+        case .door(let open): steps = [(HMCharacteristicTypeTargetDoorState, open ? 0 : 1)]
+        case .position(let p): steps = [(HMCharacteristicTypeTargetPosition, max(0, min(100, p)))]
+        case .target(let t): steps = [(HMCharacteristicTypeTargetTemperature, t)]
         case .speed(let v):
-            if v > 0 { send(d, .power(true)) }
-            write(HMCharacteristicTypeRotationSpeed, Double(max(0, min(100, v))))
-        case .swing(let on): write(HMCharacteristicTypeSwingMode, on ? 1 : 0)
-        case .machine: break
+            if v > 0 {
+                if a.services.contains(where: { $0.characteristics.contains { $0.characteristicType == HMCharacteristicTypePowerState } }) {
+                    steps.append((HMCharacteristicTypePowerState, true))
+                } else {
+                    steps.append((HMCharacteristicTypeActive, 1))
+                }
+            }
+            steps.append((HMCharacteristicTypeRotationSpeed, Double(max(0, min(100, v)))))
+        case .swing(let on): steps = [(HMCharacteristicTypeSwingMode, on ? 1 : 0)]
+        case .machine: return
         }
+        guard a.isReachable else {
+            failed[id] = (message: "Not Responding", until: Date().addingTimeInterval(8))
+            publishSoon()
+            return
+        }
+        let plan = steps
+        Task {
+            // One after another, each one awaited, so a failure (a jammed lock, no answer) is said.
+            var failure: Error?
+            for step in plan {
+                guard let acc = self.others[id], let c = self.characteristic(acc, step.0) else { continue }
+                if let e = await self.write(c, step.1) { failure = e; break }
+            }
+            if let failure {
+                let verb: String
+                switch command {
+                case .lock(let lock): verb = lock ? "Couldn’t Lock" : "Couldn’t Unlock"
+                default: verb = "Didn’t Respond"
+                }
+                self.failed[id] = (message: verb, until: Date().addingTimeInterval(8))
+            } else {
+                self.failed[id] = nil
+            }
+            self.publishSoon()
+            // The message clears itself once its time is up.
+            if failure != nil {
+                try? await Task.sleep(nanoseconds: 8_500_000_000)
+                self.publishSoon()
+            }
+        }
+    }
+
+    /// A writable characteristic of that type, in any of the accessory's services.
+    private func characteristic(_ a: HMAccessory, _ type: String) -> HMCharacteristic? {
+        for s in a.services {
+            if let c = s.characteristics.first(where: { $0.characteristicType == type && $0.properties.contains(HMCharacteristicPropertyWritable) }) {
+                return c
+            }
+        }
+        return nil
     }
 
     // MARK: Control
 
     private func send(_ light: GoveeLight, _ command: LightCommand) {
-        guard let a = accessories[light.id], let s = bulb(a) else { return }
-        switch command {
-        case .power(let on):
-            write(s, HMCharacteristicTypePowerState, on)
-        case .brightness(let v):
-            write(s, HMCharacteristicTypePowerState, true)
-            write(s, HMCharacteristicTypeBrightness, max(1, min(100, v)))
-        case .color(let c):
-            var h: CGFloat = 0, sat: CGFloat = 0, b: CGFloat = 0
-            UIColor(red: CGFloat(c.r) / 255, green: CGFloat(c.g) / 255, blue: CGFloat(c.b) / 255, alpha: 1)
-                .getHue(&h, saturation: &sat, brightness: &b, alpha: nil)
-            write(s, HMCharacteristicTypePowerState, true)
-            write(s, HMCharacteristicTypeHue, Double(h * 360))
-            write(s, HMCharacteristicTypeSaturation, Double(sat * 100))
-        case .kelvin(let k):
-            write(s, HMCharacteristicTypePowerState, true)
-            if let c = s.characteristics.first(where: { $0.characteristicType == HMCharacteristicTypeColorTemperature }) {
-                var mired = 1_000_000 / Double(max(1000, k))
-                if let lo = c.metadata?.minimumValue?.doubleValue, let hi = c.metadata?.maximumValue?.doubleValue { mired = max(lo, min(hi, mired)) }
-                c.writeValue(Int(mired)) { _ in }
-            } else {
-                write(s, HMCharacteristicTypeSaturation, 0.0)
+        let id = light.id, name = light.name
+        Task {
+            guard let a = self.accessories[id], let s = self.bulb(a) else {
+                SmartHome.shared.homeControlFailed(id, "\(name) isn’t in Apple Home any more.")
+                self.publish()
+                return
             }
+            guard a.isReachable else {
+                SmartHome.shared.homeControlFailed(id, "\(name) isn’t responding. Check it’s switched on at the wall.")
+                self.publish()
+                return
+            }
+            let isOn = (self.value(s, HMCharacteristicTypePowerState) as? NSNumber)?.boolValue == true
+            var steps: [(String, Any)] = []
+            func powerOn() { if !isOn { steps.append((HMCharacteristicTypePowerState, true)) } }
+            switch command {
+            case .power(let on):
+                steps.append((HMCharacteristicTypePowerState, on))
+            case .brightness(let v):
+                powerOn()
+                steps.append((HMCharacteristicTypeBrightness, max(1, min(100, v))))
+            case .color(let c):
+                var h: CGFloat = 0, sat: CGFloat = 0, b: CGFloat = 0
+                UIColor(red: CGFloat(max(0, min(255, c.r))) / 255, green: CGFloat(max(0, min(255, c.g))) / 255,
+                        blue: CGFloat(max(0, min(255, c.b))) / 255, alpha: 1)
+                    .getHue(&h, saturation: &sat, brightness: &b, alpha: nil)
+                powerOn()
+                steps.append((HMCharacteristicTypeHue, Double(h * 360)))
+                steps.append((HMCharacteristicTypeSaturation, Double(sat * 100)))
+            case .kelvin(let k):
+                powerOn()
+                if let c = s.characteristics.first(where: { $0.characteristicType == HMCharacteristicTypeColorTemperature }) {
+                    var mired = 1_000_000 / Double(max(1000, k))
+                    if let lo = c.metadata?.minimumValue?.doubleValue, let hi = c.metadata?.maximumValue?.doubleValue, hi >= lo {
+                        mired = max(lo, min(hi, mired))
+                    }
+                    steps.append((HMCharacteristicTypeColorTemperature, Int(mired.rounded())))
+                } else {
+                    // No white temperatures: plain white.
+                    steps.append((HMCharacteristicTypeSaturation, 0.0))
+                }
+            }
+            // One after another, each awaited, so a write that fails is said rather than lost.
+            var failure: Error?
+            for step in steps {
+                guard let acc = self.accessories[id], let svc = self.bulb(acc),
+                      let c = svc.characteristics.first(where: { $0.characteristicType == step.0 }) else { continue }
+                if let e = await self.write(c, step.1) { failure = e; break }
+            }
+            if let failure {
+                SmartHome.shared.homeControlFailed(id, "\(name) didn’t change: \(failure.localizedDescription)")
+            } else {
+                SmartHome.shared.homeControlSucceeded()
+                if case .kelvin = command { self.whiteMode[id] = true }
+                if case .color = command { self.whiteMode[id] = false }
+            }
+            self.publishSoon()
         }
     }
 
-    private func write(_ s: HMService, _ type: String, _ v: Any) {
-        guard let c = s.characteristics.first(where: { $0.characteristicType == type }) else { return }
-        c.writeValue(v) { [weak self] _ in Task { @MainActor in self?.publishSoon() } }
+    /// Writes one value and waits for the accessory's answer: nil when it took it, else what went wrong.
+    private func write(_ c: HMCharacteristic, _ v: Any) async -> Error? {
+        await withCheckedContinuation { (cont: CheckedContinuation<Error?, Never>) in
+            c.writeValue(v) { @Sendable error in cont.resume(returning: error) }
+        }
     }
 
     // MARK: Helpers

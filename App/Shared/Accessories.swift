@@ -35,6 +35,8 @@ struct HomeDevice: Identifiable, Hashable {
 
     /// Busy right now (for the running animations).
     var isRunning: Bool {
+        // Not reachable: whatever it last said ("running") no longer holds.
+        guard reachable else { return false }
         switch kind {
         case .washer, .dryer, .dishwasher, .oven: return machineState == "run"
         case .vacuum: return mode == "cleaning"
@@ -144,6 +146,7 @@ struct DeviceTile: View {
     @State private var confirmUnlock = false
 
     private var lit: Bool {
+        guard device.reachable else { return false }
         switch device.kind {
         case .lock: return device.locked == false
         case .garage: return device.doorOpen == true
@@ -203,6 +206,8 @@ struct DeviceTile: View {
         #if os(iOS)
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
         #endif
+        // Not responding: nothing would happen, so show its page (which says why) instead.
+        guard device.reachable else { openControls(); return }
         switch device.kind {
         case .outlet, .toggle, .fan:
             if let on = device.isOn { AccessoryStore.shared.send(device, .power(!on)) } else { openControls() }
@@ -268,6 +273,7 @@ struct DeviceDetailView: View {
                             .frame(height: 56)
                         Text(d.reachable ? d.status : "Not Responding").font(.title3.weight(.semibold)).multilineTextAlignment(.center)
                         controls(d)
+                            .disabled(!d.reachable)
                     }
                     .padding(22)
                     .frame(maxWidth: .infinity)

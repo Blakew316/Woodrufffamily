@@ -184,13 +184,17 @@ struct ApplianceView: View {
         ScrollView {
             VStack(spacing: 16) {
                 hero
-                if device.remoteControl == false && [.washer, .dryer, .dishwasher, .oven].contains(device.kind) {
-                    Text("Turn on Remote Control on the \(kindName) to start it or change settings from here.")
+                if !device.reachable {
+                    Text("SmartThings can't reach the \(kindName) right now. Check it has power and is on Wi‑Fi; its controls come back when it does.")
+                        .font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center).padding(.horizontal)
+                } else if isMachine && !device.remoteControl {
+                    Text("Remote Control is off. Press Remote Control (Smart Control) on the \(kindName) to start it or change its settings from here.")
                         .font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center).padding(.horizontal)
                 }
                 options
+                    .disabled(!device.reachable)
                 NameRoomCard(id: device.id, current: device.name, original: nil)
-                if let e = st.error { Text(e).font(.footnote).foregroundStyle(Palette.attention) }
+                if let e = st.commandError[id] ?? st.error { Text(e).font(.footnote).foregroundStyle(Palette.attention).multilineTextAlignment(.center) }
             }
             .padding(16)
             .frame(maxWidth: 640)
@@ -207,13 +211,16 @@ struct ApplianceView: View {
         .refreshable { await st.refresh(full: false) }
     }
 
+    private var isMachine: Bool { [.washer, .dryer, .dishwasher, .oven].contains(device.kind) }
+
     private var kindName: String {
         switch device.kind {
         case .washer: return "washer"
         case .dryer: return "dryer"
         case .dishwasher: return "dishwasher"
         case .oven: return "oven"
-        default: return "appliance"
+        case .fridge: return "fridge"
+        default: return "device"
         }
     }
 
@@ -231,7 +238,10 @@ struct ApplianceView: View {
                     }
                 }
             VStack(spacing: 4) {
-                Text(device.reachable ? device.status : "Not Responding").font(.title3.weight(.semibold)).multilineTextAlignment(.center)
+                HStack(spacing: 8) {
+                    Text(device.reachable ? device.status : "Not Responding").font(.title3.weight(.semibold)).multilineTextAlignment(.center)
+                    if st.pending.contains(id) { ProgressView().controlSize(.small) }
+                }
                 if let end = device.endsAt, end > .now, device.machineState == "run" {
                     Text("Done at \(end.formatted(date: .omitted, time: .shortened))").font(.subheadline).foregroundStyle(.secondary)
                 }
@@ -251,43 +261,40 @@ struct ApplianceView: View {
     @ViewBuilder private var transport: some View {
         switch device.kind {
         case .washer, .dryer, .dishwasher, .oven:
-            let cap = machineCap
+            let running = device.machineState == "run", paused = device.machineState == "pause"
             HStack(spacing: 12) {
-                if device.machineState == "run" {
-                    Button("Pause") { st.command(device, cap, "setMachineState", ["pause"]) }.buttonStyle(.glass)
-                } else {
-                    Button(device.machineState == "pause" ? "Resume" : "Start") { st.command(device, cap, "setMachineState", ["run"]) }
+                if running && device.kind != .oven {
+                    Button("Pause") { st.machine(device, "pause") }.buttonStyle(.glass)
+                } else if !running {
+                    Button(paused ? "Resume" : "Start") { st.machine(device, "run") }
                         .buttonStyle(.glassProminent)
                 }
-                if device.machineState == "run" || device.machineState == "pause" {
-                    Button("Stop", role: .destructive) { st.command(device, cap, "setMachineState", ["stop"]) }.buttonStyle(.glass)
+                if running || paused {
+                    Button("Stop", role: .destructive) { st.machine(device, "stop") }.buttonStyle(.glass)
                 }
             }
-            .disabled(!device.remoteControl)
+            .disabled(!device.reachable || !device.remoteControl || st.pending.contains(id))
         case .vacuum:
             HStack(spacing: 12) {
                 if device.mode == "cleaning" {
-                    Button("Pause") { st.command(device, "robotCleanerMovement", "setRobotCleanerMovement", ["pause"]) }.buttonStyle(.glass)
+                    Button("Pause") { vacuum("pause") }.buttonStyle(.glass)
                 } else {
-                    Button("Clean") { st.command(device, "robotCleanerMovement", "setRobotCleanerMovement", ["cleaning"]) }.buttonStyle(.glassProminent)
+                    Button("Clean") { vacuum("cleaning") }.buttonStyle(.glassProminent)
                 }
-                Button("Send Home") { st.command(device, "robotCleanerMovement", "setRobotCleanerMovement", ["homing"]) }.buttonStyle(.glass)
+                Button("Send Home") { vacuum("homing") }.buttonStyle(.glass)
             }
+            .disabled(!device.reachable)
         default:
             if let on = device.isOn {
-                Toggle(on ? "On" : "Off", isOn: Binding(get: { on }, set: { st.command(device, "switch", $0 ? "on" : "off") }))
+                Toggle(on ? "On" : "Off", isOn: Binding(get: { on }, set: { st.power(device, $0) }))
                     .toggleStyle(.switch).frame(maxWidth: 220)
+                    .disabled(!device.reachable)
             }
         }
     }
 
-    private var machineCap: String {
-        switch device.kind {
-        case .dryer: return "dryerOperatingState"
-        case .dishwasher: return "dishwasherOperatingState"
-        case .oven: return "ovenOperatingState"
-        default: return "washerOperatingState"
-        }
+    private func vacuum(_ move: String) {
+        st.command(device, "robotCleanerMovement", "setRobotCleanerMovement", [move], sets: "robotCleanerMovement", to: move)
     }
 
     // MARK: Options
@@ -360,7 +367,7 @@ struct ApplianceView: View {
                         Spacer()
                         Menu {
                             ForEach(values(c), id: \.self) { v in
-                                Button { st.command(device, c.cap, c.command, [v], component: c.component) } label: {
+                                Button { st.command(device, c.cap, c.command, [v], component: c.component, sets: c.attr, to: v) } label: {
                                     if v == current { Label(pretty(v), systemImage: "checkmark") } else { Text(pretty(v)) }
                                 }
                             }
@@ -368,16 +375,19 @@ struct ApplianceView: View {
                             Text(current.map(pretty) ?? "Choose").padding(.horizontal, 12).padding(.vertical, 6)
                         }
                         .menuStyle(.button).buttonStyle(.glass).fixedSize()
+                        .disabled(isMachine && !device.remoteControl)
                     }
                 }
-                ForEach(setpoints, id: \.title) { s in SetpointRow(spec: s, device: device) }
+                ForEach(setpoints, id: \.title) { s in
+                    SetpointRow(spec: s, device: device).disabled(device.kind == .oven && !device.remoteControl)
+                }
                 ForEach(toggles, id: \.title) { t in
                     Toggle(t.title, isOn: Binding(
                         get: { (st.read(id, t.cap, t.attr, in: t.component) as? String) == "on" },
                         set: { on in
-                            // A plain switch (the ice maker) has its own on and off commands.
-                            if t.cap == "switch" { st.command(device, "switch", on ? "on" : "off", component: t.component) }
-                            else { st.command(device, t.cap, t.command, t.args(on), component: t.component) }
+                            // A plain switch (power, the ice maker) has its own on and off commands.
+                            if t.cap == "switch" { st.power(device, on, component: t.component) }
+                            else { st.command(device, t.cap, t.command, t.args(on), component: t.component, sets: t.attr, to: on ? "on" : "off") }
                         }))
                 }
             }
@@ -391,6 +401,10 @@ struct ApplianceView: View {
 
     private var toggleRows: [ToggleSpec] {
         var out: [ToggleSpec] = []
+        // A washer, dryer, dishwasher or oven that switches: its power (the tile's tap opens this page instead).
+        if isMachine, device.isOn != nil, st.has(id, "switch") {
+            out.append(ToggleSpec(title: "Power", cap: "switch", attr: "switch", command: "on"))
+        }
         switch device.kind {
         case .fridge:
             if st.has(id, "refrigeration") {
@@ -478,6 +492,7 @@ struct SetpointRow: View {
         #if os(iOS)
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
         #endif
-        st.command(device, spec.cap, spec.command, [Int(v)], component: spec.component)
+        let n = Int(v.rounded())
+        st.command(device, spec.cap, spec.command, [n], component: spec.component, sets: spec.attr, to: NSNumber(value: n))
     }
 }

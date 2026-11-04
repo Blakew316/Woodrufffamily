@@ -36,6 +36,12 @@ final class DecoWifi {
     private(set) var error: String?
     private(set) var busy = false
     private(set) var updated: Date?
+    /// Decos asked to restart, and when: shown as "Restarting…" until each is seen offline and back.
+    private(set) var restarts: [String: Date] = [:]
+    @ObservationIgnored private var seenDown: Set<String> = []
+    @ObservationIgnored private var restartWatch: Task<Void, Never>?
+
+    func isRestarting(_ n: Node) -> Bool { restarts[n.id] != nil }
 
     var connected: Bool { Keychain.get("deco.password") != nil }
     var host: String { Keychain.get("deco.host") ?? Self.guessHost() ?? "192.168.68.1" }
@@ -101,8 +107,9 @@ final class DecoWifi {
 
     func signOut() {
         loop?.cancel(); loop = nil
+        restartWatch?.cancel(); restartWatch = nil
         Keychain.set(nil, for: "deco.password")
-        stok = nil; nodes = []; clients = []
+        stok = nil; nodes = []; clients = []; restarts = [:]; seenDown = []
     }
 
     // MARK: Reading
@@ -115,14 +122,22 @@ final class DecoWifi {
         let t = Task { await self.refreshNow() }
         refreshing = t
         await t.value
-        refreshing = nil
+        if refreshing == t { refreshing = nil }
     }
 
     private func refreshNow() async {
         guard connected else { return }
         do {
-            if stok == nil { try await login() }
-            let devs = try await call("/admin/device", form: "device_list", ["operation": "read"])
+            var fresh = false
+            if stok == nil { try await login(); fresh = true }
+            var devs: [String: Any]
+            do {
+                devs = try await call("/admin/device", form: "device_list", ["operation": "read"])
+            } catch let e where !fresh && !(e is WrongPassword) && !(e is URLError) {
+                // The Deco forgot this session (it restarted, or timed it out): sign in again once.
+                try await login()
+                devs = try await call("/admin/device", form: "device_list", ["operation": "read"])
+            }
             var ns: [Node] = []
             for d in (devs["result"] as? [String: Any])?["device_list"] as? [[String: Any]] ?? [] {
                 guard let mac = d["mac"] as? String else { continue }
@@ -133,10 +148,12 @@ final class DecoWifi {
                                online: (d["group_status"] as? String) == "connected", main: (d["role"] as? String) == "master", internet: inet))
             }
             // Clients, Deco by Deco, so each knows which unit it's on.
+            // (An offline Deco has none, and asking it only errors.)
             var cs: [String: Client] = [:]
-            for i in ns.indices {
-                guard let r = try? await call("/admin/client", form: "client_list", ["operation": "read", "params": ["device_mac": ns[i].id]]) else { continue }
-                let list = (r["result"] as? [String: Any])?["client_list"] as? [[String: Any]] ?? []
+            for i in ns.indices where ns[i].online {
+                guard let r = try? await call("/admin/client", form: "client_list", ["operation": "read", "params": ["device_mac": ns[i].id]], keepSession: true) else { continue }
+                let list = ((r["result"] as? [String: Any])?["client_list"] as? [[String: Any]] ?? [])
+                    .filter { ($0["online"] as? Bool) ?? true }
                 for c in list {
                     guard let mac = c["mac"] as? String else { continue }
                     let band: String
@@ -153,6 +170,11 @@ final class DecoWifi {
                 }
                 ns[i].clients = list.count
             }
+            trackRestarts(&ns)
+            // A Deco shown as restarting has nobody on it.
+            for i in ns.indices where !ns[i].online { ns[i].clients = 0 }
+            let down = Set(ns.filter { !$0.online }.map(\.id))
+            cs = cs.filter { !down.contains($0.value.node ?? "") }
             nodes = ns.sorted { ($0.main ? 0 : 1, $0.name) < ($1.main ? 0 : 1, $1.name) }
             clients = cs.values.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
             error = nil
@@ -166,7 +188,33 @@ final class DecoWifi {
             self.error = "The Deco password changed. Sign in again."
         } catch {
             stok = nil
-            if Fleet.shared.atHome { self.error = error.localizedDescription }
+            if let main = nodes.first(where: \.main), restarts[main.id] != nil {
+                // The main Deco is restarting: it can't answer, and that's expected. Show every unit as down
+                // (the mesh goes with it) until it's back.
+                seenDown.insert(main.id)
+                for i in nodes.indices { nodes[i].online = false; nodes[i].clients = 0 }
+                clients = []
+                self.error = nil
+            } else if Fleet.shared.atHome {
+                self.error = error.localizedDescription
+            }
+        }
+    }
+
+    /// A restarting Deco shows offline until it has been seen down and come back (or five minutes pass). The
+    /// first 40 s it shows offline even if the main Deco hasn't noticed yet.
+    private func trackRestarts(_ ns: inout [Node]) {
+        for (mac, at) in restarts {
+            let age = -at.timeIntervalSinceNow
+            guard let i = ns.firstIndex(where: { $0.id == mac }) else { if age > 300 { restarts[mac] = nil; seenDown.remove(mac) }; continue }
+            if !ns[i].online { seenDown.insert(mac) }
+            // Back: seen down and up again, or up after two minutes (a quick restart can fall between looks).
+            if (ns[i].online && (seenDown.contains(mac) ? age > 20 : age > 120)) || age > 300 {
+                restarts[mac] = nil
+                seenDown.remove(mac)
+            } else if age < 40 || !seenDown.contains(mac) {
+                ns[i].online = false
+            }
         }
     }
 
@@ -174,6 +222,8 @@ final class DecoWifi {
 
     /// "The internet is down" when the main Deco loses it (and "back" when it returns).
     private func noticeInternet() {
+        // Restarting the main Deco takes the internet down on purpose: no alert, and start afresh after.
+        if let m = nodes.first(where: \.main), restarts[m.id] != nil { wasUp = nil; return }
         guard let up = internetUp else { return }
         defer { wasUp = up }
         guard let was = wasUp, was != up else { return }
@@ -187,12 +237,49 @@ final class DecoWifi {
     // MARK: Restart
 
     func restart(_ node: Node) async {
-        if let running = refreshing { await running.value }
+        guard restarts[node.id] == nil else { return }
+        // In the same line as the refreshes (a sign-in beside another would swap the keys under it).
+        while let running = refreshing { await running.value; if refreshing == running { refreshing = nil } }
+        let t = Task { await self.restartNow(node) }
+        refreshing = t
+        await t.value
+        if refreshing == t { refreshing = nil }
+    }
+
+    private func restartNow(_ node: Node) async {
+        let payload: [String: Any] = ["operation": "reboot", "params": ["mac_list": [["mac": node.id]]]]
         do {
-            if stok == nil { try await login() }
-            _ = try await call("/admin/device", form: "system", ["operation": "reboot", "params": ["mac_list": [["mac": node.id]]]])
-            if let i = nodes.firstIndex(where: { $0.id == node.id }) { nodes[i].online = false }
-        } catch { self.error = error.localizedDescription }
+            var fresh = false
+            if stok == nil { try await login(); fresh = true }
+            do {
+                _ = try await call("/admin/device", form: "system", payload)
+            } catch let e where !fresh && !(e is WrongPassword) && !(e is URLError) {
+                try await login()
+                _ = try await call("/admin/device", form: "system", payload)
+            }
+        } catch let e as URLError where node.main {
+            // The main Deco often drops the connection as it goes down: that's the restart starting.
+            _ = e
+        } catch {
+            self.error = error.localizedDescription
+            return
+        }
+        error = nil
+        restarts[node.id] = Date()
+        seenDown = seenDown.subtracting([node.id])
+        if let i = nodes.firstIndex(where: { $0.id == node.id }) { nodes[i].online = false; nodes[i].clients = 0 }
+        if node.main { for i in nodes.indices { nodes[i].online = false } }
+        // Look every 10 s while anything is restarting, so it shows coming back as soon as it does.
+        if restartWatch == nil {
+            restartWatch = Task { [weak self] in
+                while !Task.isCancelled {
+                    try? await Task.sleep(nanoseconds: 10_000_000_000)
+                    guard let self, !Task.isCancelled, !self.restarts.isEmpty else { break }
+                    await self.refresh()
+                }
+                if !Task.isCancelled { self?.restartWatch = nil }
+            }
+        }
     }
 
     // MARK: Signing in
@@ -223,12 +310,13 @@ final class DecoWifi {
     }
 
     /// An authenticated, encrypted request.
-    private func call(_ path: String, form: String, _ payload: [String: Any]) async throws -> [String: Any] {
+    /// keepSession: a refusal of this one request (a satellite that can't list its clients) isn't a lost sign-in.
+    private func call(_ path: String, form: String, _ payload: [String: Any], keepSession: Bool = false) async throws -> [String: Any] {
         guard let stok else { throw OAuthRelay.Failure.refused("Not signed in.") }
         let r = try await post("/cgi-bin/luci/;stok=\(stok)\(path)", form: form, body: try encode(payload))
         let d = try decrypt(r)
         if let code = (d["error_code"] as? NSNumber)?.intValue, code != 0 {
-            self.stok = nil
+            if !keepSession { self.stok = nil }
             throw OAuthRelay.Failure.refused("The Deco answered \(code).")
         }
         return d
@@ -324,18 +412,18 @@ struct WifiSection: View {
                 Button { open = true } label: {
                     VStack(alignment: .leading, spacing: 10) {
                         HStack(spacing: 8) {
-                            Circle().fill(deco.internetUp == false ? Palette.attention : .green).frame(width: 9, height: 9)
-                            Text(deco.internetUp == false ? "Internet Down" : "Internet Online").font(.subheadline.weight(.semibold))
+                            Circle().fill(deco.internetUp == false ? Palette.attention : deco.internetUp == true ? Color.green : Color.secondary).frame(width: 9, height: 9)
+                            Text(deco.internetUp == false ? "Internet Down" : deco.internetUp == true ? "Internet Online" : "Internet").font(.subheadline.weight(.semibold))
                             Spacer()
                             Text("\(deco.clients.count) devices").font(.subheadline).foregroundStyle(.secondary)
                         }
                         LazyVGrid(columns: [GridItem(.adaptive(minimum: 140), spacing: 8)], spacing: 8) {
                             ForEach(deco.nodes) { n in
                                 HStack(spacing: 8) {
-                                    Image(systemName: "wifi.router.fill").foregroundStyle(n.online ? .primary : Palette.attention)
+                                    Image(systemName: "wifi.router.fill").foregroundStyle(n.online ? Color.primary : deco.isRestarting(n) ? Color.secondary : Palette.attention)
                                     VStack(alignment: .leading, spacing: 0) {
                                         Text(n.name).font(.footnote.weight(.semibold)).lineLimit(1)
-                                        Text(n.online ? "\(n.clients) connected" : "Offline").font(.caption).foregroundStyle(.secondary)
+                                        Text(deco.isRestarting(n) ? "Restarting…" : n.online ? "\(n.clients) connected" : "Offline").font(.caption).foregroundStyle(.secondary)
                                     }
                                     Spacer(minLength: 0)
                                 }
@@ -383,11 +471,15 @@ struct WifiView: View {
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(n.name + (n.main ? " (Main)" : ""))
-                                Text([n.model, n.ip, n.online ? "\(n.clients) connected" : "Offline"].compactMap { $0 }.joined(separator: " · "))
-                                    .font(.caption).foregroundStyle(n.online ? Color.secondary : Palette.attention)
+                                Text([n.model, n.ip, deco.isRestarting(n) ? "Restarting…" : n.online ? "\(n.clients) connected" : "Offline"].compactMap { $0 }.joined(separator: " · "))
+                                    .font(.caption).foregroundStyle(n.online || deco.isRestarting(n) ? Color.secondary : Palette.attention)
                             }
                             Spacer()
-                            Button("Restart") { restarting = n }.buttonStyle(.glass)
+                            if deco.isRestarting(n) {
+                                ProgressView()
+                            } else {
+                                Button("Restart") { restarting = n }.buttonStyle(.glass).disabled(!n.online)
+                            }
                         }
                     }
                 }

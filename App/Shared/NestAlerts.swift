@@ -122,8 +122,12 @@ final class NestAlerts {
     // MARK: Events → notifications
 
     private func handle(_ ev: [String: Any], messageID: String?) {
-        guard let upd = ev["resourceUpdate"] as? [String: Any], let device = upd["name"] as? String,
-              let events = upd["events"] as? [String: Any] else { return }
+        guard let upd = ev["resourceUpdate"] as? [String: Any], let device = upd["name"] as? String else { return }
+        // A trait change, not an event: a camera going offline or coming back shows on its tile.
+        if let status = ((upd["traits"] as? [String: Any])?["sdm.devices.traits.Connectivity"] as? [String: Any])?["status"] as? String {
+            NestCameras.shared.setOnline(device, status.uppercased() != "OFFLINE")
+        }
+        guard let events = upd["events"] as? [String: Any] else { return }
         // Old news (the phone was asleep) isn't worth a buzz.
         if let ts = ev["timestamp"] as? String, let t = ISO8601DateFormatter.withFraction.date(from: ts) ?? ISO8601DateFormatter().date(from: ts),
            t.timeIntervalSinceNow < -600 { return }

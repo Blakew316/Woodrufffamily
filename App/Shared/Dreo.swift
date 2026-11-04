@@ -33,7 +33,13 @@ final class Dreo {
         var on = false
         var level = 1
         var swing = false
+        /// Dreo's cloud can reach it (state "connected"); off the Wi‑Fi or unplugged, it can't.
+        var online = true
     }
+
+    /// The keys that swing a fan, in the order they're preferred when a fan reports more than one: tower fans
+    /// use "oscon" (older ones "shakehorizon"), air circulators "hoscon" or the "oscmode" bitmask.
+    private static let swingKeys = ["oscon", "shakehorizon", "hoscon", "oscmode"]
 
     private var server = "us"
     private var token = ""
@@ -46,11 +52,12 @@ final class Dreo {
     func start() {
         guard connected, loop == nil, !Demo.isOn else { return }
         loop = Task { [weak self] in
-            var full = true
+            // Every minute each fan's state; every ten, the list too (fans added, renamed or moved in the Dreo app).
+            var n = 0
             while !Task.isCancelled {
                 guard let self else { return }
-                await self.refresh(full: full)
-                full = false
+                await self.refresh(full: n % 10 == 0)
+                n += 1
                 try? await Task.sleep(nanoseconds: 60_000_000_000)
             }
         }
@@ -64,6 +71,8 @@ final class Dreo {
         Keychain.set(e, for: "dreo.email")
         Keychain.set(p, for: "dreo.password")
         token = ""
+        server = "us"   // a new account starts on the US servers; the login moves it to the EU's if it lives there
+        socket?.cancel(with: .goingAway, reason: nil); socket = nil
         await refresh(full: true)
         if error != nil {
             Keychain.set(nil, for: "dreo.email"); Keychain.set(nil, for: "dreo.password")
@@ -78,6 +87,9 @@ final class Dreo {
         socket?.cancel(with: .goingAway, reason: nil); socket = nil
         Keychain.set(nil, for: "dreo.email"); Keychain.set(nil, for: "dreo.password")
         token = ""
+        server = "us"
+        socketFailures = 0
+        pending = []
         fans = [:]
         AccessoryStore.shared.fromDreo = []
     }
@@ -95,7 +107,7 @@ final class Dreo {
         }
         var data = try await attempt()
         // European accounts live on Dreo's EU servers.
-        if (data["region"] as? String) == "EU", server != "eu" {
+        if (data["region"] as? String)?.uppercased() == "EU", server != "eu" {
             server = "eu"
             data = try await attempt()
         }
@@ -147,14 +159,17 @@ final class Dreo {
                     f.name = d["deviceName"] as? String ?? f.name
                     f.room = (d["roomName"] as? String).flatMap { $0.isEmpty ? nil : $0 }
                     f.maxSpeed = max
+                    // Some lists say outright whether the fan is reachable; the state read below has the final word.
+                    if let v = d["online"] ?? d["connected"], !(v is NSNull) { f.online = bool(v) }
                     next[sn] = f
                 }
                 fans = next
             }
-            for sn in fans.keys {
+            for sn in Array(fans.keys) {
                 guard let mixed = (try? await request("GET", "/api/user-device/device/state", query: ["deviceSn": sn]))?["mixed"] as? [String: Any] else { continue }
                 apply(sn, mixed.mapValues { ($0 as? [String: Any])?["state"] ?? $0 }, initial: true)
             }
+            if token.isEmpty { try await login() }   // a 401 on a state read: sign in again for the socket and next time
             error = nil
             publish()
         } catch {
@@ -167,18 +182,22 @@ final class Dreo {
     private func apply(_ sn: String, _ s: [String: Any], initial: Bool = false) {
         guard var f = fans[sn] else { return }
         if initial {
+            // Ceiling fans with a light switch the fan with "fanon" ("poweron" is the whole unit there).
             f.powerKey = s["fanon"] != nil ? "fanon" : "poweron"
-            f.swingKey = ["shakehorizon", "hoscon", "oscmode"].first { s[$0] != nil } ?? f.swingKey
+            f.swingKey = Self.swingKeys.first { s[$0] != nil } ?? f.swingKey
         }
-        if let v = s[f.powerKey] ?? s["poweron"] ?? s["fanon"] { f.on = bool(v) }
-        if let v = s["windlevel"] as? NSNumber { f.level = v.intValue }
-        for k in ["shakehorizon", "hoscon", "oscmode"] { if let v = s[k] { f.swing = bool(v); if f.swingKey == nil { f.swingKey = k } } }
+        if let v = s["connected"], !(v is NSNull) { f.online = bool(v) }
+        if let v = s[f.powerKey] { f.on = bool(v) }
+        if let v = s["windlevel"] as? NSNumber { f.level = max(1, min(f.maxSpeed, v.intValue)) }
+        if f.swingKey == nil { f.swingKey = Self.swingKeys.first { s[$0] != nil } }
+        if let k = f.swingKey, let v = s[k] { f.swing = bool(v) }
         fans[sn] = f
     }
 
     private func bool(_ v: Any) -> Bool {
         if let b = v as? Bool { return b }
         if let n = v as? NSNumber { return n.intValue != 0 }
+        if let t = v as? String { return ["true", "1", "on", "yes"].contains(t.lowercased()) }
         return false
     }
 
@@ -188,7 +207,8 @@ final class Dreo {
             d.isOn = f.on
             d.speed = Int((Double(f.level) * 100 / Double(max(1, f.maxSpeed))).rounded())
             d.swing = f.swingKey == nil ? nil : f.swing
-            d.status = f.on ? "Speed \(f.level) of \(f.maxSpeed)" + (f.swing ? " · Oscillating" : "") : "Off"
+            d.reachable = f.online
+            d.status = !f.online ? "Offline" : f.on ? "Speed \(f.level) of \(f.maxSpeed)" + (f.swing ? " · Oscillating" : "") : "Off"
             return d
         }
         .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
@@ -198,19 +218,27 @@ final class Dreo {
 
     private func openSocket() {
         socket?.cancel(with: .goingAway, reason: nil)
+        socket = nil
         guard !token.isEmpty, let url = URL(string: "wss://wsb-\(server).dreo-tech.com/websocket?accessToken=\(token)&timestamp=\(Int(Date().timeIntervalSince1970 * 1000))") else { return }
         let ws = URLSession.shared.webSocketTask(with: url)
         socket = ws
         ws.resume()
         listen(ws)
+        // Dreo's server drops a quiet socket: say "2" every 15 s (as the Dreo app does). If that can't be
+        // sent, the socket is dead; ending it makes the listener reconnect.
         keepalive?.cancel()
         keepalive = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 15_000_000_000)
-                guard let self, self.socket === ws else { return }
-                try? await ws.send(.string("2"))
+                guard let self, self.socket === ws, !Task.isCancelled else { return }
+                do { try await ws.send(.string("2")) } catch {
+                    if self.socket === ws { ws.cancel(with: .abnormalClosure, reason: nil) }
+                    return
+                }
             }
         }
+        // Anything waiting for the socket goes now (sends wait for the handshake).
+        flush()
     }
 
     private func listen(_ ws: URLSessionWebSocketTask) {
@@ -220,7 +248,13 @@ final class Dreo {
                 switch result {
                 case .success(let m):
                     self.socketFailures = 0
-                    if case let .string(text) = m, let d = text.data(using: .utf8),
+                    var text: String?
+                    switch m {
+                    case .string(let t): text = t
+                    case .data(let d): text = String(data: d, encoding: .utf8)
+                    @unknown default: text = nil
+                    }
+                    if let text, let d = text.data(using: .utf8),
                        let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
                        let sn = o["devicesn"] as? String, let reported = o["reported"] as? [String: Any] {
                         self.apply(sn, reported)
@@ -230,13 +264,15 @@ final class Dreo {
                 case .failure:
                     // Dropped: open again, waiting longer each time it keeps failing (5 s up to 5 min). The
                     // saved sign-in is reused; it's only renewed every few failures in case it ran out.
+                    // A command waiting to go doesn't wait for the back-off: it reopens straight away.
                     self.socket = nil
+                    self.keepalive?.cancel(); self.keepalive = nil
                     self.socketFailures += 1
-                    let wait = min(300, 5 * pow(2, Double(min(self.socketFailures - 1, 6))))
+                    let wait = self.pending.isEmpty ? min(300, 5 * pow(2, Double(min(self.socketFailures - 1, 6)))) : 1
                     try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
                     guard self.connected, self.socket == nil else { return }
                     if self.socketFailures % 3 == 0 || self.token.isEmpty { _ = try? await self.login() }
-                    if !self.token.isEmpty { self.openSocket() }
+                    if !self.token.isEmpty, self.socket == nil { self.openSocket() }
                 }
             }
         }
@@ -244,9 +280,19 @@ final class Dreo {
 
     // MARK: Commands
 
+    /// A change waiting to go to a fan (kept until the socket takes it; newer changes to the same fan merge in).
+    private struct Command {
+        var sn: String
+        var params: [String: Any]
+        var at: Date
+    }
+    private var pending: [Command] = []
+    private var flushing = false
+
     func send(_ d: HomeDevice, _ cmd: DeviceCommand) {
         let sn = String(d.id.dropFirst(5))
         guard let f = fans[sn] else { return }
+        guard f.online else { error = "\(f.name) is offline. Check it’s plugged in and on the Wi‑Fi."; return }
         var params: [String: Any] = [:]
         switch cmd {
         case .power(let on): params[f.powerKey] = on
@@ -264,12 +310,48 @@ final class Dreo {
         // Show it straight away; Dreo's report confirms it.
         apply(sn, params)
         publish()
+        error = nil
+        if let i = pending.firstIndex(where: { $0.sn == sn }) {
+            pending[i].params.merge(params) { _, new in new }
+            pending[i].at = Date()
+        } else {
+            pending.append(Command(sn: sn, params: params, at: Date()))
+        }
+        flush()
+    }
+
+    /// Sends what's waiting, opening the socket (and signing in) first if it's down. A send that fails ends the
+    /// socket; the listener reopens it and the command goes then, so nothing is dropped. Changes more than two
+    /// minutes old are let go (a fan shouldn't come on long after it was asked).
+    private func flush() {
+        guard !flushing, !pending.isEmpty, connected else { return }
+        flushing = true
         Task {
-            if socket == nil { if token.isEmpty { try? await login() }; openSocket(); try? await Task.sleep(nanoseconds: 800_000_000) }
-            guard let ws = socket,
-                  let data = try? JSONSerialization.data(withJSONObject: ["devicesn": sn, "method": "control", "params": params, "timestamp": Int(Date().timeIntervalSince1970 * 1000)]),
-                  let text = String(data: data, encoding: .utf8) else { error = "Couldn’t reach Dreo."; return }
-            do { try await ws.send(.string(text)) } catch { self.error = "Couldn’t reach Dreo." }
+            defer { flushing = false }
+            pending.removeAll { $0.at.timeIntervalSinceNow < -120 }
+            if socket == nil {
+                if token.isEmpty { do { try await login() } catch { self.error = "Couldn’t reach Dreo."; return } }
+                // openSocket flushes too; it's skipped while this one runs, so carry on here.
+                if socket == nil { openSocket() }
+            }
+            guard socket != nil else { error = "Couldn’t reach Dreo."; return }
+            while let c = pending.first {
+                // The socket of the moment (refresh may have replaced it meanwhile).
+                guard let ws = socket else { return }
+                guard let data = try? JSONSerialization.data(withJSONObject: ["devicesn": c.sn, "method": "control", "params": c.params, "timestamp": Int(Date().timeIntervalSince1970 * 1000)]),
+                      let text = String(data: data, encoding: .utf8) else { pending.removeFirst(); continue }
+                do {
+                    try await ws.send(.string(text))
+                    // Changed again while it was going: it stays, and the loop sends the newer one.
+                    if let i = pending.firstIndex(where: { $0.sn == c.sn }), pending[i].at == c.at { pending.remove(at: i) }
+                } catch {
+                    // The socket is dead: end it so the listener reconnects (quickly, since something waits).
+                    // (If it was already replaced, try the new one.)
+                    guard socket === ws else { continue }
+                    ws.cancel(with: .abnormalClosure, reason: nil)
+                    return
+                }
+            }
         }
     }
 }
