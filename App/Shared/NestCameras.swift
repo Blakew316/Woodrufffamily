@@ -316,6 +316,8 @@ final class CameraStreams {
     var expanded: String?
     /// A camera to open in the big view straight away (a tapped camera or doorbell alert).
     var requested: String?
+    /// Mac: the camera filling the whole app window.
+    var full: String?
     @ObservationIgnored private var players: [String: LivePlayer] = [:]
     @ObservationIgnored private var watching = 0
     @ObservationIgnored private var idle: Task<Void, Never>?
@@ -476,11 +478,12 @@ struct CameraLiveView: View {
                     GlassCircle(symbol: muted ? "speaker.slash.fill" : "speaker.wave.2.fill", size: 36) {
                         muted.toggle(); player.setMuted(muted)
                     }
-                    GlassCircle(symbol: "xmark", size: 36) { dismiss() }
+                    GlassCircle(symbol: "xmark", size: 36) { close() }
                 }
                 .padding(14)
             }
             .ignoresSafeArea()
+            .onExitCommand { close() }
             #else
             phoneBody(player)
             #endif
@@ -491,6 +494,10 @@ struct CameraLiveView: View {
             if streams.expanded == camera.id { streams.expanded = nil }
             streams.hide()
         }
+    }
+
+    private func close() {
+        if streams.full == camera.id { withAnimation(.smooth(duration: 0.25)) { streams.full = nil } } else { dismiss() }
     }
 
     private func phoneBody(_ player: LivePlayer) -> some View {
@@ -802,21 +809,17 @@ struct CamerasPhoneView: View {
 }
 
 extension View {
-    /// Opens a camera: on iPhone in a sheet; on the Mac in its own window that goes full screen.
+    /// Opens a camera: on iPhone in a sheet; on the Mac filling the whole app window.
     func cameraPresenter(_ camera: Binding<NestCameras.Camera?>) -> some View { modifier(CameraPresenter(camera: camera)) }
 }
 
 struct CameraPresenter: ViewModifier {
     @Binding var camera: NestCameras.Camera?
-    #if os(macOS)
-    @Environment(\.openWindow) private var openWindow
-    #endif
-
     func body(content: Content) -> some View {
         #if os(macOS)
         content.onChange(of: camera?.id, initial: true) { _, id in
             guard let id else { return }
-            openWindow(id: "camera", value: id)
+            withAnimation(.smooth(duration: 0.3)) { CameraStreams.shared.full = id }
             camera = nil
         }
         #else
@@ -825,41 +828,3 @@ struct CameraPresenter: ViewModifier {
     }
 }
 
-#if os(macOS)
-/// A camera on the Mac: its own window, full screen straight away. Esc or the close button closes it.
-struct CameraFullScreen: View {
-    var cameraID: String?
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        Group {
-            if let cam = NestCameras.shared.cameras.first(where: { $0.id == cameraID }) {
-                CameraLiveView(camera: cam)
-            } else {
-                Color.black.overlay { ProgressView().tint(.white) }
-            }
-        }
-        .frame(minWidth: 480, minHeight: 270)
-        .background(Color.black)
-        .background(FullScreenOnOpen())
-        .onExitCommand { dismiss() }
-    }
-}
-
-/// Puts its window into full screen once it appears.
-struct FullScreenOnOpen: NSViewRepresentable {
-    func makeNSView(context: Context) -> NSView { Watcher() }
-    func updateNSView(_ nsView: NSView, context: Context) {}
-
-    final class Watcher: NSView {
-        override func viewDidMoveToWindow() {
-            super.viewDidMoveToWindow()
-            guard let w = window else { return }
-            w.collectionBehavior.insert(.fullScreenPrimary)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                if !w.styleMask.contains(.fullScreen) { w.toggleFullScreen(nil) }
-            }
-        }
-    }
-}
-#endif

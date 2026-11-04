@@ -99,13 +99,6 @@ struct WoodruffApp: App {
         #endif
 
         #if os(macOS)
-        // A camera, full screen in its own window.
-        WindowGroup("Camera", id: "camera", for: String.self) { $id in
-            CameraFullScreen(cameraID: id).environment(fleet)
-        }
-        .windowStyle(.hiddenTitleBar)
-        .defaultSize(width: 1280, height: 720)
-
         Window("Mini Player", id: "mini") {
             MiniPlayerView().environment(fleet)
         }
@@ -195,6 +188,17 @@ struct RootView: View {
         }
         // A tapped "Person seen at the doorbell" opens that camera live. Waits for the camera list if the app
         // was just launched by the tap.
+        #if os(macOS)
+        // A clicked camera fills the whole window (Esc or ✕ to close).
+        .overlay {
+            if let id = CameraStreams.shared.full, let cam = NestCameras.shared.cameras.first(where: { $0.id == id }) {
+                CameraLiveView(camera: cam)
+                    .id(id)
+                    .transition(.opacity.combined(with: .scale(scale: 0.97)))
+            }
+        }
+        .toolbar(CameraStreams.shared.full == nil ? .automatic : .hidden, for: .windowToolbar)
+        #endif
         .cameraPresenter(Binding(
             get: { CameraStreams.shared.requested.flatMap { id in NestCameras.shared.cameras.first { $0.id == id } } },
             set: { if $0 == nil { CameraStreams.shared.requested = nil } }
