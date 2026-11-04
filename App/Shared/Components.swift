@@ -419,11 +419,10 @@ extension View {
 }
 
 extension View {
-    /// Mac: a sheet opens at a comfortable size and can be dragged to any size by its corner grips (they light
-    /// up white under the pointer, like iPad windows). [aspect] keeps a shape (a camera's 16:9). Nothing on iPhone.
+    /// Mac: a sheet opens at a comfortable fixed size. Nothing on iPhone.
     @ViewBuilder func macResizable(width: CGFloat = 680, height: CGFloat = 760, minWidth: CGFloat = 360, minHeight: CGFloat = 320, aspect: CGFloat? = nil) -> some View {
         #if os(macOS)
-        modifier(MacResizableSheet(width: width, height: height, minWidth: minWidth, minHeight: minHeight, aspect: aspect))
+        self.frame(width: width, height: aspect.map { width / $0 } ?? height)
         #else
         self
         #endif
@@ -431,60 +430,17 @@ extension View {
 }
 
 #if os(macOS)
-struct MacResizableSheet: ViewModifier {
-    let minWidth: CGFloat
-    let minHeight: CGFloat
-    let aspect: CGFloat?
-    @State private var size: CGSize
-    @State private var start: CGSize?
-
-    init(width: CGFloat, height: CGFloat, minWidth: CGFloat, minHeight: CGFloat, aspect: CGFloat?) {
-        self.minWidth = minWidth; self.minHeight = minHeight; self.aspect = aspect
-        _size = State(initialValue: CGSize(width: width, height: aspect.map { width / $0 } ?? height))
-    }
-
-    func body(content: Content) -> some View {
-        content
-            .frame(width: size.width, height: size.height)
-            .overlay(alignment: .bottomTrailing) { grip(trailing: true) }
-            .overlay(alignment: .bottomLeading) { grip(trailing: false) }
-    }
-
-    private func grip(trailing: Bool) -> some View {
-        ResizeGrip(trailing: trailing)
-            .gesture(
-                DragGesture(minimumDistance: 0, coordinateSpace: .global)
-                    .onChanged { g in
-                        let from = start ?? size
-                        if start == nil { start = size }
-                        // The sheet stays centred under the window's top, so a corner moves half as far as the
-                        // width grows, and as far as the height grows.
-                        let dx = (trailing ? g.translation.width : -g.translation.width) * 2
-                        let screen = NSScreen.main?.visibleFrame.size ?? CGSize(width: 2000, height: 1400)
-                        var w = min(max(minWidth, from.width + dx), screen.width - 40)
-                        var h = min(max(minHeight, from.height + g.translation.height), screen.height - 60)
-                        if let aspect {
-                            // Keep the shape: follow whichever way the pointer moved more.
-                            if abs(dx) >= abs(g.translation.height) * aspect { h = w / aspect } else { w = h * aspect }
-                            if w < minWidth { w = minWidth; h = w / aspect }
-                            if h < minHeight { h = minHeight; w = h * aspect }
-                        }
-                        size = CGSize(width: w, height: h)
-                    }
-                    .onEnded { _ in start = nil }
-            )
-    }
-}
-
 /// An iPad-style corner grip: a soft curved stroke in the sheet's corner, bright white under the pointer.
 struct ResizeGrip: View {
     var trailing: Bool
+    /// Faintly visible (the pointer is over the tile); fully white when the pointer is on the grip itself.
+    var shown = true
+    var active = false
     @State private var hovering = false
-    @State private var dragging = false
 
     var body: some View {
         CornerCurve(trailing: trailing)
-            .stroke(.white.opacity(hovering ? 1 : 0.3), style: StrokeStyle(lineWidth: hovering ? 5 : 4, lineCap: .round))
+            .stroke(.white.opacity(hovering || active ? 1 : (shown ? 0.45 : 0)), style: StrokeStyle(lineWidth: hovering || active ? 5 : 4, lineCap: .round))
             .shadow(color: .black.opacity(0.35), radius: 2)
             .frame(width: 22, height: 22)
             .padding(7)

@@ -11,6 +11,8 @@ struct HomeView: View {
     @State private var editing = false
     /// The TV whose player is open (iPhone: tapping a TV opens straight into what it's playing).
     @State private var playerTV: String?
+    /// Mac: how wide Favorites is (a tile can't be dragged wider).
+    @State private var favoritesWidth: CGFloat = 1200
     @Namespace private var zoom
     private let layout = HomeLayout.shared
 
@@ -166,6 +168,9 @@ struct HomeView: View {
                     .padding(16).frame(maxWidth: .infinity, alignment: .leading)
                     .glass(RoundedRectangle(cornerRadius: 20, style: .continuous), interactive: false)
             }
+            #if os(macOS)
+            macFavoriteTiles
+            #else
             CamerasSection(favorites: true, compact: true, titled: false)
             if !favTVs.isEmpty {
                 LazyVGrid(columns: columns, spacing: 18) {
@@ -175,9 +180,35 @@ struct HomeView: View {
                     }
                 }
             }
+            #endif
             RoomTiles(favorites: true)
         }
     }
+
+    #if os(macOS)
+    /// Favourite cameras and TVs, each sized by dragging its bottom-right corner; the rest flow around it.
+    private var macFavoriteTiles: some View {
+        let cams = NestCameras.shared.cameras
+        let ids = layout.favorites.filter { id in cams.contains { $0.id == id } || fleet.tv(id) != nil }
+        return FlowLayout(spacing: 14) {
+            ForEach(ids, id: \.self) { id in
+                if let cam = cams.first(where: { $0.id == id }) {
+                    ResizableTile(id: id, defaultWidth: 340, minWidth: 220, maxWidth: favoritesWidth, heightFor: { $0 * 3 / 4 }) { _ in
+                        LiveCameraTile(camera: cam, compact: true) {
+                            if cam.webRTC && cam.online { withAnimation(.smooth(duration: 0.25)) { CameraStreams.shared.full = cam.id } }
+                        }
+                    }
+                } else if let tv = fleet.tv(id) {
+                    ResizableTile(id: id, defaultWidth: 400, minWidth: 300, maxWidth: favoritesWidth, heightFor: { max(210, $0 * 9 / 16) }) { w in
+                        HomeTVTile(tv: tv, height: max(210, w * 9 / 16)) { open(tv.id) }
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { favoritesWidth = $0 }
+    }
+    #endif
 
     private func tvs(in r: String) -> [FleetTV] {
         // A TV not set up yet has no room of its own (its name isn't a room): it shows under Other.
@@ -321,6 +352,7 @@ struct HomeTVTile: View {
     #endif
     @Environment(Fleet.self) private var fleet
     var tv: FleetTV
+    var height: CGFloat = 230
     var open: () -> Void
     @State private var hovering = false
     @State private var dropTarget = false
@@ -402,7 +434,7 @@ struct HomeTVTile: View {
             .padding(18)
         }
         .foregroundStyle(hasArt ? Color.white : Color.primary)
-        .frame(height: 230)
+        .frame(height: height)
         .background {
             if hasArt { RoundedRectangle(cornerRadius: 24, style: .continuous).fill(Color.black) }
             else { Color.clear.glass(RoundedRectangle(cornerRadius: 24, style: .continuous), interactive: false) }
@@ -625,3 +657,94 @@ struct NowPlayingBanner: View {
         .animation(.smooth, value: playing.title)
     }
 }
+
+#if os(macOS)
+/// Each tile's chosen width on this Mac.
+@Observable @MainActor
+final class TileSizes {
+    static let shared = TileSizes()
+    private(set) var widths: [String: CGFloat] =
+        ((UserDefaults.standard.dictionary(forKey: "tileWidths") as? [String: Double]) ?? [:]).mapValues { CGFloat($0) }
+    func set(_ id: String, _ w: CGFloat) {
+        widths[id] = w
+        UserDefaults.standard.set(widths.mapValues { Double($0) }, forKey: "tileWidths")
+    }
+}
+
+/// A tile sized by dragging its bottom-right corner. While dragging, only this tile's width changes (no
+/// animation, no saving) so it follows the pointer exactly; it's saved when let go.
+struct ResizableTile<Content: View>: View {
+    let id: String
+    let defaultWidth: CGFloat
+    let minWidth: CGFloat
+    var maxWidth: CGFloat
+    var heightFor: (CGFloat) -> CGFloat
+    @ViewBuilder var content: (CGFloat) -> Content
+    @State private var live: CGFloat?
+    @State private var start: CGFloat = 0
+    @State private var hovering = false
+
+    private var width: CGFloat {
+        let w = live ?? TileSizes.shared.widths[id] ?? defaultWidth
+        return min(max(minWidth, w), max(minWidth, maxWidth))
+    }
+
+    var body: some View {
+        let w = width
+        content(w)
+            .frame(width: w, height: heightFor(w))
+            .overlay(alignment: .bottomTrailing) {
+                ResizeGrip(trailing: true, shown: hovering, active: live != nil)
+                    .gesture(
+                        DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                            .onChanged { g in
+                                var t = Transaction()
+                                t.disablesAnimations = true
+                                withTransaction(t) {
+                                    if live == nil { start = width }
+                                    live = min(max(minWidth, start + g.translation.width), max(minWidth, maxWidth))
+                                }
+                            }
+                            .onEnded { _ in
+                                var t = Transaction()
+                                t.disablesAnimations = true
+                                withTransaction(t) {
+                                    if let live { TileSizes.shared.set(id, live) }
+                                    live = nil
+                                }
+                            }
+                    )
+            }
+            .onHover { h in withAnimation(.easeOut(duration: 0.15)) { hovering = h } }
+    }
+}
+
+/// Lays tiles out left to right, wrapping to a new row when one doesn't fit.
+struct FlowLayout: Layout {
+    var spacing: CGFloat = 14
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let maxW = proposal.width ?? .infinity
+        var x: CGFloat = 0, y: CGFloat = 0, rowH: CGFloat = 0, widest: CGFloat = 0
+        for s in subviews {
+            let size = s.sizeThatFits(.unspecified)
+            if x > 0 && x + size.width > maxW { y += rowH + spacing; x = 0; rowH = 0 }
+            x += size.width + spacing
+            rowH = max(rowH, size.height)
+            widest = max(widest, x - spacing)
+        }
+        return CGSize(width: proposal.width ?? widest, height: y + rowH)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var x: CGFloat = 0, y: CGFloat = 0, rowH: CGFloat = 0
+        for s in subviews {
+            let size = s.sizeThatFits(.unspecified)
+            if x > 0 && x + size.width > bounds.width { y += rowH + spacing; x = 0; rowH = 0 }
+            s.place(at: CGPoint(x: bounds.minX + x, y: bounds.minY + y), proposal: ProposedViewSize(size))
+            x += size.width + spacing
+            rowH = max(rowH, size.height)
+        }
+    }
+}
+#endif

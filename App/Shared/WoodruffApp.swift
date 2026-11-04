@@ -188,17 +188,6 @@ struct RootView: View {
         }
         // A tapped "Person seen at the doorbell" opens that camera live. Waits for the camera list if the app
         // was just launched by the tap.
-        #if os(macOS)
-        // A clicked camera fills the whole window (Esc or ✕ to close).
-        .overlay {
-            if let id = CameraStreams.shared.full, let cam = NestCameras.shared.cameras.first(where: { $0.id == id }) {
-                CameraLiveView(camera: cam)
-                    .id(id)
-                    .transition(.opacity.combined(with: .scale(scale: 0.97)))
-            }
-        }
-        .toolbar(CameraStreams.shared.full == nil ? .automatic : .hidden, for: .windowToolbar)
-        #endif
         .cameraPresenter(Binding(
             get: { CameraStreams.shared.requested.flatMap { id in NestCameras.shared.cameras.first { $0.id == id } } },
             set: { if $0 == nil { CameraStreams.shared.requested = nil } }
@@ -308,6 +297,15 @@ struct MacRoot: View {
                 else if let id = tvSelection { TVDetailView(tvID: id).id(id) } else { section.view }
             }
             .background { AmbientArtwork() }
+            // A clicked camera fills everything right of the sidebar (Esc or ✕ to close).
+            .overlay {
+                if let id = CameraStreams.shared.full, let cam = NestCameras.shared.cameras.first(where: { $0.id == id }) {
+                    CameraLiveView(camera: cam)
+                        .id(id)
+                        .transition(.opacity)
+                }
+            }
+            .toolbar(CameraStreams.shared.full == nil ? .automatic : .hidden, for: .windowToolbar)
             .safeAreaInset(edge: .bottom) {
                 if tvSelection == nil && deviceSelection == nil && section != .home && !fleet.remotePanel {
                     NowPlayingBar().frame(maxWidth: 600).padding(.bottom, 8)
