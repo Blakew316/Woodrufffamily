@@ -6,13 +6,16 @@ Read-only. It runs `security find-identity`, `security find-certificate`, `codes
 CMS message whose content is a plist). It never runs `security cms -D`, which imports a profile's certificates
 into the login keychain while it decodes it. It never creates, imports, revokes, deletes or changes a
 certificate, key, profile, keychain or keychain search list, never writes into a profile folder, and never
-contacts Apple.
+contacts Apple. The only file it writes is the --out file of share-manifest and entitlements.
 
   signing.py identities [--team TEAM]          valid "Apple Development" identities (of one team)
   signing.py profiles                           every provisioning profile on this Mac, decoded
   signing.py pick-ios --team TEAM --app-id ID --widgets-id ID [--need-entitlement KEY]... --device UDID...
   signing.py entitlements --profile PATH --kind app|widget [--bundle-id ID] [--out FILE]
   signing.py pick-mac --team TEAM [--app PATH]
+  signing.py signer [--app PATH]                the certificate that signed an app (SHA-1, CN, team)
+  signing.py share-manifest --app PATH --zip ZIP --commit SHA [--subject TEXT] --out FILE
+  signing.py check-share --manifest FILE --zip ZIP --commit SHA [--team TEAM]
   signing.py devices                            the iOS devices paired with this Mac
   signing.py bundle-id PATH                     CFBundleIdentifier of a .app or .appex
   signing.py get FILE KEY.PATH                  values from a JSON file, one per line ("*" walks a list)
@@ -943,21 +946,103 @@ def unusable_identities(invalid, certs, team=None, now=None):
     return out
 
 
-def installed_signer(app_path):
-    """(SHA-1, CN) of the leaf certificate that signed app_path, or (None, None)."""
+def leaf_certificate(app_path):
+    """DER of the leaf certificate that signed app_path, or None (not there, unsigned, or signed ad hoc)."""
     if not os.path.isdir(app_path):
-        return None, None
+        return None
     with tempfile.TemporaryDirectory(prefix="woodruff-signer.") as tmp:
         prefix = os.path.join(tmp, "c")
         run(["codesign", "-d", "--extract-certificates=" + prefix, app_path])
         try:
             with open(prefix + "0", "rb") as handle:
-                der = handle.read()
+                return handle.read() or None
         except OSError:
-            return None, None
+            return None
+
+
+def installed_signer(app_path):
+    """(SHA-1, CN) of the leaf certificate that signed app_path, or (None, None)."""
+    der = leaf_certificate(app_path)
     if not der:
         return None, None
     return hashlib.sha1(der).hexdigest().upper(), certificate_info(der)["cn"]
+
+
+def app_signer(app_path):
+    """{"sha1", "cn", "team", "not_after"} of the certificate that signed app_path, or None."""
+    der = leaf_certificate(app_path)
+    if not der:
+        return None
+    info = certificate_info(der)
+    return {"sha1": hashlib.sha1(der).hexdigest().upper(), "cn": info["cn"], "team": info["ou"],
+            "not_after": info["not_after"]}
+
+
+# ------------------------------------------------------------------------------------------ shared builds
+#
+# A Mac whose own certificate Apple revoked can't sign a build, but it can run one another Mac signed: an
+# "Apple Development" Mac app needs no profile. The Mac that built it shares a zip of it in iCloud Drive with a
+# manifest; the other Mac checks the zip against the manifest before installing it. Its keychain items (the TVs'
+# pairings) stay readable as long as the new app's certificate has the same name (CN) and team as the old one's,
+# which is the case for every certificate of one Apple ID; deploy.sh refuses a build whose CN differs.
+
+
+def file_digest(path, chunk=1 << 20):
+    """(SHA-256 hex, size in bytes) of a file."""
+    digest, size = hashlib.sha256(), 0
+    with open(path, "rb") as handle:
+        while True:
+            block = handle.read(chunk)
+            if not block:
+                break
+            digest.update(block)
+            size += len(block)
+    return digest.hexdigest(), size
+
+
+def share_manifest(commit, subject, digest, size, signer, bundle, built_on, now):
+    """The manifest saved next to a shared zip."""
+    signer = signer or {}
+    return {
+        "format": 1,
+        "commit": (commit or "").strip().lower(),
+        "subject": subject or "",
+        "sha256": digest,
+        "bytes": size,
+        "bundle_id": bundle,
+        "signer_sha1": signer.get("sha1"),
+        "signer_cn": signer.get("cn"),
+        "signer_team": signer.get("team"),
+        "signer_expires": signer.get("not_after"),
+        "built_on": built_on,
+        "shared_at": now,
+    }
+
+
+def share_problem(manifest, digest, size, commit, team=None):
+    """Why a shared zip isn't the build wanted (None if it is): another commit, not all there yet, another team."""
+    if not isinstance(manifest, dict):
+        return "its manifest isn't a JSON object"
+    want = (commit or "").strip().lower()
+    have = str(manifest.get("commit") or "").strip().lower()
+    if not want or have != want:
+        return "it's the build of %s, not %s" % (have[:12] or "an unknown commit", want[:12] or "(none given)")
+    if manifest.get("bytes") != size:
+        return "the zip has %d bytes, not the %s its manifest says (still arriving?)" % (size, manifest.get("bytes"))
+    if str(manifest.get("sha256") or "").lower() != digest:
+        return "the zip's SHA-256 isn't the one its manifest says (still arriving, or damaged)"
+    if team and manifest.get("signer_team") and manifest.get("signer_team") != team:
+        return "it was signed for team %s, not %s" % (manifest.get("signer_team"), team)
+    return None
+
+
+def computer_name():
+    status, out, _ = run(["scutil", "--get", "ComputerName"], timeout=10)
+    name = out.decode("utf-8", "replace").strip() if status == 0 else ""
+    if not name:
+        import socket
+        name = socket.gethostname()
+    return name
 
 
 # -------------------------------------------------------------------------------------------- devices
@@ -1113,6 +1198,53 @@ def cmd_pick_mac(args):
     return 0
 
 
+def cmd_signer(args):
+    signer = app_signer(args.app)
+    if signer is None:
+        return _fail("%s isn't there or isn't signed with a certificate." % args.app)
+    print_json(signer)
+    return 0
+
+
+def cmd_share_manifest(args):
+    signer = app_signer(args.app)
+    if signer is None:
+        return _fail("%s isn't there or isn't signed with a certificate, so it isn't shared." % args.app)
+    try:
+        digest, size = file_digest(args.zip)
+    except OSError as exc:
+        return _fail("Couldn't read %s: %s" % (args.zip, exc))
+    try:
+        bundle = bundle_id(args.app)
+    except Exception:  # noqa: BLE001 - an unreadable Info.plist
+        bundle = None
+    manifest = share_manifest(args.commit, args.subject, digest, size, signer, bundle, computer_name(),
+                              datetime.now(timezone.utc))
+    try:
+        with open(args.out, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(manifest, indent=2, default=_json_default) + "\n")
+    except OSError as exc:
+        return _fail("Couldn't write %s: %s" % (args.out, exc))
+    return 0
+
+
+def cmd_check_share(args):
+    try:
+        with open(args.manifest, "rb") as handle:
+            manifest = json.load(handle)
+    except (OSError, ValueError) as exc:
+        return _fail("Couldn't read the manifest %s: %s" % (args.manifest, exc))
+    try:
+        digest, size = file_digest(args.zip)
+    except OSError as exc:
+        return _fail("Couldn't read %s: %s" % (args.zip, exc))
+    problem = share_problem(manifest, digest, size, args.commit, args.team)
+    if problem:
+        return _fail("The shared build isn't usable yet: %s." % problem)
+    print_json(manifest)
+    return 0
+
+
 def cmd_devices(args):
     devices, error = read_devices()
     if devices is None:
@@ -1188,6 +1320,25 @@ def main(argv=None):
     p.add_argument("--team", required=True)
     p.add_argument("--app", default=DEFAULT_MAC_APP)
     p.set_defaults(func=cmd_pick_mac)
+
+    p = sub.add_parser("signer", help="the certificate that signed an app")
+    p.add_argument("--app", default=DEFAULT_MAC_APP)
+    p.set_defaults(func=cmd_signer)
+
+    p = sub.add_parser("share-manifest", help="write the manifest for a shared zip of the Mac app")
+    p.add_argument("--app", required=True)
+    p.add_argument("--zip", required=True)
+    p.add_argument("--commit", required=True)
+    p.add_argument("--subject", default="")
+    p.add_argument("--out", required=True)
+    p.set_defaults(func=cmd_share_manifest)
+
+    p = sub.add_parser("check-share", help="check a shared zip against its manifest")
+    p.add_argument("--manifest", required=True)
+    p.add_argument("--zip", required=True)
+    p.add_argument("--commit", required=True)
+    p.add_argument("--team")
+    p.set_defaults(func=cmd_check_share)
 
     p = sub.add_parser("devices", help="the iOS devices paired with this Mac")
     p.set_defaults(func=cmd_devices)

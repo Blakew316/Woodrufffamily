@@ -73,7 +73,16 @@ certificate and provisioning profiles already on that Mac. Run it in Terminal fr
   profiles Xcode already made there and installs it on every paired iPhone (unlock them so it can open).
 - Add `--expect <commit>` to stop unless the checkout is at that commit.
 
-The first time on a Mac whose checkout doesn't have `scripts/deploy.sh` yet, get it with
+**A Mac whose certificate Apple revoked** can't sign a build, but it can run one another Mac signed, because the Mac
+app needs no profile. On a Mac that can sign, add `share`: `scripts/deploy.sh --expect <commit> mac share` (with
+`iphone` too if that's the iPhones' Mac). After installing, it puts a zip of the build and a manifest in iCloud
+Drive, in "Woodruff Family builds", replacing the previous one. Then, on the Mac that can't sign, run
+`scripts/deploy.sh --expect <commit> mac-shared`. It waits up to 20 minutes for that commit's zip to arrive and
+checks it against the manifest and its signature. It installs the zip only if it's signed by a certificate with the
+same name and team as the installed app, which is what lets the new app read the TVs' pairings from the keychain.
+Both Macs need iCloud Drive on, with the same Apple ID.
+
+The first time on a Mac whose checkout doesn't have `scripts/deploy.sh` (or `share` and `mac-shared`) yet, get it with
 `git fetch origin claude/native-apps && git checkout claude/native-apps && git pull --ff-only origin claude/native-apps`
 in the repository folder, then run it as above.
 

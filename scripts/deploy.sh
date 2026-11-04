@@ -2,11 +2,16 @@
 #
 # Deploy Woodruff Family to this Mac and/or the iPhones paired with it, signed with what's already here.
 #
-#   scripts/deploy.sh [--expect <commit>] [mac] [iphone]          (no part named: mac)
+#   scripts/deploy.sh [--expect <commit>] [mac] [share] [mac-shared] [iphone]      (no part named: mac)
 #
 #   mac      Build the Mac app signed with this Mac's own "Apple Development" identity (it needs no profile),
 #            quit the running Woodruff Family, copy the new one over /Applications/Woodruff Family.app,
 #            check its signature and open it.
+#   share    (with mac) Then put a zip of that build, and a manifest, in iCloud Drive ("Woodruff Family builds"),
+#            replacing the one shared before, for a Mac whose certificate Apple revoked.
+#   mac-shared   Instead of building: wait (up to 20 minutes) for the zip another Mac shared for this commit,
+#            check it against its manifest and its signature, check it's signed under the same certificate name
+#            as the installed app (so the TVs stay signed in), then install and open it like mac does.
 #   iphone   Build the iPhone app unsigned, sign a copy with codesign and the provisioning profiles Xcode
 #            already made on this Mac, and install it on every iPhone paired with this Mac.
 #   --expect <commit>   Stop before building unless the checkout is that commit (a prefix is enough).
@@ -20,8 +25,9 @@
 # expire (or a certificate is revoked) it says so and skips what can't be signed; only then does someone need to
 # sign in to Xcode once on this Mac. It warns 30 days ahead.
 #
-# It deletes nothing but its own temporary folder and, at most once, a stale generated
-# build/Build/Products/Release/Woodruff Family.app. Logs stay in a temporary folder named at the end.
+# It deletes nothing but its own temporary folder, at most once a stale generated
+# build/Build/Products/Release/Woodruff Family.app, and (share) the older zips and manifests it shared in
+# iCloud Drive's "Woodruff Family builds" folder. Logs stay in a temporary folder named at the end.
 # The exit status is 0 only if everything asked for worked; iPhone problems never stop the Mac part.
 #
 # Written for macOS's /bin/bash 3.2: no associative arrays, mapfile, ${x,,}, &>> or wait -n.
@@ -37,8 +43,12 @@ MAC_BUNDLE_ID="com.woodruff.family.mac"
 HOMEKIT="com.apple.developer.homekit"
 APP_NAME="Woodruff Family"
 MAC_INSTALLED="/Applications/Woodruff Family.app"
+ICLOUD="$HOME/Library/Mobile Documents/com~apple~CloudDocs"
+SHARE_DIR="$ICLOUD/Woodruff Family builds"
+SHARE_WAIT=1200   # seconds mac-shared waits for the zip to arrive
 
 ROOT=""
+MAC_OK=0
 SIGNING=""
 TMPROOT=""
 LOGDIR=""
@@ -59,8 +69,10 @@ signing() { python3 -I "$SIGNING" "$@"; }
 
 usage() {
   cat <<'EOF'
-Usage: scripts/deploy.sh [--expect <commit>] [mac] [iphone]      (no part named: mac)
+Usage: scripts/deploy.sh [--expect <commit>] [mac] [share] [mac-shared] [iphone]      (no part named: mac)
   mac                 build, sign and install the Mac app in /Applications on this Mac
+  share               with mac: then share that build in iCloud Drive for a Mac that can't sign
+  mac-shared          install the build another Mac shared for this commit instead of building one here
   iphone              build, sign and install the iPhone app on every iPhone paired with this Mac
   --expect <commit>   stop before building unless the checkout is at that commit (a prefix is enough)
 It uses only the certificates and profiles already on this Mac; it never asks for an Apple ID.
@@ -236,7 +248,7 @@ remove_stale_mac_product() {
 
 deploy_mac() {
   local pick="$LOGDIR/mac-identity.json" product="$ROOT/build/Build/Products/Release/$APP_NAME.app"
-  local identity name why cert_expires cert_days attempt=1 log vlog status built waited bid ilog verified=1 running=0
+  local identity name why cert_expires cert_days attempt=1 log vlog status built
 
   step "Mac: choosing the signing identity"
   if ! signing pick-mac --team "$TEAM" --app "$MAC_INSTALLED" >"$pick" 2>"$LOGDIR/mac-identity.log"; then
@@ -288,12 +300,21 @@ deploy_mac() {
       continue
     fi
     if revoked_certificate "$log"; then
-      mac_failed "this Mac's signing certificate was revoked by Apple, so it can't sign builds any more (log $log); $MAC_INSTALLED wasn't touched. Install the Mac app built on another Mac instead (README: Deploying), rather than signing in here." "$log"
+      mac_failed "this Mac's signing certificate was revoked by Apple, so it can't sign builds any more (log $log); $MAC_INSTALLED wasn't touched. Instead of signing in here: run scripts/deploy.sh --expect $(git rev-parse --short=12 HEAD 2>/dev/null) mac share on a Mac that can sign, then scripts/deploy.sh --expect $(git rev-parse --short=12 HEAD 2>/dev/null) mac-shared here (README: Deploying)." "$log"
       return 1
     fi
     mac_failed "the Mac app didn't build or verify (log $log); $MAC_INSTALLED wasn't touched" "$log"
     return 1
   done
+
+  install_mac "$product" "signed by $identity ($name), certificate $(valid_until "$cert_expires")"
+}
+
+# Quits the running app, copies the checked build $1 over $MAC_INSTALLED, checks that copy and opens it.
+# $2 = the "signed by ..." line for the summary. 0 once it's copied; MAC_OK=1 when it also verifies and runs.
+install_mac() {
+  local product=$1 signed=$2 bid ilog="$LOGDIR/mac-install.log" vlog="$LOGDIR/mac-verify-installed.log"
+  local waited verified=1 running=0
 
   bid=$(signing bundle-id "$product" 2>/dev/null)
   if [ "$bid" != "$MAC_BUNDLE_ID" ]; then
@@ -303,7 +324,6 @@ deploy_mac() {
 
   # Only now, with a verified new build, is the installed app quit and replaced.
   step "Mac: installing"
-  ilog="$LOGDIR/mac-install.log"
   if pgrep -x "$APP_NAME" >/dev/null 2>&1; then
     say "    quitting the running $APP_NAME"
     osascript -e 'quit app "Woodruff Family"' </dev/null >>"$ilog" 2>&1
@@ -322,7 +342,6 @@ deploy_mac() {
     mac_failed "copying the new build to $MAC_INSTALLED failed, so it may be incomplete (the new build is $product)"
     return 1
   fi
-  vlog="$LOGDIR/mac-verify-installed.log"
   if codesign --verify --deep --strict --verbose=2 "$MAC_INSTALLED" </dev/null >"$vlog" 2>&1; then
     say "    $MAC_INSTALLED verifies"
   else
@@ -351,14 +370,170 @@ deploy_mac() {
   fi
 
   if [ "$verified" -eq 1 ] && [ "$running" -eq 1 ]; then
+    MAC_OK=1
     note "Mac: installed $MAC_INSTALLED and it's running"
   elif [ "$verified" -eq 1 ]; then
     note "Mac: installed $MAC_INSTALLED, but it DIDN'T START"
   else
     note "Mac: installed $MAC_INSTALLED, but its signature DOESN'T VERIFY (log $vlog)"
   fi
-  note "     signed by $identity ($name), certificate $(valid_until "$cert_expires")"
+  note "     $signed"
   return 0
+}
+
+
+# Shares the Mac app just installed here in iCloud Drive, for a Mac that can't sign (mac-shared there).
+share_mac() {
+  local head sha12 subject f zip="$LOGDIR/share.zip" manifest="$LOGDIR/share.json" slog="$LOGDIR/mac-share.log"
+  step "Mac: sharing this build in iCloud Drive"
+  if [ "$MAC_OK" -ne 1 ]; then
+    problem "the Mac app wasn't installed and running here, so it wasn't shared"
+    note "Mac: NOT shared in iCloud Drive (the install here didn't work)"
+    return 1
+  fi
+  if [ ! -d "$ICLOUD" ]; then
+    problem "iCloud Drive isn't on for this Mac's user ($ICLOUD is missing), so the build wasn't shared"
+    note "Mac: NOT shared in iCloud Drive (iCloud Drive is off here)"
+    return 1
+  fi
+  head=$(git rev-parse HEAD 2>/dev/null)
+  sha12=$(printf '%s' "$head" | cut -c1-12)
+  subject=$(git log -1 --format=%s 2>/dev/null)
+  if [ -z "$sha12" ] || ! mkdir -p "$SHARE_DIR" 2>>"$slog"; then
+    problem "couldn't make $SHARE_DIR, so the build wasn't shared"
+    note "Mac: NOT shared in iCloud Drive"
+    return 1
+  fi
+  if ! ditto -c -k --sequesterRsrc --keepParent "$MAC_INSTALLED" "$zip" </dev/null >>"$slog" 2>&1 ||
+    ! signing share-manifest --app "$MAC_INSTALLED" --zip "$zip" --commit "$head" --subject "$subject" \
+      --out "$manifest" 2>>"$slog"; then
+    tail -n 5 "$slog" | indent
+    problem "couldn't zip $MAC_INSTALLED for sharing (log $slog)"
+    note "Mac: NOT shared in iCloud Drive"
+    return 1
+  fi
+  # The zip first, the manifest last. iCloud may deliver them in either order; mac-shared checks one against the
+  # other and waits until they match.
+  if ! cp "$zip" "$SHARE_DIR/$APP_NAME $sha12.zip" 2>>"$slog" ||
+    ! cp "$manifest" "$SHARE_DIR/$APP_NAME $sha12.json" 2>>"$slog"; then
+    tail -n 5 "$slog" | indent
+    problem "couldn't copy the zip into $SHARE_DIR (log $slog)"
+    note "Mac: NOT shared in iCloud Drive"
+    return 1
+  fi
+  for f in "$SHARE_DIR/$APP_NAME "*.zip "$SHARE_DIR/$APP_NAME "*.json; do
+    case "$f" in
+      *" $sha12.zip" | *" $sha12.json") ;;
+      *) if [ -f "$f" ]; then rm -f "$f"; fi ;;
+    esac
+  done
+  rm -f "$zip"
+  say "    Woodruff Family builds/$APP_NAME $sha12.zip ($(du -h "$SHARE_DIR/$APP_NAME $sha12.zip" 2>/dev/null | cut -f1 | tr -d ' '))"
+  note "Mac: shared this build in iCloud Drive (Woodruff Family builds/$APP_NAME $sha12.zip); on a Mac"
+  note "     that can't sign, install it with: scripts/deploy.sh --expect $sha12 mac-shared"
+  return 0
+}
+
+# Installs the build another Mac shared in iCloud Drive for this commit (share there) instead of building one:
+# for a Mac whose own certificate Apple revoked. The installed app is replaced only by a zip that matches its
+# manifest, verifies, and is signed by a certificate with the installed app's name and this team.
+deploy_mac_shared() {
+  local head sha12 name zip manifest copy="$LOGDIR/shared.zip" meta="$LOGDIR/shared.json"
+  local check="$LOGDIR/shared-check.json" clog="$LOGDIR/shared-check.log" unz="$LOGDIR/shared"
+  local product waited=0 got=0 built_on vlog="$LOGDIR/mac-verify-shared.log" new_sha1 new_cn new_team old_cn status
+  step "Mac: installing the build another Mac shared in iCloud Drive"
+  if [ ! -d "$ICLOUD" ]; then
+    mac_failed "iCloud Drive isn't on for this Mac's user ($ICLOUD is missing), so there's no shared build; $MAC_INSTALLED wasn't touched"
+    return 1
+  fi
+  head=$(git rev-parse HEAD 2>/dev/null)
+  sha12=$(printf '%s' "$head" | cut -c1-12)
+  name="$APP_NAME $sha12"
+  zip="$SHARE_DIR/$name.zip"
+  manifest="$SHARE_DIR/$name.json"
+  say "    waiting for Woodruff Family builds/$name.zip (up to $((SHARE_WAIT / 60)) minutes)"
+  while :; do
+    if [ -f "$manifest" ] && [ -f "$zip" ]; then
+      if command -v brctl >/dev/null 2>&1; then   # asks iCloud for the contents if only a placeholder is here
+        brctl download "$manifest" </dev/null >/dev/null 2>&1
+        brctl download "$zip" </dev/null >/dev/null 2>&1
+      fi
+      if cp "$manifest" "$meta" 2>"$clog" && cp "$zip" "$copy" 2>>"$clog" &&
+        signing check-share --manifest "$meta" --zip "$copy" --commit "$head" --team "$TEAM" >"$check" 2>>"$clog"; then
+        got=1
+        break
+      fi
+    fi
+    if [ "$waited" -ge "$SHARE_WAIT" ]; then
+      break
+    fi
+    sleep 15
+    waited=$((waited + 15))
+    if [ $((waited % 120)) -eq 0 ]; then
+      say "    still waiting ($((waited / 60)) minutes)"
+    fi
+  done
+  if [ "$got" -ne 1 ]; then
+    if [ -s "$clog" ]; then tail -n 3 "$clog" | indent; fi
+    rm -f "$copy"
+    mac_failed "no complete build of $sha12 arrived in iCloud Drive (Woodruff Family builds) within $((SHARE_WAIT / 60)) minutes; a Mac that can sign shares one with scripts/deploy.sh --expect $sha12 mac share. $MAC_INSTALLED wasn't touched"
+    return 1
+  fi
+  built_on=$(signing get "$check" built_on 2>/dev/null)
+  say "    $name.zip from ${built_on:-another Mac} matches its manifest"
+
+  rm -rf "$unz"
+  if ! mkdir -p "$unz" || ! ditto -x -k "$copy" "$unz" </dev/null >"$LOGDIR/shared-unzip.log" 2>&1; then
+    tail -n 5 "$LOGDIR/shared-unzip.log" | indent
+    rm -rf "$unz" "$copy"
+    mac_failed "couldn't unzip the shared build; $MAC_INSTALLED wasn't touched"
+    return 1
+  fi
+  rm -f "$copy"
+  product="$unz/$APP_NAME.app"
+  if [ ! -d "$product" ]; then
+    rm -rf "$unz"
+    mac_failed "the shared zip has no $APP_NAME.app inside; $MAC_INSTALLED wasn't touched"
+    return 1
+  fi
+  # This family's own build, copied by iCloud Drive: no download warning when it opens.
+  xattr -dr com.apple.quarantine "$product" </dev/null >/dev/null 2>&1
+  if ! codesign --verify --deep --strict --verbose=2 "$product" </dev/null >"$vlog" 2>&1; then
+    show_matches '.' "$vlog" 12
+    rm -rf "$unz"
+    mac_failed "the shared build's signature doesn't verify (log $vlog); $MAC_INSTALLED wasn't touched"
+    return 1
+  fi
+  if ! signing signer --app "$product" >"$LOGDIR/shared-signer.json" 2>>"$clog"; then
+    rm -rf "$unz"
+    mac_failed "can't tell which certificate signed the shared build; $MAC_INSTALLED wasn't touched"
+    return 1
+  fi
+  new_sha1=$(signing get "$LOGDIR/shared-signer.json" sha1 2>/dev/null)
+  new_cn=$(signing get "$LOGDIR/shared-signer.json" cn 2>/dev/null)
+  new_team=$(signing get "$LOGDIR/shared-signer.json" team 2>/dev/null)
+  if [ "$new_team" != "$TEAM" ]; then
+    rm -rf "$unz"
+    mac_failed "the shared build is signed for team '${new_team:-unknown}', not $TEAM; $MAC_INSTALLED wasn't touched"
+    return 1
+  fi
+  # The keychain gives the TVs' pairings to an app signed by a certificate with the same name and team as the
+  # app that saved them. A build signed under another name would sign this Mac out of every TV: not installed.
+  if [ -d "$MAC_INSTALLED" ] && signing signer --app "$MAC_INSTALLED" >"$LOGDIR/installed-signer.json" 2>/dev/null; then
+    old_cn=$(signing get "$LOGDIR/installed-signer.json" cn 2>/dev/null)
+    if [ -n "$old_cn" ] && [ "$old_cn" != "$new_cn" ]; then
+      rm -rf "$unz"
+      mac_failed "the shared build is signed by '$new_cn' but the installed app by '$old_cn', and installing it would sign this Mac out of the TVs, so $MAC_INSTALLED wasn't touched"
+      return 1
+    fi
+  fi
+  say "    signed by $new_sha1 ($new_cn), the installed app's certificate name"
+  install_mac "$product" "signed by $new_sha1 ($new_cn) on ${built_on:-another Mac}, shared in iCloud Drive"
+  status=$?
+  if [ "$MAC_OK" -eq 1 ]; then
+    rm -rf "$unz"
+  fi
+  return $status
 }
 
 # ---------------------------------------------------------------------------------------------- the iPhones
@@ -597,7 +772,8 @@ deploy_iphone() {
 # ------------------------------------------------------------------------------------------------------ main
 
 main() {
-  local do_mac=0 do_iphone=0 expect="" parts="" missing="" tool dir ids_before ids_after line self_sum=""
+  local do_mac=0 do_iphone=0 do_share=0 do_mac_shared=0 expect="" parts="" missing="" tool dir ids_before ids_after
+  local line self_sum=""
   local -a orig_args
   orig_args=(${1+"$@"})
 
@@ -613,12 +789,19 @@ main() {
         ;;
       --expect=*) expect=${1#--expect=}; shift ;;
       mac) do_mac=1; shift ;;
+      share) do_mac=1; do_share=1; shift ;;
+      mac-shared) do_mac_shared=1; shift ;;
       iphone | iphones) do_iphone=1; shift ;;
       -h | --help) usage; return 0 ;;
       *) say "Unknown argument: $1"; usage; return 2 ;;
     esac
   done
-  if [ "$do_mac" -eq 0 ] && [ "$do_iphone" -eq 0 ]; then
+  if [ "$do_mac" -eq 1 ] && [ "$do_mac_shared" -eq 1 ]; then
+    say "mac (build here) and mac-shared (install another Mac's build) both install the Mac app: pick one"
+    usage
+    return 2
+  fi
+  if [ "$do_mac" -eq 0 ] && [ "$do_iphone" -eq 0 ] && [ "$do_mac_shared" -eq 0 ]; then
     do_mac=1
   fi
   if [ -n "$expect" ]; then
@@ -631,6 +814,8 @@ main() {
     fi
   fi
   [ "$do_mac" -eq 1 ] && parts="Mac"
+  [ "$do_share" -eq 1 ] && parts="Mac (shared in iCloud Drive)"
+  [ "$do_mac_shared" -eq 1 ] && parts="Mac (another Mac's shared build)"
   [ "$do_iphone" -eq 1 ] && parts="${parts:+$parts and }iPhones"
 
   ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
@@ -679,7 +864,7 @@ main() {
   for tool in git python3 xcodebuild security codesign ditto; do
     command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"
   done
-  if [ "$do_mac" -eq 1 ]; then
+  if [ "$do_mac" -eq 1 ] || [ "$do_mac_shared" -eq 1 ]; then
     for tool in osascript pgrep open; do
       command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"
     done
@@ -709,9 +894,17 @@ main() {
       shopt -u execfail
       problem "couldn't run the updated scripts/deploy.sh; run it again"
       note "Nothing was built or installed."
+    elif [ "$do_mac" -eq 0 ] && [ "$do_iphone" -eq 0 ]; then
+      deploy_mac_shared   # nothing to build here, so no xcodegen
     elif generate_project; then
       if [ "$do_mac" -eq 1 ]; then
         deploy_mac
+        if [ "$do_share" -eq 1 ]; then
+          share_mac
+        fi
+      fi
+      if [ "$do_mac_shared" -eq 1 ]; then
+        deploy_mac_shared
       fi
       if [ "$do_iphone" -eq 1 ]; then
         deploy_iphone
