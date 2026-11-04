@@ -14,6 +14,16 @@ import FoundationModels
 final class HomeWeather {
     static let shared = HomeWeather()
 
+    /// One day of the forecast, in the place's own calendar.
+    struct Day: Codable, Equatable, Identifiable {
+        var date: String   // "2026-11-04"
+        var code: Int
+        var high: Double
+        var low: Double
+        var rain: Int?     // chance of rain, %
+        var id: String { date }
+    }
+
     struct Now: Codable, Equatable {
         var temp: Double
         var code: Int
@@ -21,6 +31,14 @@ final class HomeWeather {
         var high: Double?
         var low: Double?
         var at: Date
+        // The detail behind the pill (missing from a reading saved before they were asked for).
+        var feelsLike: Double?
+        var humidity: Double?
+        var wind: Double?      // mph
+        var rainChance: Int?   // today's, %
+        var sunrise: String?   // "2026-11-04T06:58", the place's own time
+        var sunset: String?
+        var days: [Day]?       // today and the next 5
     }
 
     /// The last reading (kept between launches, so Home shows it at once).
@@ -44,21 +62,37 @@ final class HomeWeather {
         c.queryItems = [
             URLQueryItem(name: "latitude", value: String(format: "%.4f", spot.latitude)),
             URLQueryItem(name: "longitude", value: String(format: "%.4f", spot.longitude)),
-            URLQueryItem(name: "current", value: "temperature_2m,weather_code,is_day"),
-            URLQueryItem(name: "daily", value: "temperature_2m_max,temperature_2m_min"),
+            URLQueryItem(name: "current", value: "temperature_2m,apparent_temperature,relative_humidity_2m,wind_speed_10m,weather_code,is_day"),
+            URLQueryItem(name: "daily", value: "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,sunrise,sunset"),
             URLQueryItem(name: "temperature_unit", value: "fahrenheit"),
+            URLQueryItem(name: "wind_speed_unit", value: "mph"),
             URLQueryItem(name: "timezone", value: "auto"),
-            URLQueryItem(name: "forecast_days", value: "1"),
+            URLQueryItem(name: "forecast_days", value: "6"),
         ]
         guard let url = c.url else { return }
         let request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 12)
         guard let (data, response) = try? await URLSession.shared.data(for: request),
               (response as? HTTPURLResponse)?.statusCode == 200,
               let answer = try? JSONDecoder().decode(Answer.self, from: data) else { return }
-        let reading = Now(temp: answer.current.temperature_2m, code: answer.current.weather_code,
-                          isDay: (answer.current.is_day ?? 1) == 1,
-                          high: answer.daily?.temperature_2m_max?.first ?? nil,
-                          low: answer.daily?.temperature_2m_min?.first ?? nil, at: Date())
+        let daily = answer.daily
+        func item<T>(_ list: [T?]?, _ i: Int) -> T? {
+            guard let list, i < list.count else { return nil }
+            return list[i]
+        }
+        var days: [Day] = []
+        for (i, date) in (daily?.time ?? []).enumerated() {
+            guard let high = item(daily?.temperature_2m_max, i), let low = item(daily?.temperature_2m_min, i) else { continue }
+            days.append(Day(date: date, code: item(daily?.weather_code, i) ?? 0, high: high, low: low,
+                            rain: item(daily?.precipitation_probability_max, i).map { Int($0.rounded()) }))
+        }
+        let current = answer.current
+        let reading = Now(temp: current.temperature_2m, code: current.weather_code,
+                          isDay: (current.is_day ?? 1) == 1,
+                          high: item(daily?.temperature_2m_max, 0), low: item(daily?.temperature_2m_min, 0), at: Date(),
+                          feelsLike: current.apparent_temperature, humidity: current.relative_humidity_2m,
+                          wind: current.wind_speed_10m, rainChance: days.first?.rain,
+                          sunrise: item(daily?.sunrise, 0), sunset: item(daily?.sunset, 0),
+                          days: days.isEmpty ? nil : days)
         now = reading
         Saved.save("homeWeather", reading)
     }
@@ -88,10 +122,18 @@ final class HomeWeather {
             var temperature_2m: Double
             var weather_code: Int
             var is_day: Int?
+            var apparent_temperature: Double?
+            var relative_humidity_2m: Double?
+            var wind_speed_10m: Double?
         }
         struct Daily: Decodable {
+            var time: [String]?
+            var weather_code: [Int?]?
             var temperature_2m_max: [Double?]?
             var temperature_2m_min: [Double?]?
+            var precipitation_probability_max: [Double?]?
+            var sunrise: [String?]?
+            var sunset: [String?]?
         }
         var current: Current
         var daily: Daily?
@@ -103,7 +145,11 @@ extension HomeWeather.Now {
     var tempText: String { "\(Int(temp.rounded()))°" }
 
     /// "Partly Cloudy" and its SF Symbol, from the WMO weather code.
-    var sky: (words: String, symbol: String) {
+    var sky: (words: String, symbol: String) { HomeWeather.sky(code: code, isDay: isDay) }
+}
+
+extension HomeWeather {
+    static func sky(code: Int, isDay: Bool) -> (words: String, symbol: String) {
         switch code {
         case 0: return isDay ? ("Sunny", "sun.max.fill") : ("Clear", "moon.stars.fill")
         case 1: return isDay ? ("Mostly Sunny", "sun.max.fill") : ("Mostly Clear", "moon.fill")
@@ -123,6 +169,9 @@ extension HomeWeather.Now {
         default: return ("", isDay ? "sun.max.fill" : "moon.fill")
         }
     }
+}
+
+extension HomeWeather.Now {
 
     /// "H 78° L 59°", when today's high and low came with it.
     var range: String? {
@@ -304,27 +353,196 @@ final class HomeGreeting {
 struct WeatherPill: View {
     var detailed = false
     private let weather = HomeWeather.shared
+    @State private var showing = false
 
     var body: some View {
         if let now = weather.now {
-            HStack(spacing: 6) {
-                Image(systemName: now.sky.symbol)
-                    .symbolRenderingMode(.multicolor)
-                    .font(.system(size: detailed ? 17 : 15, weight: .semibold))
-                Text(now.tempText)
-                    .font(.system(size: detailed ? 17 : 15, weight: .semibold, design: .rounded))
-                    .monospacedDigit()
-                    .contentTransition(.numericText())
-                if detailed, let range = now.range {
-                    Text(range).font(.caption.weight(.medium)).foregroundStyle(.secondary).monospacedDigit()
+            Button { showing = true } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: now.sky.symbol)
+                        .symbolRenderingMode(.multicolor)
+                        .font(.system(size: detailed ? 17 : 15, weight: .semibold))
+                    Text(now.tempText)
+                        .font(.system(size: detailed ? 17 : 15, weight: .semibold, design: .rounded))
+                        .monospacedDigit()
+                        .contentTransition(.numericText())
+                    if detailed, let range = now.range {
+                        Text(range).font(.caption.weight(.medium)).foregroundStyle(.secondary).monospacedDigit()
+                    }
                 }
+                .padding(.horizontal, 12).padding(.vertical, 7)
+                .glass(Capsule(), interactive: true)
             }
-            .padding(.horizontal, 12).padding(.vertical, 7)
-            .glass(Capsule(), interactive: false)
+            .buttonStyle(.plain)
             .accessibilityElement(children: .combine)
             .accessibilityLabel("\(now.sky.words) \(now.tempText)")
+            .accessibilityHint("Shows the forecast")
             .animation(.smooth, value: now)
+            #if os(iOS)
+            .sheet(isPresented: $showing) {
+                WeatherSheet()
+                    .presentationDetents([.medium, .large])
+                    .presentationDragIndicator(.visible)
+            }
+            #else
+            .popover(isPresented: $showing, arrowEdge: .bottom) {
+                WeatherSheet().frame(width: 380, height: 560)
+            }
+            #endif
         }
+    }
+}
+
+/// The weather in more detail, from the weather pill: now (feels like, humidity, wind, rain, sunrise and sunset),
+/// then today and the next five days, each with its high and low on one shared scale.
+struct WeatherSheet: View {
+    private let weather = HomeWeather.shared
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                if let now = weather.now {
+                    VStack(spacing: 18) {
+                        header(now)
+                        details(now)
+                        if let days = now.days, !days.isEmpty { forecast(days) }
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.bottom, 24)
+                } else {
+                    Text("The weather shows once Woodruff knows where you are.")
+                        .foregroundStyle(.secondary)
+                        .padding(40)
+                }
+            }
+            .navigationTitle("Weather")
+            .inlineTitle()
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
+            }
+        }
+        // A reading saved before the forecast was asked for gets one now.
+        .task { HomeWeather.shared.refresh(force: weather.now?.days == nil) }
+    }
+
+    private func header(_ now: HomeWeather.Now) -> some View {
+        VStack(spacing: 2) {
+            Image(systemName: now.sky.symbol)
+                .symbolRenderingMode(.multicolor)
+                .font(.system(size: 40))
+                .padding(.bottom, 4)
+            Text(now.tempText)
+                .font(.system(size: 64, weight: .thin, design: .rounded))
+                .monospacedDigit()
+            if !now.sky.words.isEmpty { Text(now.sky.words).font(.title3.weight(.semibold)) }
+            if let range = now.range { Text(range).font(.subheadline).foregroundStyle(.secondary).monospacedDigit() }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.top, 4)
+    }
+
+    private func details(_ now: HomeWeather.Now) -> some View {
+        var items: [Detail] = []
+        if let v = now.feelsLike { items.append(Detail(name: "Feels Like", value: "\(Int(v.rounded()))°")) }
+        if let v = now.humidity { items.append(Detail(name: "Humidity", value: "\(Int(v.rounded()))%")) }
+        if let v = now.wind { items.append(Detail(name: "Wind", value: "\(Int(v.rounded())) mph")) }
+        if let v = now.rainChance { items.append(Detail(name: "Chance of Rain", value: "\(v)%")) }
+        if let v = Self.clock(now.sunrise) { items.append(Detail(name: "Sunrise", value: v)) }
+        if let v = Self.clock(now.sunset) { items.append(Detail(name: "Sunset", value: v)) }
+        return LazyVGrid(columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)], spacing: 12) {
+            ForEach(items) { item in
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(item.name.uppercased()).font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                    Text(item.value).font(.title3.weight(.semibold)).monospacedDigit()
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(14)
+                .glass(RoundedRectangle(cornerRadius: 18, style: .continuous), interactive: false)
+            }
+        }
+    }
+
+    private func forecast(_ days: [HomeWeather.Day]) -> some View {
+        let lowest = days.map(\.low).min() ?? 0
+        let highest = days.map(\.high).max() ?? 1
+        return VStack(alignment: .leading, spacing: 0) {
+            Text("\(days.count)-DAY FORECAST").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                .padding(.bottom, 4)
+            ForEach(Array(days.enumerated()), id: \.element.id) { i, day in
+                if i > 0 { Divider() }
+                HStack(spacing: 10) {
+                    Text(Self.dayName(day.date, first: i == 0)).font(.body.weight(.semibold))
+                        .frame(width: 56, alignment: .leading)
+                    VStack(spacing: 1) {
+                        Image(systemName: HomeWeather.sky(code: day.code, isDay: true).symbol)
+                            .symbolRenderingMode(.multicolor)
+                        if let rain = day.rain, rain >= 20 {
+                            Text("\(rain)%").font(.caption2.weight(.semibold)).foregroundStyle(.cyan)
+                        }
+                    }
+                    .frame(width: 36)
+                    Text("\(Int(day.low.rounded()))°").foregroundStyle(.secondary).monospacedDigit()
+                        .frame(width: 34, alignment: .trailing)
+                    TemperatureBar(low: day.low, high: day.high, lowest: lowest, highest: highest)
+                    Text("\(Int(day.high.rounded()))°").monospacedDigit()
+                        .frame(width: 34, alignment: .trailing)
+                }
+                .padding(.vertical, 9)
+            }
+        }
+        .padding(16)
+        .glass(RoundedRectangle(cornerRadius: 22, style: .continuous), interactive: false)
+    }
+
+    /// "Today", then "Thu", "Fri", …
+    private static func dayName(_ date: String, first: Bool) -> String {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyy-MM-dd"
+        guard let d = f.date(from: date) else { return date }
+        if Calendar.current.isDateInToday(d) || (first && !Calendar.current.isDateInTomorrow(d)) { return "Today" }
+        return d.formatted(.dateTime.weekday(.abbreviated))
+    }
+
+    /// "6:58 AM" from Open-Meteo's local "2026-11-04T06:58".
+    private static func clock(_ text: String?) -> String? {
+        guard let text else { return nil }
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyy-MM-dd'T'HH:mm"
+        guard let d = f.date(from: text) else { return nil }
+        return d.formatted(date: .omitted, time: .shortened)
+    }
+}
+
+private struct Detail: Identifiable {
+    var name: String
+    var value: String
+    var id: String { name }
+}
+
+/// A day's low to high on the week's scale, like the Weather app's bars.
+private struct TemperatureBar: View {
+    var low: Double
+    var high: Double
+    var lowest: Double
+    var highest: Double
+
+    var body: some View {
+        GeometryReader { g in
+            let span = max(highest - lowest, 1)
+            let start = (low - lowest) / span * g.size.width
+            let width = max((high - low) / span * g.size.width, 6)
+            ZStack(alignment: .leading) {
+                Capsule().fill(.quaternary)
+                Capsule()
+                    .fill(LinearGradient(colors: [.cyan, .green, .yellow, .orange], startPoint: .leading, endPoint: .trailing))
+                    .frame(width: width)
+                    .offset(x: start)
+            }
+        }
+        .frame(height: 5)
     }
 }
 
