@@ -148,7 +148,6 @@ struct HomeView: View {
     private var favoritesGroup: some View {
         let favTVs = layout.favoritesOnly(fleet.tvs)
         return VStack(alignment: .leading, spacing: 16) {
-            Text("Favorites").font(.title2.bold())
             if layout.favorites.isEmpty {
                 Text("Touch and hold anything on Home (a camera, TV, speaker, light or device) and choose Add to Favorites. It shows up here.")
                     .font(.subheadline).foregroundStyle(.secondary)
@@ -186,7 +185,8 @@ struct HomeView: View {
     private func roomGroup(_ r: String) -> some View {
         let shown = { (k: String) in !layout.hiddenSections.contains(k) }
         return VStack(alignment: .leading, spacing: 10) {
-            Text(r == noRoom ? "Other" : r).font(.title3.bold())
+            // The room picked in the room bar is already its title; names only when every room is listed.
+            if room.isEmpty { Text(r == noRoom ? "Other" : r).font(.title3.bold()) }
             // A favourite camera already playing under Favorites isn't repeated here (one picture, one place).
             if shown("cameras") { CamerasSection(room: r, compact: true, titled: false, excluding: room.isEmpty ? Set(layout.favorites) : []) }
             if shown("tvs") {
