@@ -532,7 +532,7 @@ struct HomeBoard: View {
             d.over = over
         } else {
             d.over = nil
-            let bottom = f.filter { $0.key != d.id }.map(\.value.maxY).max() ?? 0
+            let bottom = f.filter { $0.key != d.id }.map { $0.value.maxY }.max() ?? 0
             if p.y > bottom + 6 && from != order.count - 1 { to = order.count - 1 }
         }
         if d.over != drag?.over { drag = d }

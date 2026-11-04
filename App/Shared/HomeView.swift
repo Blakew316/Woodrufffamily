@@ -81,6 +81,13 @@ struct HomeView: View {
             // Fills the window: tiles reflow as it's resized (no fixed width on the Mac).
             .frame(maxWidth: .infinity, alignment: .leading)
             .frame(maxWidth: .infinity)
+            // Like the Home Screen: press and hold an empty spot to arrange the tiles; tap one to finish.
+            .background {
+                Color.clear
+                    .contentShape(Rectangle())
+                    .gesture(TapGesture().onEnded { layout.stopArranging() }, including: arranging ? .all : .none)
+                    .gesture(LongPressGesture(minimumDuration: 0.5).onEnded { _ in startArranging() }, including: arranging ? .none : .all)
+            }
         }
         .scrollPosition($scroller.position)
         .onScrollGeometryChange(for: HomeScrollSpot.self) { HomeScrollSpot($0) } action: { _, spot in scroller.take(spot) }
@@ -365,6 +372,16 @@ struct HomeView: View {
 
     private func close() {
         withAnimation(.spring(response: 0.45, dampingFraction: 0.9)) { openTV = nil }
+    }
+
+    private func startArranging() {
+        guard !layout.arranging else { return }
+        layout.startArranging()
+        #if os(iOS)
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        #else
+        MacFeedback.snap()
+        #endif
     }
 }
 
