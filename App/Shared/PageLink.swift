@@ -124,8 +124,6 @@ struct MacPage<Content: View>: View {
             .safeAreaInset(edge: .top, spacing: 0) {
                 MacBackRow(title: title, backTo: backTo) { dismiss() }
             }
-            // The page's name is already next to Back: the window doesn't print it a second time at the top.
-            .toolbar(removing: .title)
     }
 }
 
@@ -148,9 +146,7 @@ struct MacBackRow: View {
             .controlSize(.large)
             .keyboardShortcut("[", modifiers: .command)
             .help("Back to \(backTo) (⌘[)")
-            Text(title)
-                .font(.title2.bold())
-                .lineLimit(1)
+            // The page's name is already at the top of the window; it isn't repeated here.
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 18)

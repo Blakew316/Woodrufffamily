@@ -476,7 +476,6 @@ struct MacRoot: View {
                 .safeAreaInset(edge: .top, spacing: 0) {
                     MacBackRow(title: "Search", backTo: rootTitle) { withAnimation(.smooth(duration: 0.25)) { query = "" } }
                 }
-                .toolbar(removing: .title)
         }
         // .id: a new item gets a fresh page (no name or level left over from the last one).
         else if let d = deviceSelection, d.hasPrefix("spk:") { SpeakerDetailView(speakerID: String(d.dropFirst(4))).id(d) }
