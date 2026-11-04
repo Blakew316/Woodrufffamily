@@ -152,7 +152,7 @@ struct WatchView: View {
         case "empty": return "Make folders named Movies and TV Shows in Google Drive."
         case "expired", "expiredEmpty", "notSignedIn": return "Sign \(t) in again from Settings → TVs → \(t)."
         case "loading": return "\(t) is reading Movies and TV Shows."
-        default: return "Add the Google Drive keys in Settings → Connections."
+        default: return "Add the Google Drive keys in Settings → Accounts → Google Drive."
         }
     }
 }

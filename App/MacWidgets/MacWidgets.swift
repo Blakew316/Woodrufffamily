@@ -130,17 +130,18 @@ struct TVsProvider: TimelineProvider {
                 let r = e.id == "this" ? 3 : (e.online ? 2 : 1)
                 if let have = rank[id], have >= r { continue }
                 rank[id] = r
-                tvs[id] = WidgetTV(id: id, name: snap.names[id] ?? e.name, online: e.online, playing: e.playing, hub: hub, routeID: e.id)
+                // Only a TV that's on plays anything (a hub can still hold what an off TV last played).
+                tvs[id] = WidgetTV(id: id, name: snap.names[id] ?? e.name, online: e.online, playing: e.online ? e.playing : nil, hub: hub, routeID: e.id)
             }
         }
         // Every TV the app knows is listed, also one no TV reported just now. One whose TV didn't answer is off from
-        // here, as the app shows it (never what it was playing hours ago).
+        // here, as the app shows it. None of these plays anything: what the app saw it playing may be long over.
         let silent = Set(snap.hubs.map(\.id).filter { answers[$0] == nil })
         for t in snap.tvs ?? [] where tvs[t.id] == nil {
             guard let hub = snap.hubs.first(where: { $0.id == t.hubID }) ?? snap.hubs.first else { continue }
             let gone = silent.contains(t.hubID) || silent.contains(t.id)
             tvs[t.id] = WidgetTV(id: t.id, name: snap.names[t.id] ?? t.name, online: gone ? false : t.online,
-                                 playing: gone ? nil : t.playing, hub: hub, routeID: t.routeID)
+                                 playing: nil, hub: hub, routeID: t.routeID)
         }
         for hub in snap.hubs where tvs[hub.id] == nil {
             tvs[hub.id] = WidgetTV(id: hub.id, name: snap.names[hub.id] ?? hub.name, online: false, playing: nil, hub: hub, routeID: "this")
@@ -148,7 +149,8 @@ struct TVsProvider: TimelineProvider {
         let list = tvs.values.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
         let selected = list.first { $0.id == snap.selectedID } ?? list.first { $0.playing != nil } ?? list.first
         var art: Data?
-        if let s = selected, let p = s.playing {
+        // A poster only for what's actually playing (not something paused, or left behind).
+        if let s = selected, let p = s.playing, p.isPlaying {
             let hub = s.hub
             art = await within(5) { await TVsProvider.poster(for: p, hub: hub) }
         }

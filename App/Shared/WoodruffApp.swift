@@ -240,7 +240,7 @@ struct RootView: View {
     /// The Liquid Glass tab bar (it tucks away while scrolling), with what's playing riding above it.
     private var tabs: some View {
         tabView
-            .onChange(of: fleet.selected?.playing) { _, _ in LiveActivitySync.shared.sync(fleet) }
+            .onChange(of: fleet.selected?.nowPlaying) { _, _ in LiveActivitySync.shared.sync(fleet) }
             .onChange(of: fleet.selectedID) { _, _ in LiveActivitySync.shared.sync(fleet) }
             .onChange(of: fleet.remoteAll) { _, _ in LiveActivitySync.shared.sync(fleet) }
     }
@@ -253,8 +253,8 @@ struct RootView: View {
                         // What's playing floats above the tabs everywhere but Remote, which shows it itself.
                         .safeAreaInset(edge: .bottom, spacing: 0) { if s != .remote { NowPlayingBar() } }
                         // Room under every page's last row for the bar, so nothing ends up stuck behind it.
-                        .contentMargins(.bottom, s != .remote && fleet.selected?.playing != nil ? 96 : 0, for: .scrollContent)
-                        .animation(.smooth, value: fleet.selected?.playing?.title)
+                        .contentMargins(.bottom, s != .remote && fleet.selected?.nowPlaying != nil ? 96 : 0, for: .scrollContent)
+                        .animation(.smooth, value: fleet.selected?.nowPlaying?.title)
                 }
                 .badge(s == .settings ? fleet.attentionCount + fleet.updatesWaiting : 0)
             }

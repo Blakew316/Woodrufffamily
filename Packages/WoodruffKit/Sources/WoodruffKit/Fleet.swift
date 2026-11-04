@@ -53,6 +53,18 @@ public struct FleetTV: Identifiable, Hashable, Sendable {
     public var alertsHidden = false
     /// A Woodruff TV heard on the Wi‑Fi that isn't paired or linked yet (`link == "unpaired"`): where it answers.
     public var foundAt: URL?
+    /// What it shows is paused, and has been for 5 minutes, or was already paused when this app first saw it (an
+    /// Android session left behind after leaving YouTube, Netflix or Plex): it no longer counts as playing
+    /// (`FleetMerge.pause`).
+    public var pausedLong = false
+
+    /// What the TV is playing right now, the one thing every picture, title and player goes by: nothing while it's
+    /// off or not paired, and nothing once a pause has gone on too long (`pausedLong`). `playing` is what the TV
+    /// last said, for its controls.
+    public var nowPlaying: NowPlaying? {
+        guard online, !isUnpaired, let p = playing, p.isPlaying || !pausedLong else { return nil }
+        return p
+    }
 
     public var isUnpaired: Bool { link == "unpaired" }
     /// Something the family should look at (and hasn't hidden).
@@ -188,6 +200,14 @@ public final class Fleet {
     // Each hub is asked on its own clock and its answer shows the moment it arrives (see `askDue` and `take`).
     /// Each hub's latest answer (none yet: still waiting for its first).
     @ObservationIgnored private var answers: [String: HubAnswer] = [:]
+    /// When each hub's latest answer arrived, on this device's clock: one older than `staleAfter` isn't believed
+    /// about what's playing.
+    @ObservationIgnored private var answeredAt: [String: Date] = [:]
+    /// Each TV a hub passes on (by `FleetMerge.relayKey`): its `seen` in that hub's answers, and when the answer that
+    /// first carried that value arrived. One that hasn't moved for a while is a TV the hub hasn't heard from lately.
+    @ObservationIgnored private var relaySeen: [String: RelaySeen] = [:]
+    /// Each TV's pause clock, by TV id (`FleetMerge.pause`).
+    @ObservationIgnored private var pauseMarks: [String: PauseMark] = [:]
     /// Missed answers in a row, per hub (two or more: it's off, or out of reach).
     @ObservationIgnored private var failures: [String: Int] = [:]
     @ObservationIgnored private var askedAt: [String: Date] = [:]
@@ -208,6 +228,9 @@ public final class Fleet {
     static var running: Fleet?
 
     init() {
+        // What each TV last played was once kept to picture TVs that had stopped; nothing is pictured unless it's
+        // playing now, so the old copy goes.
+        UserDefaults.standard.removeObject(forKey: "lastPlaying")
         if Demo.isOn {
             Demo.register()
             hubs = [Demo.hub]
@@ -313,8 +336,17 @@ public final class Fleet {
 
     public func setActive(_ on: Bool) {
         active = on
-        if on { Task { await refresh() } }
+        guard on else { return }
+        // Back from the background: what the TVs said before it may be long over, so it goes at once (answers older
+        // than `staleAfter` say nothing is playing), and each TV shows what it's doing as soon as its hub answers.
+        rebuild()
+        Task { await refresh() }
     }
+
+    /// How old a hub's answer may be before what it says is playing isn't believed any more: a little over the time
+    /// a hub that has stopped answering takes to count as off while the app is in use, longer while it isn't (the
+    /// hubs are asked less often then).
+    private var staleAfter: TimeInterval { active ? 20 : 75 }
 
     // MARK: Pairing
 
@@ -340,6 +372,8 @@ public final class Fleet {
         Keychain.set(nil, for: "hub.\(hubID)")
         saveHubs()
         answers[hubID] = nil
+        answeredAt[hubID] = nil
+        relaySeen = relaySeen.filter { !$0.key.hasPrefix(hubID + "|") }
         failures[hubID] = nil
         askedAt[hubID] = nil
         latency[hubID] = nil
@@ -442,6 +476,7 @@ public final class Fleet {
     private func askDue() {
         guard !hubs.isEmpty else { return }
         let now = Date()
+        dropStalePlaying(now)
         let heard = heardTVs()
         #if os(macOS)
         // The Mac's menu bar, widgets and media keys show the TVs even when its window isn't in front.
@@ -465,6 +500,16 @@ public final class Fleet {
             Task { await self.ask(target, timeout: wait) }
         }
         heardBefore = Set(heard.keys)
+    }
+
+    /// A hub whose latest answer has grown too old to go by (`staleAfter`) while one of its TVs still shows what that
+    /// answer said was playing: shown again without it, instead of waiting for an answer that may not come (the app
+    /// just woke in the background, or the hub went quiet without failing yet).
+    private func dropStalePlaying(_ now: Date) {
+        let limit = staleAfter
+        let old = Set(answeredAt.filter { now.timeIntervalSince($0.value) > limit }.keys)
+        guard !old.isEmpty, tvs.contains(where: { $0.playing != nil && old.contains($0.hubID) }) else { return }
+        rebuild()
     }
 
     /// How long to wait for a hub that answers: 3 seconds on the home network (6 through an away-from-home link,
@@ -534,11 +579,13 @@ public final class Fleet {
         guard let i = hubs.firstIndex(where: { $0.id == id }) else { return }   // unpaired meanwhile
         guard seq > (takenSeq[id] ?? 0) else { return }                       // an older question, answered late
         takenSeq[id] = seq
-        refreshedAt = Date()
+        let now = Date()
+        refreshedAt = now
         switch result {
         case .success(let list):
             failures[id] = nil
             answers[id] = .answered(list)
+            answeredAt[id] = now
             if let me = list.first(where: { $0.id == "this" }), me.name != hubs[i].name {
                 hubs[i].name = me.name
                 saveHubs()
@@ -559,8 +606,12 @@ public final class Fleet {
         guard !hubs.isEmpty else { return }
         let now = Date()
         let before = Dictionary(tvs.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        let limit = staleAfter
+        let stale = staleRelays()
         var all = FleetMerge.merge(hubs: hubs, answers: answers, before: before,
-                                   platforms: extras.compactMapValues(\.platform), now: now)
+                                   platforms: extras.compactMapValues(\.platform), now: now,
+                                   answeredAt: answeredAt, staleAfter: limit, staleRelays: stale)
+        var marks: [String: PauseMark] = [:]
         for i in all.indices {
             let id = all[i].id
             if extras[id]?.platform == nil, let p = guessPlatform(all[i]) {
@@ -573,7 +624,21 @@ public final class Fleet {
             }
             if let alias = extras[id]?.alias, !alias.isEmpty { all[i].name = alias }
             all[i].alertsHidden = all[i].hasAlerts && hiddenAlerts[id] == all[i].alertSignature
+            // The pause clock. A TV that only shows nothing because what was heard of it is too old keeps its clock,
+            // so a pause from before the app went to the background still counts from when it began.
+            let hubID = all[i].hubID
+            let heardAt = answeredAt[hubID]
+            let tooOld = (heardAt.map { now.timeIntervalSince($0) > limit } ?? false)
+                || (!all[i].isHub && stale.contains(FleetMerge.relayKey(hubID, all[i].routeID)))
+            if all[i].online && all[i].playing == nil && tooOld {
+                marks[id] = pauseMarks[id]
+            } else {
+                let judged = FleetMerge.pause(all[i].online ? all[i].playing : nil, mark: pauseMarks[id], heardAt: heardAt ?? now, now: now)
+                marks[id] = judged.mark
+                all[i].pausedLong = judged.long
+            }
         }
+        pauseMarks = marks
         all.sort(by: FleetMerge.order)
         // TVs heard on the Wi‑Fi that no paired TV knows: listed so they can be paired.
         let pairedHosts = Set(hubs.compactMap { $0.connection.base.host })
@@ -592,11 +657,6 @@ public final class Fleet {
         let quiet = paired.contains(where: { !$0.online }) && (!paired.contains(where: \.online) || !atHome)
         for tv in paired { notifyIfNeeded(tv, was: before[tv.id], quiet: quiet) }
         if all != tvs { tvs = all }
-        var changedLast = false
-        for tv in all {
-            if let p = tv.playing, lastPlaying[tv.id]?.title != p.title { lastPlaying[tv.id] = p; changedLast = true }
-        }
-        if changedLast { Saved.save("lastPlaying", lastPlaying) }
         // Pick another TV only when the chosen one is really gone: not while a hub that may know it hasn't
         // answered yet (a linked TV chosen last time shows up with its hub's first answer).
         let waiting = hubs.contains { answers[$0.id] == nil }
@@ -604,6 +664,26 @@ public final class Fleet {
         if selectedID == nil || (!known && !waiting) {
             if let first = tvs.first(where: { !$0.isUnpaired })?.id, first != selectedID { selectedID = first }
         }
+    }
+
+    /// The TVs a hub passes on (by `FleetMerge.relayKey`) that it still says are on but hasn't heard from for a while
+    /// (`FleetMerge.relay`): what they're playing is left out until they're heard again. Counted between that hub's
+    /// own answers, so a hub that's asked less often (the app in the background) never makes its TVs look stale.
+    private func staleRelays() -> Set<String> {
+        var stale: Set<String> = []
+        var kept: [String: RelaySeen] = [:]
+        for hub in hubs {
+            guard case .answered(let list)? = answers[hub.id], let at = answeredAt[hub.id] else { continue }
+            for e in list where e.id != "this" && e.online {
+                guard let seen = e.seen else { continue }
+                let key = FleetMerge.relayKey(hub.id, e.id)
+                let judged = FleetMerge.relay(seen: seen, at: at, kept: relaySeen[key])
+                kept[key] = judged.kept
+                if judged.stale { stale.insert(key) }
+            }
+        }
+        relaySeen = kept
+        return stale
     }
 
     /// Alerts once per problem: a TV's alert is announced again only when what it says changes, and "went
@@ -690,9 +770,6 @@ public final class Fleet {
     }
 
     // MARK: Artwork for what's playing
-
-    /// What each TV last played (kept after it stops, so its tile keeps its picture).
-    public private(set) var lastPlaying: [String: NowPlaying] = Saved.load("lastPlaying", as: [String: NowPlaying].self) ?? [:]
 
     /// The hub's Watch home, kept to put pictures on what each TV is playing.
     public private(set) var library: WatchHome?
@@ -990,7 +1067,7 @@ public final class Fleet {
     public var menuBarSymbol: String {
         if hubs.isEmpty { return "tv" }
         if tvs.contains(where: { $0.needsAttention }) { return "exclamationmark.triangle" }
-        if tvs.contains(where: { $0.playing != nil }) { return "play.tv" }
+        if tvs.contains(where: { $0.nowPlaying?.isPlaying == true }) { return "play.tv" }
         return "tv"
     }
 }
@@ -1014,18 +1091,26 @@ enum FleetMerge {
     ///   beats one saying it's off; between equals, the hub paired first wins.
     /// - A hub that doesn't answer keeps what was known of it, marked off, and so do the linked TVs only it knew
     ///   (unless another hub reports them). A hub not heard from yet keeps what was shown before.
+    /// - Only a TV that's on is playing anything, or showing anything on screen. What it plays is believed only from
+    ///   a fresh answer: none when its hub's answer arrived more than [staleAfter] seconds before [now] (by
+    ///   [answeredAt]), nor when that hub passes it on without having heard from it lately ([staleRelays], by
+    ///   `relayKey`). Either way the TV itself stays as it was (on, its version, its health).
     /// - What's playing is laid over what was shown before (`NowPlaying.smoothed`), so progress never jumps back.
     static func merge(hubs: [Hub], answers: [String: HubAnswer], before: [String: FleetTV],
-                      platforms: [String: TVPlatform], now: Date) -> [FleetTV] {
+                      platforms: [String: TVPlatform], now: Date,
+                      answeredAt: [String: Date] = [:], staleAfter: TimeInterval = .infinity,
+                      staleRelays: Set<String> = []) -> [FleetTV] {
         var merged: [String: FleetTV] = [:]
         var rank: [String: Int] = [:]
         for hub in hubs {
             guard case .answered(let list)? = answers[hub.id] else { continue }
+            let fresh = answeredAt[hub.id].map { now.timeIntervalSince($0) <= staleAfter } ?? true
             for e in list {
                 let realID = e.id == "this" ? hub.id : e.id
-                let tv = FleetTV(id: realID, name: e.name, online: e.online, onScreen: e.onScreen ?? false, playing: e.playing,
-                                 version: e.version, seen: e.seen, link: e.link ?? "ok", health: e.health, hubID: hub.id,
-                                 routeID: e.id, platform: platforms[realID])
+                let believed = e.online && fresh && (e.id == "this" || !staleRelays.contains(relayKey(hub.id, e.id)))
+                let tv = FleetTV(id: realID, name: e.name, online: e.online, onScreen: e.online && (e.onScreen ?? false),
+                                 playing: believed ? e.playing : nil, version: e.version, seen: e.seen, link: e.link ?? "ok",
+                                 health: e.health, hubID: hub.id, routeID: e.id, platform: platforms[realID])
                 let r = tv.isHub ? 3 : (tv.online ? 2 : 1)
                 if let have = rank[realID], have >= r { continue }
                 merged[realID] = tv
@@ -1066,6 +1151,60 @@ enum FleetMerge {
         if byName != .orderedSame { return byName == .orderedAscending }
         return a.id < b.id
     }
+
+    // MARK: TVs a hub passes on
+
+    /// One TV as one hub passes it on ("hub|TV"): the same TV can be passed on by several hubs, each hearing from it
+    /// on its own.
+    static func relayKey(_ hubID: String, _ tvID: String) -> String { hubID + "|" + tvID }
+
+    /// How long a hub can keep passing on the same `seen` for a TV (by its own answers, on this device's clock)
+    /// before it counts as not having heard from that TV lately. A hub hears from each linked TV every few seconds.
+    static let relayStaleAfter: TimeInterval = 20
+
+    /// [seen], as a hub's answer that arrived at [at] passes it on, laid over what was [kept] from its answers before:
+    /// the value to keep, and whether that hub has now gone `relayStaleAfter` seconds of answers without hearing from
+    /// the TV (its `seen` hasn't moved), so what it says the TV plays is out of date.
+    static func relay(seen: Double, at: Date, kept: RelaySeen?) -> (kept: RelaySeen, stale: Bool) {
+        let r = kept.flatMap { $0.seen == seen ? $0 : nil } ?? RelaySeen(seen: seen, since: at)
+        return (r, at.timeIntervalSince(r.since) >= relayStaleAfter)
+    }
+
+    // MARK: Pauses
+
+    /// How long a pause lasts before what's paused no longer counts as playing.
+    static let pausedLongAfter: TimeInterval = 300
+
+    /// The pause rule, one source of truth (`FleetTV.pausedLong`): whether [playing] has been paused so long it no
+    /// longer counts as playing, and the mark to keep for the next answer. A pause counts from the last time the title
+    /// was heard playing ([heardAt]: when the answer saying what it plays arrived), so a pause this app sees happen
+    /// starts the clock then, and one that began while the app was asleep counts from before it slept. A title first
+    /// seen already paused (the app just launched, or an Android session left behind after YouTube, Netflix or Plex
+    /// closed) counts as paused long at once. Nothing playing (or the TV off) clears the mark; another title starts
+    /// afresh.
+    static func pause(_ playing: NowPlaying?, mark: PauseMark?, heardAt: Date, now: Date) -> (mark: PauseMark?, long: Bool) {
+        guard let p = playing else { return (nil, false) }
+        let title = (p.key ?? "") + "|" + p.title
+        if p.isPlaying { return (PauseMark(title: title, playedAt: heardAt), false) }
+        guard let kept = mark, kept.title == title else { return (PauseMark(title: title, playedAt: nil), true) }
+        guard let at = kept.playedAt else { return (kept, true) }
+        return (kept, now.timeIntervalSince(at) >= pausedLongAfter)
+    }
+}
+
+/// A TV as one hub passes it on: its `seen` in that hub's answers, and when the answer that first carried that value
+/// arrived (on this device's clock).
+struct RelaySeen: Equatable, Sendable {
+    var seen: Double
+    var since: Date
+}
+
+/// What a TV was last heard doing with a title, for the pause rule (`FleetMerge.pause`).
+struct PauseMark: Equatable, Sendable {
+    /// The title as "key|title", so another title starts afresh.
+    var title: String
+    /// The last time it was heard playing; nil when it was already paused the first time it was seen.
+    var playedAt: Date?
 }
 
 public struct NowPlayingArtwork: Hashable, Sendable {

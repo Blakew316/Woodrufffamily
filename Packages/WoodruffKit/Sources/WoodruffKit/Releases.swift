@@ -83,7 +83,7 @@ public struct ReleaseFeed: Sendable {
         let status = (resp as? HTTPURLResponse)?.statusCode ?? 0
         if status == 404 || status == 401 {
             throw TVError.http(status: status, message: platform == .webOS
-                ? "The webOS releases are in a private repository. Add a GitHub token in Settings → Updates."
+                ? "The webOS releases are in a private repository. Add a GitHub token in Settings → TVs → Software Update."
                 : "GitHub refused (\(status)).")
         }
         guard status == 200 else { throw TVError.http(status: status, message: "GitHub answered \(status)") }

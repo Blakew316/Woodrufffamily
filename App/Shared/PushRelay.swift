@@ -315,7 +315,7 @@ final class PushAppDelegate: NSObject, UIApplicationDelegate {
 }
 #endif
 
-/// Settings → Notifications: instant alerts on the iPhones.
+/// Settings → Notifications (→ Instant iPhone Alerts on the Mac): instant alerts on the iPhones.
 struct PushSettingsSection: View {
     private let push = PushRelay.shared
     #if os(macOS)
@@ -361,7 +361,7 @@ struct PushSettingsSection: View {
             #if os(macOS)
             Text("Camera, doorbell, TV, internet and appliance alerts go from this Mac straight to every family iPhone, even when Woodruff is closed there. Make the key once at developer.apple.com → Certificates, IDs & Profiles → Keys → + → Apple Push Notifications service, then download the .p8 file. It syncs to your other Macs.")
             #else
-            Text("Your Macs send camera, doorbell, TV, internet and appliance alerts here even when Woodruff is closed. Set it up once on a Mac, in Settings → Notifications.")
+            Text("Your Macs send camera, doorbell, TV, internet and appliance alerts here even when Woodruff is closed. Set it up once on a Mac, in Settings → Notifications → Instant iPhone Alerts.")
             #endif
         }
         #if os(macOS)

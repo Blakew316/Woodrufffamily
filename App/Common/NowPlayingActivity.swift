@@ -39,8 +39,9 @@ extension NowPlayingAttributes.ContentState {
                   canSkip: p.can("back10") || p.can("fwd30"))
     }
 
-    /// When it goes stale: a playing title once it has ended; a paused one never.
-    var staleDate: Date? { isPlaying ? endsAt : nil }
+    /// When it goes stale: a playing title once it has ended; a paused one 5 minutes after the pause reached it (by then
+    /// it no longer counts as playing, and the app ends it the next time it runs).
+    var staleDate: Date? { isPlaying ? endsAt : Date().addingTimeInterval(300) }
 }
 
 /// The actions behind the Lock Screen, Dynamic Island and Control Center buttons, done in the app.

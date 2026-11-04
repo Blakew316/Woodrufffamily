@@ -55,12 +55,17 @@ public enum Demo {
     static let playingLiving: [String: Any] = ["title": "Midnight Harbor", "subtitle": "", "app": "Woodruff Family", "playing": true, "position": 2_710_000.0, "duration": 6_790_000.0, "can": ["playpause", "back10", "fwd30"], "key": "drive:m_midnight_harbor"]
     static let playingDen: [String: Any] = ["title": "Backyard Science · S2 E4", "subtitle": "The Volcano", "app": "YouTube", "playing": true, "position": 390_000.0, "duration": 1_299_000.0, "can": ["playpause", "back10", "fwd30", "next"], "key": "drive:t_backyard_science"]
 
-    static let tvs: [[String: Any]] = [
-        ["id": "this", "name": "Living Room", "online": true, "onScreen": true, "playing": playingLiving, "version": "2.0.214", "seen": now, "link": "ok", "health": ["status": "good", "count": 0, "first": NSNull()]],
-        ["id": "tv-den", "name": "Den", "online": true, "onScreen": false, "playing": playingDen, "version": "2.0.209", "seen": now, "link": "ok", "health": ["status": "attention", "count": 2, "first": "Google Drive’s sign-in ended"]],
-        ["id": "tv-kitchen", "name": "Kitchen", "online": false, "onScreen": false, "playing": NSNull(), "version": "2.0.214", "seen": now - 7_200_000, "link": "ok", "health": ["status": "unknown", "count": 0, "first": NSNull()]],
-        ["id": "tv-bedroom", "name": "Bedroom", "online": false, "onScreen": false, "playing": NSNull(), "version": NSNull(), "seen": now - 86_400_000, "link": "refused", "health": ["status": "unknown", "count": 0, "first": NSNull()]],
-    ]
+    /// The TVs as the hub answers right now. The ones that are on were just heard from, as a real hub hears from its
+    /// linked TVs every few seconds (a `seen` that never moves would read as a TV the hub has lost touch with).
+    static var tvs: [[String: Any]] {
+        let heard = Date().timeIntervalSince1970 * 1000
+        return [
+            ["id": "this", "name": "Living Room", "online": true, "onScreen": true, "playing": playingLiving, "version": "2.0.214", "seen": heard, "link": "ok", "health": ["status": "good", "count": 0, "first": NSNull()]],
+            ["id": "tv-den", "name": "Den", "online": true, "onScreen": false, "playing": playingDen, "version": "2.0.209", "seen": heard, "link": "ok", "health": ["status": "attention", "count": 2, "first": "Google Drive’s sign-in ended"]],
+            ["id": "tv-kitchen", "name": "Kitchen", "online": false, "onScreen": false, "playing": NSNull(), "version": "2.0.214", "seen": now - 7_200_000, "link": "ok", "health": ["status": "unknown", "count": 0, "first": NSNull()]],
+            ["id": "tv-bedroom", "name": "Bedroom", "online": false, "onScreen": false, "playing": NSNull(), "version": NSNull(), "seen": now - 86_400_000, "link": "refused", "health": ["status": "unknown", "count": 0, "first": NSNull()]],
+        ]
+    }
 
     static func health(_ id: String) -> [String: Any] {
         let den = id == "tv-den"

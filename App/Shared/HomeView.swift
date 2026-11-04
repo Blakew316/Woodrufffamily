@@ -139,7 +139,7 @@ struct HomeView: View {
             }
         }
         #endif
-        .background { HomeBackdrop(playing: featuredTV?.playing) }
+        .background { HomeBackdrop(playing: featuredTV?.nowPlaying) }
         // Home is always the dark, cinematic room: its glass and text read over the backdrop.
         .environment(\.colorScheme, .dark)
         .navigationTitle(openTV.flatMap { fleet.tv($0)?.name } ?? "Home")
@@ -367,8 +367,8 @@ struct HomeView: View {
     /// The TV whose picture warms Home's backdrop: the remote's, if it's playing right now, else any that is. None
     /// while nothing plays (no picture of something that's stopped or paused).
     private var featuredTV: FleetTV? {
-        if let s = fleet.selected, s.online, s.playing?.isPlaying == true { return s }
-        return fleet.tvs.first { $0.online && $0.playing?.isPlaying == true }
+        if let s = fleet.selected, s.nowPlaying?.isPlaying == true { return s }
+        return fleet.tvs.first { $0.nowPlaying?.isPlaying == true }
     }
 
     private func open(_ id: String) {
@@ -456,20 +456,20 @@ struct HomeTVTile: View {
     @State private var newName = ""
 
     var body: some View {
-        // Only what's on the TV right now: a TV that's off, or has stopped, shows no picture (never the last thing it
-        // played).
-        let p = tv.online ? tv.playing : nil
-        let art = p
-        let pictured = hasPicture(fleet, art)
+        // Only what's on the TV right now (`nowPlaying`): a TV that's off, has stopped, or was left paused shows no
+        // picture and reads as nothing playing (never the last thing it played).
+        let p = tv.nowPlaying
+        let pictured = hasPicture(fleet, p)
         // Lifted under the pointer, but not while the tiles are being arranged.
         let hot = hovering && !arranging
         ZStack(alignment: .bottomLeading) {
             if pictured {
                 Color.clear
-                    .overlay { NowPlayingArt(playing: art, backdrop: true) }
+                    .overlay { NowPlayingArt(playing: p, backdrop: true) }
                     .clipped()
-                    .saturation(p == nil ? 0.35 : 1)
-                    .opacity(p == nil ? 0.55 : 1)
+                    // Paused a moment ago: a little quieter until it plays again.
+                    .saturation(p?.isPlaying == false ? 0.7 : 1)
+                    .animation(.easeInOut(duration: 0.4), value: p?.isPlaying)
                 LinearGradient(stops: [.init(color: .black.opacity(0.15), location: 0), .init(color: .black.opacity(0.88), location: 1)],
                                startPoint: .top, endPoint: .bottom)
             }
@@ -582,7 +582,7 @@ struct HomeTVTile: View {
         if tv.link == "refused" && tv.needsAttention { return "Link Again" }
         if !tv.online { return "Off" }
         if fleet.isBehind(tv) { return "Update Available" }
-        if let p = tv.playing { return p.isPlaying ? "Playing" : "Paused" }
+        if let p = tv.nowPlaying { return p.isPlaying ? "Playing" : "Paused" }
         return "On"
     }
 
@@ -720,50 +720,6 @@ struct HomeBackdrop: View {
         .ignoresSafeArea()
         .animation(.easeInOut(duration: 1.2), value: playing?.title)
         .allowsHitTesting(false)
-    }
-}
-
-/// What's playing, large, at the top of Home: the picture, the title, the TV, live progress and the transport.
-struct NowPlayingBanner: View {
-    @Environment(Fleet.self) private var fleet
-    var tv: FleetTV
-    var playing: NowPlaying
-    @State private var open = false
-
-    var body: some View {
-        ZStack(alignment: .bottomLeading) {
-            Color.clear
-                .overlay { NowPlayingArt(playing: playing, backdrop: true) }
-                .clipped()
-            LinearGradient(stops: [.init(color: .clear, location: 0.25), .init(color: .black.opacity(0.88), location: 1)],
-                           startPoint: .top, endPoint: .bottom)
-            HStack(alignment: .bottom, spacing: 24) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Now Playing on \(tv.name)".uppercased())
-                        .font(.caption.weight(.bold)).tracking(1.2).foregroundStyle(.white.opacity(0.65))
-                    Text(playing.title).font(.largeTitle.bold()).lineLimit(2)
-                    if let s = [playing.subtitle, playing.app].compactMap({ $0?.isEmpty == false ? $0 : nil }).first {
-                        Text(s).font(.title3).foregroundStyle(.white.opacity(0.7)).lineLimit(1)
-                    }
-                    LiveProgress(playing: playing, tint: .white).frame(maxWidth: 420).padding(.top, 8)
-                }
-                Spacer(minLength: 0)
-                Transport(tv: tv, playing: playing, compact: true)
-                    .font(.title2)
-                    .padding(.horizontal, 10).padding(.vertical, 6)
-                    .glass(Capsule())
-            }
-            .foregroundStyle(.white)
-            .padding(28)
-        }
-        .frame(height: 300)
-        .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 28, style: .continuous).strokeBorder(.white.opacity(0.08)))
-        .shadow(color: .black.opacity(0.35), radius: 24, y: 12)
-        .contentShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
-        .onTapGesture { open = true }
-        .sheet(isPresented: $open) { NowPlayingSheet(tvID: tv.id).sheetBanner().macResizable(width: 560, height: 780) }
-        .animation(.smooth, value: playing.title)
     }
 }
 

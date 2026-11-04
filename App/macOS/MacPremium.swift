@@ -6,11 +6,11 @@ import WoodruffKit
 
 // MARK: - Ambient artwork
 
-/// The window takes on a soft blur of what the remote's TV is playing, like Music's full-screen player.
+/// The window takes on a soft blur of what the remote's TV is playing now, like Music's full-screen player.
 struct AmbientArtwork: View {
     @Environment(Fleet.self) private var fleet
     var body: some View {
-        let p = fleet.selected?.playing
+        let p = fleet.selected?.nowPlaying
         ZStack {
             if p != nil, fleet.artwork(for: p) != nil {
                 GeometryReader { g in
@@ -78,13 +78,15 @@ struct MiniPlayerView: View {
 
     var body: some View {
         let tv = fleet.selected
-        // What's on now only (no picture of the last thing it played once it's stopped or off).
-        let p = tv?.online == true ? tv?.playing : nil
+        // What's on now only: once it's stopped, off or left paused, no picture and no old title.
+        let p = tv?.nowPlaying
         HStack(spacing: 14) {
-            NowPlayingArt(playing: p)
-                .frame(width: 64, height: 64)
-                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                .shadow(color: .black.opacity(0.3), radius: 8, y: 4)
+            Group {
+                if let p { NowPlayingArt(playing: p) } else { Color.secondary.opacity(0.18) }
+            }
+            .frame(width: 64, height: 64)
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .shadow(color: .black.opacity(0.3), radius: 8, y: 4)
             VStack(alignment: .leading, spacing: 6) {
                 VStack(alignment: .leading, spacing: 1) {
                     Text(p?.title ?? "Nothing Playing").font(.headline).lineLimit(1)
@@ -138,7 +140,8 @@ final class NowPlayingBridge {
     func update(_ fleet: Fleet) {
         wire()
         let info = MPNowPlayingInfoCenter.default()
-        guard let tv = fleet.selected, let p = tv.playing else {
+        // Only what's playing now: a TV that's off, or a title left paused, clears Control Center.
+        guard let tv = fleet.selected, let p = tv.nowPlaying else {
             info.nowPlayingInfo = nil
             info.playbackState = .stopped
             lastTitle = nil
@@ -156,9 +159,12 @@ final class NowPlayingBridge {
         info.playbackState = p.isPlaying ? .playing : .paused
         if lastTitle != p.title, let path = fleet.artwork(for: p)?.poster, let url = fleet.hubClient()?.art(path) {
             lastTitle = p.title
+            let title = p.title
             Task {
                 guard let data = try? await URLSession.woodruff.data(from: url).0, let img = NSImage(data: data) else { return }
-                var cur = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? d
+                // Still showing that title (not cleared, nor moved on, while the poster loaded).
+                guard var cur = MPNowPlayingInfoCenter.default().nowPlayingInfo,
+                      cur[MPMediaItemPropertyTitle] as? String == title else { return }
                 cur[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: img.size) { _ in img }
                 MPNowPlayingInfoCenter.default().nowPlayingInfo = cur
             }
@@ -197,12 +203,14 @@ enum WidgetSync {
         let hubs = fleet.hubs.isEmpty ? (SharedStore.load()?.hubs ?? [])
             : fleet.hubs.map { SharedStore.HubLink(id: $0.id, name: $0.name, base: $0.connection.base, key: $0.connection.key) }
         let home = SmartHome.shared
+        // What each TV plays now (nothing for one that's off or left paused), so a widget drawn from this never shows
+        // an old title.
         let tvs = fleet.tvs.filter { !$0.isUnpaired }.map {
-            SharedStore.TVInfo(id: $0.id, name: $0.name, online: $0.online, playing: $0.playing, hubID: $0.hubID, routeID: $0.routeID)
+            SharedStore.TVInfo(id: $0.id, name: $0.name, online: $0.online, playing: $0.nowPlaying, hubID: $0.hubID, routeID: $0.routeID)
         }
         SharedStore.save(.init(hubs: hubs, selectedID: fleet.selectedID, names: names, speakers: home.speakers, lights: home.lights, tvs: tvs))
         // Reload only when what a widget shows changes (titles, play state, on/off), not every refresh.
-        let key = fleet.tvs.map { "\($0.id)|\($0.name)|\($0.link)|\($0.online)|\($0.playing?.title ?? "")|\($0.playing?.isPlaying ?? false)" }.joined(separator: ";") + "#\(fleet.selectedID ?? "")"
+        let key = fleet.tvs.map { "\($0.id)|\($0.name)|\($0.link)|\($0.online)|\($0.nowPlaying?.title ?? "")|\($0.nowPlaying?.isPlaying ?? false)" }.joined(separator: ";") + "#\(fleet.selectedID ?? "")"
             + home.speakers.map { "\($0.name)|\($0.title ?? "")|\($0.isPlaying)" }.joined() + home.lights.map { "\($0.name)|\($0.on)" }.joined()
         if key != lastKey {
             lastKey = key
@@ -213,7 +221,7 @@ enum WidgetSync {
 
 // MARK: - Feedback
 
-/// A soft click for remote keys (Settings → Notifications can turn it off) and trackpad haptics.
+/// A soft click for remote keys (Settings → General can turn it off) and trackpad haptics.
 @MainActor
 enum MacFeedback {
     static var soundOn: Bool { UserDefaults.standard.object(forKey: "remoteClick") as? Bool ?? true }

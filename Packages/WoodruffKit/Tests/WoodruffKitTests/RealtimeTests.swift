@@ -218,6 +218,134 @@ final class RealtimeTests: XCTestCase {
         XCTAssertFalse(HubAnswer.unreachable.isAnswered)
     }
 
+    // MARK: Only what's on, and playing now
+
+    private func mergeStale(_ hubs: [Hub], _ answers: [String: HubAnswer], now: Date, answeredAt: [String: Date] = [:],
+                            staleAfter: TimeInterval = .infinity, staleRelays: Set<String> = []) -> [String: FleetTV] {
+        let list = FleetMerge.merge(hubs: hubs, answers: answers, before: [:], platforms: [:], now: now,
+                                    answeredAt: answeredAt, staleAfter: staleAfter, staleRelays: staleRelays)
+        return Dictionary(list.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+    }
+
+    func testATVPassedOnAsOffPlaysNothingAndShowsNothing() {
+        // The hub still has what the Kitchen last played, and its screen, but says it's off.
+        let off = TVListEntry(id: "tv-k", name: "Kitchen", online: false, onScreen: true, playing: show(at: 2_000),
+                              version: "2.0.1", seen: nil, link: "ok", health: nil)
+        let tvs = merge([hubA], ["tv-a": .answered([entry("this", "Living Room"), off])])
+        XCTAssertEqual(tvs["tv-k"]?.online, false)
+        XCTAssertNil(tvs["tv-k"]?.playing)
+        XCTAssertEqual(tvs["tv-k"]?.onScreen, false)
+        XCTAssertNil(tvs["tv-k"]?.nowPlaying)
+    }
+
+    func testAStaleAnswerSaysNothingAboutWhatsPlaying() {
+        let answer = HubAnswer.answered([entry("this", "Living Room", playing: show(at: 1_000)),
+                                         entry("tv-k", "Kitchen", playing: show("Ironwood", at: 2_000, key: "drive:m2"))])
+        let fresh = mergeStale([hubA], ["tv-a": answer], now: t0.addingTimeInterval(20), answeredAt: ["tv-a": t0], staleAfter: 20)
+        XCTAssertEqual(fresh["tv-a"]?.playing?.title, "Midnight Harbor", "20 seconds old is still fresh")
+        XCTAssertEqual(fresh["tv-k"]?.playing?.title, "Ironwood")
+        let stale = mergeStale([hubA], ["tv-a": answer], now: t0.addingTimeInterval(21), answeredAt: ["tv-a": t0], staleAfter: 20)
+        XCTAssertNil(stale["tv-a"]?.playing)
+        XCTAssertNil(stale["tv-k"]?.playing)
+        // The TVs themselves stay as they were.
+        XCTAssertEqual(stale["tv-a"]?.online, true)
+        XCTAssertEqual(stale["tv-a"]?.version, "2.0.1")
+        XCTAssertEqual(stale["tv-a"]?.onScreen, true)
+        XCTAssertEqual(stale["tv-k"]?.online, true)
+        XCTAssertEqual(stale["tv-k"]?.version, "2.0.1")
+        // A hub with no time given is taken as fresh.
+        XCTAssertEqual(mergeStale([hubA], ["tv-a": answer], now: t0.addingTimeInterval(500), staleAfter: 20)["tv-a"]?.playing?.title, "Midnight Harbor")
+    }
+
+    func testAStaleRelayDropsOnlyWhatThatTVPlays() {
+        let answer = HubAnswer.answered([entry("this", "Living Room", playing: show(at: 1_000)),
+                                         entry("tv-k", "Kitchen", playing: show("Ironwood", at: 2_000, key: "drive:m2")),
+                                         entry("tv-d", "Den", playing: show("Orbit", at: 3_000, key: "drive:m3"))])
+        let tvs = mergeStale([hubA], ["tv-a": answer], now: t0,
+                             staleRelays: [FleetMerge.relayKey("tv-a", "tv-k"), FleetMerge.relayKey("tv-a", "this")])
+        XCTAssertNil(tvs["tv-k"]?.playing)
+        XCTAssertEqual(tvs["tv-k"]?.online, true, "the TV itself stays as it was")
+        XCTAssertEqual(tvs["tv-k"]?.version, "2.0.1")
+        XCTAssertEqual(tvs["tv-a"]?.playing?.title, "Midnight Harbor", "a hub's word about itself is never a relay")
+        XCTAssertEqual(tvs["tv-d"]?.playing?.title, "Orbit")
+        // The same TV passed on by another hub is that hub's own (stale) relay or not.
+        XCTAssertEqual(mergeStale([hubA], ["tv-a": answer], now: t0, staleRelays: [FleetMerge.relayKey("tv-b", "tv-k")])["tv-k"]?.playing?.title, "Ironwood")
+    }
+
+    func testARelayGoesStaleOnlyWhenItsHubHasntHeardFromItFor20Seconds() {
+        var r = FleetMerge.relay(seen: 1_000, at: t0, kept: nil)
+        XCTAssertFalse(r.stale)
+        r = FleetMerge.relay(seen: 1_000, at: t0.addingTimeInterval(19), kept: r.kept)
+        XCTAssertFalse(r.stale)
+        r = FleetMerge.relay(seen: 1_000, at: t0.addingTimeInterval(20), kept: r.kept)
+        XCTAssertTrue(r.stale)
+        // Heard from again: fresh at once, counted from that answer.
+        r = FleetMerge.relay(seen: 2_000, at: t0.addingTimeInterval(25), kept: r.kept)
+        XCTAssertFalse(r.stale)
+        XCTAssertEqual(r.kept.since, t0.addingTimeInterval(25))
+        r = FleetMerge.relay(seen: 2_000, at: t0.addingTimeInterval(44), kept: r.kept)
+        XCTAssertFalse(r.stale)
+    }
+
+    func testATitleFirstSeenPausedCountsAsPausedLongAtOnce() {
+        // Just launched, or an Android session left behind after leaving YouTube: there's no telling when it paused.
+        let first = FleetMerge.pause(show(playing: false, at: 50_000), mark: nil, heardAt: t0, now: t0)
+        XCTAssertTrue(first.long)
+        let still = FleetMerge.pause(show(playing: false, at: 50_000), mark: first.mark, heardAt: t0.addingTimeInterval(2), now: t0.addingTimeInterval(2))
+        XCTAssertTrue(still.long)
+        // Played again: it counts at once.
+        let played = FleetMerge.pause(show(at: 50_000), mark: still.mark, heardAt: t0.addingTimeInterval(4), now: t0.addingTimeInterval(4))
+        XCTAssertFalse(played.long)
+    }
+
+    func testAPauseSeenHappeningCountsForFiveMinutes() {
+        var mark = FleetMerge.pause(show(at: 10_000), mark: nil, heardAt: t0, now: t0).mark
+        let paused = show(playing: false, at: 11_000)
+        for (s, long) in [(1.0, false), (299.0, false), (300.0, true), (900.0, true)] {
+            let judged = FleetMerge.pause(paused, mark: mark, heardAt: t0.addingTimeInterval(s), now: t0.addingTimeInterval(s))
+            XCTAssertEqual(judged.long, long, "\(s) s after it was last heard playing")
+            mark = judged.mark
+        }
+    }
+
+    func testANewTitleStartsAfresh() {
+        let watched = FleetMerge.pause(show(at: 10_000), mark: nil, heardAt: t0, now: t0).mark
+        let left = FleetMerge.pause(show(playing: false, at: 11_000), mark: watched, heardAt: t0.addingTimeInterval(600), now: t0.addingTimeInterval(600))
+        XCTAssertTrue(left.long)
+        // Another title starts: playing, then paused a little later, on its own clock.
+        let next = FleetMerge.pause(show("Ironwood", at: 1_000, key: "drive:m2"), mark: left.mark,
+                                    heardAt: t0.addingTimeInterval(610), now: t0.addingTimeInterval(610))
+        XCTAssertFalse(next.long)
+        let nextPaused = FleetMerge.pause(show("Ironwood", playing: false, at: 5_000, key: "drive:m2"), mark: next.mark,
+                                          heardAt: t0.addingTimeInterval(620), now: t0.addingTimeInterval(620))
+        XCTAssertFalse(nextPaused.long)
+        // A title that turns up already paused is a leftover, whatever was watched before it.
+        let leftover = FleetMerge.pause(show("Orbit", playing: false, at: 9_000, key: "drive:m3"), mark: nextPaused.mark,
+                                        heardAt: t0.addingTimeInterval(630), now: t0.addingTimeInterval(630))
+        XCTAssertTrue(leftover.long)
+        // Nothing playing clears the mark.
+        let none = FleetMerge.pause(nil, mark: leftover.mark, heardAt: t0.addingTimeInterval(640), now: t0.addingTimeInterval(640))
+        XCTAssertNil(none.mark)
+        XCTAssertFalse(none.long)
+    }
+
+    func testNowPlayingIsOnlyWhatsOnAndNotLeftPaused() {
+        var tv = FleetTV(id: "tv-a", name: "Living Room", online: true, onScreen: true, playing: show(at: 1_000), version: nil, seen: nil,
+                         link: "ok", health: nil, hubID: "tv-a", routeID: "this", platform: nil)
+        XCTAssertEqual(tv.nowPlaying?.title, "Midnight Harbor")
+        tv.pausedLong = true
+        XCTAssertNotNil(tv.nowPlaying, "playing counts whatever the pause clock said")
+        tv.playing = show(playing: false, at: 1_000)
+        XCTAssertNil(tv.nowPlaying, "paused too long")
+        tv.pausedLong = false
+        XCTAssertEqual(tv.nowPlaying?.isPlaying, false, "a recent pause still shows")
+        tv.online = false
+        XCTAssertNil(tv.nowPlaying)
+        tv.online = true
+        tv.link = "unpaired"
+        XCTAssertNil(tv.nowPlaying)
+    }
+
     // MARK: Addresses
 
     func testHomeAddresses() {

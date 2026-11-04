@@ -805,14 +805,20 @@ struct LiveWebView: NSViewRepresentable {
 
 // MARK: - Settings
 
-/// Settings → Cameras: connect this device to the Nest cameras and list them.
+/// Settings → Smart Home → Cameras: connect this device to the Nest cameras and list them.
 struct CamerasPhoneView: View {
     @Environment(Fleet.self) private var fleet
+    /// The TVs' settings as Settings already has them (the Device Access project and Google app this device signs in
+    /// with), so opening the page asks the TVs nothing. Without them it reads its own, once.
+    var hub: HubSettings? = nil
     private let nest = NestCameras.shared
-    @State private var project = ""
-    @State private var clientID = ""
+    @State private var own = HubSettings()
     @State private var secret = ""
     @State private var open: NestCameras.Camera?
+
+    private var settings: HubSettings { hub ?? own }
+    private var project: String { settings.s?.nest?.project ?? "" }
+    private var clientID: String { settings.s?.google?.clientId ?? "" }
 
     var body: some View {
         Form {
@@ -844,20 +850,24 @@ struct CamerasPhoneView: View {
                     }
                     .disabled(nest.busy || project.isEmpty || clientID.isEmpty || secret.isEmpty)
                 } footer: {
-                    Text("Uses the same Google project as your TVs (Settings → Connections → Cameras). Paste the Client Secret from Google Cloud → Credentials (the one you gave the TVs), then sign in with Google and allow the cameras. Do this on the same Wi‑Fi as your TVs.")
+                    Text("Uses the same Google project as your TVs (Settings → Accounts → Nest Cameras). Paste the Client Secret from Google Cloud → Credentials (the one you gave the TVs), then sign in with Google and allow the cameras. Do this on the same Wi‑Fi as your TVs.")
                 }
             }
             if let e = nest.error { Section { Text(e).foregroundStyle(Palette.attention) } }
+            if let hub {
+                // The TVs' own camera keys and alerts (the same page as Accounts → Nest Cameras), right from here.
+                Section {
+                    PageLink("Nest Cameras") { CamerasView(hub: hub) } label: {
+                        IconRow(symbol: "", color: .clear, title: "Camera Keys on the TVs", value: hub.s?.nest?.statusText)
+                    }
+                }
+            }
         }
         .formStyle(.grouped)
         .navigationTitle("Cameras")
         .inlineTitle()
-        .task {
-            if let s = try? await fleet.hubClient()?.settings() {
-                project = s.nest?.project ?? ""
-                clientID = s.google?.clientId ?? ""
-            }
-        }
+        // Settings hadn't read the TVs' settings yet (or this page was opened from somewhere else): read them once.
+        .task { if settings.s == nil && !settings.loading { await settings.load(fleet.hubClient()) } }
         .cameraPresenter($open)
     }
 }

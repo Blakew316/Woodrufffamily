@@ -3,9 +3,10 @@ import ActivityKit
 import Observation
 import WoodruffKit
 
-/// Keeps the Lock Screen / Dynamic Island in step with what the remote's TV is playing: starts the Live Activity
-/// when something plays, updates it when the title or play state changes (the progress bar runs by itself in
-/// between), and ends it when playback stops. Settings → Notifications → Now Playing on Lock Screen turns it off.
+/// Keeps the Lock Screen / Dynamic Island in step with what the remote's TV is playing now (`FleetTV.nowPlaying`):
+/// starts the Live Activity when something plays, updates it when the title or play state changes (the progress bar
+/// runs by itself in between), and ends it when the TV stops, goes off, or is left paused. Settings → Notifications →
+/// Now Playing on Lock Screen turns it off.
 @MainActor
 final class LiveActivitySync {
     static let shared = LiveActivitySync()
@@ -15,6 +16,8 @@ final class LiveActivitySync {
     private var watching = false
     /// The last update sent to the Live Activity, for `syncAndWait`.
     private var pending: Task<Void, Never>?
+    /// Nothing to show for the activity's TV just now: it ends in a moment unless something plays again by then.
+    private var ending: Task<Void, Never>?
 
     private init() {
         // Lock Screen buttons (shared with the widgets extension) bring the Live Activity up to date through this.
@@ -24,19 +27,32 @@ final class LiveActivitySync {
     var enabled: Bool { UserDefaults.standard.object(forKey: "liveActivity") as? Bool ?? true }
 
     /// `sync`, then waits until the Live Activity has the update (a Lock Screen button runs while the app is in the
-    /// background, and the app may sleep again as soon as it returns).
+    /// background, and the app may sleep again as soon as it returns). The TVs have just been asked, so nothing to show
+    /// ends it at once.
     func syncAndWait(_ fleet: Fleet) async {
-        sync(fleet)
+        sync(fleet, endAtOnce: true)
         await pending?.value
     }
 
-    func sync(_ fleet: Fleet) {
+    /// [endAtOnce]: when the remote's TV has nothing to show, end now instead of in a moment. Otherwise a TV that only
+    /// seems to have stopped (the app just woke, and drops what its old answers said until the TVs answer again a
+    /// moment later) never ends the Live Activity only to start a new one.
+    func sync(_ fleet: Fleet, endAtOnce: Bool = false) {
         watch(fleet)
-        guard enabled, ActivityAuthorizationInfo().areActivitiesEnabled,
-              !fleet.remoteAll, let tv = fleet.selected, let p = tv.playing else { end(); return }
-        let state = NowPlayingAttributes.ContentState(tv: tv, playing: p)
-        // One the system ended or the family swiped away can't be updated: start a new one instead.
+        guard enabled, ActivityAuthorizationInfo().areActivitiesEnabled, !fleet.remoteAll, let tv = fleet.selected else {
+            end()
+            return
+        }
+        // One the system ended or the family swiped away can't be updated: a new one is started instead.
         let current = Activity<NowPlayingAttributes>.activities.first { $0.activityState == .active || $0.activityState == .stale }
+        guard let p = tv.nowPlaying else {
+            // Nothing to show: it ends in a moment (at once when told to, or when the activity is another TV's).
+            if endAtOnce || current?.attributes.tvID != tv.id { end() } else { endSoon(fleet) }
+            return
+        }
+        ending?.cancel()
+        ending = nil
+        let state = NowPlayingAttributes.ContentState(tv: tv, playing: p)
         if let current, current.attributes.tvID == tv.id {
             guard needsUpdate(state) else { return }
             last = state
@@ -51,10 +67,24 @@ final class LiveActivitySync {
     }
 
     func end() {
+        ending?.cancel()
+        ending = nil
         last = nil
         lastTV = nil
         for a in Activity<NowPlayingAttributes>.activities {
             Task { await a.end(nil, dismissalPolicy: .immediate) }
+        }
+    }
+
+    /// Ends the Live Activity in 4 seconds, unless the remote's TV plays something again by then (see `sync`).
+    private func endSoon(_ fleet: Fleet) {
+        guard ending == nil else { return }
+        ending = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 4_000_000_000)
+            guard !Task.isCancelled else { return }
+            let live = LiveActivitySync.shared
+            live.ending = nil
+            live.sync(fleet, endAtOnce: true)
         }
     }
 
@@ -65,7 +95,7 @@ final class LiveActivitySync {
         guard !watching else { return }
         watching = true
         withObservationTracking {
-            _ = fleet.selected?.playing
+            _ = fleet.selected?.nowPlaying
             _ = fleet.selected?.name
             _ = fleet.remoteAll
         } onChange: {

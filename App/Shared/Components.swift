@@ -224,7 +224,8 @@ struct TVPicker: View {
 func statusWord(_ t: FleetTV) -> String {
     if t.link == "refused" { return "Link again" }
     if !t.online { return "Off" }
-    if let p = t.playing { return (p.isPlaying ? "Playing " : "Paused · ") + p.title }
+    // A title left paused reads as nothing playing, as it does on its tile.
+    if let p = t.nowPlaying { return (p.isPlaying ? "Playing " : "Paused · ") + p.title }
     return "Nothing playing"
 }
 

@@ -60,8 +60,11 @@ struct TVDetailView: View {
             .task(id: waking) { await watchWake() }
             // The TV's own answer replaces a play/pause guess the moment it arrives.
             .onChange(of: tv.playing?.isPlaying) { _, _ in flipped = nil }
+            // The last screen capture is only for a TV that's on and not playing: gone the moment it goes off or starts
+            // playing, so it never comes back later showing what was on screen before.
+            .onChange(of: tv.online && tv.nowPlaying == nil) { _, idle in if !idle { screen = nil } }
             .sheet(isPresented: $showScreen) {
-                Group { if tv.playing != nil { NowPlayingSheet(tvID: tvID) } else { TVScreenSheet(tvID: tvID) } }
+                Group { if tv.nowPlaying != nil { NowPlayingSheet(tvID: tvID) } else { TVScreenSheet(tvID: tvID) } }
                     .sheetBanner()
                     .macResizable(width: 640, height: 780)
             }
@@ -93,8 +96,9 @@ struct TVDetailView: View {
             Button { showScreen = true } label: {
                 ZStack {
                     Rectangle().fill(.black)
-                    if tv.playing != nil { NowPlayingArt(playing: tv.playing, backdrop: true) }
-                    else if let screen { Image(platformImage: screen).resizable().aspectRatio(contentMode: .fill) }
+                    // What's playing now; else, while it's on, its screen as last captured.
+                    if let p = tv.nowPlaying { NowPlayingArt(playing: p, backdrop: true) }
+                    else if tv.online, let screen { Image(platformImage: screen).resizable().aspectRatio(contentMode: .fill) }
                     else { Text(tv.online ? "" : "Off").font(.caption.weight(.semibold)).foregroundStyle(.white.opacity(0.5)) }
                 }
                 .frame(width: 136, height: 77)
@@ -320,8 +324,13 @@ struct TVDetailView: View {
 
     private func screenLoop() async {
         while !Task.isCancelled {
-            if !showScreen, let t = fleet.tv(tvID), t.online, t.playing == nil, fleet.platform(of: t) != .webOS, let c = fleet.client(for: t) {
-                if let d = try? await c.screen(width: 480) { screen = PlatformImage(data: d) }
+            if let t = fleet.tv(tvID), !t.online || t.nowPlaying != nil {
+                // Off, or playing: the last capture is from before (it gets a fresh one once it's on and idle again).
+                if screen != nil { screen = nil }
+            } else if !showScreen, let t = fleet.tv(tvID), fleet.platform(of: t) != .webOS, let c = fleet.client(for: t) {
+                if let d = try? await c.screen(width: 480), let latest = fleet.tv(tvID), latest.online, latest.nowPlaying == nil {
+                    screen = PlatformImage(data: d)
+                }
             }
             try? await Task.sleep(nanoseconds: 3_000_000_000)
         }

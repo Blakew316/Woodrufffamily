@@ -65,7 +65,7 @@ final class NestAlerts {
 
     // MARK: The subscription
 
-    /// This device's own subscription beside the family's (the TVs' one, set in Connections → Cameras).
+    /// This device's own subscription beside the family's (the TVs' one, set in Accounts → Nest Cameras).
     private func subscription() async throws -> String {
         if let own { return own }
         var shared = Keychain.get("nest.subscription") ?? ""
@@ -74,7 +74,7 @@ final class NestAlerts {
             Keychain.set(d, for: "nest.subscription")
         }
         guard let m = shared.range(of: #"^projects/([^/]+)/subscriptions/([^/]+)$"#, options: .regularExpression), !m.isEmpty else {
-            throw OAuthRelay.Failure.refused("Set up doorbell alerts on the TVs first (Settings → Connections → Cameras).")
+            throw OAuthRelay.Failure.refused("Set up doorbell alerts on the TVs first (Settings → Accounts → Nest Cameras).")
         }
         let parts = shared.split(separator: "/")
         let project = String(parts[1]), id = String(parts[3])
@@ -172,8 +172,12 @@ final class NestAlerts {
     }
 }
 
-/// Settings → Cameras → Alerts.
+/// The cameras' alerts on this device: Settings → Smart Home → Cameras, and Settings → Notifications.
 struct AlertsSection: View {
+    var title = "Alerts on This Device"
+    /// Offers to connect the cameras again when they can't alert yet (it signs them out first, so only where the
+    /// cameras are connected); elsewhere it says where that's done.
+    var showsReconnect = true
     @State private var person = NestAlerts.shared.person
     @State private var motion = NestAlerts.shared.motion
     @State private var doorbell = NestAlerts.shared.doorbell
@@ -185,9 +189,14 @@ struct AlertsSection: View {
             Toggle("Person Seen", isOn: $person).onChange(of: person) { _, v in NestAlerts.shared.person = v }
             Toggle("Motion", isOn: $motion).onChange(of: motion) { _, v in NestAlerts.shared.motion = v }
             if !NestCameras.shared.canAlert {
-                Button("Connect Again to Turn On Alerts") { NestCameras.shared.signOut() }
+                if showsReconnect {
+                    Button("Connect Again to Turn On Alerts") { NestCameras.shared.signOut() }
+                } else {
+                    Text("Connect the cameras again in Smart Home → Cameras to turn these on.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
             }
-        } header: { Text("Alerts on This Device") } footer: {
+        } header: { Text(title) } footer: {
             #if os(iOS)
             Text("Status: \(status). Alerts come straight away while Woodruff is open or was used in the last little while; when it’s been closed a long time, iOS only lets it check now and then.")
             #else

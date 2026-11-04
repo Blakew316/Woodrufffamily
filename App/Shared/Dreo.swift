@@ -389,7 +389,7 @@ final class Dreo {
     }
 }
 
-/// The Dreo part of Settings → Devices.
+/// The Dreo part of Settings → Smart Home → Devices.
 struct DreoSection: View {
     private let dreo = Dreo.shared
     @State private var email = Keychain.get("dreo.email") ?? ""

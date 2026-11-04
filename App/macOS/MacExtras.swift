@@ -9,8 +9,8 @@ struct MenuBarFleetView: View {
 
     var body: some View {
         let tv = fleet.selected
-        // What's on now only (no picture of the last thing it played once it's stopped or off).
-        let p = tv?.online == true ? tv?.playing : nil
+        // What's on now only (no picture of the last thing it played once it's stopped, off or left paused).
+        let p = tv?.nowPlaying
         VStack(alignment: .leading, spacing: 14) {
             Menu {
                 ForEach(fleet.tvs.filter { !$0.isUnpaired }) { t in
@@ -52,7 +52,7 @@ struct MenuBarFleetView: View {
                         Circle().fill(dot(t)).frame(width: 7, height: 7)
                         Text(t.name).font(.subheadline)
                         Spacer()
-                        Text(t.playing?.title ?? (t.online ? (t.isUnpaired ? "Not paired" : "On") : "Off"))
+                        Text(t.nowPlaying?.title ?? (t.online ? (t.isUnpaired ? "Not paired" : "On") : "Off"))
                             .font(.caption).foregroundStyle(.secondary).lineLimit(1)
                     }
                     .contentShape(Rectangle())
@@ -84,7 +84,7 @@ struct MenuBarFleetView: View {
     private func dot(_ t: FleetTV) -> Color {
         if !t.online || t.isUnpaired { return .gray }
         if t.needsAttention { return Palette.attention }
-        return t.playing?.isPlaying == true ? .accentColor : .green
+        return t.nowPlaying?.isPlaying == true ? .accentColor : .green
     }
 }
 

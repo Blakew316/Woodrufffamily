@@ -125,13 +125,14 @@ struct LiveProgress: View {
     }
 }
 
-/// The floating glass bar above the tabs (not on Remote): what the remote's TV plays. Tap for Now Playing.
+/// The floating glass bar above the tabs (not on Remote): what the remote's TV plays now (nothing once it's off or was
+/// left paused). Tap for Now Playing.
 struct NowPlayingBar: View {
     @Environment(Fleet.self) private var fleet
     @State private var open = false
 
     var body: some View {
-        if let tv = fleet.selected, let p = tv.playing {
+        if let tv = fleet.selected, let p = tv.nowPlaying {
             HStack(spacing: 12) {
                 Button { open = true } label: {
                     HStack(spacing: 10) {
@@ -236,9 +237,12 @@ struct NowPlayingDropdown: View {
             if expanded {
                 HStack(spacing: 12) {
                     Button { open = true } label: {
-                        NowPlayingArt(playing: playing)
-                            .frame(width: 52, height: 52)
-                            .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+                        // A picture only of what's playing now (not of a title left paused long ago).
+                        Group {
+                            if tv.nowPlaying != nil { NowPlayingArt(playing: playing) } else { Color.secondary.opacity(0.18) }
+                        }
+                        .frame(width: 52, height: 52)
+                        .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
                     }
                     .buttonStyle(PressScale())
                     .accessibilityLabel("Open the player")
@@ -273,13 +277,16 @@ struct NowPlayingSheet: View {
 
     var body: some View {
         let tv = tvID.flatMap { fleet.tv($0) } ?? fleet.selected
+        // The title and the controls follow what the TV says; the pictures only what's playing now (plain black for a
+        // TV that's off, or a title left paused).
         let p = tv?.playing
+        let art = tv?.nowPlaying
         NavigationStack {
             GeometryReader { geo in
                 let w = min(geo.size.width, 560) - 48
                 VStack(spacing: 0) {
                     Spacer(minLength: 12)
-                    picture(p)
+                    picture(art)
                         .frame(width: w, height: w * 9 / 16)
                         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
                         .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).strokeBorder(.white.opacity(0.08)))
@@ -313,7 +320,7 @@ struct NowPlayingSheet: View {
                 .frame(width: geo.size.width, height: geo.size.height)
             }
             .foregroundStyle(.white)
-            .background { backdrop(p) }
+            .background { backdrop(art) }
             .environment(\.colorScheme, .dark)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -338,30 +345,33 @@ struct NowPlayingSheet: View {
         #endif
     }
 
-    /// The picture: the video's thumbnail, the title's backdrop, or the TV's screen (Woodruff's own menus).
+    /// The picture: the video's thumbnail, the title's backdrop, or the TV's screen (Woodruff's own menus). Plain black
+    /// when nothing is playing now.
     @ViewBuilder private func picture(_ p: NowPlaying?) -> some View {
         ZStack {
             Color.black
             if showScreen {
                 if let screen { Image(platformImage: screen).resizable().aspectRatio(contentMode: .fit) }
                 else { Text(screenNote ?? "Loading the TV’s screen…").font(.footnote).foregroundStyle(.white.opacity(0.6)).padding() }
-            } else {
+            } else if let p {
                 NowPlayingArt(playing: p, backdrop: true)
             }
         }
     }
 
-    /// A deep, dark blur of the picture, held to the screen.
+    /// A deep, dark blur of the picture, held to the screen (just the dark when nothing is playing now).
     private func backdrop(_ p: NowPlaying?) -> some View {
         GeometryReader { g in
             ZStack {
                 Color(white: 0.07)
-                NowPlayingArt(playing: p, backdrop: true)
-                    .frame(width: g.size.width, height: g.size.height)
-                    .blur(radius: 80, opaque: true)
-                    .saturation(1.2)
-                    .opacity(0.55)
-                    .clipped()
+                if let p {
+                    NowPlayingArt(playing: p, backdrop: true)
+                        .frame(width: g.size.width, height: g.size.height)
+                        .blur(radius: 80, opaque: true)
+                        .saturation(1.2)
+                        .opacity(0.55)
+                        .clipped()
+                }
                 LinearGradient(colors: [.black.opacity(0.2), .black.opacity(0.55), .black.opacity(0.85)], startPoint: .top, endPoint: .bottom)
             }
         }

@@ -30,7 +30,7 @@ final class HomeKitLights: NSObject, HMHomeManagerDelegate, HMHomeDelegate, HMAc
     func start() {
         guard manager == nil, !Demo.isOn else { return }
         guard Self.enabled else {
-            AccessoryStore.shared.homeProblem = "This copy of Woodruff was built without Apple Home, so the ecobee can only come in through SmartThings (Settings → Devices)."
+            AccessoryStore.shared.homeProblem = "This copy of Woodruff was built without Apple Home, so the ecobee can only come in through SmartThings (Settings → Smart Home → Devices)."
             return
         }
         let m = HMHomeManager()

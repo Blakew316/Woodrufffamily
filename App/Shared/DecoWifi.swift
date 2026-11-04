@@ -448,7 +448,7 @@ struct WifiSection: View {
     }
 }
 
-// MARK: - The Wi‑Fi page (Settings → Wi‑Fi, and from Home)
+// MARK: - The Wi‑Fi page (Settings → Smart Home → Wi‑Fi, and from Home)
 
 struct WifiView: View {
     var inSheet = false

@@ -782,7 +782,7 @@ extension ISO8601DateFormatter {
     }()
 }
 
-/// The Samsung part of Settings → Devices.
+/// The Samsung part of Settings → Smart Home → Devices.
 struct SmartThingsSection: View {
     private let st = SmartThings.shared
     @State private var clientID = SmartThings.shared.clientID

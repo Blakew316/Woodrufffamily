@@ -1524,7 +1524,7 @@ public final class SmartHome {
         return abs(a - b) <= d
     }
 
-    /// Every light that answered the search, by address: what it says it is (shown in Settings → Lights).
+    /// Every light that answered the search, by address: what it says it is (shown in Settings → Smart Home → Lights).
     public private(set) var answers: [LightAnswer] = []
 
     private func found(ip: String, id: String, sku: String) {

@@ -39,79 +39,44 @@ import WoodruffKit
     }
 }
 
-/// Settings, as iOS Settings: this phone, TVs (status and health of every TV), Software Update, Connections,
-/// Weather, Away From Home, Shortcuts.
+/// Settings in five rows, grouped as iOS Settings groups things: TVs (every TV, Software Update, Send on iPhone, and
+/// one tap for all of them) and Smart Home (speakers, lights, cameras, devices, the Wi‑Fi); Notifications, and
+/// Accounts (what the TVs sign in to); and General (Away From Home, Shortcuts, Sync Across Devices, the TV's last
+/// crash).
 struct SettingsView: View {
     @Environment(Fleet.self) private var fleet
     @State private var hub = HubSettings()
     @State private var route: String? = { let r = UserDefaults.standard.string(forKey: "route"); return r == "tvs" || r == "tv" ? r : nil }()
+    // Read through UserDefaults, so a switch turned on Notifications (or synced from another device) shows at once.
+    @AppStorage("notifyFleet") private var notifyFleet = true
 
     var body: some View {
         Form {
             Section {
-                PageLink("TVs") { TVsView() } label: {
-                    IconRow(symbol: "tv.fill", color: .blue, title: "TVs", value: tvsSummary, valueColor: fleet.tvs.contains(where: \.needsAttention) ? Palette.attention : .secondary)
-                }
-                PageLink("Every TV") { EveryTVView() } label: {
-                    IconRow(symbol: "", color: .clear, title: "Every TV")
-                }
-                PageLink("Speakers") { SpeakersListView() } label: {
-                    IconRow(symbol: "", color: .clear, title: "Speakers", value: SmartHome.shared.speakers.isEmpty ? "None" : "\(SmartHome.shared.speakers.count)")
-                }
-                PageLink("Lights") { LightsListView() } label: {
-                    IconRow(symbol: "", color: .clear, title: "Lights", value: SmartHome.shared.lights.isEmpty ? "None" : "\(SmartHome.shared.lights.count)")
-                }
-                PageLink("Cameras") { CamerasPhoneView() } label: {
-                    IconRow(symbol: "", color: .clear, title: "Cameras", value: NestCameras.shared.connected ? "\(NestCameras.shared.cameras.count)" : "Not Connected")
-                }
-                PageLink("Wi‑Fi") { WifiView() } label: {
-                    IconRow(symbol: "", color: .clear, title: "Wi‑Fi", value: DecoWifi.shared.connected ? (DecoWifi.shared.internetUp == false ? "Internet Down" : "\(DecoWifi.shared.nodes.count) Decos") : "Not Connected")
-                }
-                PageLink("Devices") { DevicesListView() } label: {
-                    IconRow(symbol: "", color: .clear, title: "Devices", value: AccessoryStore.shared.all.isEmpty ? "None" : "\(AccessoryStore.shared.all.count)")
-                }
-                PageLink("Software Update") { SoftwareUpdateView() } label: {
-                    HStack {
-                        IconRow(symbol: "", color: .clear, title: "Software Update")
-                        if fleet.updatesWaiting > 0 {
-                            Text("\(fleet.updatesWaiting)").font(.subheadline.weight(.semibold)).foregroundStyle(.white)
-                                .frame(minWidth: 22, minHeight: 22).background(Circle().fill(.red))
-                        }
-                    }
-                }
+                // Every TV, Software Update, Send (iPhone) and one tap for all of them.
+                PageLink("TVs") { TVsView() } label: { TVsSummaryRow() }
+                // Speakers, lights, cameras, devices and the Wi‑Fi.
+                PageLink("Smart Home") { SmartHomeSettingsView(hub: hub) } label: { SmartHomeSummaryRow() }
             }
 
             Section {
-                #if os(iOS)
-                // Messages, links and files to the TVs and phones (the Mac has Send in its sidebar).
-                PageLink("Send") { SendView() } label: { IconRow(symbol: "", color: .clear, title: "Send") }
-                #endif
-                // Alert choices, Now Playing on the Lock Screen, recent messages, and (on the Macs) Instant iPhone
-                // Alerts' push key: the only way to reach them.
+                // Alert choices, Now Playing on the Lock Screen, the cameras' alerts, recent messages, and (on the
+                // Macs) Instant iPhone Alerts' push key.
                 PageLink("Notifications") { PhoneSettingsView() } label: {
                     IconRow(symbol: "", color: .clear, title: "Notifications", value: notificationsSummary)
                 }
-            }
-
-            Section {
-                PageLink("Connections") { ConnectionsView(hub: hub) } label: {
-                    IconRow(symbol: "cloud.fill", color: .blue, title: "Connections", value: connectionsSummary)
+                // What the TVs sign in to: Google Drive, movie posters, the Nest cameras, mail.
+                PageLink("Accounts") { ConnectionsView(hub: hub) } label: {
+                    IconRow(symbol: "", color: .clear, title: "Accounts", value: connectionsSummary)
                 }
             }
 
             Section {
-                PageLink("Away From Home") { AwayView(hub: hub) } label: {
-                    IconRow(symbol: "globe", color: .green, title: "Away From Home", value: hub.s?.awayUrl?.isEmpty == false ? "On" : "Off")
-                }
-                PageLink("Shortcuts") { ShortcutsView(hub: hub) } label: {
-                    IconRow(symbol: "square.2.layers.3d.fill", color: .purple, title: "Shortcuts")
-                }
-                if let crash = hub.s?.crash, !crash.isEmpty {
-                    PageLink("Last Crash") { CrashView(hub: hub) } label: { IconRow(symbol: "exclamationmark.triangle.fill", color: .red, title: "Last Crash on This TV") }
+                // Away From Home, Shortcuts, Sync Across Devices, and the TV's last crash.
+                PageLink("General") { GeneralSettingsView(hub: hub) } label: {
+                    IconRow(symbol: "", color: .clear, title: "General", value: generalSummary, valueColor: hasCrash ? Palette.attention : .secondary)
                 }
             }
-
-            SyncSection()
 
             Section {
                 Text("Woodruff Family \(hub.s?.version ?? "")")
@@ -132,37 +97,54 @@ struct SettingsView: View {
         .onAppear {
             guard let r = route else { return }
             route = nil
-            if r == "tv" { MacNav.shared.push(fleet.tv("tv-den")?.name ?? "TV", TVDetailView(tvID: "tv-den")) } else { MacNav.shared.push("TVs", TVsView()) }
+            if r == "tv" { MacNav.shared.push(fleet.tv("tv-den")?.name ?? "TV", backTo: "Settings", TVDetailView(tvID: "tv-den")) } else { MacNav.shared.push("TVs", backTo: "Settings", TVsView()) }
         }
         #endif
-        // Again when the remote moves to a TV with another hub (its keys and links are that hub's).
-        .task(id: fleet.hubClient()?.hub.id) {
-            SiriVocabulary.start()
-            await hub.load(fleet.hubClient())
-        }
+        // Reads the TVs' settings, again when the remote moves to a TV with another hub, and every 20 seconds: from
+        // behind the page, so the TVs' reports every couple of seconds don't redraw it.
+        .background { HubSettingsLoader(hub: hub) }
         .refreshable { await hub.load(fleet.hubClient()); await fleet.refresh() }
-        .task { await hub.follow(fleet) }
     }
 
-    private var notificationsSummary: String {
-        let alerts = UserDefaults.standard.object(forKey: "notifyFleet") as? Bool ?? true
-        return fleet.phone.alerts || alerts ? "On" : "Off"
+    private var notificationsSummary: String { fleet.phone.alerts || notifyFleet ? "On" : "Off" }
+
+    /// How many of the TVs' accounts are connected: Google Drive, movie posters, the Nest cameras, mail.
+    private var connectionsSummary: String? {
+        guard let s = hub.s else { return nil }
+        let on = [s.google?.connected == true, s.tmdb == true, s.nest?.connected == true, !(s.mail ?? []).isEmpty].filter { $0 }.count
+        return on == 0 ? "Not Set Up" : "\(on) Connected"
+    }
+
+    /// The TV that holds the settings has a crash report waiting.
+    private var hasCrash: Bool { !(hub.s?.crash ?? "").isEmpty }
+
+    private var generalSummary: String {
+        if hasCrash { return "Crash Report" }
+        return SettingsSync.shared.lastSynced == nil ? "Not Synced Yet" : "In Sync"
+    }
+}
+
+/// Settings' TVs row: one that needs attention, what's playing, or how many there are; and the red count of TVs with
+/// an update waiting. A view of its own: the TVs report every couple of seconds, and only this row redraws then.
+struct TVsSummaryRow: View {
+    @Environment(Fleet.self) private var fleet
+
+    var body: some View {
+        HStack {
+            IconRow(symbol: "", color: .clear, title: "TVs", value: tvsSummary, valueColor: fleet.tvs.contains(where: \.needsAttention) ? Palette.attention : .secondary)
+            if fleet.updatesWaiting > 0 { UpdateCountBadge(count: fleet.updatesWaiting) }
+        }
     }
 
     private var tvsSummary: String {
         let needing = fleet.tvs.filter(\.needsAttention)
         if needing.count == 1 { return "\(needing[0].name) needs attention" }
         if needing.count > 1 { return "\(needing.count) TVs need attention" }
-        let playing = fleet.tvs.filter { $0.playing != nil }
+        // Only what's really playing now (not a TV that's off, paused, or left paused).
+        let playing = fleet.tvs.filter { $0.nowPlaying?.isPlaying == true }
         if playing.count == 1 { return "\(playing[0].name) · Playing" }
         if playing.count > 1 { return "\(playing.count) Playing" }
         return fleet.tvs.count == 1 ? fleet.tvs[0].name : "\(fleet.tvs.count) TVs"
-    }
-
-    private var connectionsSummary: String {
-        guard let s = hub.s else { return "" }
-        let on = [s.google?.connected == true, s.tmdb == true, s.nest?.connected == true, !(s.mail ?? []).isEmpty].filter { $0 }.count
-        return "\(on) On"
     }
 }
 
@@ -172,8 +154,8 @@ struct PhoneSettingsView: View {
     @Environment(Fleet.self) private var fleet
     @State private var topic: String?
     @State private var telling = false
-    // Read and written through UserDefaults, so a change synced from another device shows here at once.
-    @AppStorage("remoteClick") private var remoteClick = true
+    // Read and written through UserDefaults, so a change synced from another device shows here at once. (The Mac's
+    // click sound for the remote's keys is in General.)
     @AppStorage("liveActivity") private var liveActivity = true
     @AppStorage("notifyFleet") private var notifyFleet = true
 
@@ -191,9 +173,6 @@ struct PhoneSettingsView: View {
                     LabeledContent("ntfy topic", value: topic)
                     Button("Copy Topic") { copyToClipboard(topic) }
                 }
-                #if os(macOS)
-                Toggle("Click Sound on Remote Keys", isOn: $remoteClick)
-                #endif
                 #if os(iOS)
                 Toggle("Now Playing on Lock Screen", isOn: $liveActivity)
                 #endif
@@ -201,16 +180,32 @@ struct PhoneSettingsView: View {
             } footer: {
                 Text("Lock-screen alerts reach this device through the free ntfy app even when Woodruff is closed. TV alerts tell you when a TV goes off or needs attention.")
             }
-            PushSettingsSection()
-            Section("Recent Messages") {
-                if fleet.recentMessages.isEmpty { Text("No messages in the last week.").foregroundStyle(.secondary) }
-                ForEach(fleet.recentMessages) { m in
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(m.title).font(.subheadline.weight(.semibold))
-                        if let b = m.body, !b.isEmpty { Text(b).font(.subheadline) }
-                        Text([m.from, m.at.map { Date(timeIntervalSince1970: $0 / 1000).formatted(date: .abbreviated, time: .shortened) }].compactMap { $0 }.joined(separator: " · "))
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
+            // The cameras' alerts on this device, with the rest of its alerts (the same switches as Smart Home →
+            // Cameras, which is where the cameras are connected).
+            if NestCameras.shared.connected {
+                AlertsSection(title: "Doorbell & Cameras", showsReconnect: false)
+            }
+            #if os(macOS)
+            // The push key the Macs send the iPhones' alerts with: set up once, so it has a page of its own.
+            Section {
+                PageLink("Instant iPhone Alerts") {
+                    Form { PushSettingsSection() }
+                        .formStyle(.grouped)
+                        .navigationTitle("Instant iPhone Alerts")
+                        .inlineTitle()
+                } label: {
+                    IconRow(symbol: "", color: .clear, title: "Instant iPhone Alerts", value: PushRelay.shared.hasKey ? "On" : "Not Set Up")
+                }
+            }
+            #else
+            // Only on an iPhone that has signed up for them (a copy built without push never does).
+            if PushRelay.shared.registered || PushRelay.shared.tokens[DeviceID.value] != nil {
+                PushSettingsSection()
+            }
+            #endif
+            Section {
+                PageLink("Recent Messages") { RecentMessagesView() } label: {
+                    IconRow(symbol: "", color: .clear, title: "Recent Messages", value: fleet.recentMessages.isEmpty ? "None" : "\(fleet.recentMessages.count)")
                 }
             }
         }
@@ -262,7 +257,8 @@ struct PhoneSettingsView: View {
 
 // MARK: - TVs
 
-/// Every TV: what's playing, off, needs attention, link again. Tap one for its screen, controls and health.
+/// Every TV: what's playing, off, needs attention, link again. Tap one for its screen, controls and health. Below
+/// them, Software Update, Send (on iPhone; the Mac has it in its sidebar), and one tap for all of them.
 struct TVsView: View {
     @Environment(Fleet.self) private var fleet
     @State private var pairing = false
@@ -291,6 +287,16 @@ struct TVsView: View {
                     Text("They come back if something new goes wrong.")
                 }
             }
+            Section {
+                #if os(iOS)
+                // Messages, links and files to the TVs and phones (the Mac has Send in its sidebar).
+                PageLink("Send") { SendView() } label: {
+                    IconRow(symbol: "", color: .clear, title: "Send", subtitle: "A message, photos, files or a link")
+                }
+                #endif
+                PageLink("Software Update") { SoftwareUpdateView() } label: { SoftwareUpdateRow() }
+            }
+            EveryTVSection()
             Section {
                 Button("Pair Another TV") { pairing = true }
             } footer: {
@@ -372,9 +378,10 @@ struct SoftwareUpdateView: View {
                 VStack(spacing: 12) {
                     Text(headline).font(.title3.weight(.semibold)).multilineTextAlignment(.center)
                     Text(subline).font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
-                    if fleet.updatesWaiting > 0 {
+                    // Whenever there's a TV to ask: with nothing waiting it has each Android TV look for itself now.
+                    if fleet.updatesWaiting > 0 || androidOn {
                         ActionButton(action: { await updateAll() }) {
-                            Text("Update All TVs").font(.headline).frame(maxWidth: .infinity).padding(.vertical, 6)
+                            Text(fleet.updatesWaiting > 0 ? "Update All TVs" : "Check Every TV Now").font(.headline).frame(maxWidth: .infinity).padding(.vertical, 6)
                         }
                         .buttonStyle(.glassProminent)
                         .padding(.top, 4)
@@ -417,6 +424,11 @@ struct SoftwareUpdateView: View {
         .task { if fleet.latest.isEmpty { await fleet.checkReleases() }; await fleet.loadAllHealth() }
     }
 
+    /// An Android TV that's on: Update All can ask it (LG TVs install from the Mac, over SSH).
+    private var androidOn: Bool {
+        fleet.tvs.contains { $0.online && !$0.isUnpaired && fleet.platform(of: $0) != .webOS }
+    }
+
     private var headline: String {
         if fleet.updatesWaiting == 0 { return "Every TV Is Up to Date" }
         return fleet.updatesWaiting == 1 ? "1 TV Has an Update" : "\(fleet.updatesWaiting) TVs Have an Update"
@@ -455,8 +467,9 @@ struct SoftwareUpdateView: View {
     }
 
     private func updateAll() async {
+        let checking = fleet.updatesWaiting == 0
         let (n, failed) = await fleet.pushUpdateToAll()
-        log.insert("Asked \(n) Android TV\(n == 1 ? "" : "s") to update." + (failed.isEmpty ? "" : " " + failed.joined(separator: "; ")), at: 0)
+        log.insert("Asked \(n) Android TV\(n == 1 ? "" : "s") to \(checking ? "look for an update now" : "update")." + (failed.isEmpty ? "" : " " + failed.joined(separator: "; ")), at: 0)
         #if os(macOS)
         for tv in fleet.tvs where fleet.platform(of: tv) == .webOS && fleet.isBehind(tv) && fleet.extras[tv.id]?.ssh != nil { await installWebOS(tv) }
         #endif
@@ -483,7 +496,7 @@ struct SoftwareUpdateView: View {
     #endif
 }
 
-// MARK: - Connections and the other pages
+// MARK: - Accounts and the other pages
 
 /// Saved when you press Return or leave it (not on every keystroke, which would check releases and sync each letter).
 private struct GitHubTokenField: View {
@@ -505,6 +518,8 @@ private struct GitHubTokenField: View {
     }
 }
 
+/// Settings → Accounts: what the TVs sign in to (Google Drive, movie posters, the Nest cameras, mail), kept on the
+/// TVs and copied to every TV linked to them.
 struct ConnectionsView: View {
     @Environment(Fleet.self) private var fleet
     var hub: HubSettings
@@ -513,12 +528,12 @@ struct ConnectionsView: View {
         Form {
             if let s = hub.s {
                 Section {
-                    PageLink("Google Drive") { DriveView(hub: hub) } label: { IconRow(symbol: "externaldrive.fill.badge.icloud", color: .blue, title: "Google Drive", value: s.google?.statusText) }
-                    PageLink("Posters") { PostersView(hub: hub) } label: { IconRow(symbol: "film.fill", color: .orange, title: "Posters", value: s.tmdb == true ? "On" : "Off") }
-                    PageLink("Cameras") { CamerasView(hub: hub) } label: { IconRow(symbol: "video.fill", color: .green, title: "Cameras", value: s.nest?.statusText) }
-                    PageLink("Mail") { MailView(hub: hub) } label: { IconRow(symbol: "envelope.fill", color: .blue, title: "Mail", value: mailSummary(s)) }
+                    PageLink("Google Drive") { DriveView(hub: hub) } label: { IconRow(symbol: "", color: .clear, title: "Google Drive", value: s.google?.statusText) }
+                    PageLink("Movie Posters") { PostersView(hub: hub) } label: { IconRow(symbol: "", color: .clear, title: "Movie Posters", value: s.tmdb == true ? "On" : "Off") }
+                    PageLink("Nest Cameras") { CamerasView(hub: hub) } label: { IconRow(symbol: "", color: .clear, title: "Nest Cameras", value: s.nest?.statusText) }
+                    PageLink("Mail") { MailView(hub: hub) } label: { IconRow(symbol: "", color: .clear, title: "Mail", value: mailSummary(s)) }
                 } footer: {
-                    Text("Keys entered here are copied to every TV linked to \(fleet.hubClient()?.hub.name ?? "this TV").")
+                    Text("Keys entered here are copied to every TV linked to \(fleet.hubClient()?.hub.name ?? "this TV"). Speakers, lights, appliances, the Wi‑Fi and this device’s cameras sign in on their own pages in Smart Home.")
                 }
                 if let e = hub.error {
                     Section { Text(e).font(.footnote).foregroundStyle(Palette.attention) }
@@ -535,7 +550,7 @@ struct ConnectionsView: View {
             }
         }
         .formStyle(.grouped)
-        .navigationTitle("Connections")
+        .navigationTitle("Accounts")
         .inlineTitle()
         .task { if hub.s == nil && !hub.loading { await hub.load(fleet.hubClient()) } }
         .task { await hub.follow(fleet) }
@@ -593,7 +608,7 @@ struct DriveView: View {
         .onAppear { fill() }
         // The settings arrived after the page opened: fill in what was saved (never over what's being typed).
         .onChange(of: hub.s?.google?.clientId) { _, _ in fill() }
-        // A finished sign-in shows here (and on Connections) as soon as the sheet closes.
+        // A finished sign-in shows here (and on Accounts) as soon as the sheet closes.
         .sheet(isPresented: $signIn, onDismiss: { Task { await hub.load(fleet.hubClient()) } }) { HubSignIn(grant: "drive") }
     }
 
@@ -621,12 +636,12 @@ struct PostersView: View {
                     let k = key.trimmingCharacters(in: .whitespacesAndNewlines)
                     try await hub.save({ try await $0.saveTMDB(k) }, on: fleet.hubClient())
                     key = ""
-                    fleet.say("Posters", hub.s?.note ?? "Saved. Posters appear as the library refreshes.")
+                    fleet.say("Movie Posters", hub.s?.note ?? "Saved. Posters appear as the library refreshes.")
                 }) { Text("Save") }
             } footer: { Text("A free key from themoviedb.org adds official posters, genres and ratings. Your own poster.jpg files always win.") }
         }
         .formStyle(.grouped)
-        .navigationTitle("Posters").inlineTitle()
+        .navigationTitle("Movie Posters").inlineTitle()
         .task { await hub.follow(fleet) }
     }
 }
@@ -650,7 +665,7 @@ struct CamerasView: View {
                     let p = project.trimmingCharacters(in: .whitespacesAndNewlines)
                     let d = doorbell.trimmingCharacters(in: .whitespacesAndNewlines)
                     try await hub.save({ try await $0.saveNest(["project": p, "doorbell": d]) }, on: fleet.hubClient())
-                    fleet.say("Cameras", hub.s?.nest?.connected == true || p.isEmpty ? "Saved." : "Saved. Press Connect Cameras… to sign in.")
+                    fleet.say("Nest Cameras", hub.s?.nest?.connected == true || p.isEmpty ? "Saved." : "Saved. Press Connect Cameras… to sign in.")
                 }) { Text("Save") }
             }
             Section {
@@ -659,7 +674,7 @@ struct CamerasView: View {
             } footer: { Text(doorbellNote) }
         }
         .formStyle(.grouped)
-        .navigationTitle("Cameras").inlineTitle()
+        .navigationTitle("Nest Cameras").inlineTitle()
         .task { await hub.follow(fleet) }
         .onAppear { fill() }
         .onChange(of: hub.s?.nest?.project) { _, _ in fill() }
@@ -719,26 +734,6 @@ struct MailView: View {
     }
 }
 
-struct WeatherView: View {
-    @Environment(Fleet.self) private var fleet
-    var hub: HubSettings
-    @State private var place = ""
-    var body: some View {
-        Form {
-            Section {
-                TextField("City or ZIP", text: $place)
-                ActionButton(action: {
-                    let p = place.trimmingCharacters(in: .whitespacesAndNewlines)
-                    try await hub.save({ try await $0.saveWeather(p) }, on: fleet.hubClient())
-                }) { Text("Save") }
-            } footer: { Text("Home’s greeting shows the morning’s weather and the date line the temperature. Leave it empty to turn it off.") }
-        }
-        .formStyle(.grouped)
-        .navigationTitle("Weather on Home").inlineTitle()
-        .onAppear { place = hub.s?.weather ?? "" }
-    }
-}
-
 struct AwayView: View {
     @Environment(Fleet.self) private var fleet
     var hub: HubSettings
@@ -788,7 +783,7 @@ struct CrashView: View {
                 Button("Copy Report") { copyToClipboard(hub.s?.crash ?? "") }
                 ActionButton(role: .destructive, action: {
                     try await hub.save({ try await $0.clearCrash() }, on: fleet.hubClient())
-                    // Cleared: back to Settings, where its row has gone.
+                    // Cleared: back to General, where its row has gone.
                     dismiss()
                 }) { Text("Clear") }
             }
@@ -861,32 +856,20 @@ struct AddMailSheet: View {
     }
 }
 
-/// Settings → Every TV: one tap for all of them (it used to sit at the bottom of Home).
-struct EveryTVView: View {
+/// Settings → TVs → All TVs: one tap for all of them (it used to sit at the bottom of Home). Update All is on
+/// Software Update, beside every TV's version.
+struct EveryTVSection: View {
     @Environment(Fleet.self) private var fleet
     @State private var busy: String?
 
     var body: some View {
-        Form {
-            Section {
-                row("Pause All", "Everything that’s playing") { await keyAll("playpause", onlyPlaying: true) }
-                row("Mute All", "Every TV that’s on") { await keyAll("mute") }
-                row("Woodruff Home on All", "Every TV that’s on") { await keyAll("home") }
-            }
-            Section {
-                row("Update All", fleet.updatesWaiting == 0 ? "All up to date" : "\(fleet.updatesWaiting) waiting") {
-                    let (n, failed) = await fleet.pushUpdateToAll()
-                    if !failed.isEmpty { fleet.say("Update All", failed.joined(separator: "\n")) }
-                    else if n == 0 { fleet.say("Update All", "No Android TV is on right now.") }
-                    else { fleet.say("Update All", "Asked \(n) TV\(n == 1 ? "" : "s") to update. Each installs once nobody’s watching.") }
-                }
-            } footer: {
-                Text("TVs install the update once nobody’s watching.")
-            }
+        Section {
+            row("Pause All", "Everything that’s playing") { await keyAll("playpause", onlyPlaying: true) }
+            row("Mute All", "Every TV that’s on") { await keyAll("mute") }
+            row("Woodruff Home on All", "Every TV that’s on") { await keyAll("home") }
+        } header: {
+            Text("All TVs")
         }
-        .formStyle(.grouped)
-        .navigationTitle("Every TV")
-        .inlineTitle()
     }
 
     private func row(_ title: String, _ detail: String, _ run: @escaping () async -> Void) -> some View {
@@ -924,7 +907,7 @@ struct EveryTVView: View {
         var failed: [String] = []
         // All at once: a TV that's slow to answer doesn't hold up the others.
         await withTaskGroup(of: String?.self) { g in
-            for tv in targets { g.addTask { await EveryTVView.press(key, on: tv, fleet: f) } }
+            for tv in targets { g.addTask { await EveryTVSection.press(key, on: tv, fleet: f) } }
             for await problem in g { if let problem { failed.append(problem) } }
         }
         if !failed.isEmpty { fleet.say("Didn’t Reach Every TV", failed.sorted().joined(separator: "\n")) }
@@ -950,7 +933,7 @@ struct EveryTVView: View {
     }
 }
 
-/// Settings → Sync Across Devices: where everything was last saved, and Sync Now.
+/// Settings → General → Sync Across Devices: where everything was last saved, and Sync Now.
 struct SyncSection: View {
     private let sync = SettingsSync.shared
     @State private var busy = false
