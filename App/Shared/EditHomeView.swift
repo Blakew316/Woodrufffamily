@@ -6,7 +6,7 @@ import WoodruffKit
 final class HomeLayout {
     static let shared = HomeLayout()
 
-    static let allSections = ["status", "rooms", "cameras", "tvs", "speakers", "lights", "devices", "wifi"]
+    static let allSections = ["rooms", "cameras", "tvs", "speakers", "lights", "devices", "wifi"]
     static func title(_ key: String) -> String {
         switch key {
         case "status": return "Status"

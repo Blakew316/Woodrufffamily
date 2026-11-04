@@ -21,7 +21,6 @@ struct HomeView: View {
                 HStack(alignment: .firstTextBaseline) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Home").font(.largeTitle.bold())
-                        Text(statusLine).font(.subheadline.weight(.medium)).foregroundStyle(.secondary)
                     }
                     Spacer()
                     Button("Edit") { editing = true }.buttonStyle(.glass)
@@ -80,7 +79,6 @@ struct HomeView: View {
         // Home is always the dark, cinematic room: its glass and text read over the backdrop.
         .environment(\.colorScheme, .dark)
         .navigationTitle(openTV.flatMap { fleet.tv($0)?.name } ?? "Home")
-        .navigationSubtitle(statusLine)
         #if os(iOS)
         // The title sits in the page itself, right under the status bar.
         .toolbar(.hidden, for: .navigationBar)
@@ -97,7 +95,6 @@ struct HomeView: View {
 
     @ViewBuilder private func section(_ key: String) -> some View {
         switch key {
-        case "status": summary
         case "rooms": roomBar
         case "tvs":
             if !shownTVs.isEmpty {
@@ -134,31 +131,6 @@ struct HomeView: View {
         async let cams: Void = NestCameras.shared.load()
         _ = await (tvs, speakers, samsung, cams)
         await fleet.loadAllHealth()
-    }
-
-    /// The Home app's status line: small capsules for what needs a look.
-    private var summary: some View {
-        let playing = fleet.tvs.filter { $0.playing != nil }.count
-        let on = fleet.tvs.filter { $0.online && !$0.isUnpaired }.count
-        let attention = fleet.tvs.filter(\.needsAttention).count
-        return ScrollView(.horizontal) {
-            HStack(spacing: 10) {
-                StatusPill(title: "\(on) of \(fleet.tvs.count) On", tint: nil)
-                let found = fleet.tvs.filter(\.isUnpaired).count
-                if found > 0 { StatusPill(title: found == 1 ? "1 TV to Pair" : "\(found) TVs to Pair", tint: .accentColor) }
-                if playing > 0 { StatusPill(title: "\(playing) Playing", tint: nil) }
-                if attention > 0 {
-                    Menu {
-                        Button("Hide All Alerts") { withAnimation { fleet.hideAllAlerts() } }
-                    } label: {
-                        StatusPill(title: attention == 1 ? "1 Needs Attention" : "\(attention) Need Attention", tint: Palette.attention)
-                    }
-                    .menuStyle(.button).buttonStyle(.plain).fixedSize()
-                }
-                if fleet.updatesWaiting > 0 { StatusPill(title: fleet.updatesWaiting == 1 ? "1 Update" : "\(fleet.updatesWaiting) Updates", tint: .blue) }
-            }
-        }
-        .scrollIndicators(.hidden)
     }
 
     /// Rooms with something in them, like the Home app's room bar; picking one shows just that room.
@@ -287,13 +259,6 @@ struct HomeView: View {
             .padding(.horizontal, 14).padding(.vertical, 8)
             .foregroundStyle(selected ? Color.black : .primary)
             .background { if selected { Capsule().fill(.white) } }
-    }
-
-    /// "4 TVs · 2 playing" under the title.
-    private var statusLine: String {
-        let paired = fleet.tvs.filter { !$0.isUnpaired }
-        let playing = paired.filter { $0.playing?.isPlaying == true }.count
-        return "\(paired.count) TV\(paired.count == 1 ? "" : "s")" + (playing > 0 ? " · \(playing) playing" : "")
     }
 
     /// The TV the banner shows: the remote's, if it's playing, else any that is.
