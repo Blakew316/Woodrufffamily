@@ -624,7 +624,7 @@ final class SmartThings {
         // A thermostat with only the older all-in-one capability takes the same command through that.
         let cap = !has(d.id, own) && has(d.id, "thermostat") ? "thermostat" : own
         let attr = heating ? "heatingSetpoint" : "coolingSetpoint"
-        let fahrenheit = unit(d.id, cap, attr) == "F" || (unit(d.id, cap, attr) == nil && Locale.current.measurementSystem == .us)
+        let fahrenheit = unit(d.id, cap, attr) != "C"   // the family uses °F; only a thermostat that says °C gets °C
         let v: Any = fahrenheit ? Int((celsiusValue * 9 / 5 + 32).rounded()) : (celsiusValue * 2).rounded() / 2
         // Shown at once (the re-read after the command then confirms what the thermostat took).
         if d.reachable {
