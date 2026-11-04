@@ -312,7 +312,6 @@ struct MacRoot: View {
                 }
             }
         }
-        .searchable(text: $query, placement: .toolbar, prompt: "Movies and TV Shows")
         .background(WindowMemory())
         .sheet(isPresented: $palette) { CommandPalette().macResizable(width: 620, height: 480) }
         .background {
@@ -334,13 +333,21 @@ struct MacRoot: View {
                 .inspectorColumnWidth(min: 300, ideal: 320, max: 380)
         }
         .toolbar {
-            ToolbarItem(placement: .primaryAction) {
+            // Left: the remote, Edit Home (on Home) and search, side by side.
+            ToolbarItemGroup(placement: .navigation) {
                 Button { withAnimation(.smooth) { fleet.remotePanel.toggle() } } label: {
                     Image(systemName: "appletvremote.gen4")
                 }
                 .help("Remote (⌥⌘R)")
                 .keyboardShortcut("r", modifiers: [.command, .option])
+                if section == .home && tvSelection == nil && deviceSelection == nil && query.isEmpty {
+                    Button("Edit Home") { HomeLayout.shared.editing = true }
+                }
+                ToolbarSearchField(text: $query, prompt: "Movies and TV Shows")
             }
+            ToolbarSpacer(.flexible)
+            // Right: the thermostat, always there.
+            ToolbarItem { ThermostatChip() }
         }
     }
 
@@ -359,3 +366,29 @@ struct MacRoot: View {
 }
 #endif
 
+
+#if os(macOS)
+/// The Mac's search: a field in the toolbar beside Edit Home (⌘F to jump to it).
+struct ToolbarSearchField: View {
+    @Binding var text: String
+    var prompt: String
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+            TextField(prompt, text: $text)
+                .textFieldStyle(.plain)
+                .focused($focused)
+                .onExitCommand { text = ""; focused = false }
+            if !text.isEmpty {
+                Button { text = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
+                    .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 10)
+        .frame(width: 260, height: 28)
+        .background { Button("") { focused = true }.keyboardShortcut("f", modifiers: .command).opacity(0) }
+    }
+}
+#endif

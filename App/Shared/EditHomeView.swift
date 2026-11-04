@@ -5,6 +5,8 @@ import WoodruffKit
 @Observable @MainActor
 final class HomeLayout {
     static let shared = HomeLayout()
+    /// Edit Home is open (from Home's Edit button, or the Mac's toolbar).
+    var editing = false
 
     static let allSections = ["rooms", "cameras", "tvs", "speakers", "lights", "devices", "wifi"]
     static func title(_ key: String) -> String {

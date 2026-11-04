@@ -554,3 +554,151 @@ func thermostatStatus(_ d: HomeDevice) -> String {
     }
     return [lead, now].compactMap { $0 }.joined(separator: " · ")
 }
+
+#if os(macOS)
+/// The Mac toolbar's thermostat, top right on every page: the temperature now, what it's doing, and the set
+/// temperature with − and +. Click it for every control.
+struct ThermostatChip: View {
+    private let store = AccessoryStore.shared
+    @State private var open = false
+    @State private var pending: Double?
+    @State private var sendSoon: Task<Void, Never>?
+    @State private var hovering = false
+
+    private var step: Double { Locale.current.measurementSystem == .us ? 5.0 / 9.0 : 0.5 }
+
+    var body: some View {
+        let t = store.all.first { $0.kind == .thermostat }
+        HStack(spacing: 10) {
+            HStack(spacing: 9) {
+                ZStack {
+                    Circle().fill(tint(t).gradient)
+                    Image(systemName: symbol(t)).font(.system(size: 12, weight: .bold)).foregroundStyle(.white)
+                        .symbolEffect(.pulse, isActive: t?.action == "heating" || t?.action == "cooling")
+                }
+                .frame(width: 26, height: 26)
+                .shadow(color: tint(t).opacity(0.5), radius: 6)
+                VStack(alignment: .leading, spacing: -1) {
+                    Text(t?.temperature.map { temperatureText($0) } ?? "--")
+                        .font(.system(size: 17, weight: .semibold, design: .rounded)).monospacedDigit()
+                        .contentTransition(.numericText())
+                    Text(t.map(subtitle) ?? "Thermostat")
+                        .font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary).lineLimit(1)
+                }
+            }
+            .contentShape(Rectangle())
+            .onTapGesture { open.toggle() }
+            if let t, t.reachable, let mode = t.thermostatMode, mode == "heat" || mode == "cool",
+               let current = pending ?? (mode == "heat" ? t.heatTo : t.coolTo) ?? t.target {
+                Divider().frame(height: 22)
+                HStack(spacing: 6) {
+                    stepButton("minus") { nudge(t, mode, current - step) }
+                    Text(temperatureText(current))
+                        .font(.system(size: 15, weight: .semibold, design: .rounded)).monospacedDigit()
+                        .foregroundStyle(tint(t))
+                        .contentTransition(.numericText())
+                        .frame(minWidth: 34)
+                        .animation(.snappy, value: current)
+                    stepButton("plus") { nudge(t, mode, current + step) }
+                }
+            }
+        }
+        .padding(.leading, 5).padding(.trailing, 12).padding(.vertical, 4)
+        .fixedSize()
+        .opacity(t?.reachable == false ? 0.6 : 1)
+        .scaleEffect(hovering ? 1.02 : 1)
+        .animation(.spring(response: 0.3, dampingFraction: 0.8), value: hovering)
+        .onHover { hovering = $0 }
+        .help(t.map { "\($0.name): \($0.status)" } ?? "Thermostat")
+        .popover(isPresented: $open, arrowEdge: .bottom) {
+            VStack(alignment: .leading, spacing: 18) {
+                if let t {
+                    HStack {
+                        Text(t.name).font(.title3.bold())
+                        Spacer()
+                        Text(t.sourceName).font(.caption).foregroundStyle(.secondary)
+                    }
+                    ThermostatControls(device: t)
+                } else {
+                    Text("No Thermostat Yet").font(.title3.bold())
+                    Text("Add your ecobee to the SmartThings app (Add Device → Thermostat → ecobee), and connect SmartThings in Settings → Devices. It shows up here, ready to control.")
+                        .font(.callout).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .padding(22)
+            .frame(width: 400)
+        }
+    }
+
+    private func stepButton(_ symbol: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol).font(.system(size: 10, weight: .bold))
+                .frame(width: 22, height: 22)
+                .background(Circle().fill(.white.opacity(0.12)))
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// Shows the new temperature at once; sends it a moment after the last click.
+    private func nudge(_ t: HomeDevice, _ mode: String, _ value: Double) {
+        pending = value
+        sendSoon?.cancel()
+        sendSoon = Task {
+            try? await Task.sleep(nanoseconds: 700_000_000)
+            guard !Task.isCancelled else { return }
+            store.send(t, mode == "heat" ? .heatTo(value) : .coolTo(value))
+            try? await Task.sleep(nanoseconds: 4_000_000_000)
+            if !Task.isCancelled { pending = nil }
+        }
+    }
+
+    private func subtitle(_ t: HomeDevice) -> String {
+        guard t.reachable else { return "Offline" }
+        switch t.action {
+        case "heating": return "Heating"
+        case "cooling": return "Cooling"
+        default:
+            switch t.thermostatMode {
+            case "heat": return "Heat"
+            case "cool": return "Cool"
+            case "auto": return t.heatTo.flatMap { h in t.coolTo.map { "Auto \(temperatureText(h))–\(temperatureText($0))" } } ?? "Auto"
+            case "off": return "Off"
+            default: return t.name
+            }
+        }
+    }
+
+    private func tint(_ t: HomeDevice?) -> Color {
+        guard let t, t.reachable else { return .gray }
+        switch t.action {
+        case "heating": return .orange
+        case "cooling": return .cyan
+        default:
+            switch t.thermostatMode {
+            case "heat": return .orange.opacity(0.8)
+            case "cool": return .blue
+            case "auto": return .teal
+            default: return .gray
+            }
+        }
+    }
+
+    private func symbol(_ t: HomeDevice?) -> String {
+        guard let t else { return "thermometer.medium" }
+        guard t.reachable else { return "wifi.slash" }
+        switch t.action {
+        case "heating": return "flame.fill"
+        case "cooling": return "snowflake"
+        default:
+            switch t.thermostatMode {
+            case "heat": return "flame"
+            case "cool": return "snowflake"
+            case "auto": return "arrow.up.arrow.down"
+            case "off": return "power"
+            default: return "thermometer.medium"
+            }
+        }
+    }
+}
+#endif

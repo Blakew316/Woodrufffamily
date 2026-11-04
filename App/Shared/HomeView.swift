@@ -8,7 +8,6 @@ struct HomeView: View {
     @State private var openTV: String?
     /// The room bar's choice: Favorites (first, and where Home opens), All Rooms (""), or a room.
     @AppStorage("home.room2") private var room = favoritesKey
-    @State private var editing = false
     /// The TV whose player is open (iPhone: tapping a TV opens straight into what it's playing).
     @State private var playerTV: String?
     /// Mac: how wide Favorites is (a tile can't be dragged wider).
@@ -31,7 +30,7 @@ struct HomeView: View {
                         Text("Home").font(.largeTitle.bold())
                     }
                     Spacer()
-                    Button("Edit") { editing = true }.buttonStyle(.glass)
+                    Button("Edit") { layout.editing = true }.buttonStyle(.glass)
                 }
                 .padding(.bottom, -14)
                 #endif
@@ -91,16 +90,13 @@ struct HomeView: View {
         // The title sits in the page itself, right under the status bar.
         .toolbar(.hidden, for: .navigationBar)
         #else
-        .toolbar {
-            ToolbarItem(placement: .automatic) { Button("Edit Home") { editing = true } }
-        }
         // No title strip: the room bar and tiles run right up under the window's buttons, over the backdrop.
         .toolbar(removing: .title)
         .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
         // Everything a size up on the Mac's big screens.
         .dynamicTypeSize(.xxLarge)
         #endif
-        .sheet(isPresented: $editing) { EditHomeView().macResizable(width: 520, height: 720) }
+        .sheet(isPresented: Binding(get: { layout.editing }, set: { layout.editing = $0 })) { EditHomeView().macResizable(width: 520, height: 720) }
         .sheet(item: Binding(get: { playerTV.map { TitleRef(id: $0) } }, set: { playerTV = $0?.id })) { NowPlayingSheet(tvID: $0.id).macResizable(width: 560, height: 780) }
         // With the room bar hidden there's no way to pick a room: show everything.
         .onAppear { if layout.hiddenSections.contains("rooms") && !room.isEmpty { room = "" } }
@@ -281,7 +277,7 @@ struct HomeView: View {
                         }
                     }
                     Divider()
-                    Button("Choose Rooms for This Bar…") { editing = true }
+                    Button("Choose Rooms for This Bar…") { layout.editing = true }
                 } label: {
                     // Shows the room picked from here, so it's clear where you are.
                     chip(inMore ? (room.isEmpty ? "All Rooms" : room) + " ▾" : "More ▾", selected: inMore)
