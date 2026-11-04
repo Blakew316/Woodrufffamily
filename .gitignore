@@ -1,4 +1,6 @@
 *.xcodeproj
+# XcodeGen writes these from project.yml.
+App/*/Info.plist
 xcuserdata/
 DerivedData/
 .build/

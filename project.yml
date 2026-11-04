@@ -12,7 +12,11 @@ settings:
     SWIFT_VERSION: "5.10"
     SWIFT_STRICT_CONCURRENCY: minimal
     MARKETING_VERSION: "1.0"
+    # scripts/deploy.sh stamps each build: CURRENT_PROJECT_VERSION is the branch's commit count (CFBundleVersion, so a
+    # newer build has a higher number) and WOODRUFF_COMMIT the commit it was built from (Settings → General shows
+    # both). A build from Xcode or CI keeps these: "Build 1".
     CURRENT_PROJECT_VERSION: "1"
+    WOODRUFF_COMMIT: ""
     DEVELOPMENT_TEAM: ""
     CODE_SIGN_STYLE: Automatic
     ENABLE_PREVIEWS: YES
@@ -52,6 +56,9 @@ targets:
       path: App/iOS/Info.plist
       properties:
         CFBundleDisplayName: Woodruff
+        # XcodeGen writes "1" here otherwise; the widgets carry the same number.
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        WoodruffCommit: $(WOODRUFF_COMMIT)
         LSApplicationCategoryType: public.app-category.utilities
         UILaunchScreen: {}
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
@@ -97,6 +104,8 @@ targets:
       path: App/Widgets/Info.plist
       properties:
         CFBundleDisplayName: Woodruff
+        # The same build number as the app around it.
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
         NSAppTransportSecurity:
@@ -126,6 +135,9 @@ targets:
       path: App/macOS/Info.plist
       properties:
         CFBundleDisplayName: Woodruff Family
+        # XcodeGen writes "1" here otherwise; the widgets carry the same number.
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        WoodruffCommit: $(WOODRUFF_COMMIT)
         LSApplicationCategoryType: public.app-category.utilities
         LSMinimumSystemVersion: "26.0"
         NSLocalNetworkUsageDescription: Woodruff finds and controls the family’s TVs, Sonos speakers and lights on your network.
@@ -197,6 +209,8 @@ targets:
       path: App/MacWidgets/Info.plist
       properties:
         CFBundleDisplayName: Woodruff
+        # The same build number as the app around it.
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         WoodruffAppGroup: $(TeamIdentifierPrefix)com.woodruff.family
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension

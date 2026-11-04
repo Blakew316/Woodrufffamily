@@ -201,8 +201,9 @@ final class HomeGreeting {
             do {
                 let session = LanguageModelSession(instructions: """
                     You write the one-liner under the greeting on the Woodruff family's TV and smart-home app. \
-                    One short, witty, warm, family-friendly line, at most 12 words. Light humour about TV, movies, \
-                    snacks, the couch, the weather or the time of day. No quotes, no emoji, no hashtags, no names.
+                    One short, witty, warm, family-friendly sentence that fits on one line: at most 7 words and 40 \
+                    characters. Light humour about TV, movies, snacks, the couch, the weather or the time of day. \
+                    No quotes, no emoji, no hashtags, no names, no dashes.
                     """)
                 let answer = try await session.respond(to: "It's \(p.rawValue) and \(sky). Write a fresh one-liner.")
                 guard !Task.isCancelled, self.part == p else { return }
@@ -219,7 +220,8 @@ final class HomeGreeting {
         var t = s.trimmingCharacters(in: .whitespacesAndNewlines)
         if let first = t.split(whereSeparator: \.isNewline).first { t = String(first) }
         t = t.trimmingCharacters(in: CharacterSet(charactersIn: "\"“”'‘’ "))
-        return t.count > 90 ? "" : t
+        // A real one-liner: one row under the greeting. Anything longer keeps the picked line instead.
+        return t.count > 42 ? "" : t
     }
 
     private static func pick(_ p: DayPart, weather: HomeWeather.Now?) -> String {
@@ -241,58 +243,58 @@ final class HomeGreeting {
     private static let morning = [
         "Coffee first. Decisions later.",
         "Rise and shine — or at least rise.",
-        "Today's forecast: a 100% chance of snacks.",
+        "Forecast: 100% chance of snacks.",
         "The couch misses you already.",
         "Pajamas count as an outfit until noon.",
-        "Somebody start the coffee and nobody gets hurt.",
+        "Coffee now. Nobody gets hurt.",
         "The TVs are up, even if you're not.",
         "Fresh day. Same great couch.",
-        "Plot twist: today's going to be a good one.",
-        "Breakfast is the most important meal. Second breakfast is a close second.",
+        "Plot twist: today's a good one.",
+        "Second breakfast is still breakfast.",
         "Let's make today binge-worthy.",
-        "Yesterday's episodes are behind us. Onward.",
-        "Good things come to those who get out of bed.",
+        "New day, new episodes.",
+        "Good things come to the awake.",
         "Morning mood: one more snooze.",
     ]
 
     private static let afternoon = [
         "Halfway there. Snack accordingly.",
-        "Afternoon slump? The couch has entered the chat.",
-        "It's never too early to plan tonight's movie.",
+        "Afternoon slump? The couch says hi.",
+        "Plan tonight's movie now.",
         "The afternoon called. It wants a nap.",
-        "Productivity is overrated. Popcorn isn't.",
+        "Productivity's overrated. Popcorn isn't.",
         "Hydrate, snack, repeat.",
         "Somewhere, a TV is waiting just for you.",
         "Lunch was great. Dinner will be better.",
-        "A nap is just a short film with your eyes closed.",
+        "A nap is a short film, eyes closed.",
         "Keep calm and press play later.",
-        "Afternoon plan: look busy, think about dinner.",
+        "Look busy. Think about dinner.",
         "Snack o'clock is a real time zone.",
     ]
 
     private static let evening = [
-        "Couch claimed. Remote located. Snacks pending.",
+        "Couch claimed. Snacks pending.",
         "Tonight's lineup is looking strong.",
-        "Just one more episode. Famous last words.",
+        "One more episode. Famous last words.",
         "Popcorn won't make itself. Sadly.",
         "Who's picking the movie? Choose wisely.",
         "The day is done. The binge begins.",
         "Blankets out, lights low, let's go.",
-        "Plot twist: everyone agrees on what to watch.",
-        "Bedtime is a suggestion. The credits are a commitment.",
+        "Plot twist: everyone agrees on a movie.",
+        "Bedtime is more of a suggestion.",
         "Lights down, volume up.",
         "Dinner, a movie, then one more movie.",
-        "The remote is the real head of the household.",
+        "The remote runs this house.",
     ]
 
     private static let moods: [String: [String]] = [
-        "rain": ["Rain outside, movie inside. Perfect math.", "Puddles out there, popcorn in here."],
-        "snow": ["Snow day energy: blankets are mandatory.", "Let it snow. We've got a queue to finish."],
-        "storm": ["Thunder outside means surround sound inside.", "Stormy out there. Cozy in here."],
+        "rain": ["Rain outside, movie inside.", "Puddles out there, popcorn in here."],
+        "snow": ["Snow day energy: blankets are mandatory.", "Let it snow. The queue awaits."],
+        "storm": ["Thunder outside, surround sound inside.", "Stormy out there. Cozy in here."],
         "fog": ["Foggy out there. Crystal clear in here.", "The fog rolled in. So did the snacks."],
-        "hot": ["It's hot out. The AC and the couch agree.", "Too hot to move. Perfect excuse."],
+        "hot": ["Too hot out. The couch agrees.", "Too hot to move. Perfect excuse."],
         "cold": ["Too cold to go out. Too cozy to care.", "Bundle up, or just stay on the couch."],
-        "sunny": ["Sunny out there. The screens can wait. A little.", "Sunshine outside, showtime inside later."],
+        "sunny": ["Sunny now. Screens later.", "Sunshine outside, showtime inside later."],
     ]
 }
 
@@ -346,7 +348,8 @@ struct GreetingText: View {
                 Text(greeting.line)
                     .font(compact ? .caption : .subheadline)
                     .foregroundStyle(.secondary)
-                    .lineLimit(compact ? 1 : 2)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
                     .multilineTextAlignment(alignment == .center ? .center : .leading)
                     .contentTransition(.opacity)
                     .id(greeting.line)

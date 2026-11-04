@@ -63,9 +63,13 @@ struct HomeView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 30) {
                 #if os(iOS)
-                // The weather and Edit on the left, the thermostat on the right, and the greeting with its one-liner
-                // in the middle under them. (While arranging, Done stays pinned at the top right instead.)
+                // The greeting with its one-liner at the top, then the weather and Edit on the left and the thermostat
+                // on the right under it. (While arranging, Done stays pinned at the top right instead.)
                 VStack(spacing: 14) {
+                    GreetingText()
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14).padding(.horizontal, 16)
+                        .glass(RoundedRectangle(cornerRadius: 22, style: .continuous), interactive: false)
                     HStack(alignment: .center, spacing: 10) {
                         WeatherPill()
                         if !arranging {
@@ -75,10 +79,6 @@ struct HomeView: View {
                         if !arranging { ThermostatChip(compact: true) }
                     }
                     .frame(minHeight: 40)
-                    GreetingText()
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 14).padding(.horizontal, 16)
-                        .glass(RoundedRectangle(cornerRadius: 22, style: .continuous), interactive: false)
                 }
                 .padding(.bottom, -10)
                 #endif

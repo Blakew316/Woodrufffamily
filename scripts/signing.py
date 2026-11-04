@@ -6,7 +6,7 @@ Read-only. It runs `security find-identity`, `security find-certificate`, `codes
 CMS message whose content is a plist). It never runs `security cms -D`, which imports a profile's certificates
 into the login keychain while it decodes it. It never creates, imports, revokes, deletes or changes a
 certificate, key, profile, keychain or keychain search list, never writes into a profile folder, and never
-contacts Apple. The only file it writes is the --out file of share-manifest and entitlements.
+contacts Apple. The only file it writes is the --out file of share-manifest, kept-build and entitlements.
 
   signing.py identities [--team TEAM]          valid "Apple Development" identities (of one team)
   signing.py profiles                           every provisioning profile on this Mac, decoded
@@ -16,13 +16,17 @@ contacts Apple. The only file it writes is the --out file of share-manifest and 
   signing.py signer [--app PATH]                the certificate that signed an app (SHA-1, CN, team)
   signing.py share-manifest --app PATH --zip ZIP --commit SHA [--subject TEXT] --out FILE
   signing.py check-share --manifest FILE --zip ZIP --commit SHA [--team TEAM]
+  signing.py kept-build --commit SHA --build N --identity SHA1 --app-profile-uuid UUID
+             --app-profile-expires TIME --devices FILE --device UDID... --out FILE
+                                                the build.json next to an iPhone app deploy.sh kept (--keep-iphone)
   signing.py devices                            the iOS devices paired with this Mac
   signing.py bundle-id PATH                     CFBundleIdentifier of a .app or .appex
   signing.py get FILE KEY.PATH                  values from a JSON file, one per line ("*" walks a list)
 
-pick-ios, pick-mac and entitlements exit 2, with the reason, when it can't be done. Python 3.7+, standard
-library only. The choices are pure functions (pick_ios, pick_mac, build_entitlements, ...) so they can be
-tested with made-up profiles.
+pick-ios, pick-mac and entitlements exit 2, with the reason, when it can't be done. check-share exits 2 while
+the shared zip isn't usable yet (still arriving) and 3 when it never will be (signed for another team). Python
+3.7+, standard library only. The choices are pure functions (pick_ios, pick_mac, build_entitlements, ...) so
+they can be tested with made-up profiles.
 """
 
 import argparse
@@ -1019,21 +1023,53 @@ def share_manifest(commit, subject, digest, size, signer, bundle, built_on, now)
     }
 
 
-def share_problem(manifest, digest, size, commit, team=None):
-    """Why a shared zip isn't the build wanted (None if it is): another commit, not all there yet, another team."""
+def share_verdict(manifest, digest, size, commit, team=None):
+    """(problem, final) for a shared zip: why it isn't the build wanted (None if it is), and whether waiting can't
+    help. Another commit or a zip that doesn't match its manifest may still be arriving; another team never works."""
     if not isinstance(manifest, dict):
-        return "its manifest isn't a JSON object"
+        return "its manifest isn't a JSON object", False
     want = (commit or "").strip().lower()
     have = str(manifest.get("commit") or "").strip().lower()
     if not want or have != want:
-        return "it's the build of %s, not %s" % (have[:12] or "an unknown commit", want[:12] or "(none given)")
+        return "it's the build of %s, not %s" % (have[:12] or "an unknown commit", want[:12] or "(none given)"), False
     if manifest.get("bytes") != size:
-        return "the zip has %d bytes, not the %s its manifest says (still arriving?)" % (size, manifest.get("bytes"))
+        return ("the zip has %d bytes, not the %s its manifest says (still arriving?)" % (size, manifest.get("bytes")),
+                False)
     if str(manifest.get("sha256") or "").lower() != digest:
-        return "the zip's SHA-256 isn't the one its manifest says (still arriving, or damaged)"
+        return "the zip's SHA-256 isn't the one its manifest says (still arriving, or damaged)", False
     if team and manifest.get("signer_team") and manifest.get("signer_team") != team:
-        return "it was signed for team %s, not %s" % (manifest.get("signer_team"), team)
-    return None
+        return "it was signed for team %s, not %s" % (manifest.get("signer_team"), team), True
+    return None, False
+
+
+def share_problem(manifest, digest, size, commit, team=None):
+    """Why a shared zip isn't the build wanted (None if it is): another commit, not all there yet, another team."""
+    return share_verdict(manifest, digest, size, commit, team)[0]
+
+
+def kept_build(commit, build, signed_at, identity, app_profile_uuid, app_profile_expires, devices, names=None):
+    """The build.json saved next to an iPhone app deploy.sh signed and kept (--keep-iphone): devices are the UDIDs
+    it's signed for, names {UDID: name} from `devicectl list devices` (a UDID stands in for a missing name)."""
+    names = names or {}
+    try:
+        number = int(str(build).strip())
+    except (TypeError, ValueError):
+        number = None
+    out, seen = [], set()
+    for udid in devices:
+        udid = str(udid or "").strip()
+        if udid and udid not in seen:
+            seen.add(udid)
+            out.append({"udid": udid, "name": names.get(udid) or udid})
+    return {
+        "commit": (commit or "").strip().lower(),
+        "build": number,
+        "signed_at": signed_at,
+        "identity": (identity or "").strip().upper(),
+        "app_profile_uuid": app_profile_uuid or "",
+        "app_profile_expires": app_profile_expires or "",
+        "devices": out,
+    }
 
 
 def computer_name():
@@ -1238,10 +1274,41 @@ def cmd_check_share(args):
         digest, size = file_digest(args.zip)
     except OSError as exc:
         return _fail("Couldn't read %s: %s" % (args.zip, exc))
-    problem = share_problem(manifest, digest, size, args.commit, args.team)
+    problem, final = share_verdict(manifest, digest, size, args.commit, args.team)
+    if problem and final:
+        return _fail("The shared build can't be used: %s." % problem, 3)
     if problem:
         return _fail("The shared build isn't usable yet: %s." % problem)
     print_json(manifest)
+    return 0
+
+
+def cmd_kept_build(args):
+    names = {}
+    if args.devices:
+        try:
+            with open(args.devices, "rb") as handle:
+                listed = json.load(handle)
+        except (OSError, ValueError):
+            listed = []
+        for device in listed if isinstance(listed, list) else []:
+            if isinstance(device, dict) and isinstance(device.get("udid"), str):
+                names[device["udid"]] = device.get("name") or device["udid"]
+    devices = [udid for group in args.device or [] for udid in group]
+    record = kept_build(args.commit, args.build, _iso(datetime.now(timezone.utc)), args.identity,
+                        args.app_profile_uuid, args.app_profile_expires, devices, names)
+    folder = os.path.dirname(os.path.abspath(args.out))
+    tmp = None
+    try:  # written next to it and renamed, so a reader never sees half of it
+        fd, tmp = tempfile.mkstemp(dir=folder, prefix=".build.", suffix=".json")
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, indent=2, ensure_ascii=False) + "\n")
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, args.out)
+    except OSError as exc:
+        if tmp and os.path.exists(tmp):
+            os.unlink(tmp)
+        return _fail("Couldn't write %s: %s" % (args.out, exc), 1)
     return 0
 
 
@@ -1339,6 +1406,17 @@ def main(argv=None):
     p.add_argument("--commit", required=True)
     p.add_argument("--team")
     p.set_defaults(func=cmd_check_share)
+
+    p = sub.add_parser("kept-build", help="write build.json for an iPhone app deploy.sh kept")
+    p.add_argument("--commit", required=True)
+    p.add_argument("--build", default="")
+    p.add_argument("--identity", required=True)
+    p.add_argument("--app-profile-uuid", default="")
+    p.add_argument("--app-profile-expires", default="")
+    p.add_argument("--devices", help="the JSON of `signing.py devices`, for the names")
+    p.add_argument("--device", action="append", nargs="+", metavar="UDID", required=True)
+    p.add_argument("--out", required=True)
+    p.set_defaults(func=cmd_kept_build)
 
     p = sub.add_parser("devices", help="the iOS devices paired with this Mac")
     p.set_defaults(func=cmd_devices)

@@ -129,8 +129,8 @@ struct SmartHomeSettingsView: View {
     }
 }
 
-/// Settings → General: Away From Home, Shortcuts, the Mac's click sound, keeping every device in step, and the TV's
-/// last crash when there is one.
+/// Settings → General: Away From Home, Shortcuts, the Mac's click sound, keeping every device in step, the TV's last
+/// crash when there is one, and which build of Woodruff Family this is (on a Mac, with how its updates are going).
 struct GeneralSettingsView: View {
     @Environment(Fleet.self) private var fleet
     var hub: HubSettings
@@ -162,6 +162,7 @@ struct GeneralSettingsView: View {
                     }
                 }
             }
+            WoodruffFamilySection()
         }
         .formStyle(.grouped)
         .navigationTitle("General")
@@ -170,6 +171,11 @@ struct GeneralSettingsView: View {
         // Opened before Settings had read them (or they couldn't be read then): read them now, and keep them current.
         .task { await hub.loadIfNeeded(fleet) }
         .task { await hub.follow(fleet) }
+        #if os(macOS)
+        // The family's updater: what it says is read as the page opens, every 5 seconds while it shows, and every 2
+        // seconds for a minute after Check Now.
+        .task { await UpdaterStatus.shared.follow() }
+        #endif
     }
 
     /// On or Off once the settings are read (nothing before then, rather than a guess).
@@ -178,6 +184,72 @@ struct GeneralSettingsView: View {
         return (s.awayUrl ?? "").isEmpty ? "Off" : "On"
     }
 }
+
+/// Settings → General → Woodruff Family: which build this is and, on a Mac, how the family's updater is doing here (on
+/// the Mac Studio, also each iPhone it installs on), with Check for Updates Now. A view of its own: what the updater
+/// says is read every few seconds while General shows, and only these rows redraw when it changes.
+struct WoodruffFamilySection: View {
+    #if os(macOS)
+    private let updater = UpdaterStatus.shared
+    #endif
+
+    var body: some View {
+        #if os(macOS)
+        Section {
+            LabeledContent("Version", value: AppBuild.label)
+            updatesRow
+            ForEach(updater.iPhones) { IPhoneUpdateRow(phone: $0) }
+            Button("Check for Updates Now") { updater.checkNow() }
+                .disabled(!updater.isSetUp || updater.running || updater.checking)
+        } header: {
+            Text("Woodruff Family")
+        }
+        #else
+        Section {
+            LabeledContent("Version", value: AppBuild.label)
+        } header: {
+            Text("Woodruff Family")
+        } footer: {
+            Text("New versions install automatically from the family’s Mac while this iPhone is on home Wi‑Fi.")
+        }
+        #endif
+    }
+
+    #if os(macOS)
+    /// "Updates: Up to date", with why it went wrong (when it did) and when the updater last looked.
+    private var updatesRow: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            IconRow(symbol: "", color: .clear, title: "Updates", value: updater.summary, valueColor: updater.hasProblem ? Palette.attention : .secondary)
+            if let detail = updater.detail {
+                Text(detail).font(.footnote).foregroundStyle(.secondary).lineLimit(4)
+            }
+            if let checked = updater.lastChecked {
+                // Redrawn now and then, so "3 min. ago" keeps up while the page stays open.
+                TimelineView(.periodic(from: .now, by: 20)) { _ in
+                    Text("Last checked \(relative(checked.timeIntervalSince1970 * 1000))").font(.footnote).foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+    #endif
+}
+
+#if os(macOS)
+/// One iPhone the Mac Studio installs Woodruff Family on: up to date, waiting for it to be on the home Wi‑Fi,
+/// installing, or why it couldn't.
+struct IPhoneUpdateRow: View {
+    var phone: UpdaterStatus.Phone
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            IconRow(symbol: "", color: .clear, title: phone.displayName, value: phone.summary, valueColor: phone.state == "failed" ? Palette.attention : .secondary)
+            if let problem = phone.problem {
+                Text(problem).font(.footnote).foregroundStyle(.secondary).lineLimit(4)
+            }
+        }
+    }
+}
+#endif
 
 /// Notifications → Recent Messages: what the TVs and the family sent this device in the last week.
 struct RecentMessagesView: View {

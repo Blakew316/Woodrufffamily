@@ -2,9 +2,15 @@ name: Build apps
 
 on:
   push:
-    branches-ignore: [screenshots]
+    # Not release: it only ever points at a commit this workflow has built already.
+    branches-ignore: [screenshots, release]
   pull_request:
   workflow_dispatch:
+    inputs:
+      release:
+        description: Ship this commit to every device
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -15,6 +21,9 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+      - name: Script tests
+        # macOS's own bash 3.2 and Apple's python3, which the family's Macs run these scripts with.
+        run: /bin/bash -n scripts/deploy.sh && /usr/bin/python3 -m unittest discover -s scripts/tests -p 'test_*.py' -v
       - name: Xcode
         run: |
           ls -d /Applications/Xcode*.app
@@ -60,3 +69,68 @@ jobs:
           path: |
             out/WoodruffFamily-unsigned.ipa
             out/WoodruffFamily-mac.zip
+
+  # Ships a commit once it has built: moves the release branch, which every Mac's updater (scripts/updater.py)
+  # follows, to it. A push to claude/native-apps whose newest commit has [release] in its message does this, and so
+  # does Run workflow with "Ship this commit to every device" ticked. It only ever fast-forwards; going back to an
+  # older build is a force-push by hand.
+  release:
+    needs: build
+    if: >-
+      (github.event_name == 'push' && github.ref == 'refs/heads/claude/native-apps' &&
+      contains(github.event.head_commit.message, '[release]')) ||
+      (github.event_name == 'workflow_dispatch' && inputs.release)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    concurrency:
+      group: release
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Move release to this commit
+        run: |
+          set -euo pipefail
+          sha=$GITHUB_SHA
+          build=$(git rev-list --count "$sha")
+          subject=$(git log -1 --format=%s "$sha")
+          if git ls-remote --exit-code origin refs/heads/release >/dev/null; then
+            git fetch --no-tags origin +refs/heads/release:refs/remotes/origin/release
+            current=$(git rev-parse refs/remotes/origin/release)
+            # A newer release (its run finished first) already has this commit, or this commit is released already.
+            if git merge-base --is-ancestor "$sha" "$current"; then
+              echo "release is at $current, which already has $sha: nothing to do."
+              echo "Already released: release is at $current, which has $sha." >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+          else
+            status=$?
+            if [ "$status" -ne 2 ]; then
+              echo "::error::Couldn't list origin's branches (git ls-remote exited with $status)."
+              echo "Not released: couldn't list origin's branches." >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
+            echo "origin has no release branch yet: this makes it."
+          fi
+          # Never --force: if release has commits this one doesn't, GitHub refuses the push and nothing moves.
+          if ! git push origin "$sha:refs/heads/release" 2>&1 | tee "$RUNNER_TEMP/push.log"; then
+            if grep -q 'without .workflows. permission' "$RUNNER_TEMP/push.log"; then
+              why="GitHub won't let this job's token move release past a change to .github/workflows."
+              why="$why The commit built, so move release by hand, without --force: git push origin $sha:release"
+            else
+              why="release wasn't moved to $sha (see the log above). If it isn't a fast-forward, release has commits"
+              why="$why this one doesn't: check them before moving it by hand (git push --force origin $sha:release)."
+            fi
+            echo "::error::$why"
+            echo "Not released: $why" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "Released $sha (build $build): $subject"
+          {
+            echo "Released $sha"
+            echo
+            echo "Build $build: $subject"
+          } >> "$GITHUB_STEP_SUMMARY"

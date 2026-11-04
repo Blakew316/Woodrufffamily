@@ -88,11 +88,16 @@ struct MenuBarFleetView: View {
     }
 }
 
-/// Menu commands: refresh, the remote's keys, and ⌘1–⌘4 to pick a TV.
+/// Menu commands: Check for Updates, refresh, the remote's keys, and ⌘1–⌘4 to pick a TV.
 struct WoodruffCommands: Commands {
     var fleet: Fleet
     @Environment(\.openWindow) private var openWindow
     var body: some Commands {
+        // Under About, where Mac apps keep it: the family's updater looks for a new version now, and Woodruff says what
+        // it found.
+        CommandGroup(after: .appInfo) {
+            Button("Check for Updates…") { UpdaterStatus.shared.checkNow(reportTo: fleet) }
+        }
         CommandGroup(after: .windowArrangement) {
             Button("Mini Player") { openWindow(id: "mini") }.keyboardShortcut("m", modifiers: [.command, .shift])
         }

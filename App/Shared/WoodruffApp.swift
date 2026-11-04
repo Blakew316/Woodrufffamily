@@ -34,6 +34,10 @@ struct WoodruffApp: App {
         // Before launch finishes, as Apple asks: a tapped doorbell or camera alert that opened the app (Woodruff
         // wasn't running) still arrives here and opens that camera live, instead of being dropped.
         UNUserNotificationCenter.current().delegate = Notifier.handler
+        #if os(macOS)
+        // An update replacing the app asks it to quit first (a notification from deploy.sh): it quits itself.
+        UpdaterStatus.listenForQuit()
+        #endif
     }
 
     var body: some Scene {
