@@ -191,7 +191,7 @@ struct RootView: View {
         .sheet(item: Binding(
             get: { CameraStreams.shared.requested.flatMap { id in NestCameras.shared.cameras.first { $0.id == id } } },
             set: { if $0 == nil { CameraStreams.shared.requested = nil } }
-        )) { cam in CameraLiveView(camera: cam).macResizable(width: 960, height: 640, minWidth: 480, minHeight: 320) }
+        )) { cam in CameraLiveView(camera: cam).macResizable(width: 960, height: 540, minWidth: 480, minHeight: 270, aspect: 16 / 9) }
     }
 
     #if os(iOS)

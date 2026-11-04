@@ -295,7 +295,7 @@ struct CamerasSection: View {
                     }
                 }
             }
-            .sheet(item: $open) { cam in CameraLiveView(camera: cam).macResizable(width: 960, height: 640, minWidth: 480, minHeight: 320) }
+            .sheet(item: $open) { cam in CameraLiveView(camera: cam).macResizable(width: 960, height: 540, minWidth: 480, minHeight: 270, aspect: 16 / 9) }
         }
     }
 }
@@ -454,6 +454,43 @@ struct CameraLiveView: View {
 
     var body: some View {
         let player = streams.player(camera)
+        Group {
+            #if os(macOS)
+            // Just the picture, filling the window, with the name and buttons floating over its top.
+            ZStack(alignment: .top) {
+                Color.black
+                LiveWebView(player: player)
+                    .aspectRatio(16 / 9, contentMode: .fit)
+                LinearGradient(colors: [.black.opacity(0.6), .clear], startPoint: .top, endPoint: .bottom)
+                    .frame(height: 90)
+                    .allowsHitTesting(false)
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(camera.name).font(.title3.bold()).foregroundStyle(.white)
+                        Text(camera.online ? (streams.status[camera.id] ?? "Starting…") : "Offline").font(.subheadline).foregroundStyle(.white.opacity(0.7))
+                    }
+                    Spacer()
+                    GlassCircle(symbol: muted ? "speaker.slash.fill" : "speaker.wave.2.fill", size: 36) {
+                        muted.toggle(); player.setMuted(muted)
+                    }
+                    GlassCircle(symbol: "xmark", size: 36) { dismiss() }
+                }
+                .padding(14)
+            }
+            .ignoresSafeArea()
+            #else
+            phoneBody(player)
+            #endif
+        }
+        .onAppear { streams.expanded = camera.id; streams.show(camera) }
+        .onDisappear {
+            player.setMuted(true)
+            if streams.expanded == camera.id { streams.expanded = nil }
+            streams.hide()
+        }
+    }
+
+    private func phoneBody(_ player: LivePlayer) -> some View {
         VStack(spacing: 14) {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
@@ -475,12 +512,6 @@ struct CameraLiveView: View {
         .padding(20)
         .frame(minWidth: 420, minHeight: 340)
         .presentationDetents([.medium, .large])
-        .onAppear { streams.expanded = camera.id; streams.show(camera) }
-        .onDisappear {
-            player.setMuted(true)
-            if streams.expanded == camera.id { streams.expanded = nil }
-            streams.hide()
-        }
     }
 }
 
@@ -763,6 +794,6 @@ struct CamerasPhoneView: View {
                 clientID = s.google?.clientId ?? ""
             }
         }
-        .sheet(item: $open) { cam in CameraLiveView(camera: cam).macResizable(width: 960, height: 640, minWidth: 480, minHeight: 320) }
+        .sheet(item: $open) { cam in CameraLiveView(camera: cam).macResizable(width: 960, height: 540, minWidth: 480, minHeight: 270, aspect: 16 / 9) }
     }
 }
