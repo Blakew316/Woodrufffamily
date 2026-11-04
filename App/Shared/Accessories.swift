@@ -692,13 +692,24 @@ func thermostatStatus(_ d: HomeDevice) -> String {
 
 /// The thermostat pill, top right: on the Mac in the toolbar of every page (with − and + for the set
 /// temperature), on iPhone beside Home's title (compact). Click or tap it for every control.
+/// The thermostat panel's state, kept outside the pill: the pill sits in the Mac's toolbar and Home's header,
+/// which redraw every second or two while the TVs report, and a pop-over or a value held inside it was lost on
+/// every redraw (the controls flashed open and vanished). The panel opens from the window itself instead.
+@Observable @MainActor
+final class ThermostatUI {
+    static let shared = ThermostatUI()
+    /// The thermostat controls are showing.
+    var open = false
+    /// The set temperature being changed with − and + (shown at once, sent a moment after the last click).
+    var pending: Double?
+    @ObservationIgnored var sendSoon: Task<Void, Never>?
+}
+
 struct ThermostatChip: View {
     /// iPhone: just the icon, the temperature and what it's doing.
     var compact = false
     private let store = AccessoryStore.shared
-    @State private var open = false
-    @State private var pending: Double?
-    @State private var sendSoon: Task<Void, Never>?
+    private let ui = ThermostatUI.shared
     @State private var hovering = false
 
     /// The set temperature the − and + change (Mac, in Heat or Cool).
@@ -717,7 +728,7 @@ struct ThermostatChip: View {
                 #if os(iOS)
                 UIImpactFeedbackGenerator(style: .light).impactOccurred()
                 #endif
-                open.toggle()
+                ui.open = true
             } label: {
                 summary(t)
                     .padding(.leading, 5)
@@ -754,9 +765,6 @@ struct ThermostatChip: View {
         .animation(.spring(response: 0.3, dampingFraction: 0.8), value: hovering)
         .onHover { hovering = $0 }
         .help(t.map { "\($0.name): \($0.status)" } ?? "Thermostat: not connected yet. Click for how to add it.")
-        .popover(isPresented: $open, arrowEdge: .bottom) {
-            ThermostatPanel()
-        }
     }
 
     /// The set temperature − and + work on: the Mac's full pill, a thermostat that's responding, in Heat or Cool.
@@ -765,7 +773,7 @@ struct ThermostatChip: View {
         // No mode reported (only set temperatures): the one it has.
         let mode = t.thermostatMode ?? (t.heatTo == nil && t.coolTo != nil ? "cool" : "heat")
         guard mode == "heat" || mode == "cool",
-              let current = pending ?? (mode == "heat" ? t.heatTo : t.coolTo) ?? t.target else { return nil }
+              let current = ui.pending ?? (mode == "heat" ? t.heatTo : t.coolTo) ?? t.target else { return nil }
         return Nudge(mode: mode, value: current)
     }
 
@@ -805,15 +813,17 @@ struct ThermostatChip: View {
 
     /// Shows the new temperature at once; sends it a moment after the last click.
     private func nudge(_ t: HomeDevice, _ mode: String, _ value: Double) {
-        pending = value
-        sendSoon?.cancel()
-        sendSoon = Task {
+        let ui = ui
+        let store = store
+        ui.pending = value
+        ui.sendSoon?.cancel()
+        ui.sendSoon = Task { @MainActor in
             try? await Task.sleep(nanoseconds: 700_000_000)
             guard !Task.isCancelled else { return }
             store.send(t, mode == "heat" ? .heatTo(value) : .coolTo(value))
             // The thermostat's own value shows from here: the change at once, then what it says.
-            pending = nil
-            sendSoon = nil
+            ui.pending = nil
+            ui.sendSoon = nil
         }
     }
 
@@ -873,28 +883,36 @@ struct ThermostatChip: View {
 }
 
 /// What the thermostat pill opens: every control, or, with no thermostat yet, how to connect it.
-private struct ThermostatPanel: View {
+struct ThermostatPanel: View {
     private let store = AccessoryStore.shared
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            if let t = store.thermostat {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
                 HStack(alignment: .firstTextBaseline) {
-                    Text(t.name).font(.title3.bold()).lineLimit(1)
+                    if let t = store.thermostat {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(t.name).font(.title3.bold()).lineLimit(1)
+                            Text(t.reachable ? t.sourceName : "Not Responding").font(.caption).foregroundStyle(.secondary)
+                        }
+                    } else {
+                        Text("Thermostat").font(.title3.bold())
+                    }
                     Spacer()
-                    Text(t.reachable ? t.sourceName : "Not Responding").font(.caption).foregroundStyle(.secondary)
+                    Button("Done") { ThermostatUI.shared.open = false }
+                        .keyboardShortcut(.cancelAction)
+                        .buttonStyle(.glass)
                 }
-                ThermostatControls(device: t, showsFailure: true)
-            } else {
-                ThermostatSetup()
+                if let t = store.thermostat {
+                    ThermostatControls(device: t, showsFailure: true)
+                } else {
+                    ThermostatSetup()
+                }
             }
+            .padding(22)
         }
-        .padding(22)
-        #if os(iOS)
-        .frame(width: 350)
-        .presentationCompactAdaptation(.popover)
-        #else
-        .frame(width: 400)
+        #if os(macOS)
+        .frame(width: 440, height: 520)
         #endif
     }
 }

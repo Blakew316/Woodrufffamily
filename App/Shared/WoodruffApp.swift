@@ -194,6 +194,8 @@ struct RootView: View {
         // just launched by the tap. (Read here, so the page redraws the moment the tap arrives.)
         let requested = CameraStreams.shared.requested.flatMap { id in NestCameras.shared.cameras.first { $0.id == id } }
         let banner = fleet.banner
+        // Read here so the window notices the moment the thermostat pill is tapped.
+        let thermostatOpen = ThermostatUI.shared.open
         Group {
             if fleet.hubs.isEmpty {
                 WelcomeView()
@@ -207,6 +209,15 @@ struct RootView: View {
         }
         .alert(item: Binding(get: { banner }, set: { fleet.banner = $0 })) { b in
             Alert(title: Text(b.title), message: Text(b.message), dismissButton: .default(Text("OK")))
+        }
+        // The thermostat controls, from the pill in Home's header (iPhone) or the toolbar (Mac). Shown from here, the
+        // window's root, so the screen redrawing (it does every second or two while the TVs report) can't close it.
+        .sheet(isPresented: Binding(get: { thermostatOpen }, set: { ThermostatUI.shared.open = $0 })) {
+            ThermostatPanel()
+                #if os(iOS)
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+                #endif
         }
         .cameraPresenter(Binding(
             get: { requested },
