@@ -124,6 +124,8 @@ struct MacPage<Content: View>: View {
             .safeAreaInset(edge: .top, spacing: 0) {
                 MacBackRow(title: title, backTo: backTo) { dismiss() }
             }
+            // The page's name is already next to Back: the window doesn't print it a second time at the top.
+            .toolbar(removing: .title)
     }
 }
 
