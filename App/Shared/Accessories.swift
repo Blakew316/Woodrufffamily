@@ -555,10 +555,11 @@ func thermostatStatus(_ d: HomeDevice) -> String {
     return [lead, now].compactMap { $0 }.joined(separator: " · ")
 }
 
-#if os(macOS)
-/// The Mac toolbar's thermostat, top right on every page: the temperature now, what it's doing, and the set
-/// temperature with − and +. Click it for every control.
+/// The thermostat pill, top right: on the Mac in the toolbar of every page (with − and + for the set
+/// temperature), on iPhone beside Home's title (compact). Click or tap it for every control.
 struct ThermostatChip: View {
+    /// iPhone: just the icon, the temperature and what it's doing.
+    var compact = false
     private let store = AccessoryStore.shared
     @State private var open = false
     @State private var pending: Double?
@@ -588,7 +589,7 @@ struct ThermostatChip: View {
             }
             .contentShape(Rectangle())
             .onTapGesture { open.toggle() }
-            if let t, t.reachable, let mode = t.thermostatMode, mode == "heat" || mode == "cool",
+            if !compact, let t, t.reachable, let mode = t.thermostatMode, mode == "heat" || mode == "cool",
                let current = pending ?? (mode == "heat" ? t.heatTo : t.coolTo) ?? t.target {
                 Divider().frame(height: 22)
                 HStack(spacing: 6) {
@@ -603,8 +604,11 @@ struct ThermostatChip: View {
                 }
             }
         }
-        .padding(.leading, 5).padding(.trailing, 12).padding(.vertical, 4)
+        .padding(.leading, 5).padding(.trailing, 12).padding(.vertical, compact ? 6 : 4)
         .fixedSize()
+        #if os(iOS)
+        .glass(Capsule(), interactive: true)
+        #endif
         .opacity(t?.reachable == false ? 0.6 : 1)
         .scaleEffect(hovering ? 1.02 : 1)
         .animation(.spring(response: 0.3, dampingFraction: 0.8), value: hovering)
@@ -627,7 +631,12 @@ struct ThermostatChip: View {
                 }
             }
             .padding(22)
+            #if os(iOS)
+            .frame(width: 350)
+            .presentationCompactAdaptation(.popover)
+            #else
             .frame(width: 400)
+            #endif
         }
     }
 
@@ -701,4 +710,4 @@ struct ThermostatChip: View {
         }
     }
 }
-#endif
+

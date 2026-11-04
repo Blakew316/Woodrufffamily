@@ -25,12 +25,12 @@ struct HomeView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 30) {
                 #if os(iOS)
-                HStack(alignment: .firstTextBaseline) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Home").font(.largeTitle.bold())
-                    }
+                // Home and Edit on the left; the thermostat on the right.
+                HStack(alignment: .center, spacing: 12) {
+                    Text("Home").font(.largeTitle.bold())
+                    Button("Edit") { layout.editing = true }.buttonStyle(.glass).controlSize(.small)
                     Spacer()
-                    Button("Edit") { layout.editing = true }.buttonStyle(.glass)
+                    ThermostatChip(compact: true)
                 }
                 .padding(.bottom, -14)
                 #endif
