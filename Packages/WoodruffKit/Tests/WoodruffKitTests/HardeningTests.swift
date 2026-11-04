@@ -141,4 +141,205 @@ final class HardeningTests: XCTestCase {
             XCTAssertEqual(Set(copies.map(\.0)).count, 1)
         }
     }
+
+    func testEntryTiesEndTheSameEitherWayRound() {
+        // Two old copies (no stamps) with different names for the same thing, handed across at the same moment:
+        // both devices keep the same one (never each taking the other's, which swaps them back and forth).
+        let a = #"{"x":"Kitchen"}"#, b = #"{"x":"Den"}"#
+        let m1 = SyncMerge.mergeEntries(local: a, localStamps: [:], remote: b, remoteStamps: [:])
+        let m2 = SyncMerge.mergeEntries(local: b, localStamps: [:], remote: a, remoteStamps: [:])
+        XCTAssertEqual(m1.value, m2.value)
+        XCTAssertEqual(m1.stamps, m2.stamps)
+        // The same stamp on both sides with different values: the same answer too, and merging it again changes nothing.
+        let m3 = SyncMerge.mergeEntries(local: a, localStamps: ["x": 50], remote: b, remoteStamps: ["x": 50])
+        let m4 = SyncMerge.mergeEntries(local: b, localStamps: ["x": 50], remote: a, remoteStamps: ["x": 50])
+        XCTAssertEqual(m3.value, m4.value)
+        XCTAssertEqual(SyncMerge.mergeEntries(local: m3.value, localStamps: m3.stamps, remote: b, remoteStamps: ["x": 50]).value, m3.value)
+    }
+
+    func testOldCopiesWithTiesConverge() {
+        // Devices that start with different old (unstamped) copies, then make changes, all end identical.
+        var rng = SystemRandomNumberGenerator()
+        let keys = ["a", "b", "c", "d"]
+        for _ in 0..<200 {
+            var copies: [(String, [String: Double])] = []
+            for _ in 0..<4 {
+                var dict: [String: String] = [:]
+                for k in keys {
+                    if Bool.random(using: &rng) { dict[k] = "o\(Int.random(in: 0..<3, using: &rng))" }
+                }
+                copies.append((SyncMerge.canonical(dict) ?? "{}", [:]))
+            }
+            var clock = 1.0
+            for _ in 0..<8 {
+                let i = Int.random(in: 0..<4, using: &rng)
+                var dict = SyncMerge.object(copies[i].0) as? [String: String] ?? [:]
+                let key = keys[Int.random(in: 0..<keys.count, using: &rng)]
+                if Bool.random(using: &rng) { dict[key] = "v\(Int.random(in: 0..<9, using: &rng))" } else { dict[key] = nil }
+                let new = SyncMerge.canonical(dict) ?? "{}"
+                clock += 1
+                copies[i] = (new, SyncMerge.stampEntries(old: copies[i].0, new: new, stamps: copies[i].1, now: clock))
+            }
+            for _ in 0..<4 {
+                for i in (0..<4).shuffled(using: &rng) {
+                    for j in (0..<4).shuffled(using: &rng) where i != j {
+                        let m = SyncMerge.mergeEntries(local: copies[i].0, localStamps: copies[i].1, remote: copies[j].0, remoteStamps: copies[j].1)
+                        copies[i] = (m.value, m.stamps)
+                    }
+                }
+            }
+            XCTAssertEqual(Set(copies.map(\.0)).count, 1)
+        }
+    }
+
+    func testLayoutPartsMergeBothDevicesChanges() throws {
+        let base = #"{"favorites":["cam1"],"groupByRoom":true,"hiddenItems":[],"order":{},"pinnedRooms":["Kitchen"],"sections":["rooms","tvs"],"version":2}"#
+        let start = SyncMerge.uniformStamps(base, 5)
+        // The phone hides a tile; the Mac pins a room a moment later; neither has seen the other's change yet.
+        let phone = #"{"favorites":["cam1"],"groupByRoom":true,"hiddenItems":["tv1"],"order":{},"pinnedRooms":["Kitchen"],"sections":["rooms","tvs"],"version":2}"#
+        let mac = #"{"favorites":["cam1"],"groupByRoom":true,"hiddenItems":[],"order":{},"pinnedRooms":["Kitchen","Den"],"sections":["rooms","tvs"],"version":2}"#
+        let ps = SyncMerge.stampEntries(old: base, new: phone, stamps: start, now: 10)
+        let ms = SyncMerge.stampEntries(old: base, new: mac, stamps: start, now: 11)
+        let a = SyncMerge.mergeLayout(local: phone, localStamps: ps, remote: mac, remoteStamps: ms)
+        let b = SyncMerge.mergeLayout(local: mac, localStamps: ms, remote: phone, remoteStamps: ps)
+        XCTAssertEqual(a.value, b.value)
+        XCTAssertEqual(a.stamps, b.stamps)
+        let o = try XCTUnwrap(SyncMerge.object(a.value) as? [String: Any])
+        XCTAssertEqual(o["hiddenItems"] as? [String], ["tv1"])
+        XCTAssertEqual(o["pinnedRooms"] as? [String], ["Kitchen", "Den"])
+        // Merging again changes nothing (no back and forth).
+        XCTAssertEqual(SyncMerge.mergeLayout(local: a.value, localStamps: a.stamps, remote: mac, remoteStamps: ms).value, a.value)
+    }
+
+    func testLayoutFavouritesMergeOneByOneEitherWayRound() throws {
+        let a = #"{"favorites":["cam1","tv1"],"favoriteStamps":{"tv1":10},"sections":["tvs"]}"#
+        let b = #"{"favorites":["cam1","lamp"],"favoriteStamps":{"lamp":20,"tv1":-15},"sections":["cameras"]}"#
+        let sa: [String: Double] = ["favorites": 10, "favoriteStamps": 10, "sections": 3]
+        let sb: [String: Double] = ["favorites": 20, "favoriteStamps": 20, "sections": 4]
+        let m1 = SyncMerge.mergeLayout(local: a, localStamps: sa, remote: b, remoteStamps: sb)
+        let m2 = SyncMerge.mergeLayout(local: b, localStamps: sb, remote: a, remoteStamps: sa)
+        XCTAssertEqual(m1.value, m2.value)
+        let o = try XCTUnwrap(SyncMerge.object(m1.value) as? [String: Any])
+        XCTAssertEqual(o["favorites"] as? [String], ["cam1", "lamp"])   // tv1 removed later on b
+        XCTAssertEqual(o["sections"] as? [String], ["cameras"])        // b changed its sections later
+        // One added on each device, neither seen by the other: both stay, the same on both.
+        let c = #"{"favorites":["cam1","tv2"],"favoriteStamps":{"tv2":30}}"#
+        let d = #"{"favorites":["cam1","fan"],"favoriteStamps":{"fan":31}}"#
+        let sc: [String: Double] = ["favorites": 30, "favoriteStamps": 30]
+        let sd: [String: Double] = ["favorites": 31, "favoriteStamps": 31]
+        let m3 = SyncMerge.mergeLayout(local: c, localStamps: sc, remote: d, remoteStamps: sd)
+        let m4 = SyncMerge.mergeLayout(local: d, localStamps: sd, remote: c, remoteStamps: sc)
+        XCTAssertEqual(m3.value, m4.value)
+        let favs = try XCTUnwrap((SyncMerge.object(m3.value) as? [String: Any])?["favorites"] as? [String])
+        XCTAssertEqual(Set(favs), ["cam1", "tv2", "fan"])
+    }
+
+    func testLayoutFromBeforePartByPartKeepsTheNewerLayout() throws {
+        // A copy kept whole (stamp 50) against this device's, kept whole until now (stamp 40): the other layout is
+        // the newer one, so every part comes from it; favourites still merge one by one.
+        let mine = #"{"favorites":["cam1"],"sections":["tvs","rooms"]}"#
+        let theirs = #"{"favorites":["tv1"],"favoriteStamps":{"tv1":45},"sections":["rooms","tvs"]}"#
+        let m = SyncMerge.mergeLayout(local: mine, localStamps: SyncMerge.uniformStamps(mine, 40),
+                                      remote: theirs, remoteStamps: SyncMerge.uniformStamps(theirs, 50))
+        let o = try XCTUnwrap(SyncMerge.object(m.value) as? [String: Any])
+        XCTAssertEqual(o["sections"] as? [String], ["rooms", "tvs"])
+        XCTAssertEqual(o["favorites"] as? [String], ["tv1", "cam1"])
+    }
+
+    func testLayoutMergeStressConverges() throws {
+        // Three devices changing parts of the layout and toggling favourites, merged in random orders, all end the same.
+        var rng = SystemRandomNumberGenerator()
+        let parts = ["sections", "hiddenItems", "pinnedRooms", "groupByRoom"]
+        let ids = ["a", "b", "c", "d"]
+        for _ in 0..<150 {
+            let empty: (String, [String: Double]) = (#"{"favorites":[],"version":2}"#, ["favorites": 1, "version": 1])
+            var copies = Array(repeating: empty, count: 3)
+            var clock = 10.0
+            for _ in 0..<10 {
+                let i = Int.random(in: 0..<3, using: &rng)
+                var o = try XCTUnwrap(SyncMerge.object(copies[i].0) as? [String: Any])
+                clock += 1
+                if Bool.random(using: &rng) {
+                    // A favourite added or removed, as HomeLayout.toggleFavorite does it.
+                    let id = ids[Int.random(in: 0..<ids.count, using: &rng)]
+                    var favs = o["favorites"] as? [String] ?? []
+                    var stamps = o["favoriteStamps"] as? [String: Double] ?? [:]
+                    if let at = favs.firstIndex(of: id) { favs.remove(at: at); stamps[id] = -clock } else { favs.append(id); stamps[id] = clock }
+                    o["favorites"] = favs
+                    o["favoriteStamps"] = stamps
+                } else {
+                    o[parts[Int.random(in: 0..<parts.count, using: &rng)]] = ["v\(Int.random(in: 0..<5, using: &rng))"]
+                }
+                let new = try XCTUnwrap(SyncMerge.canonical(o))
+                copies[i] = (new, SyncMerge.stampEntries(old: copies[i].0, new: new, stamps: copies[i].1, now: clock))
+            }
+            for _ in 0..<4 {
+                for i in (0..<3).shuffled(using: &rng) {
+                    for j in (0..<3).shuffled(using: &rng) where i != j {
+                        let m = SyncMerge.mergeLayout(local: copies[i].0, localStamps: copies[i].1, remote: copies[j].0, remoteStamps: copies[j].1)
+                        copies[i] = (m.value, m.stamps)
+                    }
+                }
+            }
+            XCTAssertEqual(Set(copies.map(\.0)).count, 1)
+        }
+    }
+
+    func testTileWidthsMergeTileByTile() throws {
+        // Two Macs resizing different Favorites tiles at about the same time both keep their size.
+        let base = #"{"cam1":320,"tv1":400}"#
+        let a = #"{"cam1":480,"tv1":400}"#, b = #"{"cam1":320,"tv1":520.5}"#
+        let sa = SyncMerge.stampEntries(old: base, new: a, stamps: [:], now: 100.25)
+        let sb = SyncMerge.stampEntries(old: base, new: b, stamps: [:], now: 100.5)
+        let m1 = SyncMerge.mergeEntries(local: a, localStamps: sa, remote: b, remoteStamps: sb)
+        let m2 = SyncMerge.mergeEntries(local: b, localStamps: sb, remote: a, remoteStamps: sa)
+        XCTAssertEqual(m1.value, m2.value)
+        let o = try XCTUnwrap(SyncMerge.object(m1.value) as? [String: Double])
+        XCTAssertEqual(o["cam1"], 480)
+        XCTAssertEqual(o["tv1"], 520.5)
+    }
+
+    func testPairedTVsMergeOneByOne() throws {
+        // A TV paired on the phone and another forgotten on the Mac: the family's list ends up with both changes.
+        let base = #"{"tv1":{"base":"http://10.0.0.5:8090","key":"k1","name":"Den"},"tv2":{"base":"http://10.0.0.6:8090","key":"k2","name":"Kitchen"}}"#
+        let phone = #"{"tv1":{"base":"http://10.0.0.5:8090","key":"k1","name":"Den"},"tv2":{"base":"http://10.0.0.6:8090","key":"k2","name":"Kitchen"},"tv3":{"base":"http://10.0.0.7:8090","key":"k3","name":"Office"}}"#
+        let mac = #"{"tv1":{"base":"http://10.0.0.5:8090","key":"k1","name":"Den"}}"#
+        let ps = SyncMerge.stampEntries(old: base, new: phone, stamps: [:], now: 200)
+        let ms = SyncMerge.stampEntries(old: base, new: mac, stamps: [:], now: 201)
+        let m = SyncMerge.mergeEntries(local: phone, localStamps: ps, remote: mac, remoteStamps: ms)
+        let o = try XCTUnwrap(SyncMerge.object(m.value) as? [String: Any])
+        XCTAssertEqual(Set(o.keys), ["tv1", "tv3"])
+        XCTAssertEqual(m.stamps["tv2"], -201)   // the removal travels on
+        // Paired again with a new key (the TV was reset): the new key replaces the old one.
+        let renewed = #"{"tv1":{"base":"http://10.0.0.5:8090","key":"k9","name":"Den"}}"#
+        let rs = SyncMerge.stampEntries(old: mac, new: renewed, stamps: ms, now: 300)
+        let m2 = SyncMerge.mergeEntries(local: m.value, localStamps: m.stamps, remote: renewed, remoteStamps: rs)
+        let merged = try XCTUnwrap(SyncMerge.object(m2.value) as? [String: Any])
+        XCTAssertEqual((merged["tv1"] as? [String: Any])?["key"] as? String, "k9")
+        XCTAssertNotNil(merged["tv3"])
+    }
+
+    func testUniformStamps() {
+        XCTAssertEqual(SyncMerge.uniformStamps(#"{"a":1,"b":[2]}"#, 7), ["a": 7, "b": 7])
+        XCTAssertEqual(SyncMerge.uniformStamps("", 7), [:])
+        XCTAssertEqual(SyncMerge.uniformStamps(#"{"a":1}"#, 0), [:])
+    }
+
+    func testStampsReadBackExactlyFromJSON() throws {
+        // A stamp (or a setting's text) that came back a hair different would look like a change, and devices would
+        // hand it back and forth for ever.
+        var rng = SystemRandomNumberGenerator()
+        for _ in 0..<1000 {
+            let t = SyncMerge.stampNow(Date(timeIntervalSince1970: Double.random(in: 1_600_000_000...2_100_000_000, using: &rng)))
+            let item: [String: Any] = ["t": t, "e": ["a": t, "b": -t]]
+            let d = try JSONSerialization.data(withJSONObject: item)
+            let back = try XCTUnwrap(JSONSerialization.jsonObject(with: d) as? [String: Any])
+            XCTAssertEqual((back["t"] as? NSNumber)?.doubleValue, t)
+            let e = (back["e"] as? [String: Any] ?? [:]).compactMapValues { ($0 as? NSNumber)?.doubleValue }
+            XCTAssertEqual(e, ["a": t, "b": -t])
+            let text = try XCTUnwrap(SyncMerge.canonical(item))
+            XCTAssertEqual(SyncMerge.object(text).flatMap { SyncMerge.canonical($0) }, text)
+        }
+        XCTAssertEqual(SyncMerge.stampNow(Date(timeIntervalSince1970: 1_700_000_000.123_456)), 1_700_000_000.123)
+    }
 }

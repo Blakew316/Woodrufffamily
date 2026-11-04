@@ -7,6 +7,8 @@ import WoodruffKit
 import UniformTypeIdentifiers
 #if os(iOS)
 import UIKit
+#elseif os(macOS)
+import AppKit
 #endif
 
 /// Alerts that reach the iPhones even when Woodruff is closed, through Apple's push service.
@@ -35,8 +37,11 @@ final class PushRelay {
     private(set) var registered = false
     private(set) var otherRelays: [String] = []
 
-    var tokens: [String: Token] { Saved.load(Self.tokensKey, as: [String: Token].self) ?? [:] }
-    var keyID: String { Keychain.get("apns.keyid") ?? "" }
+    /// Every family iPhone's push address, by device (synced: each iPhone adds its own; see `reloadTokens`).
+    private(set) var tokens: [String: Token] = Saved.load("pushTokens", as: [String: Token].self) ?? [:]
+    /// Goes up whenever the push key changes here or arrives from another Mac, so what shows it looks again.
+    private(set) var keyChanges = 0
+    var keyID: String { _ = keyChanges; return Keychain.get("apns.keyid") ?? "" }
     var hasKey: Bool { Keychain.get("apns.key") != nil && !keyID.isEmpty }
     /// Whether this Mac sends (each Mac's own choice; not synced).
     var sendsFromHere: Bool {
@@ -55,6 +60,7 @@ final class PushRelay {
     @ObservationIgnored private var jwt: (String, Date)?
     @ObservationIgnored private var listener: NWListener?
     @ObservationIgnored private var browser: NWBrowser?
+    @ObservationIgnored private var wakeWatch: NSObjectProtocol?
 
     // MARK: iPhone: registering
 
@@ -65,12 +71,34 @@ final class PushRelay {
         advertise()
         browse()
         #endif
+        #if os(macOS)
+        // After the Mac sleeps, look and say so on the Wi‑Fi again (once it's back).
+        if wakeWatch == nil {
+            wakeWatch = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.wokeUp() }
+            }
+        }
+        #endif
+    }
+
+    /// Reads the iPhones' push addresses again (one signed up, or one was removed, on another device).
+    func reloadTokens() {
+        let t = Saved.load(Self.tokensKey, as: [String: Token].self) ?? [:]
+        if t != tokens { tokens = t }
+    }
+
+    /// The push key changed on another Mac (or was removed there): sign with the new one, and this Mac says on the
+    /// Wi‑Fi whether it can send now.
+    func keysChanged() {
+        jwt = nil
+        keyChanges += 1
+        advertise()
     }
 
     /// The iPhone's push address, put where every Mac can read it.
     func didRegister(_ deviceToken: Data) {
         let hex = deviceToken.map { String(format: "%02x", $0) }.joined()
-        var all = tokens
+        var all = Saved.load(Self.tokensKey, as: [String: Token].self) ?? [:]
         #if DEBUG
         let env = "development"
         #else
@@ -83,8 +111,12 @@ final class PushRelay {
         #endif
         let topic = Bundle.main.bundleIdentifier ?? ""
         registered = true
-        if let old = all[DeviceID.value], old.token == hex, old.env == env, old.topic == topic, old.name == name { return }
+        if let old = all[DeviceID.value], old.token == hex, old.env == env, old.topic == topic, old.name == name {
+            if all != tokens { tokens = all }
+            return
+        }
         all[DeviceID.value] = Token(token: hex, env: env, topic: topic, name: name, at: Date().timeIntervalSince1970)
+        tokens = all
         Saved.save(Self.tokensKey, all)
     }
 
@@ -150,8 +182,9 @@ final class PushRelay {
             }
         }
         if !gone.isEmpty {
-            var all = tokens
+            var all = Saved.load(Self.tokensKey, as: [String: Token].self) ?? [:]
             for g in gone { all[g] = nil }
+            tokens = all
             Saved.save(Self.tokensKey, all)
         }
         if anySent { lastSent = Date() }
@@ -196,6 +229,7 @@ final class PushRelay {
         let tm = team.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
         Keychain.set(tm.isEmpty ? nil : tm, for: "apns.team")
         jwt = nil
+        keyChanges += 1
         lastError = nil
         advertise()
         return true
@@ -204,6 +238,7 @@ final class PushRelay {
     func removeKey() {
         Keychain.set(nil, for: "apns.key"); Keychain.set(nil, for: "apns.keyid"); Keychain.set(nil, for: "apns.team")
         jwt = nil
+        keyChanges += 1
         advertise()
     }
 
@@ -232,8 +267,17 @@ final class PushRelay {
             for r in results { if case let .service(name, _, _, _) = r.endpoint { names.append(name) } }
             Task { @MainActor in self?.otherRelays = names.filter { $0 != DeviceID.value } }
         }
-        b.stateUpdateHandler = { [weak self] s in
-            if case .failed = s { Task { @MainActor in self?.browser?.cancel(); self?.browser = nil; self?.otherRelays = []; self?.browse() } }
+        b.stateUpdateHandler = { [weak self, weak b] s in
+            guard case .failed = s else { return }
+            Task { @MainActor in
+                // Only the search running now (not one already replaced), and again after a pause, not in a spin.
+                guard let self, let b, self.browser === b else { return }
+                b.cancel()
+                self.browser = nil
+                self.otherRelays = []
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
+                if self.browser == nil { self.browse() }
+            }
         }
         b.start(queue: .main)
         browser = b
@@ -247,6 +291,16 @@ final class PushRelay {
         advertise()
         #endif
     }
+
+    #if os(macOS)
+    /// The Mac woke from sleep: once the Wi‑Fi is back, look and say so again.
+    private func wokeUp() {
+        Task {
+            try? await Task.sleep(nanoseconds: 4_000_000_000)
+            wake()
+        }
+    }
+    #endif
 }
 
 #if os(iOS)

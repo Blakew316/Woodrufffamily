@@ -308,7 +308,11 @@ struct LightTile: View {
             #endif
             SmartHome.shared.setOn(light, !light.on)
         }
+        #if os(macOS)
+        // Press and hold for the controls (right-click has the menu). Not on iPhone: there touch and hold is the
+        // menu below (Controls…, Add to Favorites), and a second hold here fought it for the same touch.
         .onLongPressGesture(minimumDuration: 0.35, perform: openControls)
+        #endif
         .contextMenu {
             if !light.isOffline {
                 Button(light.on ? "Turn Off" : "Turn On") { SmartHome.shared.setOn(light, !light.on) }
@@ -371,7 +375,7 @@ struct LightSheet: View {
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(light.name).font(.title3.bold())
-                        Text(light.isOffline ? "Offline" : light.on ? "\(Int(level))%" : "Off")
+                        Text(light.isOffline ? "Offline" : light.on || dragging ? "\(Int(level))%" : "Off")
                             .font(.subheadline).foregroundStyle(.secondary).monospacedDigit()
                     }
                     Spacer()
@@ -419,11 +423,13 @@ struct LightSheet: View {
     }
 
     private func brightnessBar(_ light: GoveeLight) -> some View {
-        GeometryReader { g in
+        // A light that's off shows the level under the finger too (letting go turns it on at that level).
+        let shown = light.isLit || dragging
+        return GeometryReader { g in
             ZStack(alignment: .bottom) {
                 Rectangle().fill(.white.opacity(0.12))
-                Rectangle().fill(light.isLit ? light.shade : .white.opacity(0.3))
-                    .frame(height: g.size.height * (light.isLit ? level / 100 : 0))
+                Rectangle().fill(shown ? light.shade : .white.opacity(0.3))
+                    .frame(height: g.size.height * (shown ? level / 100 : 0))
             }
             .clipShape(RoundedRectangle(cornerRadius: 30, style: .continuous))
             .contentShape(Rectangle())
@@ -663,6 +669,10 @@ struct LightDetailView: View {
                             HStack(spacing: 12) {
                                 Image(systemName: "sun.min").foregroundStyle(.secondary)
                                 Slider(value: $level, in: 1...100) { e in dragging = e; if !e { home.setBrightness(l, Int(level)) } }
+                                    // The arrow keys and VoiceOver move it without a drag: those reach the light too.
+                                    .onChange(of: level) { _, v in
+                                        if !dragging && Int(v) != (home.light(lightID)?.brightness ?? l.brightness) { home.setBrightness(l, Int(v)) }
+                                    }
                                 Image(systemName: "sun.max.fill").foregroundStyle(.secondary)
                             }
                             swatches(LightSheet.colors.map { c in (c.color, l.color == c, { home.setColor(l, c) }) })

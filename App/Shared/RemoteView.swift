@@ -151,9 +151,10 @@ struct RemoteView: View {
             HStack(spacing: 6) {
                 Text(tv.link == "refused" ? "\(tv.name) needs linking again" : "\(tv.name) is off")
                     .font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
-                if let mac = fleet.extras[tv.id]?.mac, tv.link != "refused" {
+                if fleet.extras[tv.id]?.mac != nil, tv.link != "refused" {
                     Text("·").foregroundStyle(.tertiary)
-                    Button("Turn On") { WakeOnLAN.wake(mac: mac, lastHost: fleet.extras[tv.id]?.lastHost) }
+                    // Wakes it and watches closely, so the remote comes alive the moment the TV answers.
+                    Button("Turn On") { fleet.wake(tv) }
                         .font(.subheadline.weight(.semibold))
                 }
             }
@@ -230,7 +231,12 @@ struct RemoteView: View {
         for t in targets {
             Task {
                 do {
-                    if let lg = fleet.lg(for: t), let action = LGKeyMap.action(for: key) { try await action(lg) }
+                    if let lg = fleet.lg(for: t), let action = LGKeyMap.action(for: key) {
+                        try await action(lg)
+                        // LG direct control doesn't pass through Woodruff, so ask the TV again here (keys sent
+                        // through Woodruff do this by themselves).
+                        if !["volup", "voldown", "mute"].contains(key) { fleet.poke(t.id) }
+                    }
                     else { try await fleet.client(for: t)?.key(key, repeat: n) }
                     if key == "ok" && !all {
                         try? await Task.sleep(nanoseconds: 400_000_000)
@@ -585,7 +591,14 @@ struct LGMenu: View {
     }
 
     private func run(_ op: @escaping (LGRemote) async throws -> Void) {
-        Task { do { if let lg = fleet.lg(for: tv) { try await op(lg) } } catch { fleet.show(error) } }
+        Task {
+            do {
+                guard let lg = fleet.lg(for: tv) else { return }
+                try await op(lg)
+                // Apps, inputs and power change what's on: show it right away.
+                fleet.poke(tv.id)
+            } catch { fleet.show(error) }
+        }
     }
 }
 

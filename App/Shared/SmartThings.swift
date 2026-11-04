@@ -126,8 +126,19 @@ final class SmartThings {
         guard let r = Keychain.get("st.refresh"), let id = Keychain.get("st.client"), let sec = Keychain.get("st.secret") else {
             throw OAuthRelay.Failure.refused("Sign in to SmartThings again.")
         }
-        let t = try await formPost(Self.tokenURL, ["grant_type": "refresh_token", "refresh_token": r, "client_id": id], basic: (id, sec))
-        store(t)
+        do {
+            let t = try await formPost(Self.tokenURL, ["grant_type": "refresh_token", "refresh_token": r, "client_id": id], basic: (id, sec))
+            store(t)
+        } catch {
+            // Another of the family's devices renewed first (the renewal key works once) and its new key has
+            // arrived by sync in the meantime: use that one rather than giving up.
+            guard let newer = Keychain.get("st.refresh"), newer != r else { throw error }
+            if let a = Keychain.get("st.access"), let e = Keychain.get("st.expires").flatMap(Double.init), e > Date().timeIntervalSince1970 {
+                return a
+            }
+            let t = try await formPost(Self.tokenURL, ["grant_type": "refresh_token", "refresh_token": newer, "client_id": id], basic: (id, sec))
+            store(t)
+        }
         return Keychain.get("st.access") ?? ""
     }
 
@@ -512,29 +523,36 @@ final class SmartThings {
             let words = ["cleaning": "Cleaning", "homing": "Going Home", "charging": "Charging", "idle": "Docked", "pause": "Paused", "alarm": "Needs Help", "after": "Done", "powerOff": "Off"]
             d.status = (move.flatMap { words[$0] } ?? "Ready") + (battery.map { " · \($0)%" } ?? "")
             d.alert = move == "alarm"
-        } else if c.contains("thermostatMode") || c.contains("thermostatHeatingSetpoint") || c.contains("thermostatCoolingSetpoint") {
-            // A thermostat (an ecobee added to SmartThings).
-            d.kind = .thermostat
-            d.temperature = celsius(st, "main")
-            d.heatTo = celsius(st, "main", "thermostatHeatingSetpoint", "heatingSetpoint")
-            d.coolTo = celsius(st, "main", "thermostatCoolingSetpoint", "coolingSetpoint")
-            let mode = (value(st, "thermostatMode", "thermostatMode") as? String).map { m -> String in
-                let l = m.lowercased()
-                return l.contains("heat") ? "heat" : l
-            }
-            d.thermostatMode = mode
-            d.modes = ((value(st, "thermostatMode", "supportedThermostatModes") as? [String]) ?? []).map { $0.lowercased() }
-            d.target = mode == "cool" ? d.coolTo : d.heatTo
-            d.action = (value(st, "thermostatOperatingState", "thermostatOperatingState") as? String)?.lowercased()
-            d.humidity = (value(st, "relativeHumidityMeasurement", "humidity") as? NSNumber)?.intValue
-            d.status = thermostatStatus(d)
         } else if c.contains("airConditionerMode") {
+            // Before thermostats: a Samsung air conditioner also has a cooling setpoint, but it isn't the ecobee.
             d.kind = .aircon
             let mode = value(st, "airConditionerMode", "airConditionerMode") as? String
             d.mode = mode
             var bits: [String] = [d.isOn == true ? (mode.map { Self.jobWords($0) } ?? "On") : "Off"]
             if let t = celsius(st, "main") { d.temperature = t; bits.append(temperatureText(t)) }
             d.status = bits.joined(separator: " · ")
+        } else if c.contains("thermostatMode") || c.contains("thermostatHeatingSetpoint") || c.contains("thermostatCoolingSetpoint")
+                    || c.contains("thermostat") || ocfType.contains("thermostat") {
+            // A thermostat (an ecobee added to SmartThings).
+            d.kind = .thermostat
+            // Each value from its own capability, else from the older all-in-one "thermostat" capability.
+            d.temperature = celsius(st, "main") ?? celsius(st, "main", "thermostat", "temperature")
+            d.heatTo = celsius(st, "main", "thermostatHeatingSetpoint", "heatingSetpoint") ?? celsius(st, "main", "thermostat", "heatingSetpoint")
+            d.coolTo = celsius(st, "main", "thermostatCoolingSetpoint", "coolingSetpoint") ?? celsius(st, "main", "thermostat", "coolingSetpoint")
+            let reported = (value(st, "thermostatMode", "thermostatMode") ?? value(st, "thermostat", "thermostatMode")) as? String
+            // "emergency heat", "auxheatonly" → heat (what the controls offer).
+            let mode = reported.map { m -> String in
+                let l = m.lowercased()
+                return l.contains("heat") ? "heat" : l.hasPrefix("auto") ? "auto" : l
+            }
+            d.thermostatMode = mode
+            let supported = (value(st, "thermostatMode", "supportedThermostatModes") ?? value(st, "thermostat", "supportedThermostatModes")) as? [String]
+            d.modes = (supported ?? []).map { $0.lowercased() }
+            d.target = mode == "cool" ? d.coolTo : d.heatTo
+            let operating = (value(st, "thermostatOperatingState", "thermostatOperatingState") ?? value(st, "thermostat", "thermostatOperatingState")) as? String
+            d.action = operating?.lowercased()
+            d.humidity = (value(st, "relativeHumidityMeasurement", "humidity") as? NSNumber)?.intValue
+            d.status = thermostatStatus(d)
         } else if c.contains("airPurifierFanMode") {
             d.kind = .fan
             d.status = d.isOn == true ? ((value(st, "airPurifierFanMode", "airPurifierFanMode") as? String).map { Self.jobWords($0) } ?? "On") : "Off"
@@ -597,13 +615,19 @@ final class SmartThings {
 
     /// Sets a thermostat's heat or cool temperature, in the units the thermostat uses (whole degrees in °F).
     private func setpoint(_ d: HomeDevice, heating: Bool, _ celsiusValue: Double) {
-        let cap = heating ? "thermostatHeatingSetpoint" : "thermostatCoolingSetpoint"
+        let own = heating ? "thermostatHeatingSetpoint" : "thermostatCoolingSetpoint"
+        // A thermostat with only the older all-in-one capability takes the same command through that.
+        let cap = !has(d.id, own) && has(d.id, "thermostat") ? "thermostat" : own
         let attr = heating ? "heatingSetpoint" : "coolingSetpoint"
         let fahrenheit = unit(d.id, cap, attr) == "F" || (unit(d.id, cap, attr) == nil && Locale.current.measurementSystem == .us)
         let v: Any = fahrenheit ? Int((celsiusValue * 9 / 5 + 32).rounded()) : (celsiusValue * 2).rounded() / 2
-        updateLocal(d.id) { x in
-            if heating { x.heatTo = celsiusValue } else { x.coolTo = celsiusValue }
-            x.status = thermostatStatus(x)
+        // Shown at once (the re-read after the command then confirms what the thermostat took).
+        if d.reachable {
+            updateLocal(d.id) { x in
+                if heating { x.heatTo = celsiusValue } else { x.coolTo = celsiusValue }
+                if x.thermostatMode != "auto" { x.target = celsiusValue }
+                x.status = thermostatStatus(x)
+            }
         }
         command(d, cap, heating ? "setHeatingSetpoint" : "setCoolingSetpoint", [v], sets: attr, to: v)
     }
@@ -660,12 +684,21 @@ final class SmartThings {
         case .power(let on): power(d, on)
         case .machine(let m): machine(d, m)
         case .thermostatMode(let m):
-            updateLocal(d.id) { x in x.thermostatMode = m; x.status = thermostatStatus(x) }
-            command(d, "thermostatMode", "setThermostatMode", [m], sets: "thermostatMode", to: m)
+            let cap = !has(d.id, "thermostatMode") && has(d.id, "thermostat") ? "thermostat" : "thermostatMode"
+            if d.reachable {
+                updateLocal(d.id) { x in
+                    x.thermostatMode = m
+                    x.target = m == "cool" ? x.coolTo : x.heatTo
+                    x.status = thermostatStatus(x)
+                }
+            }
+            command(d, cap, "setThermostatMode", [m], sets: "thermostatMode", to: m)
         case .heatTo(let t): setpoint(d, heating: true, t)
         case .coolTo(let t): setpoint(d, heating: false, t)
         case .target(let t): setpoint(d, heating: d.thermostatMode != "cool", t)
-        default: return
+        case .lock, .position, .door, .speed, .swing:
+            // Nothing from SmartThings offers these here; say so rather than doing nothing.
+            commandError[d.id] = "\(d.name) can’t be changed that way from Woodruff yet. Use the SmartThings app."
         }
     }
 
@@ -678,7 +711,7 @@ final class SmartThings {
         }
         commandError[key] = nil
         pending.insert(key)
-        holdUntil[key] = Date().addingTimeInterval(15)
+        holdUntil[key] = Date().addingTimeInterval(20)
         Task {
             do {
                 let r = try await self.call("POST", "/devices/\(id)/commands", ["commands": [c]])
@@ -686,8 +719,9 @@ final class SmartThings {
                     throw APIError(code: 422, message: (failed["error"] as? [String: Any]).flatMap { Self.errorWords(["error": $0]) } ?? "The appliance refused it.")
                 }
                 if stops { self.userStopped[key] = Date() }
-                // Samsung takes a few seconds to show a change: look again until it does.
-                let delays: [Double] = [1.5, 2.5, 4]
+                // Samsung takes a few seconds to show a change (a cloud thermostat like the ecobee longer): look
+                // again until it does, and only then, or at the last look, take what it says.
+                let delays: [Double] = [1.5, 2.5, 4, 6]
                 for (n, delay) in delays.enumerated() {
                     try? await Task.sleep(for: .seconds(delay))
                     if await self.reread(id, expect: expect, last: n == delays.count - 1) { break }

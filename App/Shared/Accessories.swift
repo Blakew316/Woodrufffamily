@@ -77,7 +77,15 @@ final class AccessoryStore {
     var fromSmartThings: [HomeDevice] = [] { didSet { zones() } }
     var fromDreo: [HomeDevice] = [] { didSet { zones() } }
     /// Carries out a change to an Apple Home accessory (set by the iPhone app).
-    var homeControl: ((HomeDevice, DeviceCommand) -> Void)?
+    @ObservationIgnored var homeControl: ((HomeDevice, DeviceCommand) -> Void)?
+    /// Why Apple Home has nothing to show on this iPhone (no permission, no home yet); nil when it's fine.
+    var homeProblem: String?
+
+    /// The house's thermostat (the ecobee): one that's responding first, Apple Home's before SmartThings'.
+    var thermostat: HomeDevice? {
+        let list = all.filter { $0.kind == .thermostat }
+        return list.first { $0.reachable && $0.source == "home" } ?? list.first { $0.reachable } ?? list.first
+    }
 
     var all: [HomeDevice] {
         let names = SmartHome.shared.names
@@ -96,7 +104,9 @@ final class AccessoryStore {
 
     func send(_ d: HomeDevice, _ c: DeviceCommand) {
         switch d.source {
-        case "home": homeControl?(d, c)
+        case "home":
+            // Only the iPhone reaches Apple Home; it's set as soon as Apple Home starts there.
+            if let control = homeControl { control(d, c) }
         case "dreo": Dreo.shared.send(d, c)
         default: SmartThings.shared.send(d, c)
         }
@@ -273,9 +283,12 @@ struct DeviceDetailView: View {
     @Environment(\.dismiss) private var dismiss
     private let store = AccessoryStore.shared
     @State private var position: Double = 0
+    @State private var sliding = false
 
     var body: some View {
-        if let d = store.device(deviceID), d.source == "smartthings" {
+        // Samsung appliances have their own page; a thermostat through SmartThings (the ecobee on the Mac) gets the
+        // thermostat's controls here, like the Apple Home one (the appliance page has none for it).
+        if let d = store.device(deviceID), d.source == "smartthings", d.kind != .thermostat {
             ApplianceView(device: d, inSheet: inSheet)
         } else if let d = store.device(deviceID) {
             ScrollView {
@@ -292,6 +305,10 @@ struct DeviceDetailView: View {
                     .padding(22)
                     .frame(maxWidth: .infinity)
                     .glass(RoundedRectangle(cornerRadius: 28, style: .continuous), interactive: false)
+
+                    if d.source == "dreo", let e = Dreo.shared.error {
+                        Text(e).font(.footnote).foregroundStyle(Palette.attention).multilineTextAlignment(.center)
+                    }
 
                     NameRoomCard(id: d.id, current: d.name, original: nil)
 
@@ -312,10 +329,22 @@ struct DeviceDetailView: View {
             .toolbar {
                 if inSheet { ToolbarItem(placement: .cancellationAction) { Button(role: .close) { dismiss() } } }
             }
+            .refreshable { await reread(d) }
             .onAppear { position = Double(d.position ?? 0) }
+            // Moved from elsewhere (or by a tap on its tile): the slider follows, unless it's being dragged.
+            .onChange(of: d.position) { _, p in if !sliding { position = Double(p ?? 0) } }
         } else {
             ContentUnavailableView("Device Not Found", systemImage: "questionmark.square.dashed")
         }
+    }
+
+    /// Pull down on a device's page: it's asked again.
+    private func reread(_ d: HomeDevice) async {
+        #if os(iOS)
+        if d.source == "home" { HomeKitLights.shared.refresh() }
+        #endif
+        if d.source == "smartthings" { await SmartThings.shared.refresh(full: false) }
+        if d.source == "dreo" { await Dreo.shared.refresh(full: false) }
     }
 
     @ViewBuilder private func controls(_ d: HomeDevice) -> some View {
@@ -339,8 +368,15 @@ struct DeviceDetailView: View {
                 .buttonStyle(.glassProminent)
         case .blinds:
             VStack(spacing: 6) {
-                Slider(value: $position, in: 0...100, step: 5) { editing in if !editing { store.send(d, .position(Int(position))) } }
+                Slider(value: $position, in: 0...100, step: 5) { editing in
+                    sliding = editing
+                    if !editing { store.send(d, .position(Int(position))) }
+                }
                 Text("\(Int(position))% open").font(.subheadline).foregroundStyle(.secondary)
+                HStack(spacing: 12) {
+                    Button("Close") { position = 0; store.send(d, .position(0)) }.buttonStyle(.glass)
+                    Button("Open") { position = 100; store.send(d, .position(100)) }.buttonStyle(.glass)
+                }
             }
         case .thermostat:
             ThermostatControls(device: d)
@@ -378,6 +414,7 @@ struct DevicesListView: View {
     var body: some View {
         Form {
             Section {
+                if let problem = store.homeProblem { Text(problem).font(.footnote).foregroundStyle(Palette.attention) }
                 if store.all.isEmpty { Text("No devices yet.").foregroundStyle(.secondary) }
                 ForEach(store.all) { d in
                     NavigationLink { DeviceDetailView(deviceID: d.id) } label: {
@@ -398,7 +435,12 @@ struct DevicesListView: View {
         .formStyle(.grouped)
         .navigationTitle("Devices")
         .inlineTitle()
-        .refreshable { await SmartThings.shared.refresh(full: true) }
+        .refreshable {
+            #if os(iOS)
+            HomeKitLights.shared.reload()
+            #endif
+            await SmartThings.shared.refresh(full: true)
+        }
     }
 }
 
@@ -446,17 +488,31 @@ struct FanControls: View {
 
 // MARK: - Thermostat
 
+/// One step warmer (+1) or cooler (−1) than [c] °C, in the family's own units: whole degrees °F on a US phone or
+/// Mac, half degrees °C elsewhere (so every tap shows a new number). Kept between 7 and 32 °C (45–90 °F).
+private func thermostatStep(_ c: Double, _ direction: Double) -> Double {
+    let next: Double
+    if Locale.current.measurementSystem == .us {
+        next = ((c * 9 / 5 + 32).rounded() + direction - 32) * 5 / 9
+    } else {
+        next = (c * 2).rounded() / 2 + direction * 0.5
+    }
+    return min(32, max(7, next))
+}
+
 /// An ecobee (or any thermostat): what it is now, its mode, and the temperature(s) it's holding. Taps on
 /// + and − show straight away and are sent together a moment after the last one.
 struct ThermostatControls: View {
     var device: HomeDevice
+    /// In the pop-over (where the page's status line isn't): say when a change didn't go through.
+    var showsFailure = false
     private let store = AccessoryStore.shared
     @State private var heat: Double?
     @State private var cool: Double?
-    @State private var sendSoon: Task<Void, Never>?
+    // Heat and cool each wait on their own, so changing both in Auto sends both.
+    @State private var sendHeat: Task<Void, Never>?
+    @State private var sendCool: Task<Void, Never>?
 
-    /// One degree in the family's units (°F steps on a US phone, half degrees in °C elsewhere).
-    private var step: Double { Locale.current.measurementSystem == .us ? 5.0 / 9.0 : 0.5 }
     private var modes: [String] {
         let wanted = ["off", "heat", "cool", "auto"]
         let offered = device.modes.isEmpty ? wanted : wanted.filter { device.modes.contains($0) }
@@ -473,52 +529,88 @@ struct ThermostatControls: View {
                 Text([actionWord(d), d.humidity.map { "\($0)% humidity" }].compactMap { $0 }.joined(separator: " · "))
                     .font(.subheadline).foregroundStyle(actionColor(d))
             }
-            Picker("Mode", selection: Binding(get: { d.thermostatMode ?? "off" }, set: { store.send(d, .thermostatMode($0)) })) {
-                ForEach(modes, id: \.self) { m in Text(modeName(m)).tag(m) }
-            }
-            .pickerStyle(.segmented)
-            .frame(maxWidth: 360)
-            .disabled(!d.reachable)
-            HStack(spacing: 28) {
-                if d.thermostatMode == "heat" || d.thermostatMode == "auto", let h = heat ?? d.heatTo ?? d.target {
-                    setpoint("Heat To", h, tint: .orange) { v in heat = v; schedule { store.send(d, .heatTo(v)) } }
+            // A thermostat that doesn't report a mode (only its set temperatures) has no mode to pick.
+            if d.thermostatMode != nil || !d.modes.isEmpty {
+                Picker("Mode", selection: Binding(get: { d.thermostatMode ?? "off" }, set: { m in pick(m) })) {
+                    ForEach(modes, id: \.self) { m in Text(modeName(m)).tag(m) }
                 }
-                if d.thermostatMode == "cool" || d.thermostatMode == "auto", let c = cool ?? d.coolTo ?? d.target {
-                    setpoint("Cool To", c, tint: .cyan) { v in cool = v; schedule { store.send(d, .coolTo(v)) } }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(maxWidth: 360)
+                .disabled(!d.reachable)
+            }
+            HStack(spacing: 28) {
+                if showsHeat(d), let h = heat ?? d.heatTo ?? d.target {
+                    setpoint("Heat To", h, tint: .orange) { v in change(heating: true, to: v) }
+                }
+                if showsCool(d), let c = cool ?? d.coolTo ?? d.target {
+                    setpoint("Cool To", c, tint: .cyan) { v in change(heating: false, to: v) }
                 }
             }
             .disabled(!d.reachable)
             if d.thermostatMode == "off" { Text("Off").font(.headline).foregroundStyle(.secondary) }
+            // A change that didn't go through, in words (never a control that quietly does nothing).
+            if showsFailure, d.alert, d.reachable {
+                Text(d.status).font(.footnote.weight(.semibold)).foregroundStyle(Palette.attention)
+            }
+            if d.source == "smartthings", let e = SmartThings.shared.commandError[d.id] {
+                Text(e).font(.footnote).foregroundStyle(Palette.attention).multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .frame(maxWidth: .infinity)
-        // A new reading from the thermostat replaces what was being typed once it's been sent.
-        .onChange(of: d.heatTo) { _, _ in if sendSoon == nil { heat = nil } }
-        .onChange(of: d.coolTo) { _, _ in if sendSoon == nil { cool = nil } }
+    }
+
+    /// Heat To shows in Heat and Auto (and, with no mode reported, whenever it has a heat temperature).
+    private func showsHeat(_ d: HomeDevice) -> Bool {
+        d.thermostatMode == "heat" || d.thermostatMode == "auto" || (d.thermostatMode == nil && d.heatTo != nil)
+    }
+
+    private func showsCool(_ d: HomeDevice) -> Bool {
+        d.thermostatMode == "cool" || d.thermostatMode == "auto" || (d.thermostatMode == nil && d.coolTo != nil)
+    }
+
+    /// A new mode: sent now, and shown at once (the thermostat's answer then confirms it).
+    private func pick(_ m: String) {
+        guard m != device.thermostatMode else { return }
+        #if os(iOS)
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        #endif
+        store.send(device, .thermostatMode(m))
+    }
+
+    /// Shows the new temperature at once; sends it a moment after the last tap (so five taps are one change).
+    private func change(heating: Bool, to v: Double) {
+        #if os(iOS)
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        #endif
+        let d = device
+        if heating { heat = v } else { cool = v }
+        let job = Task {
+            try? await Task.sleep(nanoseconds: 700_000_000)
+            guard !Task.isCancelled else { return }
+            store.send(d, heating ? .heatTo(v) : .coolTo(v))
+            // The thermostat's tile has the new value now (then whatever the thermostat says).
+            if heating { heat = nil; sendHeat = nil } else { cool = nil; sendCool = nil }
+        }
+        if heating { sendHeat?.cancel(); sendHeat = job } else { sendCool?.cancel(); sendCool = job }
     }
 
     private func setpoint(_ title: String, _ value: Double, tint: Color, set: @escaping (Double) -> Void) -> some View {
         VStack(spacing: 10) {
             Text(title).font(.caption.weight(.semibold)).foregroundStyle(tint)
             HStack(spacing: 14) {
-                GlassCircle(symbol: "minus", size: 44) { set(value - step) }
+                GlassCircle(symbol: "minus", size: 44) { set(thermostatStep(value, -1)) }
+                    .accessibilityLabel("\(title), cooler")
                 Text(temperatureText(value))
                     .font(.system(size: 34, weight: .semibold, design: .rounded)).monospacedDigit()
                     .contentTransition(.numericText())
                     .frame(minWidth: 70)
-                GlassCircle(symbol: "plus", size: 44) { set(value + step) }
+                GlassCircle(symbol: "plus", size: 44) { set(thermostatStep(value, 1)) }
+                    .accessibilityLabel("\(title), warmer")
             }
         }
         .animation(.snappy, value: value)
-    }
-
-    private func schedule(_ send: @escaping () -> Void) {
-        sendSoon?.cancel()
-        sendSoon = Task {
-            try? await Task.sleep(nanoseconds: 700_000_000)
-            guard !Task.isCancelled else { return }
-            send()
-            sendSoon = nil
-        }
     }
 
     private func modeName(_ m: String) -> String {
@@ -566,87 +658,106 @@ struct ThermostatChip: View {
     @State private var sendSoon: Task<Void, Never>?
     @State private var hovering = false
 
-    private var step: Double { Locale.current.measurementSystem == .us ? 5.0 / 9.0 : 0.5 }
+    /// The set temperature the − and + change (Mac, in Heat or Cool).
+    private struct Nudge {
+        var mode: String
+        var value: Double
+    }
 
     var body: some View {
-        let t = store.all.first { $0.kind == .thermostat }
-        HStack(spacing: 10) {
-            HStack(spacing: 9) {
-                ZStack {
-                    Circle().fill(tint(t).gradient)
-                    Image(systemName: symbol(t)).font(.system(size: 12, weight: .bold)).foregroundStyle(.white)
-                        .symbolEffect(.pulse, isActive: t?.action == "heating" || t?.action == "cooling")
-                }
-                .frame(width: 26, height: 26)
-                .shadow(color: tint(t).opacity(0.5), radius: 6)
-                VStack(alignment: .leading, spacing: -1) {
-                    Text(t?.temperature.map { temperatureText($0) } ?? "--")
-                        .font(.system(size: 17, weight: .semibold, design: .rounded)).monospacedDigit()
-                        .contentTransition(.numericText())
-                    Text(t.map { subtitle($0) } ?? "Thermostat")
-                        .font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary).lineLimit(1)
-                }
+        let t = store.thermostat
+        let n = nudgeable(t)
+        HStack(spacing: 0) {
+            // The pill is a real button: a tap gesture inside a Mac toolbar is taken by the window (dragging it),
+            // so a click on it never arrived before.
+            Button {
+                #if os(iOS)
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                #endif
+                open.toggle()
+            } label: {
+                summary(t)
+                    .padding(.leading, 5)
+                    .padding(.trailing, n == nil ? 12 : 8)
+                    .padding(.vertical, compact ? 6 : 4)
+                    .contentShape(Capsule())
             }
-            .contentShape(Rectangle())
-            .onTapGesture { open.toggle() }
-            if !compact, let t, t.reachable, let mode = t.thermostatMode, mode == "heat" || mode == "cool",
-               let current = pending ?? (mode == "heat" ? t.heatTo : t.coolTo) ?? t.target {
+            .buttonStyle(PressScale(scale: 0.95))
+            .accessibilityLabel(spoken(t))
+            .accessibilityHint("Shows the thermostat’s controls")
+            // − and + are buttons of their own beside it (they change the temperature; they don't open anything).
+            if let t, let n {
                 Divider().frame(height: 22)
                 HStack(spacing: 6) {
-                    stepButton("minus") { nudge(t, mode, current - step) }
-                    Text(temperatureText(current))
+                    stepButton("minus", "Cooler") { nudge(t, n.mode, thermostatStep(n.value, -1)) }
+                    Text(temperatureText(n.value))
                         .font(.system(size: 15, weight: .semibold, design: .rounded)).monospacedDigit()
                         .foregroundStyle(tint(t))
                         .contentTransition(.numericText())
                         .frame(minWidth: 34)
-                        .animation(.snappy, value: current)
-                    stepButton("plus") { nudge(t, mode, current + step) }
+                        .animation(.snappy, value: n.value)
+                    stepButton("plus", "Warmer") { nudge(t, n.mode, thermostatStep(n.value, 1)) }
                 }
+                .padding(.leading, 8).padding(.trailing, 10)
             }
         }
-        .padding(.leading, 5).padding(.trailing, 12).padding(.vertical, compact ? 6 : 4)
         .fixedSize()
         #if os(iOS)
-        .glass(Capsule(), interactive: true)
+        // Plain glass behind it (the button inside takes the taps).
+        .glass(Capsule(), interactive: false)
         #endif
         .opacity(t?.reachable == false ? 0.6 : 1)
         .scaleEffect(hovering ? 1.02 : 1)
         .animation(.spring(response: 0.3, dampingFraction: 0.8), value: hovering)
         .onHover { hovering = $0 }
-        .help(t.map { "\($0.name): \($0.status)" } ?? "Thermostat")
+        .help(t.map { "\($0.name): \($0.status)" } ?? "Thermostat: not connected yet. Click for how to add it.")
         .popover(isPresented: $open, arrowEdge: .bottom) {
-            VStack(alignment: .leading, spacing: 18) {
-                if let t {
-                    HStack {
-                        Text(t.name).font(.title3.bold())
-                        Spacer()
-                        Text(t.sourceName).font(.caption).foregroundStyle(.secondary)
-                    }
-                    ThermostatControls(device: t)
-                } else {
-                    Text("No Thermostat Yet").font(.title3.bold())
-                    Text("Add your ecobee to the SmartThings app (Add Device → Thermostat → ecobee), and connect SmartThings in Settings → Devices. It shows up here, ready to control.")
-                        .font(.callout).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-            .padding(22)
-            #if os(iOS)
-            .frame(width: 350)
-            .presentationCompactAdaptation(.popover)
-            #else
-            .frame(width: 400)
-            #endif
+            ThermostatPanel()
         }
     }
 
-    private func stepButton(_ symbol: String, action: @escaping () -> Void) -> some View {
+    /// The set temperature − and + work on: the Mac's full pill, a thermostat that's responding, in Heat or Cool.
+    private func nudgeable(_ t: HomeDevice?) -> Nudge? {
+        guard !compact, let t, t.reachable else { return nil }
+        // No mode reported (only set temperatures): the one it has.
+        let mode = t.thermostatMode ?? (t.heatTo == nil && t.coolTo != nil ? "cool" : "heat")
+        guard mode == "heat" || mode == "cool",
+              let current = pending ?? (mode == "heat" ? t.heatTo : t.coolTo) ?? t.target else { return nil }
+        return Nudge(mode: mode, value: current)
+    }
+
+    /// The icon, the temperature now and what it's doing.
+    private func summary(_ t: HomeDevice?) -> some View {
+        HStack(spacing: 9) {
+            ZStack {
+                Circle().fill(tint(t).gradient)
+                Image(systemName: symbol(t)).font(.system(size: 12, weight: .bold)).foregroundStyle(.white)
+                    .symbolEffect(.pulse, isActive: t?.action == "heating" || t?.action == "cooling")
+            }
+            .frame(width: 26, height: 26)
+            .shadow(color: tint(t).opacity(0.5), radius: 6)
+            VStack(alignment: .leading, spacing: -1) {
+                Text(t?.temperature.map { temperatureText($0) } ?? "--")
+                    .font(.system(size: 17, weight: .semibold, design: .rounded)).monospacedDigit()
+                    .foregroundStyle(.primary)
+                    .contentTransition(.numericText())
+                Text(t.map { subtitle($0) } ?? "Thermostat")
+                    .font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary).lineLimit(1)
+            }
+        }
+    }
+
+    private func stepButton(_ symbol: String, _ name: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: symbol).font(.system(size: 10, weight: .bold))
+                .foregroundStyle(.primary)
                 .frame(width: 22, height: 22)
-                .background(Circle().fill(.white.opacity(0.12)))
+                .background(Circle().fill(Color.primary.opacity(0.1)))
+                .contentShape(Circle())
         }
         .buttonStyle(.plain)
+        .help(name)
+        .accessibilityLabel(name)
     }
 
     /// Shows the new temperature at once; sends it a moment after the last click.
@@ -657,9 +768,16 @@ struct ThermostatChip: View {
             try? await Task.sleep(nanoseconds: 700_000_000)
             guard !Task.isCancelled else { return }
             store.send(t, mode == "heat" ? .heatTo(value) : .coolTo(value))
-            try? await Task.sleep(nanoseconds: 4_000_000_000)
-            if !Task.isCancelled { pending = nil }
+            // The thermostat's own value shows from here: the change at once, then what it says.
+            pending = nil
+            sendSoon = nil
         }
+    }
+
+    private func spoken(_ t: HomeDevice?) -> String {
+        guard let t else { return "Thermostat, not connected yet" }
+        let now = t.temperature.map { temperatureText($0) } ?? "no reading"
+        return "\(t.name), \(now), \(subtitle(t))"
     }
 
     private func subtitle(_ t: HomeDevice) -> String {
@@ -711,3 +829,101 @@ struct ThermostatChip: View {
     }
 }
 
+/// What the thermostat pill opens: every control, or, with no thermostat yet, how to connect it.
+private struct ThermostatPanel: View {
+    private let store = AccessoryStore.shared
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            if let t = store.thermostat {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(t.name).font(.title3.bold()).lineLimit(1)
+                    Spacer()
+                    Text(t.reachable ? t.sourceName : "Not Responding").font(.caption).foregroundStyle(.secondary)
+                }
+                ThermostatControls(device: t, showsFailure: true)
+            } else {
+                ThermostatSetup()
+            }
+        }
+        .padding(22)
+        #if os(iOS)
+        .frame(width: 350)
+        .presentationCompactAdaptation(.popover)
+        #else
+        .frame(width: 400)
+        #endif
+    }
+}
+
+/// No thermostat yet: why, and what to do about it, right there (connect SmartThings on the Mac, allow Apple
+/// Home on iPhone, look again).
+private struct ThermostatSetup: View {
+    private let st = SmartThings.shared
+    @State private var looking = false
+    @Environment(\.openURL) private var openURL
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("No Thermostat Yet").font(.title3.bold())
+            #if os(iOS)
+            if let problem = AccessoryStore.shared.homeProblem {
+                Text(problem)
+                    .font(.callout).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if HomeKitLights.enabled {
+                    Button("Open Settings") {
+                        if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
+                    }
+                    .buttonStyle(.glassProminent)
+                }
+            } else {
+                Text("Add your ecobee in the Home app (Add Accessory, then scan the code on the thermostat or in the ecobee app) and it shows up here, ready to control. It can also come in through Samsung SmartThings (Settings → Devices).")
+                    .font(.callout).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            lookAgain
+            #else
+            Text(st.connected
+                 ? "SmartThings is connected but doesn’t list a thermostat. Add your ecobee in the SmartThings app (Add Device → Thermostat → ecobee), then look again."
+                 : "On the Mac, Woodruff reaches the ecobee through Samsung SmartThings. Add it in the SmartThings app on your phone (Add Device → Thermostat → ecobee), then connect SmartThings here.")
+                .font(.callout).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if st.connected {
+                lookAgain
+            } else {
+                Form { SmartThingsSection() }
+                    .formStyle(.grouped)
+                    .scrollContentBackground(.hidden)
+                    .frame(height: 330)
+            }
+            #endif
+            if let e = st.error, st.connected {
+                Text(e).font(.footnote).foregroundStyle(Palette.attention)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private var lookAgain: some View {
+        Button {
+            looking = true
+            Task {
+                #if os(iOS)
+                HomeKitLights.shared.reload()
+                #endif
+                await SmartThings.shared.refresh(full: true)
+                // Apple Home answers on its own time; give it a moment before saying it's done.
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                looking = false
+            }
+        } label: {
+            HStack(spacing: 8) {
+                Text(looking ? "Looking…" : "Look Again")
+                if looking { ProgressView().controlSize(.small) }
+            }
+        }
+        .buttonStyle(.glass)
+        .disabled(looking)
+    }
+}

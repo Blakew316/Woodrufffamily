@@ -7,6 +7,8 @@ final class HomeLayout {
     static let shared = HomeLayout()
     /// Edit Home is open (from Home's Edit button, or the Mac's toolbar).
     var editing = false
+    /// Taking in a layout another device saved: nothing is written back meanwhile (it's already saved as it is).
+    @ObservationIgnored private var applying = false
 
     static let allSections = ["rooms", "cameras", "tvs", "speakers", "lights", "devices", "wifi"]
     static func title(_ key: String) -> String {
@@ -52,7 +54,7 @@ final class HomeLayout {
     var favoriteStamps: [String: Double] { didSet { save() } }
 
     func toggleFavorite(_ id: String) {
-        let now = Date().timeIntervalSince1970
+        let now = SyncMerge.stampNow()
         if let i = favorites.firstIndex(of: id) { favorites.remove(at: i); favoriteStamps[id] = -now }
         else { favorites.append(id); favoriteStamps[id] = now }
     }
@@ -94,9 +96,12 @@ final class HomeLayout {
         if (s?.version ?? 1) < 2 { save() }
     }
 
-    /// Reads the layout again (after another of the family's devices changed it).
+    /// Reads the layout again (after another of the family's devices changed it), every part of it, without writing
+    /// it back part-way through.
     func reload() {
         guard let s = Saved.load("homeLayout", as: Stored.self) else { return }
+        applying = true
+        defer { applying = false }
         var secs = s.sections.filter { Self.allSections.contains($0) }
         for k in Self.allSections where !secs.contains(k) { secs.append(k) }
         if secs != sections { sections = secs }
@@ -110,6 +115,7 @@ final class HomeLayout {
     }
 
     private func save() {
+        guard !applying else { return }
         Saved.save("homeLayout", Stored(sections: sections, hiddenSections: hiddenSections.sorted(), order: order, hiddenItems: hiddenItems.sorted(), version: 2, groupByRoom: groupByRoom, favorites: favorites, pinnedRooms: pinnedRooms, favoriteStamps: favoriteStamps))
     }
 

@@ -7,13 +7,19 @@ struct HomeView: View {
     @Environment(Fleet.self) private var fleet
     @State private var openTV: String?
     /// The room bar's choice: Favorites (first, and where Home opens), All Rooms (""), or a room.
-    @AppStorage("home.room2") private var room = favoritesKey
+    @AppStorage("home.room2") private var picked = favoritesKey
     /// The TV whose player is open (iPhone: tapping a TV opens straight into what it's playing).
     @State private var playerTV: String?
-    /// Mac: how wide Favorites is (a tile can't be dragged wider).
-    @State private var favoritesWidth: CGFloat = 1200
     @Namespace private var zoom
     private let layout = HomeLayout.shared
+
+    /// What Home shows for the room bar's choice. A room with nothing in it just now (its cameras or linked TVs
+    /// still loading at launch, say) shows All Rooms until it's back, without forgetting the choice; with the room
+    /// bar hidden there's no way to pick a room, so everything shows.
+    private var room: String {
+        if layout.hiddenSections.contains("rooms") { return "" }
+        return picked == favoritesKey || picked.isEmpty || rooms.contains(picked) ? picked : ""
+    }
 
     #if os(macOS)
     private let columns = [GridItem(.adaptive(minimum: 400), spacing: 22)]
@@ -22,6 +28,9 @@ struct HomeView: View {
     #endif
 
     var body: some View {
+        // Read here, so Home redraws the moment either changes (Edit Home from the Mac's toolbar, a tapped TV).
+        let editing = layout.editing
+        let player = playerTV
         ScrollView {
             VStack(alignment: .leading, spacing: 30) {
                 #if os(iOS)
@@ -78,6 +87,13 @@ struct HomeView: View {
                     .frame(maxWidth: 820)
                     #if os(macOS)
                     .onExitCommand { close() }
+                    // Esc closes it wherever the focus is (onExitCommand only hears it while something in it has focus);
+                    // a camera opened over it takes Esc first.
+                    .background {
+                        if CameraStreams.shared.full == nil {
+                            Button("Close") { close() }.keyboardShortcut(.cancelAction).opacity(0).frame(width: 0, height: 0).accessibilityHidden(true)
+                        }
+                    }
                     #endif
                     .transition(.asymmetric(insertion: .identity, removal: .opacity))
             }
@@ -96,10 +112,8 @@ struct HomeView: View {
         // Everything a size up on the Mac's big screens.
         .dynamicTypeSize(.xxLarge)
         #endif
-        .sheet(isPresented: Binding(get: { layout.editing }, set: { layout.editing = $0 })) { EditHomeView().macResizable(width: 520, height: 720) }
-        .sheet(item: Binding(get: { playerTV.map { TitleRef(id: $0) } }, set: { playerTV = $0?.id })) { NowPlayingSheet(tvID: $0.id).macResizable(width: 560, height: 780) }
-        // With the room bar hidden there's no way to pick a room: show everything.
-        .onAppear { if layout.hiddenSections.contains("rooms") && !room.isEmpty { room = "" } }
+        .sheet(isPresented: Binding(get: { editing }, set: { layout.editing = $0 })) { EditHomeView().macResizable(width: 520, height: 720) }
+        .sheet(item: Binding(get: { player.map { TitleRef(id: $0) } }, set: { playerTV = $0?.id })) { NowPlayingSheet(tvID: $0.id).macResizable(width: 560, height: 780) }
         .refreshable { await refreshEverything() }
     }
 
@@ -139,7 +153,10 @@ struct HomeView: View {
         async let speakers: Void = SmartHome.shared.refreshSpeakers()
         async let samsung: Void = SmartThings.shared.refresh(full: false)
         async let cams: Void = NestCameras.shared.load()
-        _ = await (tvs, speakers, samsung, cams)
+        // The fans and the Wi‑Fi too (they're on Home as well).
+        async let fans: Void = Dreo.shared.refresh(full: false)
+        async let wifi: Void = DecoWifi.shared.refresh()
+        _ = await (tvs, speakers, samsung, cams, fans, wifi)
         await fleet.loadAllHealth()
     }
 
@@ -165,7 +182,7 @@ struct HomeView: View {
                     .glass(RoundedRectangle(cornerRadius: 20, style: .continuous), interactive: false)
             }
             #if os(macOS)
-            macFavoriteTiles
+            MacFavoriteTiles(open: { open($0) })
             #else
             CamerasSection(favorites: true, compact: true, titled: false)
             if !favTVs.isEmpty {
@@ -181,31 +198,6 @@ struct HomeView: View {
         }
     }
 
-    #if os(macOS)
-    /// Favourite cameras and TVs, each sized by dragging its bottom-right corner; the rest flow around it.
-    private var macFavoriteTiles: some View {
-        let cams = NestCameras.shared.cameras
-        let ids = layout.favorites.filter { id in cams.contains { $0.id == id } || fleet.tv(id) != nil }
-        return FlowLayout(spacing: 14) {
-            ForEach(ids, id: \.self) { id in
-                if let cam = cams.first(where: { $0.id == id }) {
-                    ResizableTile(id: id, defaultWidth: 340, minWidth: 220, maxWidth: favoritesWidth, heightFor: { $0 * 3 / 4 }) { _ in
-                        LiveCameraTile(camera: cam, compact: true) {
-                            if cam.webRTC && cam.online { withAnimation(.smooth(duration: 0.25)) { CameraStreams.shared.full = cam.id } }
-                        }
-                    }
-                } else if let tv = fleet.tv(id) {
-                    ResizableTile(id: id, defaultWidth: 400, minWidth: 300, maxWidth: favoritesWidth, heightFor: { max(210, $0 * 9 / 16) }) { w in
-                        HomeTVTile(tv: tv, height: max(210, w * 9 / 16)) { open(tv.id) }
-                    }
-                }
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { favoritesWidth = $0 }
-    }
-    #endif
-
     private func tvs(in r: String) -> [FleetTV] {
         // A TV not set up yet has no room of its own (its name isn't a room): it shows under Other.
         layout.arrange(fleet.tvs.filter { roomMatches(SmartHome.shared.rooms[$0.id] ?? ($0.isUnpaired ? nil : $0.name), r) }, in: "tvs")
@@ -214,8 +206,10 @@ struct HomeView: View {
     private func hasThings(_ r: String) -> Bool {
         let h = SmartHome.shared
         let shown = { (k: String) in !layout.hiddenSections.contains(k) }
+        // Every room listed: a favourite camera is already playing under Favorites, so it doesn't count here.
+        let everyRoom = room.isEmpty
         return (shown("tvs") && !tvs(in: r).isEmpty)
-            || (shown("cameras") && NestCameras.shared.cameras.contains { roomMatches(h.rooms[$0.id] ?? $0.room, r) && !layout.hiddenItems.contains($0.id) && !(room.isEmpty && layout.favorites.contains($0.id)) })
+            || (shown("cameras") && NestCameras.shared.cameras.contains { roomMatches(h.rooms[$0.id] ?? $0.room, r) && !layout.hiddenItems.contains($0.id) && !(everyRoom && layout.favorites.contains($0.id)) })
             || (shown("speakers") && h.speakers.contains { roomMatches(h.room(of: $0.id), r) && !layout.hiddenItems.contains($0.id) })
             || (shown("lights") && h.lights.contains { roomMatches(h.room(of: $0.id), r) && !layout.hiddenItems.contains($0.id) })
             || (shown("devices") && AccessoryStore.shared.all.contains { roomMatches(h.room(of: $0.id), r) && !layout.hiddenItems.contains($0.id) })
@@ -257,20 +251,20 @@ struct HomeView: View {
         return ScrollView(.horizontal) {
             HStack(spacing: 8) {
                 ForEach([favoritesKey] + pinned, id: \.self) { r in
-                    Button { withAnimation(.smooth) { room = r } } label: {
+                    Button { withAnimation(.smooth) { picked = r } } label: {
                         chip(r == favoritesKey ? "Favorites" : r, selected: room == r)
                     }
                     .buttonStyle(.plain)
                     .glass(Capsule())
                 }
                 Menu {
-                    Button { withAnimation(.smooth) { room = "" } } label: {
+                    Button { withAnimation(.smooth) { picked = "" } } label: {
                         if room.isEmpty { Label("All Rooms", systemImage: "checkmark") } else { Text("All Rooms") }
                     }
                     if !others.isEmpty {
                         Section("Rooms") {
                             ForEach(others, id: \.self) { r in
-                                Button { withAnimation(.smooth) { room = r } } label: {
+                                Button { withAnimation(.smooth) { picked = r } } label: {
                                     if room == r { Label(r, systemImage: "checkmark") } else { Text(r) }
                                 }
                             }
@@ -289,7 +283,6 @@ struct HomeView: View {
             }
         }
         .scrollIndicators(.hidden)
-        .onAppear { if !room.isEmpty && room != favoritesKey && !rooms.contains(room) { room = "" } }
     }
 
     private func chip(_ title: String, selected: Bool) -> some View {
@@ -347,6 +340,8 @@ struct HomeTVTile: View {
     static let macBig = false
     #endif
     @Environment(Fleet.self) private var fleet
+    /// Its corner is being dragged (Mac Favorites): the hover lift and tilt rest so the tile follows the pointer.
+    @Environment(\.tileResizing) private var resizing
     var tv: FleetTV
     var height: CGFloat = 230
     var open: () -> Void
@@ -364,8 +359,19 @@ struct HomeTVTile: View {
                 defer { if access { url.stopAccessingSecurityScopedResource() } }
                 do { last = try await c.addMemory(file: url, name: url.lastPathComponent, taken: nil) } catch { fleet.show(error) }
             }
-            if let last, fleet.hub(tv.id) != nil { try? await c.showMemory(last) }
-            fleet.say("Added to Family Memories", fleet.hub(tv.id) != nil ? "Showing on \(tv.name)." : "Open Memories to show them on \(tv.name).")
+            // Nothing went in: each failure has already said why (no "Added" that isn't true).
+            guard let last else { return }
+            // Shown straight away on a TV that holds Memories itself; a linked TV gets them from Memories.
+            guard fleet.hub(tv.id) != nil else {
+                fleet.say("Added to Family Memories", "Open Memories to show them on \(tv.name).")
+                return
+            }
+            do {
+                try await c.showMemory(last)
+                fleet.say("Added to Family Memories", "Showing on \(tv.name).")
+            } catch {
+                fleet.say("Added to Family Memories", "They’re in Memories, but \(tv.name) didn’t show them: \(error.localizedDescription)")
+            }
         }
     }
     @State private var renaming = false
@@ -375,8 +381,11 @@ struct HomeTVTile: View {
         let p = tv.playing
         // A TV that stopped keeps the picture of what it last played, dimmed, so the grid stays rich.
         let art = p ?? (tv.isUnpaired ? nil : fleet.lastPlaying[tv.id])
+        let pictured = hasPicture(fleet, art)
+        // Lifted under the pointer, but not while its corner is being dragged.
+        let hot = hovering && !resizing
         ZStack(alignment: .bottomLeading) {
-            if hasPicture(fleet, art) {
+            if pictured {
                 Color.clear
                     .overlay { NowPlayingArt(playing: art, backdrop: true) }
                     .clipped()
@@ -405,8 +414,9 @@ struct HomeTVTile: View {
                 HStack(spacing: 8) {
                     if let p { Transport(tv: tv, playing: p, compact: true) }
                     Spacer()
-                    if !tv.online, let mac = fleet.extras[tv.id]?.mac {
-                        Button("Turn On") { WakeOnLAN.wake(mac: mac, lastHost: fleet.extras[tv.id]?.lastHost) }
+                    if !tv.online, fleet.extras[tv.id]?.mac != nil {
+                        // Wake-on-LAN, and the TV is watched closely so it shows as on the moment it is.
+                        Button("Turn On") { fleet.wake(tv) }
                             .buttonStyle(.glass)
                     }
                     if tv.isUnpaired {
@@ -429,21 +439,21 @@ struct HomeTVTile: View {
             }
             .padding(18)
         }
-        .foregroundStyle(hasArt ? Color.white : Color.primary)
+        .foregroundStyle(pictured ? Color.white : Color.primary)
         .frame(height: height)
         .background {
-            if hasArt { RoundedRectangle(cornerRadius: 24, style: .continuous).fill(Color.black) }
+            if pictured { RoundedRectangle(cornerRadius: 24, style: .continuous).fill(Color.black) }
             else { Color.clear.glass(RoundedRectangle(cornerRadius: 24, style: .continuous), interactive: false) }
         }
         .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 24, style: .continuous).strokeBorder(.white.opacity(hovering ? 0.18 : 0.06)))
+        .overlay(RoundedRectangle(cornerRadius: 24, style: .continuous).strokeBorder(.white.opacity(hot ? 0.18 : 0.06)))
         .opacity(tv.online ? 1 : 0.6)
-        .shadow(color: .black.opacity(hovering ? 0.3 : 0.15), radius: hovering ? 18 : 10, y: hovering ? 10 : 5)
-        .scaleEffect(hovering ? 1.01 : 1)
-        .animation(.spring(response: 0.3, dampingFraction: 0.8), value: hovering)
+        .shadow(color: .black.opacity(hot ? 0.3 : 0.15), radius: hot ? 18 : 10, y: hot ? 10 : 5)
+        .scaleEffect(hot ? 1.01 : 1)
+        .animation(.spring(response: 0.3, dampingFraction: 0.8), value: hot)
         .contentShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
         #if os(macOS)
-        .hoverTilt()
+        .modifier(TileTilt(enabled: !resizing))
         .dropDestination(for: URL.self) { urls, _ in
             dropped(urls)
             return true
@@ -473,16 +483,18 @@ struct HomeTVTile: View {
                 UserDefaults.standard.set("remote", forKey: "section")
                 #endif
             }
-            Button("Check for Updates") { Task { do { try await fleet.pushUpdate(tv) } catch { fleet.show(error) } } }
+            Button("Check for Updates") {
+                Task {
+                    do {
+                        try await fleet.pushUpdate(tv)
+                        fleet.say("Checking for Updates", "\(tv.name) checks GitHub now and installs once nobody’s watching.")
+                    } catch { fleet.show(error) }
+                }
+            }
             if tv.needsAttention { Button("Hide Alerts") { fleet.hideAlerts(tv) } }
             if tv.alertsHidden { Button("Show Hidden Alerts") { fleet.showAlerts(tv) } }
             FavoriteButton(id: tv.id)
         }
-    }
-
-    private var hasArt: Bool {
-        let art = tv.playing ?? (tv.isUnpaired ? nil : fleet.lastPlaying[tv.id])
-        return hasPicture(fleet, art)
     }
 
     private var state: String {
@@ -534,9 +546,12 @@ struct LibrarySearchResults: View {
     @Environment(Fleet.self) private var fleet
     var query: String
     @State private var r: SearchResults?
+    /// Why the search didn't come back (the TV holding the library is off, say), instead of a spinner forever.
+    @State private var failed: String?
     @State private var openTitle: String?
 
     var body: some View {
+        let opened = openTitle
         ScrollView {
             VStack(alignment: .leading, spacing: 26) {
                 if let r {
@@ -548,6 +563,9 @@ struct LibrarySearchResults: View {
                         EmptyState(symbol: "magnifyingglass", title: "No Results", message: "Nothing in Movies or TV Shows matches “\(query)”.")
                             .padding(.top, 60)
                     }
+                } else if let failed {
+                    EmptyState(symbol: "exclamationmark.triangle", title: "Couldn’t Search", message: failed)
+                        .padding(.top, 60)
                 } else {
                     ProgressView().frame(maxWidth: .infinity).padding(.top, 80)
                 }
@@ -556,11 +574,26 @@ struct LibrarySearchResults: View {
         }
         .navigationTitle("Search")
         .environment(\.openTitle, OpenTitleAction { openTitle = $0 })
-        .sheet(item: Binding(get: { openTitle.map { TitleRef(id: $0) } }, set: { openTitle = $0?.id })) { TitleSheet(id: $0.id).macResizable(width: 760, height: 820, minWidth: 520, minHeight: 500) }
+        .sheet(item: Binding(get: { opened.map { TitleRef(id: $0) } }, set: { openTitle = $0?.id })) { TitleSheet(id: $0.id).macResizable(width: 760, height: 820, minWidth: 520, minHeight: 500) }
         .task(id: query) {
             try? await Task.sleep(nanoseconds: 220_000_000)
             guard !Task.isCancelled else { return }
-            r = try? await fleet.hubClient()?.search(query)
+            guard let client = fleet.hubClient() else {
+                r = nil
+                failed = "Pair a TV first: the library lives on the TVs."
+                return
+            }
+            do {
+                let found = try await client.search(query)
+                guard !Task.isCancelled else { return }
+                r = found
+                failed = nil
+            } catch {
+                // Typed on: the next search takes over.
+                guard !Task.isCancelled else { return }
+                r = nil
+                failed = error.localizedDescription
+            }
         }
     }
 }
@@ -654,6 +687,15 @@ struct NowPlayingBanner: View {
     }
 }
 
+private struct TileResizingKey: EnvironmentKey { static let defaultValue = false }
+extension EnvironmentValues {
+    /// A tile's corner is being dragged (Mac Favorites): its hover effects rest so it follows the pointer cleanly.
+    var tileResizing: Bool {
+        get { self[TileResizingKey.self] }
+        set { self[TileResizingKey.self] = newValue }
+    }
+}
+
 #if os(macOS)
 /// Each tile's chosen width on this Mac.
 @Observable @MainActor
@@ -676,9 +718,16 @@ struct ResizableTile<Content: View>: View {
     var maxWidth: CGFloat
     var heightFor: (CGFloat) -> CGFloat
     @ViewBuilder var content: (CGFloat) -> Content
+    /// The width while the corner is being dragged (nil otherwise).
     @State private var live: CGFloat?
     @State private var start: CGFloat = 0
+    /// Width over height when the drag began: the corner moves along that diagonal, staying as close to the
+    /// pointer as the tile's shape allows whichever way it's dragged (across, down, or both).
+    @State private var aspect: CGFloat = 1
     @State private var hovering = false
+    /// Goes back to false by itself if a drag is cut short (the window loses focus mid-drag), so the new width
+    /// is still kept and the grip never stays lit.
+    @GestureState private var dragging = false
 
     private var width: CGFloat {
         let w = live ?? TileSizes.shared.widths[id] ?? defaultWidth
@@ -689,29 +738,116 @@ struct ResizableTile<Content: View>: View {
         let w = width
         content(w)
             .frame(width: w, height: heightFor(w))
+            // The tile's own hover lift and tilt rest while it's being resized (they'd fight the pointer).
+            .environment(\.tileResizing, live != nil)
             .overlay(alignment: .bottomTrailing) {
+                // In the overlay, apart from the tile: dragging it never counts as a click on the tile.
                 ResizeGrip(trailing: true, shown: hovering, active: live != nil)
                     .gesture(
                         DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                            .updating($dragging) { _, state, _ in state = true }
                             .onChanged { g in
-                                var t = Transaction()
-                                t.disablesAnimations = true
-                                withTransaction(t) {
-                                    if live == nil { start = width }
-                                    live = min(max(minWidth, start + g.translation.width), max(minWidth, maxWidth))
+                                still {
+                                    // The width and shape when this drag began.
+                                    var s = start, r = aspect
+                                    if live == nil {
+                                        s = width
+                                        r = s / max(1, heightFor(s))
+                                        start = s
+                                        aspect = r
+                                    }
+                                    // The point on the tile's diagonal nearest the pointer.
+                                    let grow = (r * r * g.translation.width + r * g.translation.height) / (r * r + 1)
+                                    live = min(max(minWidth, (s + grow).rounded()), max(minWidth, maxWidth))
                                 }
                             }
-                            .onEnded { _ in
-                                var t = Transaction()
-                                t.disablesAnimations = true
-                                withTransaction(t) {
-                                    if let live { TileSizes.shared.set(id, live) }
-                                    live = nil
-                                }
-                            }
+                            .onEnded { _ in commit() }
                     )
             }
+            .onChange(of: dragging) { _, now in if !now { commit() } }
             .onHover { h in withAnimation(.easeOut(duration: 0.15)) { hovering = h } }
+    }
+
+    /// Keeps the dragged width (once, however the drag ended).
+    private func commit() {
+        still {
+            if let w = live { TileSizes.shared.set(id, w) }
+            live = nil
+        }
+    }
+
+    /// A change with no animation at all, so the tile and the tiles flowing around it move with the pointer.
+    private func still(_ change: () -> Void) {
+        var t = Transaction()
+        t.disablesAnimations = true
+        withTransaction(t, change)
+    }
+}
+
+/// Favourite cameras and TVs, each sized by dragging its bottom-right corner; the rest flow around it. A view of
+/// its own (with its own width), so resizing the window or a tile never re-runs the rest of Home.
+private struct MacFavoriteTiles: View {
+    @Environment(Fleet.self) private var fleet
+    var open: (String) -> Void
+    /// How wide Favorites is: a tile can't be dragged wider, and shrinks with the window.
+    @State private var width: CGFloat = 1200
+    private let layout = HomeLayout.shared
+
+    var body: some View {
+        let cams = NestCameras.shared.cameras
+        let ids = layout.favorites.filter { id in cams.contains { $0.id == id } || fleet.tv(id) != nil }
+        FlowLayout(spacing: 14) {
+            ForEach(ids, id: \.self) { id in
+                if let cam = cams.first(where: { $0.id == id }) {
+                    ResizableTile(id: id, defaultWidth: 340, minWidth: 220, maxWidth: width, heightFor: { $0 * 3 / 4 }) { _ in
+                        LiveCameraTile(camera: cam, compact: true) {
+                            if cam.webRTC && cam.online { withAnimation(.smooth(duration: 0.25)) { CameraStreams.shared.full = cam.id } }
+                        }
+                    }
+                } else if let tv = fleet.tv(id) {
+                    ResizableTile(id: id, defaultWidth: 400, minWidth: 300, maxWidth: width, heightFor: { max(210, $0 * 9 / 16) }) { w in
+                        HomeTVTile(tv: tv, height: max(210, w * 9 / 16)) { open(tv.id) }
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
+    }
+}
+
+/// The Mac's hover tilt (as `hoverTilt()`), resting while the tile is being resized, so the corner grip never
+/// fights a tile that's turning under the pointer.
+private struct TileTilt: ViewModifier {
+    var enabled: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var point: CGPoint?
+    @State private var size: CGSize = .zero
+
+    func body(content: Content) -> some View {
+        let at = enabled ? point : nil
+        let dx = reduceMotion ? 0 : at.map { ($0.x / max(size.width, 1)) - 0.5 } ?? 0
+        let dy = reduceMotion ? 0 : at.map { ($0.y / max(size.height, 1)) - 0.5 } ?? 0
+        content
+            .overlay {
+                if let at {
+                    RadialGradient(colors: [.white.opacity(0.16), .clear], center: UnitPoint(x: at.x / max(size.width, 1), y: at.y / max(size.height, 1)),
+                                   startRadius: 0, endRadius: max(size.width, size.height) * 0.7)
+                        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+                        .allowsHitTesting(false)
+                        .blendMode(.plusLighter)
+                }
+            }
+            .rotation3DEffect(.degrees(Double(-dy) * 6), axis: (x: 1, y: 0, z: 0), perspective: 0.6)
+            .rotation3DEffect(.degrees(Double(dx) * 6), axis: (x: 0, y: 1, z: 0), perspective: 0.6)
+            .animation(.spring(response: 0.35, dampingFraction: 0.75), value: at)
+            .onGeometryChange(for: CGSize.self) { $0.size } action: { size = $0 }
+            .onContinuousHover { phase in
+                switch phase {
+                case .active(let p): point = p
+                case .ended: point = nil
+                }
+            }
     }
 }
 

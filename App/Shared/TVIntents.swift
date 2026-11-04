@@ -30,9 +30,22 @@ struct TVQuery: EntityQuery {
 @MainActor
 private func tvsForIntent(_ tv: TVEntity?) async -> [FleetTV] {
     let fleet = Fleet.shared
-    if fleet.refreshedAt == nil { await fleet.refresh() }
+    // Siri can wake the app after it sat in the background for a while: ask the TVs again unless the last
+    // answer is from just now, so "what's playing" and "pause the TVs" go by what the TVs are doing now.
+    let fresh = fleet.refreshedAt.map { Date().timeIntervalSince($0) < 3 } ?? false
+    if !fresh { await fleet.refresh() }
     if let tv { return fleet.tvs.filter { $0.id == tv.id } }
     return fleet.tvs.filter { $0.online && !$0.isUnpaired }
+}
+
+/// What Siri says after acting on some TVs: where it worked, and where it didn't (never "done" for a TV that
+/// didn't get it).
+private func outcome(_ verb: String, done: [String], failed: [String], none: String) -> String {
+    if done.isEmpty && failed.isEmpty { return none }
+    var parts: [String] = []
+    if !done.isEmpty { parts.append("\(verb) \(done.joined(separator: ", ")).") }
+    if !failed.isEmpty { parts.append("Couldn’t reach \(failed.joined(separator: ", ")).") }
+    return parts.joined(separator: " ")
 }
 
 struct PauseTVsIntent: AppIntent {
@@ -44,9 +57,17 @@ struct PauseTVsIntent: AppIntent {
         let fleet = Fleet.shared
         var list = await tvsForIntent(tv)
         if tv == nil { list = list.filter { $0.playing?.isPlaying == true } }
-        for t in list { try? await fleet.client(for: t)?.key("playpause") }
-        let names = list.map(\.name)
-        return .result(dialog: names.isEmpty ? "Nothing is playing." : "Done on \(names.joined(separator: ", ")).")
+        var done: [String] = []
+        var failed: [String] = []
+        for t in list {
+            do {
+                guard let c = fleet.client(for: t) else { failed.append(t.name); continue }
+                try await c.key("playpause")
+                done.append(t.name)
+            } catch { failed.append(t.name) }
+        }
+        let said = outcome("Done on", done: done, failed: failed, none: "Nothing is playing.")
+        return .result(dialog: "\(said)")
     }
 }
 
@@ -58,11 +79,21 @@ struct MuteTVsIntent: AppIntent {
     @MainActor func perform() async throws -> some IntentResult & ProvidesDialog {
         let fleet = Fleet.shared
         let list = await tvsForIntent(tv)
+        var done: [String] = []
+        var failed: [String] = []
         for t in list {
-            if let lg = fleet.lg(for: t), let v = try? await lg.volume() { try? await lg.setMute(!v.muted) }
-            else { try? await fleet.client(for: t)?.key("mute") }
+            do {
+                if let lg = fleet.lg(for: t), let v = try? await lg.volume() {
+                    try await lg.setMute(!v.muted)
+                } else {
+                    guard let c = fleet.client(for: t) else { failed.append(t.name); continue }
+                    try await c.key("mute")
+                }
+                done.append(t.name)
+            } catch { failed.append(t.name) }
         }
-        return .result(dialog: list.isEmpty ? "No TVs are on." : "Muted \(list.map(\.name).joined(separator: ", ")).")
+        let said = outcome("Muted", done: done, failed: failed, none: "No TVs are on.")
+        return .result(dialog: "\(said)")
     }
 }
 

@@ -409,9 +409,11 @@ struct LiveCameraTile: View {
     var compact = false
     var open: () -> Void
     private let streams = CameraStreams.shared
+    /// An offline camera was tapped: Google is being asked about it again.
+    @State private var checking = false
 
     var body: some View {
-        let status = camera.online ? (streams.status[camera.id] ?? "Starting…") : "Offline"
+        let status = camera.online ? (streams.status[camera.id] ?? "Starting…") : (checking ? "Checking…" : "Offline")
         ZStack(alignment: .bottomLeading) {
             Color.black
             if camera.webRTC && streams.expanded != camera.id {
@@ -419,8 +421,8 @@ struct LiveCameraTile: View {
             }
             if status != "Live" || streams.expanded == camera.id {
                 VStack(spacing: 8) {
-                    if camera.webRTC && status.hasSuffix("…") && streams.expanded != camera.id { ProgressView().tint(.white) }
-                    Text(!camera.online ? "Offline" : !camera.webRTC ? "Live view not supported" : streams.expanded == camera.id ? "Open in the big view" : status)
+                    if (camera.webRTC || checking) && status.hasSuffix("…") && streams.expanded != camera.id { ProgressView().tint(.white) }
+                    Text(caption(status))
                         .font(.caption).foregroundStyle(.white.opacity(0.75)).multilineTextAlignment(.center).padding(.horizontal)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -438,13 +440,36 @@ struct LiveCameraTile: View {
         .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).strokeBorder(.white.opacity(0.08)))
         .contentShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-        .onTapGesture { if camera.webRTC && camera.online { streams.expanded = camera.id; open() } }
+        .onTapGesture {
+            if camera.webRTC && camera.online { streams.expanded = camera.id; open() }
+            else if !camera.online { checkAgain() }
+        }
         .contextMenu {
             if camera.webRTC && camera.online { Button("Open") { streams.expanded = camera.id; open() } }
+            if !camera.online { Button("Check Again") { checkAgain() } }
             FavoriteButton(id: camera.id)
         }
         .onAppear { if camera.webRTC { streams.show(camera) } }
         .onDisappear { if camera.webRTC { streams.hide() } }
+    }
+
+    /// What the tile says over its picture when it isn't simply live.
+    private func caption(_ status: String) -> String {
+        if !camera.online { return checking ? "Checking…" : "Offline · Tap to Check Again" }
+        if !camera.webRTC { return "Live view not supported" }
+        if streams.expanded == camera.id { return "Open in the big view" }
+        return status
+    }
+
+    /// Offline: ask Google about the cameras now (otherwise it's every five minutes). One that's back starts
+    /// playing by itself.
+    private func checkAgain() {
+        guard !checking else { return }
+        checking = true
+        Task {
+            await NestCameras.shared.load()
+            checking = false
+        }
     }
 }
 
@@ -461,14 +486,24 @@ struct CameraLiveView: View {
         let player = streams.player(camera)
         Group {
             #if os(macOS)
-            // Just the picture, filling the window, with the name and buttons floating over its top.
+            // Just the picture, filling everything right of the sidebar (centred, edge to edge), with the name and
+            // buttons floating over its top, below the window's title bar so a click on them is never a window drag.
             ZStack(alignment: .top) {
                 Color.black
+                    .ignoresSafeArea()
                 LiveWebView(player: player)
                     .aspectRatio(16 / 9, contentMode: .fit)
-                LinearGradient(colors: [.black.opacity(0.6), .clear], startPoint: .top, endPoint: .bottom)
-                    .frame(height: 90)
                     .allowsHitTesting(false)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .ignoresSafeArea()
+                // A shade from the very top (under the title bar too) behind the name and buttons.
+                VStack(spacing: 0) {
+                    LinearGradient(colors: [.black.opacity(0.6), .clear], startPoint: .top, endPoint: .bottom)
+                        .frame(height: 140)
+                    Spacer(minLength: 0)
+                }
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(camera.name).font(.title3.bold()).foregroundStyle(.white)
@@ -482,8 +517,9 @@ struct CameraLiveView: View {
                 }
                 .padding(14)
             }
-            .ignoresSafeArea()
             .onExitCommand { close() }
+            // Esc closes it wherever the focus is (onExitCommand only hears it while something in it has focus).
+            .background { Button("Close") { close() }.keyboardShortcut(.cancelAction).opacity(0).frame(width: 0, height: 0).accessibilityHidden(true) }
             #else
             phoneBody(player)
             #endif
@@ -520,7 +556,8 @@ struct CameraLiveView: View {
             Spacer(minLength: 0)
         }
         .padding(20)
-        .frame(minWidth: 420, minHeight: 340)
+        // As wide as the phone (a fixed minimum wider than an iPhone pushed the close button off the edge).
+        .frame(maxWidth: .infinity, minHeight: 340, alignment: .top)
         .presentationDetents([.medium, .large])
     }
 }

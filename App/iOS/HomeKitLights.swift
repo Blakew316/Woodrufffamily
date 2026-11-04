@@ -6,7 +6,7 @@ import WoodruffKit
 /// The lights in Apple Home (Cync bulbs over Matter, and any other), shown and controlled with the Govee ones.
 /// HomeKit is iPhone-only for an app like this, so the Mac doesn't list them.
 @MainActor
-final class HomeKitLights: NSObject, HMHomeManagerDelegate, HMAccessoryDelegate {
+final class HomeKitLights: NSObject, HMHomeManagerDelegate, HMHomeDelegate, HMAccessoryDelegate {
     static let shared = HomeKitLights()
 
     /// Built with the HomeKit capability (WOODRUFF_HOMEKIT=YES); without it, HomeKit isn't touched at all.
@@ -16,14 +16,23 @@ final class HomeKitLights: NSObject, HMHomeManagerDelegate, HMAccessoryDelegate 
     private var accessories: [String: HMAccessory] = [:]
     private var others: [String: HMAccessory] = [:]
     private var pending: Task<Void, Never>?
+    private var reloading: Task<Void, Never>?
     /// Whether each light was last set to a white temperature (true) or a colour (false). HomeKit keeps both
     /// hue/saturation and colour temperature, so which one the light shows is what was set last.
     private var whiteMode: [String: Bool] = [:]
     /// A change to an accessory that didn't go through (accessory id → what to say, until when).
     private var failed: [String: (message: String, until: Date)] = [:]
+    /// Values just written, shown at once while the accessory takes them (accessory id → characteristic type →
+    /// the value, and which write it came from). The accessory's answer replaces them.
+    private var showing: [String: [String: (value: Double, stamp: Int)]] = [:]
+    private var writes = 0
 
     func start() {
-        guard Self.enabled, manager == nil, !Demo.isOn else { return }
+        guard manager == nil, !Demo.isOn else { return }
+        guard Self.enabled else {
+            AccessoryStore.shared.homeProblem = "This copy of Woodruff was built without Apple Home, so the ecobee can only come in through SmartThings (Settings → Devices)."
+            return
+        }
         let m = HMHomeManager()
         m.delegate = self
         manager = m
@@ -34,15 +43,56 @@ final class HomeKitLights: NSObject, HMHomeManagerDelegate, HMAccessoryDelegate 
     /// Reads everything again (when the app comes back to the front).
     func refresh() {
         guard let manager else { return }
+        // Nothing found yet (the homes weren't ready the first time): look through them again.
+        if accessories.isEmpty && others.isEmpty { loadSoon() }
         for home in manager.homes {
             for a in home.accessories { for s in a.services where s.serviceType != HMServiceTypeAccessoryInformation { read(s) } }
         }
+    }
+
+    /// Looks through Apple Home again from the start (a new accessory, a thermostat that hasn't shown up).
+    func reload() {
+        if manager == nil { start() } else { load() }
     }
 
     // MARK: HomeKit
 
     nonisolated func homeManagerDidUpdateHomes(_ manager: HMHomeManager) {
         Task { @MainActor in self.load() }
+    }
+
+    /// Permission given (or taken away) for Apple Home.
+    nonisolated func homeManager(_ manager: HMHomeManager, didUpdate status: HMHomeManagerAuthorizationStatus) {
+        Task { @MainActor in self.loadSoon() }
+    }
+
+    nonisolated func homeManager(_ manager: HMHomeManager, didAdd home: HMHome) {
+        Task { @MainActor in self.loadSoon() }
+    }
+
+    nonisolated func homeManager(_ manager: HMHomeManager, didRemove home: HMHome) {
+        Task { @MainActor in self.loadSoon() }
+    }
+
+    // An accessory added in the Home app (the ecobee, a new plug) shows up without restarting Woodruff.
+    nonisolated func home(_ home: HMHome, didAdd accessory: HMAccessory) {
+        Task { @MainActor in self.loadSoon() }
+    }
+
+    nonisolated func home(_ home: HMHome, didRemove accessory: HMAccessory) {
+        Task { @MainActor in self.loadSoon() }
+    }
+
+    nonisolated func home(_ home: HMHome, didUpdate room: HMRoom, for accessory: HMAccessory) {
+        Task { @MainActor in self.publishSoon() }
+    }
+
+    nonisolated func accessoryDidUpdateName(_ accessory: HMAccessory) {
+        Task { @MainActor in self.publishSoon() }
+    }
+
+    nonisolated func accessoryDidUpdateServices(_ accessory: HMAccessory) {
+        Task { @MainActor in self.loadSoon() }
     }
 
     nonisolated func accessory(_ accessory: HMAccessory, service: HMService, didUpdateValueFor characteristic: HMCharacteristic) {
@@ -60,11 +110,39 @@ final class HomeKitLights: NSObject, HMHomeManagerDelegate, HMAccessoryDelegate 
         Task { @MainActor in self.publishSoon() }
     }
 
+    /// Several changes arrive together (permission, then the homes): look through them once.
+    private func loadSoon() {
+        reloading?.cancel()
+        reloading = Task {
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            guard !Task.isCancelled else { return }
+            load()
+        }
+    }
+
+    /// Why there's nothing from Apple Home (no permission, no home yet), for the thermostat pill and Settings.
+    private func noteAccess(_ m: HMHomeManager) {
+        let s = m.authorizationStatus
+        let problem: String?
+        if s.contains(.restricted) {
+            problem = "Apple Home is restricted on this iPhone (Screen Time → Content & Privacy Restrictions). Allow it and the ecobee shows up here."
+        } else if s.contains(.determined) && !s.contains(.authorized) {
+            problem = "Woodruff isn’t allowed to use Apple Home. Open Settings and allow it (also under Privacy & Security → HomeKit), and the ecobee shows up here."
+        } else if s.contains(.authorized) && m.homes.isEmpty {
+            problem = "There’s no home in the Home app on this iPhone yet. Set one up there and add the ecobee to it."
+        } else {
+            problem = nil
+        }
+        if AccessoryStore.shared.homeProblem != problem { AccessoryStore.shared.homeProblem = problem }
+    }
+
     private func load() {
         guard let manager else { return }
+        noteAccess(manager)
         accessories = [:]
         others = [:]
         for home in manager.homes {
+            home.delegate = self
             for a in home.accessories {
                 guard let s = bulb(a) else {
                     // Everything else: plugs, locks, thermostats, sensors, blinds, HomePod temperature…
@@ -134,7 +212,7 @@ final class HomeKitLights: NSObject, HMHomeManagerDelegate, HMAccessoryDelegate 
             return l
         }
         SmartHome.shared.setHomeLights(list)
-        AccessoryStore.shared.fromHome = others.values.compactMap(device)
+        AccessoryStore.shared.fromHome = others.values.compactMap { self.device($0) }
     }
 
     // MARK: Other accessories
@@ -152,10 +230,24 @@ final class HomeKitLights: NSObject, HMHomeManagerDelegate, HMAccessoryDelegate 
         return nil
     }
 
-    private func num(_ a: HMAccessory, _ type: String) -> Double? {
+    /// A value of the accessory: one just written (until the accessory answers), else what it last said, from
+    /// [preferred] first (an ecobee also has temperature and occupancy sensors; its thermostat's reading counts).
+    private func num(_ a: HMAccessory, _ type: String, in preferred: HMService? = nil) -> Double? {
+        if let shown = showing[id(a)]?[type] { return shown.value }
+        if let preferred, let c = preferred.characteristics.first(where: { $0.characteristicType == type }), let v = c.value as? NSNumber {
+            return v.doubleValue
+        }
         for s in a.services {
             if let c = s.characteristics.first(where: { $0.characteristicType == type }), let v = c.value as? NSNumber { return v.doubleValue }
         }
+        return nil
+    }
+
+    /// A value to write, as a number (for showing it before the accessory answers).
+    private static func number(_ v: Any) -> Double? {
+        if let b = v as? Bool { return b ? 1 : 0 }
+        if let i = v as? Int { return Double(i) }
+        if let d = v as? Double { return d }
         return nil
     }
 
@@ -176,28 +268,48 @@ final class HomeKitLights: NSObject, HMHomeManagerDelegate, HMAccessoryDelegate 
             d.alert = st == 2
         case HMServiceTypeGarageDoorOpener:
             d.kind = .garage
-            let st = max(0, min(4, Int(num(a, HMCharacteristicTypeCurrentDoorState) ?? 1)))
+            let st = max(0, min(4, Int(num(a, HMCharacteristicTypeCurrentDoorState, in: p) ?? 1)))
             d.doorOpen = st != 1
             d.status = ["Open", "Closed", "Opening", "Closing", "Stopped"][st]
+            // Asked to open or close and not moving yet: say so (and the button already offers the other way).
+            let asked = num(a, HMCharacteristicTypeTargetDoorState, in: p).map { Int($0) }
+            if st == 0 || st == 1, let asked, asked == 0 || asked == 1, asked != st {
+                d.status = asked == 0 ? "Opening…" : "Closing…"
+                d.doorOpen = asked == 0
+            }
+            if num(a, HMCharacteristicTypeObstructionDetected, in: p) == 1 { d.status = "Obstructed"; d.alert = true }
         case HMServiceTypeThermostat:
             d.kind = .thermostat
-            d.temperature = num(a, HMCharacteristicTypeCurrentTemperature)
-            d.target = num(a, HMCharacteristicTypeTargetTemperature)
-            let target = Int(num(a, HMCharacteristicTypeTargetHeatingCooling) ?? 0)
-            d.thermostatMode = ["off", "heat", "cool", "auto"][max(0, min(3, target))]
-            d.modes = ["off", "heat", "cool", "auto"]
-            let current = Int(num(a, HMCharacteristicTypeCurrentHeatingCooling) ?? 0)
+            d.temperature = num(a, HMCharacteristicTypeCurrentTemperature, in: p)
+            d.target = num(a, HMCharacteristicTypeTargetTemperature, in: p)
+            let names = ["off", "heat", "cool", "auto"]
+            let target = max(0, min(3, Int(num(a, HMCharacteristicTypeTargetHeatingCooling, in: p) ?? 0)))
+            d.thermostatMode = names[target]
+            // The modes this one offers (a system without cooling has no Cool).
+            let valid = (p.characteristics.first { $0.characteristicType == HMCharacteristicTypeTargetHeatingCooling }?.metadata?.validValues ?? [])
+                .map { $0.intValue }.filter { $0 >= 0 && $0 <= 3 }
+            d.modes = valid.isEmpty ? names : Array(Set(valid)).sorted().map { names[$0] }
+            let current = Int(num(a, HMCharacteristicTypeCurrentHeatingCooling, in: p) ?? 0)
             d.action = current == 1 ? "heating" : current == 2 ? "cooling" : "idle"
             // In heat or cool the target is the one temperature; in auto it holds between two.
-            d.heatTo = target == 3 ? num(a, HMCharacteristicTypeHeatingThreshold) ?? d.target : d.target
-            d.coolTo = target == 3 ? num(a, HMCharacteristicTypeCoolingThreshold) ?? d.target : d.target
-            d.humidity = num(a, HMCharacteristicTypeCurrentRelativeHumidity).map { Int($0.rounded()) }
+            d.heatTo = target == 3 ? num(a, HMCharacteristicTypeHeatingThreshold, in: p) ?? d.target : d.target
+            d.coolTo = target == 3 ? num(a, HMCharacteristicTypeCoolingThreshold, in: p) ?? d.target : d.target
+            d.humidity = num(a, HMCharacteristicTypeCurrentRelativeHumidity, in: p).map { Int($0.rounded()) }
             d.status = thermostatStatus(d)
         case HMServiceTypeWindowCovering:
             d.kind = .blinds
-            let pos = Int(num(a, HMCharacteristicTypeCurrentPosition) ?? 0)
-            d.position = pos
-            d.status = pos == 0 ? "Closed" : pos >= 100 ? "Open" : "\(pos)% Open"
+            let pos = max(0, min(100, Int(num(a, HMCharacteristicTypeCurrentPosition, in: p) ?? 0)))
+            let target = num(a, HMCharacteristicTypeTargetPosition, in: p).map { max(0, min(100, Int($0))) }
+            // Moving (or just asked to): where it's going, so a second tap goes the other way.
+            let moving = num(a, HMCharacteristicTypePositionState, in: p).map { Int($0) != 2 } ?? false
+            let asked = showing[d.id]?[HMCharacteristicTypeTargetPosition] != nil
+            if let target, target != pos, moving || asked {
+                d.position = target
+                d.status = target > pos ? "Opening…" : "Closing…"
+            } else {
+                d.position = pos
+                d.status = pos == 0 ? "Closed" : pos >= 100 ? "Open" : "\(pos)% Open"
+            }
         case HMServiceTypeFan, HMServiceTypeAirPurifier:
             d.kind = .fan
             d.isOn = power ?? false
@@ -234,44 +346,69 @@ final class HomeKitLights: NSObject, HMHomeManagerDelegate, HMAccessoryDelegate 
     }
 
     private func send(_ d: HomeDevice, _ command: DeviceCommand) {
-        guard let a = others[d.id] else { return }
         let id = d.id
+        guard let a = others[id] else {
+            // Gone from Apple Home since the list was made: look again.
+            loadSoon()
+            return
+        }
+        // On or off: the switch's own power, else "Active" (fans, purifiers).
+        let usesPower = characteristic(a, HMCharacteristicTypePowerState) != nil
+        let power = usesPower ? HMCharacteristicTypePowerState : HMCharacteristicTypeActive
+        // Auto holds between two temperatures; heat and cool hold one.
+        let auto = Int(num(a, HMCharacteristicTypeTargetHeatingCooling) ?? 0) == 3
         var steps: [(String, Any)] = []
         switch command {
         case .power(let on):
-            if a.services.contains(where: { $0.characteristics.contains { $0.characteristicType == HMCharacteristicTypePowerState } }) {
-                steps = [(HMCharacteristicTypePowerState, on)]
-            } else {
-                steps = [(HMCharacteristicTypeActive, on ? 1 : 0)]
-            }
+            if usesPower { steps = [(power, on)] } else { steps = [(power, on ? 1 : 0)] }
         case .lock(let lock): steps = [(HMCharacteristicTypeTargetLockMechanismState, lock ? 1 : 0)]
         case .door(let open): steps = [(HMCharacteristicTypeTargetDoorState, open ? 0 : 1)]
         case .position(let p): steps = [(HMCharacteristicTypeTargetPosition, max(0, min(100, p)))]
         case .target(let t): steps = [(HMCharacteristicTypeTargetTemperature, t)]
         case .speed(let v):
-            if v > 0 {
-                if a.services.contains(where: { $0.characteristics.contains { $0.characteristicType == HMCharacteristicTypePowerState } }) {
-                    steps.append((HMCharacteristicTypePowerState, true))
-                } else {
-                    steps.append((HMCharacteristicTypeActive, 1))
-                }
+            if v <= 0 {
+                // Speed 0 is off (some fans refuse a speed of 0 while on).
+                if usesPower { steps = [(power, false)] } else { steps = [(power, 0)] }
+            } else {
+                if usesPower { steps.append((power, true)) } else { steps.append((power, 1)) }
+                steps.append((HMCharacteristicTypeRotationSpeed, Double(min(100, v))))
             }
-            steps.append((HMCharacteristicTypeRotationSpeed, Double(max(0, min(100, v)))))
         case .swing(let on): steps = [(HMCharacteristicTypeSwingMode, on ? 1 : 0)]
         case .thermostatMode(let m):
-            steps = [(HMCharacteristicTypeTargetHeatingCooling, ["off": 0, "heat": 1, "cool": 2, "auto": 3][m] ?? 0)]
+            // Never a guess: an unknown mode isn't sent (it would otherwise turn the heating off).
+            guard let v = ["off": 0, "heat": 1, "cool": 2, "auto": 3][m] else { return }
+            steps = [(HMCharacteristicTypeTargetHeatingCooling, v)]
         case .heatTo(let t):
-            steps = [(d.thermostatMode == "auto" ? HMCharacteristicTypeHeatingThreshold : HMCharacteristicTypeTargetTemperature, t)]
+            let threshold = auto && characteristic(a, HMCharacteristicTypeHeatingThreshold) != nil
+            steps = [(threshold ? HMCharacteristicTypeHeatingThreshold : HMCharacteristicTypeTargetTemperature, t)]
         case .coolTo(let t):
-            steps = [(d.thermostatMode == "auto" ? HMCharacteristicTypeCoolingThreshold : HMCharacteristicTypeTargetTemperature, t)]
+            let threshold = auto && characteristic(a, HMCharacteristicTypeCoolingThreshold) != nil
+            steps = [(threshold ? HMCharacteristicTypeCoolingThreshold : HMCharacteristicTypeTargetTemperature, t)]
         case .machine: return
+        }
+        // Only what this accessory can take; anything else is said on its tile rather than quietly dropped.
+        let plan = steps.filter { characteristic(a, $0.0) != nil }
+        guard !plan.isEmpty else {
+            failed[id] = (message: "Can’t Change That", until: Date().addingTimeInterval(8))
+            publishSoon()
+            return
         }
         guard a.isReachable else {
             failed[id] = (message: "Not Responding", until: Date().addingTimeInterval(8))
             publishSoon()
             return
         }
-        let plan = steps
+        // Shown straight away; the accessory's answer then confirms it (or puts back what it really is).
+        writes += 1
+        let stamp = writes
+        var shown = showing[id] ?? [:]
+        for step in plan {
+            guard let c = characteristic(a, step.0), let v = Self.number(step.1) else { continue }
+            shown[step.0] = (value: aligned(c, v), stamp: stamp)
+        }
+        showing[id] = shown
+        failed[id] = nil
+        publish()
         Task {
             // One after another, each one awaited, so a failure (a jammed lock, no answer) is said.
             var failure: Error?
@@ -280,6 +417,10 @@ final class HomeKitLights: NSObject, HMHomeManagerDelegate, HMAccessoryDelegate 
                 // Temperatures and levels go in within the accessory's range and steps (HomeKit refuses others).
                 let v: Any = (step.1 as? Double).map { self.aligned(c, $0) } ?? step.1
                 if let e = await self.write(c, v) { failure = e; break }
+            }
+            // The accessory has answered: from now on its own value shows (unless a newer change is on its way).
+            for step in plan where self.showing[id]?[step.0]?.stamp == stamp {
+                self.showing[id]?[step.0] = nil
             }
             if let failure {
                 let verb: String

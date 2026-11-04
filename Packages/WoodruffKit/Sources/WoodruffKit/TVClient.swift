@@ -17,6 +17,19 @@ public struct TVClient: Sendable {
         self.routeID = routeID
     }
 
+    /// Tells the app's running `Fleet` that this TV was just asked to change what it plays (or whether it's on),
+    /// so it asks the TV again right away, and a moment later, instead of on its next round: what's playing,
+    /// play/pause and position show the change at once on every screen. [target] says which TV when it isn't
+    /// this client's own: a linked TV's id, or "all". Does nothing where no Fleet runs (widgets).
+    func changed(_ target: String? = nil) {
+        let hubID = hub.id
+        let route = target ?? routeID
+        Task { @MainActor in Fleet.commandSent(hub: hubID, route: route) }
+    }
+
+    /// Keys that change nothing worth asking the TV about again.
+    static let quietKeys: Set<String> = ["volup", "voldown", "mute"]
+
     // MARK: Remote
 
     /// Key names: up down left right ok back home menu playpause volup voldown mute netflix youtube
@@ -24,12 +37,19 @@ public struct TVClient: Sendable {
     public func key(_ key: String, repeat n: Int = 0) async throws {
         if isDirect { try await t.post("/api/key", ["key": key, "repeat": n > 0 ? n : nil], timeout: 6) }
         else { try await t.post("/api/tvs/key", ["id": routeID, "key": key, "repeat": n > 0 ? n : nil], timeout: 8) }
+        if !TVClient.quietKeys.contains(key) { changed() }
     }
 
     /// ↺10, 30↻, Next. Play/pause goes through `key("playpause")`, as the phone page does.
     @discardableResult
     public func media(_ action: String) async throws -> Bool? {
-        let r = isDirect ? try await t.post("/api/media", ["action": action]) : try await t.post("/api/tvs/media", ["id": routeID, "action": action])
+        let r: JSONValue
+        if isDirect {
+            r = try await t.post("/api/media", ["action": action])
+        } else {
+            r = try await t.post("/api/tvs/media", ["id": routeID, "action": action])
+        }
+        changed()
         return r["playing"]?.bool
     }
 
@@ -103,15 +123,19 @@ public struct TVClient: Sendable {
         try await t.post("/api/phone/hello", ["id": p.id, "name": p.name, "alerts": alerts])
     }
 
-    public func inbox(phone: String, after: Int?, epoch: String?) async throws -> Inbox {
-        try await t.get("/api/inbox", ["id": phone, "after": after.map(String.init), "epoch": epoch])
+    public func inbox(phone: String, after: Int?, epoch: String?, timeout: TimeInterval = 10) async throws -> Inbox {
+        try await t.get("/api/inbox", ["id": phone, "after": after.map(String.init), "epoch": epoch], timeout: timeout)
     }
 
-    public func open(_ url: String) async throws { try await t.post("/api/open", ["url": url]) }
+    public func open(_ url: String) async throws {
+        try await t.post("/api/open", ["url": url])
+        changed()
+    }
     public func slideshow(folder: String? = nil, start: Bool) async throws {
         var b: [String: Any?] = ["start": start]
         if let folder { b["folder"] = folder }
         try await t.post("/api/slideshow", b)
+        if start { changed() }
     }
     public func background(_ path: String) async throws { try await t.post("/api/background", ["path": path]) }
 
@@ -128,7 +152,9 @@ public struct TVClient: Sendable {
     }
     @discardableResult
     public func play(path: String? = nil, key: String? = nil, title: String? = nil, position: Double? = nil, resume: Bool? = nil) async throws -> PlayResult {
-        try await t.post("/api/play", ["path": path, "key": key, "title": title, "position": position, "resume": resume])
+        let r: PlayResult = try await t.post("/api/play", ["path": path, "key": key, "title": title, "position": position, "resume": resume])
+        changed()
+        return r
     }
 
     /// Raw-bytes upload into folder [path] (`/api/upload`). Returns the name the TV gave it.
@@ -157,7 +183,10 @@ public struct TVClient: Sendable {
         return try JSONDecoder().decode(MemoryAdded.self, from: d).item
     }
     public func deleteMemory(_ m: MemoryItem) async throws -> Memories { try await t.post("/api/memories/delete", ["path": m.path]) }
-    public func showMemory(_ m: MemoryItem) async throws { try await t.post("/api/memories/show", ["path": m.path]) }
+    public func showMemory(_ m: MemoryItem) async throws {
+        try await t.post("/api/memories/show", ["path": m.path])
+        changed()
+    }
 
     // MARK: Watch
 
@@ -201,11 +230,15 @@ public struct TVClient: Sendable {
         if target == "this" && !action.isDrive {
             return try await play(key: action.key, title: action.title, position: pos, resume: resume)
         }
+        let r: PlayResult
         if target == "this" {
-            return try await t.post("/api/watch", ["key": action.key, "title": action.title, "position": pos, "resume": resume, "latest": latest], timeout: 15)
+            r = try await t.post("/api/watch", ["key": action.key, "title": action.title, "position": pos, "resume": resume, "latest": latest], timeout: 15)
+        } else {
+            r = try await t.post("/api/tvs/watch", ["id": target, "key": action.key, "title": action.title, "position": pos,
+                                                    "resume": resume, "latest": latest, "showId": showId], timeout: 20)
         }
-        return try await t.post("/api/tvs/watch", ["id": target, "key": action.key, "title": action.title, "position": pos,
-                                                   "resume": resume, "latest": latest, "showId": showId], timeout: 20)
+        changed(target)
+        return r
     }
 
     // MARK: Settings

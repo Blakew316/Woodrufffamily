@@ -4,13 +4,12 @@ import WoodruffKit
 // What a TV is playing, shown as it plays: the title's artwork, a progress bar that moves every second,
 // and the transport. TVs blank video out of screen grabs, so the picture is the title's own art.
 
-/// Seconds played right now: the TV's last answer plus the time since, while it plays.
+/// Milliseconds played right now: the TV's last answer plus the time since, while it plays. Each TV's answer
+/// carries when it arrived (`reportedAt`); [since] is only for one that doesn't.
 func livePosition(_ p: NowPlaying, at date: Date, since: Date?) -> Double {
-    let base = p.position ?? 0
-    guard p.isPlaying, let since else { return base }
-    let pos = base + date.timeIntervalSince(since) * 1000
-    if let d = p.duration, d > 0 { return min(d, pos) }
-    return pos
+    var q = p
+    if q.reportedAt == nil { q.reportedAt = since }
+    return q.estimatedPosition(at: date)
 }
 
 /// Finds the real thumbnail of a YouTube video the TV is playing, from its title and channel (YouTube doesn't
@@ -98,12 +97,16 @@ struct LiveProgress: View {
     var body: some View {
         if let d = playing.duration, d > 0 {
             TimelineView(.periodic(from: .now, by: 1)) { ctx in
-                let pos = livePosition(playing, at: ctx.date, since: fleet.refreshedAt)
+                // The TV's own clock for this title (when its answer arrived), so the bar never jumps back on a
+                // slightly stale answer; the app-wide time is only for an answer that doesn't carry one.
+                let pos = livePosition(playing, at: ctx.date, since: playing.reportedAt ?? fleet.refreshedAt)
                 VStack(spacing: 4) {
                     GeometryReader { g in
                         Capsule().fill(tint.opacity(0.2))
                             .overlay(alignment: .leading) {
-                                Capsule().fill(tint).frame(width: max(4, g.size.width * pos / d))
+                                Capsule().fill(tint).frame(width: max(4, g.size.width * min(1, max(0, pos / d))))
+                                    // Glides from one second to the next instead of stepping.
+                                    .animation(playing.isPlaying ? Animation.linear(duration: 1) : Animation.snappy, value: pos)
                             }
                     }
                     .frame(height: times ? 5 : 3)
@@ -111,7 +114,7 @@ struct LiveProgress: View {
                         HStack {
                             Text(formatTime(ms: pos))
                             Spacer()
-                            Text("−" + formatTime(ms: d - pos))
+                            Text("−" + formatTime(ms: max(0, d - pos)))
                         }
                         .font(.caption2.monospacedDigit().weight(.medium))
                         .foregroundStyle(tint.opacity(0.6))
@@ -163,6 +166,8 @@ struct Transport: View {
     var playing: NowPlaying
     var compact = false
     @State private var flipped: Bool?
+    /// Taps so far: a guess is only cleared by the tap that made it.
+    @State private var taps = 0
 
     var body: some View {
         let isPlaying = flipped ?? playing.isPlaying
@@ -177,12 +182,17 @@ struct Transport: View {
     private func button(_ symbol: String, _ action: String, size: CGFloat) -> some View {
         Button {
             if action == "playpause" { withAnimation(.snappy) { flipped = !(flipped ?? playing.isPlaying) } }
+            taps += 1
+            let tap = taps
             Task {
-                guard let c = fleet.client(for: tv) else { return }
+                guard let c = fleet.client(for: tv) else { flipped = nil; return }
                 do {
+                    // The client tells the fleet, which asks the TV again at once and a moment later.
                     if action == "playpause" { try await c.key("playpause") } else { try await c.media(action) }
-                    try? await Task.sleep(nanoseconds: 700_000_000)
-                    await fleet.refresh()
+                    // The TV's answer replaces the guess as soon as it changes (onChange above). If it never does
+                    // (the TV ignored the key), show what the TV really says instead of a button that lies.
+                    try? await Task.sleep(nanoseconds: 4_000_000_000)
+                    if taps == tap && flipped != nil { withAnimation(.snappy) { flipped = nil } }
                 } catch { flipped = nil; fleet.show(error) }
             }
         } label: {

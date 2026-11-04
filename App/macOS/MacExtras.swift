@@ -63,8 +63,14 @@ struct MenuBarFleetView: View {
             HStack {
                 Button("Mini Player") { openWindow(id: "mini") }
                 Button("Open Woodruff") {
-                    NSApp.activate(ignoringOtherApps: true)
-                    NSApp.windows.first { $0.canBecomeMain }?.makeKeyAndOrderFront(nil)
+                    NSApp.activate()
+                    // Woodruff's own window (not the mini player); after it's been closed, a new one.
+                    if let w = MainWindow.current, w.isVisible || w.isMiniaturized {
+                        if w.isMiniaturized { w.deminiaturize(nil) }
+                        w.makeKeyAndOrderFront(nil)
+                    } else {
+                        openWindow(id: "main")
+                    }
                 }
                 Spacer()
                 Button("Quit") { NSApp.terminate(nil) }
@@ -93,7 +99,7 @@ struct WoodruffCommands: Commands {
         CommandMenu("TVs") {
             Button("Refresh All") { Task { await fleet.refresh(); await fleet.loadAllHealth() } }
                 .keyboardShortcut("r", modifiers: [.command, .shift])
-            Button("Update Every Android TV") { Task { _ = await fleet.pushUpdateToAll() } }
+            Button("Update Every Android TV") { MacActions.updateAll(fleet) }
             Divider()
             Button(tvName(0)) { pick(0) }.keyboardShortcut("1", modifiers: .command)
             Button(tvName(1)) { pick(1) }.keyboardShortcut("2", modifiers: .command)
@@ -101,7 +107,8 @@ struct WoodruffCommands: Commands {
             Button(tvName(3)) { pick(3) }.keyboardShortcut("4", modifiers: .command)
             Divider()
             Button("Play / Pause") { send("playpause") }.keyboardShortcut("p", modifiers: [.command, .option])
-            Button("Home") { send("home") }.keyboardShortcut("h", modifiers: [.command, .option])
+            // ⇧⌘H: ⌥⌘H is the Mac's own Hide Others, which always took it first.
+            Button("Home") { send("home") }.keyboardShortcut("h", modifiers: [.command, .shift])
             Button("Mute") { send("mute") }.keyboardShortcut("m", modifiers: [.command, .option])
             Button("Volume Up") { send("volup") }.keyboardShortcut(.upArrow, modifiers: [.command, .option])
             Button("Volume Down") { send("voldown") }.keyboardShortcut(.downArrow, modifiers: [.command, .option])
@@ -117,7 +124,71 @@ struct WoodruffCommands: Commands {
         fleet.selectedID = list[i].id
     }
 
-    private func send(_ key: String) {
-        Task { @MainActor in try? await fleet.selectedClient?.key(key) }
+    /// The remote's keys, sent as the remote sends them (LG direct control for an LG that has it, every TV that's
+    /// on when the remote is on All TVs), saying so when one doesn't go through.
+    @MainActor private func send(_ key: String) {
+        MacActions.send(key, fleet: fleet)
+    }
+}
+
+/// What the Mac's keyboard, menus and command palette do to the TVs, done the way the remote does it.
+@MainActor
+enum MacActions {
+    /// [key] on the remote's TV, or on every TV that's on when the remote is set to All TVs.
+    static func send(_ key: String, fleet: Fleet) {
+        let targets = fleet.remoteAll ? fleet.tvs.filter { $0.online && !$0.isUnpaired } : (fleet.selected.map { [$0] } ?? [])
+        send(key, to: targets, fleet: fleet)
+    }
+
+    /// [key] on each of [targets] at once. Any that didn't go through say why (in one message).
+    static func send(_ key: String, to targets: [FleetTV], fleet: Fleet) {
+        guard !targets.isEmpty else { return }
+        Task {
+            var failed: [String] = []
+            await withTaskGroup(of: String?.self) { group in
+                for tv in targets {
+                    group.addTask { await MacActions.press(key, on: tv, fleet: fleet) }
+                }
+                for await problem in group {
+                    if let problem { failed.append(problem) }
+                }
+            }
+            guard !failed.isEmpty else { return }
+            fleet.say(targets.count == 1 ? "Couldn't do that" : "Didn’t Reach Every TV", failed.joined(separator: "\n"))
+        }
+    }
+
+    /// Presses [key] on [tv]: LG direct control when it's connected (it reaches every app), otherwise Woodruff on
+    /// the TV. Nil when it went through, else what went wrong.
+    private static func press(_ key: String, on tv: FleetTV, fleet: Fleet) async -> String? {
+        do {
+            if let lg = fleet.lg(for: tv), let action = LGKeyMap.action(for: key) {
+                try await action(lg)
+                // LG direct control doesn't pass through Woodruff: ask the TV what it's doing now.
+                if !["volup", "voldown", "mute"].contains(key) { fleet.poke(tv.id) }
+            } else if let client = fleet.client(for: tv) {
+                // Woodruff tells the fleet itself, so what's playing updates at once.
+                try await client.key(key)
+            } else {
+                return "\(tv.name) can't be reached from this Mac."
+            }
+            return nil
+        } catch {
+            return "\(tv.name): \(error.localizedDescription)"
+        }
+    }
+
+    /// Asks every Android TV that's on to update, and says how that went.
+    static func updateAll(_ fleet: Fleet) {
+        Task {
+            let (asked, failed) = await fleet.pushUpdateToAll()
+            if !failed.isEmpty {
+                fleet.say("Update All", failed.joined(separator: "\n"))
+            } else if asked == 0 {
+                fleet.say("Update All", "No Android TV is on right now.")
+            } else {
+                fleet.say("Update All", "Asked \(asked) TV\(asked == 1 ? "" : "s") to update. Each installs once nobody’s watching.")
+            }
+        }
     }
 }

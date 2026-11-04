@@ -230,6 +230,15 @@ struct ApplianceView: View {
         VStack(spacing: 14) {
             ApplianceArt(kind: device.kind, running: device.isRunning, alert: device.alert)
                 .frame(height: 190)
+                .overlay {
+                    // Nothing to animate for this kind (a plug, a switch, a sensor): its symbol, not an empty picture.
+                    if !ApplianceArt.animates(device.kind) {
+                        Image(systemName: deviceSymbol(device))
+                            .font(.system(size: 56, weight: .semibold))
+                            .foregroundStyle(device.isOn == true ? Color.orange : Color.white.opacity(0.8))
+                            .contentTransition(.symbolEffect(.replace))
+                    }
+                }
                 .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
                 .overlay(alignment: .topTrailing) {
                     if device.isRunning {

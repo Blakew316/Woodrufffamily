@@ -1,4 +1,5 @@
 import SwiftUI
+import UserNotifications
 import WoodruffKit
 #if os(iOS)
 import BackgroundTasks
@@ -22,10 +23,21 @@ struct WoodruffApp: App {
     @UIApplicationDelegateAdaptor(PushAppDelegate.self) private var pushDelegate
     #endif
 
+    init() {
+        // Before launch finishes, as Apple asks: a tapped doorbell or camera alert that opened the app (Woodruff
+        // wasn't running) still arrives here and opens that camera live, instead of being dropped.
+        UNUserNotificationCenter.current().delegate = Notifier.handler
+    }
+
     var body: some Scene {
-        WindowGroup {
+        // An id, so the menu bar's Open Woodruff can bring the window back after it's been closed.
+        WindowGroup(id: "main") {
             RootView()
                 .environment(fleet)
+                #if os(macOS)
+                // Remembers the window's size and place, and which window is Woodruff's own.
+                .background(WindowMemory())
+                #endif
                 .task {
                     #if os(macOS)
                     if !Demo.isOn { MacPairingBackup.attach(fleet) }
@@ -172,6 +184,10 @@ struct RootView: View {
     }
 
     var body: some View {
+        // A tapped "Person seen at the doorbell" opens that camera live. Waits for the camera list if the app was
+        // just launched by the tap. (Read here, so the page redraws the moment the tap arrives.)
+        let requested = CameraStreams.shared.requested.flatMap { id in NestCameras.shared.cameras.first { $0.id == id } }
+        let banner = fleet.banner
         Group {
             if fleet.hubs.isEmpty {
                 WelcomeView()
@@ -183,13 +199,11 @@ struct RootView: View {
                 #endif
             }
         }
-        .alert(item: Binding(get: { fleet.banner }, set: { fleet.banner = $0 })) { b in
+        .alert(item: Binding(get: { banner }, set: { fleet.banner = $0 })) { b in
             Alert(title: Text(b.title), message: Text(b.message), dismissButton: .default(Text("OK")))
         }
-        // A tapped "Person seen at the doorbell" opens that camera live. Waits for the camera list if the app
-        // was just launched by the tap.
         .cameraPresenter(Binding(
-            get: { CameraStreams.shared.requested.flatMap { id in NestCameras.shared.cameras.first { $0.id == id } } },
+            get: { requested },
             set: { if $0 == nil { CameraStreams.shared.requested = nil } }
         ))
     }
@@ -236,18 +250,29 @@ struct MacRoot: View {
     @AppStorage("sidebar.lights") private var showLights = false
     @State private var palette = false
     @State private var query = ""
-    @State private var keyMonitor: Any?
+    /// The page area is too narrow for the full toolbar: the search field gets shorter so the thermostat stays.
+    @State private var narrow = false
+    /// The remote's sidebar has the keyboard (arrows, Return, Esc, H, M, + and − go to the TV).
+    @FocusState private var remoteFocused: Bool
     @AppStorage("macWelcomeShown") private var welcomeShown = false
 
     private var section: AppSection { selection == .remote ? .home : selection }
 
+    /// The camera filling everything right of the sidebar (one that's still in the camera list).
+    private var fullCamera: NestCameras.Camera? {
+        CameraStreams.shared.full.flatMap { id in NestCameras.shared.cameras.first { $0.id == id } }
+    }
+
     var body: some View {
         @Bindable var fleet = fleet
+        let camera = fullCamera
         NavigationSplitView {
             List(selection: Binding<String?>(
                 get: { deviceSelection ?? tvSelection.map { "tv:\($0)" } ?? section.rawValue },
                 set: { v in
                     guard let v else { return }
+                    // Going somewhere in the sidebar closes a camera that's filling the window.
+                    if CameraStreams.shared.full != nil { withAnimation(.smooth(duration: 0.25)) { CameraStreams.shared.full = nil } }
                     if v.hasPrefix("tv:") { deviceSelection = nil; tvSelection = String(v.dropFirst(3)) }
                     else if v.hasPrefix("spk:") || v.hasPrefix("light:") { tvSelection = nil; deviceSelection = v }
                     else if let s = AppSection(rawValue: v) { tvSelection = nil; deviceSelection = nil; selection = s }
@@ -299,20 +324,22 @@ struct MacRoot: View {
             .background { AmbientArtwork() }
             // A clicked camera fills everything right of the sidebar (Esc or ✕ to close).
             .overlay {
-                if let id = CameraStreams.shared.full, let cam = NestCameras.shared.cameras.first(where: { $0.id == id }) {
+                if let cam = camera {
                     CameraLiveView(camera: cam)
-                        .id(id)
+                        .id(cam.id)
                         .transition(.opacity)
                 }
             }
-            .toolbar(CameraStreams.shared.full == nil ? .automatic : .hidden, for: .windowToolbar)
+            .toolbar(camera == nil ? .automatic : .hidden, for: .windowToolbar)
             .safeAreaInset(edge: .bottom) {
                 if tvSelection == nil && deviceSelection == nil && section != .home && !fleet.remotePanel {
                     NowPlayingBar().frame(maxWidth: 600).padding(.bottom, 8)
                 }
             }
+            // Never narrower than Home's tiles: the window stops shrinking before anything is clipped.
+            .frame(minWidth: 480)
+            .onGeometryChange(for: Bool.self) { $0.size.width < 760 } action: { narrow = $0 }
         }
-        .background(WindowMemory())
         .sheet(isPresented: $palette) { CommandPalette().macResizable(width: 620, height: 480) }
         .background {
             Button("Command Palette") { palette = true }.keyboardShortcut("k", modifiers: .command).opacity(0).frame(width: 0, height: 0)
@@ -320,17 +347,20 @@ struct MacRoot: View {
         .onChange(of: fleet.tvs) { _, _ in NowPlayingBridge.shared.update(fleet); WidgetSync.update(fleet) }
         .onChange(of: fleet.selectedID) { _, _ in NowPlayingBridge.shared.update(fleet); WidgetSync.update(fleet) }
         .onAppear { SmartHome.shared.onChange = { WidgetSync.update(fleet) } }
-        .sheet(isPresented: Binding(get: { !welcomeShown && !Demo.isOn }, set: { if !$0 { welcomeShown = true } })) { MacWelcome().macResizable(width: 640, height: 600) }
+        .sheet(isPresented: Binding(get: { !welcomeShown && !Demo.isOn }, set: { if !$0 { welcomeShown = true } })) { MacWelcome().macResizable(width: 520, height: 420) }
         .userActivity("com.woodruff.family.remote", isActive: fleet.remotePanel) { a in
             a.title = "Woodruff Remote"
             a.isEligibleForHandoff = true
             if let id = fleet.selectedID { a.addUserInfoEntries(from: ["tv": id]) }
         }
-        .onAppear { installSpaceKey() }
-        .onDisappear { if let m = keyMonitor { NSEvent.removeMonitor(m) } }
+        .onAppear { SpaceKey.install() }
         .inspector(isPresented: $fleet.remotePanel) {
             RemoteView(embedded: true)
                 .inspectorColumnWidth(min: 300, ideal: 320, max: 380)
+                // Opened (the toolbar, ⌥⌘R, a TV's Remote button): the keyboard drives it straight away, without a
+                // click into it first.
+                .focused($remoteFocused)
+                .onAppear { remoteFocused = true }
         }
         .toolbar {
             // Left: the remote, Edit Home (on Home) and search, side by side.
@@ -343,22 +373,32 @@ struct MacRoot: View {
                 if section == .home && tvSelection == nil && deviceSelection == nil && query.isEmpty {
                     Button("Edit Home") { HomeLayout.shared.editing = true }
                 }
-                ToolbarSearchField(text: $query, prompt: "Movies and TV Shows")
+                ToolbarSearchField(text: $query, prompt: narrow ? "Search" : "Movies and TV Shows", width: narrow ? 170 : 260)
             }
             ToolbarSpacer(.flexible)
             // Right: the thermostat, always there.
             ToolbarItem { ThermostatChip() }
         }
     }
+}
 
-    /// Space plays or pauses the remote's TV from anywhere, except while typing in a text field.
-    private func installSpaceKey() {
-        guard keyMonitor == nil else { return }
-        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { e in
+/// Space plays or pauses the remote's TV from anywhere in the app (every TV that's on when the remote is set to
+/// All TVs), except while typing, in a sheet or alert, or in the menu bar's panel. One monitor for the whole app
+/// (a window each would press it twice).
+@MainActor
+enum SpaceKey {
+    private static var monitor: Any?
+
+    static func install() {
+        guard monitor == nil else { return }
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { e in
             guard e.keyCode == 49, e.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty,
-                  !(NSApp.keyWindow?.firstResponder is NSText) else { return e }
-            Task { @MainActor in
-                if let tv = Fleet.shared.selected { try? await Fleet.shared.client(for: tv)?.key("playpause") }
+                  let window = NSApp.keyWindow, window.sheetParent == nil, !(window is NSPanel),
+                  !(window.firstResponder is NSText) else { return e }
+            // Held down: one press, not play-pause-play.
+            if !e.isARepeat {
+                MacFeedback.key()
+                MacActions.send("playpause", fleet: Fleet.shared)
             }
             return nil
         }
@@ -372,6 +412,8 @@ struct MacRoot: View {
 struct ToolbarSearchField: View {
     @Binding var text: String
     var prompt: String
+    /// Shorter when the window is narrow, so the toolbar's other items keep their place.
+    var width: CGFloat = 260
     @FocusState private var focused: Bool
 
     var body: some View {
@@ -387,7 +429,7 @@ struct ToolbarSearchField: View {
             }
         }
         .padding(.horizontal, 10)
-        .frame(width: 260, height: 28)
+        .frame(width: width, height: 28)
         .background { Button("") { focused = true }.keyboardShortcut("f", modifiers: .command).opacity(0) }
     }
 }

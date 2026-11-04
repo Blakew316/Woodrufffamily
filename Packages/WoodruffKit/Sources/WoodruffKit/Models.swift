@@ -13,6 +13,13 @@ public struct NowPlaying: Codable, Hashable, Sendable {
     public var duration: Double?
     public var can: [String]?
     public var key: String?
+    /// When `position` was true (set by the app when the answer arrives; the TVs don't send it). With it, the
+    /// position right now is `position` plus the time since, while it plays.
+    public var reportedAt: Date? = nil
+
+    enum CodingKeys: String, CodingKey {
+        case title, subtitle, app, playing, position, duration, can, key
+    }
 
     public var isPlaying: Bool { playing ?? false }
     public func can(_ action: String) -> Bool { can?.contains(action) ?? false }
@@ -20,6 +27,53 @@ public struct NowPlaying: Codable, Hashable, Sendable {
         guard let d = duration, d > 0, let p = position else { return nil }
         return min(1, max(0, p / d))
     }
+
+    /// Milliseconds played at [date]: where the TV said it was, plus the time since, while it plays (never past the end).
+    public func estimatedPosition(at date: Date) -> Double {
+        let base = position ?? 0
+        guard isPlaying, let since = reportedAt else { return base }
+        var pos = base + max(0, date.timeIntervalSince(since)) * 1000
+        if let d = duration, d > 0 { pos = min(d, pos) }
+        return pos
+    }
+
+    /// This answer (just arrived, at [now]) laid over what was shown before, so a progress bar keeps moving
+    /// smoothly: a new title, a pause, a play or a seek shows at once, but a slightly stale position (a hub
+    /// relaying a linked TV, a slow answer) never pulls the bar backwards. While nothing changes the result
+    /// equals [old], so nothing redraws for it.
+    public func smoothed(after old: NowPlaying?, now: Date) -> NowPlaying {
+        var fresh = self
+        fresh.reportedAt = now
+        guard let old, let oldAt = old.reportedAt else { return fresh }
+        var same = self
+        same.reportedAt = oldAt
+        if same == old { return old }
+        guard isPlaying, old.isPlaying, title == old.title, key == old.key,
+              let pos = position, let was = old.position else { return fresh }
+        let elapsed = now.timeIntervalSince(oldAt)
+        guard elapsed >= 0 else { return fresh }
+        var expected = was + elapsed * 1000
+        if let d = duration, d > 0 { expected = min(d, expected) }
+        let drift = pos - expected
+        // Further along than the bar (a skip forward), or well behind it (a skip back): show the TV's word.
+        if drift > NowPlaying.aheadTolerance || drift < -NowPlaying.behindTolerance { return fresh }
+        // Where the bar already is: keep its clock (re-anchored now and then, never backwards).
+        var kept = self
+        if elapsed < NowPlaying.reanchorAfter {
+            kept.position = was
+            kept.reportedAt = oldAt
+        } else {
+            kept.position = max(pos, expected)
+            kept.reportedAt = now
+        }
+        return kept
+    }
+
+    /// How far (ms) an answer may run ahead of, or behind, the bar before it counts as a jump.
+    static let aheadTolerance: Double = 1_500
+    static let behindTolerance: Double = 5_000
+    /// Seconds between re-anchoring a bar that agrees with the TV.
+    static let reanchorAfter: TimeInterval = 10
 }
 
 public struct HealthSummary: Codable, Hashable, Sendable {

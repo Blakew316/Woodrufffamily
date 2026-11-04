@@ -24,35 +24,76 @@ struct NowPlayingAttributes: ActivityAttributes {
     var tvID: String
 }
 
+extension NowPlayingAttributes.ContentState {
+    /// What the Lock Screen shows for [p] on [tv]: when it started, worked out from where the TV is right now
+    /// (its last answer plus the time since), so the bar runs by itself and lines up with the app's.
+    init(tv: FleetTV, playing p: NowPlaying, now: Date = Date()) {
+        let pos = p.estimatedPosition(at: now) / 1000
+        let dur = (p.duration ?? 0) / 1000
+        let started: Date? = dur > 0 ? now.addingTimeInterval(-pos) : nil
+        self.init(title: p.title,
+                  detail: [p.subtitle, p.app].compactMap { $0?.isEmpty == false ? $0 : nil }.joined(separator: " · "),
+                  tvName: tv.name, isPlaying: p.isPlaying,
+                  startedAt: started, endsAt: started.map { $0.addingTimeInterval(dur) },
+                  fraction: dur > 0 ? min(1, max(0, pos / dur)) : 0,
+                  canSkip: p.can("back10") || p.can("fwd30"))
+    }
+
+    /// When it goes stale: a playing title once it has ended; a paused one never.
+    var staleDate: Date? { isPlaying ? endsAt : nil }
+}
+
 /// The actions behind the Lock Screen, Dynamic Island and Control Center buttons, done in the app.
 enum TVIntentActions {
     @MainActor static func target() async -> (Fleet, FleetTV)? {
         let fleet = Fleet.shared
-        if fleet.selected == nil || fleet.refreshedAt == nil { await fleet.refresh() }
+        // The app may have been asleep in the background: go by what the TV is doing now.
+        let fresh = fleet.refreshedAt.map { Date().timeIntervalSince($0) < 3 } ?? false
+        if fleet.selected == nil || !fresh { await fleet.refresh() }
         guard let tv = fleet.selected else { return nil }
         return (fleet, tv)
     }
 
     @MainActor static func key(_ key: String) async {
-        guard let (fleet, tv) = await target() else { return }
-        if let lg = fleet.lg(for: tv) {
-            switch key {
-            case "mute": if let v = try? await lg.volume() { try? await lg.setMute(!v.muted) }
-            default: try? await fleet.client(for: tv)?.key(key)
-            }
+        guard let found = await target() else { return }
+        let fleet = found.0
+        let tv = found.1
+        let was = tv.playing
+        if key == "mute", let lg = fleet.lg(for: tv) {
+            if let v = try? await lg.volume() { try? await lg.setMute(!v.muted) }
         } else {
             try? await fleet.client(for: tv)?.key(key)
         }
-        try? await Task.sleep(nanoseconds: 600_000_000)
-        await fleet.refresh()
+        // Volume changes nothing on the Lock Screen; play/pause does, as soon as the TV has made it.
+        guard key == "playpause" else { return }
+        await settle(fleet, tv.id) { $0?.isPlaying != was?.isPlaying || $0?.title != was?.title }
     }
 
     @MainActor static func media(_ action: String) async {
-        guard let (fleet, tv) = await target() else { return }
+        guard let found = await target() else { return }
+        let fleet = found.0
+        let tv = found.1
+        let was = tv.playing
         _ = try? await fleet.client(for: tv)?.media(action)
-        try? await Task.sleep(nanoseconds: 600_000_000)
-        await fleet.refresh()
+        await settle(fleet, tv.id) { $0?.position != was?.position || $0?.title != was?.title }
     }
+
+    /// Asks the TV again until [changed] says the change shows (or about 3 seconds pass), then brings the Live
+    /// Activity up to date before returning: these buttons run while the app is in the background, where its
+    /// views (which otherwise keep the Live Activity in step) don't update, and it may sleep again right after.
+    @MainActor static func settle(_ fleet: Fleet, _ tvID: String, until changed: (NowPlaying?) -> Bool) async {
+        let waits: [UInt64] = [400_000_000, 800_000_000, 1_600_000_000]
+        for wait in waits {
+            try? await Task.sleep(nanoseconds: wait)
+            await fleet.refresh()
+            if changed(fleet.tv(tvID)?.playing) { break }
+        }
+        if let update = updateActivity { await update(fleet) }
+    }
+
+    /// Brings the Live Activity up to date with the fleet and waits until it has it. Set by the app
+    /// (`LiveActivitySync`); the widgets extension compiles this file too and never touches the Live Activity.
+    @MainActor static var updateActivity: ((Fleet) async -> Void)?
 }
 
 struct PlayPauseTVIntent: LiveActivityIntent {

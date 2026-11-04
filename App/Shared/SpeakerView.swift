@@ -112,7 +112,11 @@ struct SpeakerDetailView: View {
                 .foregroundStyle(r.muted ? Palette.attention : .secondary)
                 Slider(value: $volume, in: 0...100) { e in dragging = e; if !e { home.setVolume(r, Int(volume)) } }
                     .tint(.white)
-                    .onChange(of: volume) { _, v in if dragging { home.setVolume(r, Int(v)) } }
+                    // Dragging sends as it goes; the arrow keys and VoiceOver move it without a drag, and those go too
+                    // (a new level read from the speaker matches it, so it isn't sent back).
+                    .onChange(of: volume) { _, v in
+                        if dragging || Int(v) != (home.speaker(r.id)?.volume ?? r.volume) { home.setVolume(r, Int(v)) }
+                    }
                 Text("\(Int(volume))").font(.subheadline.monospacedDigit()).foregroundStyle(.secondary).frame(width: 28, alignment: .trailing)
             }
             .disabled(r.isOffline)
@@ -218,6 +222,8 @@ struct LevelRow: View {
             }
             Slider(value: $v, in: range, step: 1) { e in editing = e; if !e { set(Int(v)) } }
                 .tint(.white)
+                // The arrow keys and VoiceOver move it without a drag: those are sent too.
+                .onChange(of: v) { _, n in if !editing && Int(n) != (value ?? 0) { set(Int(n)) } }
         }
         .onAppear { v = Double(value ?? 0) }
         .onChange(of: value) { _, n in if !editing { v = Double(n ?? 0) } }

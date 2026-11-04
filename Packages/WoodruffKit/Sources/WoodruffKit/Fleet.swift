@@ -84,6 +84,7 @@ public final class Fleet {
         if let e = Saved.load("extras", as: [String: TVExtras].self), e != extras { extras = e }
         let h = Saved.load("hiddenAlerts", as: [String: String].self) ?? [:]
         if h != hiddenAlerts { hiddenAlerts = h }
+        rebuild()   // new names and hidden alerts show at once
         Task { await refresh() }
     }
     /// The TV the remote, Send and Memories act on.
@@ -178,7 +179,31 @@ public final class Fleet {
 
     private var active = true
     private var loop: Task<Void, Never>?
+    @ObservationIgnored private var inboxLoop: Task<Void, Never>?
+    @ObservationIgnored private var slowLoop: Task<Void, Never>?
     private var lgRemotes: [String: LGRemote] = [:]
+
+    // Each hub is asked on its own clock and its answer shows the moment it arrives (see `askDue` and `take`).
+    /// Each hub's latest answer (none yet: still waiting for its first).
+    @ObservationIgnored private var answers: [String: HubAnswer] = [:]
+    /// Missed answers in a row, per hub (two or more: it's off, or out of reach).
+    @ObservationIgnored private var failures: [String: Int] = [:]
+    @ObservationIgnored private var askedAt: [String: Date] = [:]
+    @ObservationIgnored private var inFlight: [String: Int] = [:]
+    /// Every question gets a number; an answer older than the last one shown for its hub is dropped.
+    @ObservationIgnored private var askSeq = 0
+    @ObservationIgnored private var takenSeq: [String: Int] = [:]
+    /// How long each hub took to answer last time (a usually slow one gets longer to answer).
+    @ObservationIgnored private var latency: [String: TimeInterval] = [:]
+    /// Hubs asked as often as the ones that answer, whatever they did last (just woken, say).
+    @ObservationIgnored private var boostUntil: [String: Date] = [:]
+    @ObservationIgnored private var pokes: [String: Task<Void, Never>] = [:]
+    @ObservationIgnored private var heardBefore: Set<String> = []
+    @ObservationIgnored private var refreshCount = 0
+
+    /// The Fleet the app runs: told about every command sent through a `TVClient` (see `TVClient.changed`).
+    /// Nil in widgets and anywhere `start()` wasn't called.
+    static var running: Fleet?
 
     init() {
         if Demo.isOn {
@@ -247,18 +272,38 @@ public final class Fleet {
 
     public func start() async {
         guard loop == nil else { return }
+        Fleet.running = self
         if !Demo.isOn { discovery.start() }
+        // What every TV is doing: each hub on its own clock (see `askDue`), never waiting on the others.
         loop = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                self.askDue()
+                try? await Task.sleep(nanoseconds: 500_000_000)
+            }
+        }
+        // Announcements for this phone: every 5 seconds while the app is in use, every 30 otherwise.
+        inboxLoop = Task { [weak self] in
             var tick = 0
             while !Task.isCancelled {
                 guard let self else { return }
-                if self.active || tick % 6 == 0 { await self.refresh() }
-                if tick % 120 == 0 { await self.checkReleases() }
                 if self.active || tick % 6 == 0 { await self.pollInbox() }
-                if tick % 24 == 0 { await self.refreshLibrary() }
-                if !Demo.isOn && (self.lanScannedAt == nil || Date().timeIntervalSince(self.lanScannedAt!) > 600) { await self.scanNetwork() }
                 tick += 1
-                try? await Task.sleep(nanoseconds: (self.active ? 5 : 30) * 1_000_000_000)
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
+            }
+        }
+        // The slow things, apart so they never hold up the TVs: the library's pictures (every 2 minutes),
+        // releases (every 10) and looking for TVs across the Wi‑Fi (every 10).
+        slowLoop = Task { [weak self] in
+            var tick = 0
+            while !Task.isCancelled {
+                guard let self else { return }
+                if tick % 4 == 0 { await self.refreshLibrary() }
+                if tick % 20 == 0 { await self.checkReleases() }
+                let scanDue = self.lanScannedAt.map({ Date().timeIntervalSince($0) > 600 }) ?? true
+                if !Demo.isOn && scanDue { await self.scanNetwork() }
+                tick += 1
+                try? await Task.sleep(nanoseconds: 30_000_000_000)
             }
         }
         Task { for h in hubs { _ = try? await hello(h) } }
@@ -278,6 +323,7 @@ public final class Fleet {
         let hub = Hub(id: status.id, name: status.name, connection: connection)
         hubs.removeAll { $0.id == hub.id }
         hubs.append(hub)
+        failures[hub.id] = nil
         saveHubs()
         if extras[hub.id] == nil { extras[hub.id] = TVExtras() }
         extras[hub.id]?.lastHost = connection.base.host
@@ -291,8 +337,18 @@ public final class Fleet {
         hubs.removeAll { $0.id == hubID }
         Keychain.set(nil, for: "hub.\(hubID)")
         saveHubs()
-        tvs.removeAll { $0.hubID == hubID }
-        if selectedID == hubID { selectedID = tvs.first?.id }
+        answers[hubID] = nil
+        failures[hubID] = nil
+        askedAt[hubID] = nil
+        latency[hubID] = nil
+        boostUntil[hubID] = nil
+        pokes[hubID]?.cancel()
+        pokes[hubID] = nil
+        // TVs another hub still reaches stay; the ones only it knew go.
+        if hubs.isEmpty { tvs.removeAll { $0.hubID == hubID } } else { rebuild() }
+        if selectedID == hubID || !tvs.contains(where: { $0.id == selectedID && !$0.isUnpaired }) {
+            selectedID = tvs.first { !$0.isUnpaired }?.id
+        }
     }
 
     /// A pairing link opened from elsewhere (the QR code's URL, or woodruff://pair?url=…).
@@ -308,72 +364,215 @@ public final class Fleet {
 
     // MARK: Refresh
 
-    /// Asks every hub for its TVs (each hub answers for itself and its linked TVs) and merges them.
+    /// Asks every hub for its TVs now (each hub answers for itself and its linked TVs). Each answer shows the
+    /// moment it arrives, so a TV that's off never holds up the others; returns once every hub has answered or
+    /// given up. Safe to call any time, also while other questions are out (the newest answer always wins).
     public func refresh() async {
-        guard !hubs.isEmpty, !refreshing else { return }
+        guard !hubs.isEmpty else { return }
+        refreshCount += 1
         refreshing = true
-        defer { refreshing = false; refreshedAt = Date() }
-        let before = Dictionary(uniqueKeysWithValues: tvs.map { ($0.id, $0) })
-        var merged: [String: FleetTV] = [:]
-        await withTaskGroup(of: (Hub, Result<[TVListEntry], Error>).self) { g in
-            for hub in hubs {
-                g.addTask {
-                    do {
-                        let r: TVList = try await TVTransport(hub.connection).get("/api/tvs", timeout: 6)
-                        return (hub, .success(r.tvs))
-                    } catch { return (hub, .failure(error)) }
-                }
-            }
-            for await (hub, result) in g {
-                switch result {
-                case .success(let list):
-                    for e in list {
-                        let realID = e.id == "this" ? hub.id : e.id
-                        let tv = FleetTV(id: realID, name: e.name, online: e.online, onScreen: e.onScreen ?? false, playing: e.playing,
-                                         version: e.version, seen: e.seen, link: e.link ?? "ok", health: e.health, hubID: hub.id,
-                                         routeID: e.id, platform: extras[realID]?.platform)
-                        // Prefer the TV's own answer (direct), then any online answer.
-                        if let old = merged[realID] {
-                            if old.isHub { continue }
-                            if !tv.isHub && old.online && !tv.online { continue }
-                        }
-                        merged[realID] = tv
-                    }
-                    if let i = hubs.firstIndex(where: { $0.id == hub.id }), let me = list.first(where: { $0.id == "this" }), me.name != hubs[i].name {
-                        hubs[i].name = me.name; saveHubs()
-                    }
-                case .failure:
-                    // The hub is off: keep what was known of it, marked offline.
-                    if merged[hub.id] == nil {
-                        var tv = before[hub.id] ?? FleetTV(id: hub.id, name: hub.name, online: false, onScreen: false, playing: nil, version: nil, seen: nil, link: "ok", health: nil, hubID: hub.id, routeID: "this", platform: extras[hub.id]?.platform)
-                        tv.online = false; tv.onScreen = false; tv.playing = nil; tv.hubID = hub.id; tv.routeID = "this"
-                        merged[hub.id] = tv
-                    }
-                    // Linked TVs only this hub knew stay listed as they were, offline.
-                    for old in before.values where old.hubID == hub.id && merged[old.id] == nil {
-                        var t = old; t.online = false; t.playing = nil; merged[old.id] = t
-                    }
-                }
+        defer {
+            refreshCount -= 1
+            if refreshCount <= 0 { refreshCount = 0; refreshing = false }
+        }
+        let list = hubs
+        await withTaskGroup(of: Void.self) { g in
+            for hub in list {
+                g.addTask { await self.ask(hub) }
             }
         }
-        let list = merged.values.sorted { a, b in
-            if a.isHub != b.isHub { return a.isHub }
-            return a.name.localizedStandardCompare(b.name) == .orderedAscending
+    }
+
+    /// Something was just sent to [tvID] that changes what it plays or whether it's on: its hub is asked right
+    /// away, and again about 1 and 3 seconds later, so the change shows as soon as the TV has made it.
+    /// (Everything sent through a `TVClient` does this by itself; LG direct control and Wake-on-LAN call it.)
+    public func poke(_ tvID: String) {
+        pokeHubs(hubIDs(for: tvID))
+    }
+
+    /// Turns [tv] on with Wake-on-LAN (when its network address is known) and watches closely for it to come on.
+    public func wake(_ tv: FleetTV) {
+        #if canImport(Network)
+        if let mac = extras[tv.id]?.mac { WakeOnLAN.wake(mac: mac, lastHost: extras[tv.id]?.lastHost) }
+        #endif
+        let until = Date().addingTimeInterval(90)
+        for id in hubIDs(for: tv.id) { boostUntil[id] = until }
+        poke(tv.id)
+    }
+
+    /// A command went out through a `TVClient` (on [hubID], for [routeID]: "this", a linked TV's id, or "all").
+    static func commandSent(hub hubID: String, route routeID: String) {
+        guard let fleet = running else { return }
+        if routeID == "all" { fleet.pokeHubs(fleet.hubs.map(\.id)); return }
+        var ids = fleet.hubIDs(for: routeID == "this" ? hubID : routeID)
+        if !ids.contains(hubID) && fleet.hubs.contains(where: { $0.id == hubID }) { ids.append(hubID) }
+        fleet.pokeHubs(ids)
+    }
+
+    /// The hubs that answer for [tvID]: the TV itself when it's paired here, and the hub that links it.
+    private func hubIDs(for tvID: String) -> [String] {
+        var ids: [String] = []
+        if hubs.contains(where: { $0.id == tvID }) { ids.append(tvID) }
+        if let t = tv(tvID), !t.hubID.isEmpty, !ids.contains(t.hubID), hubs.contains(where: { $0.id == t.hubID }) { ids.append(t.hubID) }
+        return ids.isEmpty ? hubs.map(\.id) : ids
+    }
+
+    private func pokeHubs(_ ids: [String]) {
+        // Right away (the TV has just been told), then about 1 and 3 seconds after: a TV takes a moment to
+        // start a title, pause or switch apps. A newer command starts the count again.
+        let waits: [UInt64] = [150_000_000, 850_000_000, 2_000_000_000]
+        for id in ids {
+            pokes[id]?.cancel()
+            pokes[id] = Task { [weak self] in
+                for wait in waits {
+                    try? await Task.sleep(nanoseconds: wait)
+                    if Task.isCancelled { return }
+                    guard let self, let hub = self.hub(id) else { return }
+                    await self.ask(hub)
+                }
+            }
         }
-        for tv in list {
-            notifyIfNeeded(tv, was: before[tv.id])
-            if extras[tv.id]?.platform == nil, let p = guessPlatform(tv) { extras[tv.id, default: TVExtras()].platform = p }
+    }
+
+    /// Asks each hub whose turn it is. One that answers: every 1.5 seconds while the app is in use. One that's
+    /// off: every 12 seconds, with a short wait of its own, so it never slows the TVs that are on. Each answer
+    /// is shown by itself as it arrives (`take`).
+    private func askDue() {
+        guard !hubs.isEmpty else { return }
+        let now = Date()
+        let heard = heardTVs()
+        #if os(macOS)
+        // The Mac's menu bar, widgets and media keys show the TVs even when its window isn't in front.
+        let idle: (on: TimeInterval, off: TimeInterval) = (4, 20)
+        #else
+        let idle: (on: TimeInterval, off: TimeInterval) = (25, 60)
+        #endif
+        for listed in hubs where (inFlight[listed.id] ?? 0) == 0 {
+            var hub = listed
+            let boosted = boostUntil[hub.id].map { $0 > now } ?? false
+            let answering = (failures[hub.id] ?? 0) < 2 || boosted
+            var every: TimeInterval = answering ? (active ? 1.5 : idle.on) : (active ? 12 : idle.off)
+            if !answering, let found = heard[hub.id] {
+                // Off until now but just heard on the Wi‑Fi (switched on): ask now, at its new address if it moved.
+                if !heardBefore.contains(hub.id) { every = 0 }
+                if let moved = moveIfNeeded(hub, to: found) { hub = moved; every = 0 }
+            }
+            if let at = askedAt[hub.id], now.timeIntervalSince(at) < every - 0.05 { continue }
+            let wait: TimeInterval = answering ? askTimeout(hub) : 4
+            let target = hub
+            Task { await self.ask(target, timeout: wait) }
         }
-        var all = list.map { tv -> FleetTV in
-            var t = tv
+        heardBefore = Set(heard.keys)
+    }
+
+    /// How long to wait for a hub that answers: 3 seconds on the home network (6 through an away-from-home link,
+    /// more for one that's usually slow), so a TV that just went off is noticed quickly.
+    private func askTimeout(_ hub: Hub) -> TimeInterval {
+        let base: TimeInterval = Fleet.isHomeAddress(hub.connection.base.host) ? 3 : 6
+        return min(10, max(base, (latency[hub.id] ?? 0) * 3))
+    }
+
+    /// An address on the home network (private IPv4, link-local, or .local), as opposed to an away-from-home link.
+    nonisolated static func isHomeAddress(_ host: String?) -> Bool {
+        guard let host, !host.isEmpty else { return false }
+        if host.hasSuffix(".local") { return true }
+        let parts = host.split(separator: ".", omittingEmptySubsequences: false)
+        let p = parts.compactMap { Int($0) }
+        guard parts.count == 4, p.count == 4, p.allSatisfy({ (0...255).contains($0) }) else { return false }
+        return p[0] == 10 || (p[0] == 192 && p[1] == 168) || (p[0] == 172 && (16...31).contains(p[1])) || (p[0] == 169 && p[1] == 254)
+    }
+
+    /// Woodruff TVs heard on the Wi‑Fi, by id (Bonjour's answer wins over the address scan's).
+    private func heardTVs() -> [String: DiscoveredTV] {
+        var out: [String: DiscoveredTV] = [:]
+        for f in lanFound { out[f.id] = f }
+        for f in discovery.found { out[f.id] = f }
+        return out
+    }
+
+    /// A paired TV that stopped answering but announces itself at another address on the home network (the
+    /// router gave it a new one): talk to it there. Never replaces an away-from-home link.
+    private func moveIfNeeded(_ hub: Hub, to found: DiscoveredTV) -> Hub? {
+        guard let base = found.base, let newHost = base.host, let oldHost = hub.connection.base.host,
+              newHost != oldHost, Fleet.isHomeAddress(oldHost), Fleet.isHomeAddress(newHost),
+              let i = hubs.firstIndex(where: { $0.id == hub.id }) else { return nil }
+        hubs[i].connection.base = base
+        saveHubs()
+        extras[hub.id, default: TVExtras()].lastHost = newHost
+        failures[hub.id] = 1
+        return hubs[i]
+    }
+
+    /// Asks one hub for its TVs and shows the answer the moment it arrives.
+    private func ask(_ hub: Hub, timeout: TimeInterval? = nil) async {
+        askSeq += 1
+        let seq = askSeq
+        let id = hub.id
+        let wait = timeout ?? askTimeout(hub)
+        let started = Date()
+        askedAt[id] = started
+        inFlight[id, default: 0] += 1
+        let result: Result<[TVListEntry], Error>
+        do {
+            let list: TVList = try await TVTransport(hub.connection).get("/api/tvs", timeout: wait)
+            result = .success(list.tvs)
+        } catch {
+            result = .failure(error)
+        }
+        let left = (inFlight[id] ?? 1) - 1
+        inFlight[id] = left > 0 ? left : nil
+        // Called off (a newer command started the count again): it says nothing about the TV.
+        if Task.isCancelled { return }
+        if case .success = result { latency[id] = Date().timeIntervalSince(started) }
+        take(result, from: id, seq: seq)
+    }
+
+    /// One hub's answer (or its silence), shown at once.
+    private func take(_ result: Result<[TVListEntry], Error>, from id: String, seq: Int) {
+        guard let i = hubs.firstIndex(where: { $0.id == id }) else { return }   // unpaired meanwhile
+        guard seq > (takenSeq[id] ?? 0) else { return }                       // an older question, answered late
+        takenSeq[id] = seq
+        refreshedAt = Date()
+        switch result {
+        case .success(let list):
+            failures[id] = nil
+            answers[id] = .answered(list)
+            if let me = list.first(where: { $0.id == "this" }), me.name != hubs[i].name {
+                hubs[i].name = me.name
+                saveHubs()
+            }
+        case .failure:
+            let missed = (failures[id] ?? 0) + 1
+            failures[id] = missed
+            // One missed answer from a TV that was answering isn't "off" yet: it's asked again right away.
+            if missed < 2 && answers[id]?.isAnswered == true { return }
+            answers[id] = .unreachable
+        }
+        rebuild()
+    }
+
+    /// Shows every TV from every hub's latest answer (the rules are `FleetMerge.merge`), with the family's
+    /// names for them, the alerts they've hidden, and the TVs heard on the Wi‑Fi that aren't paired yet.
+    private func rebuild() {
+        guard !hubs.isEmpty else { return }
+        let now = Date()
+        let before = Dictionary(tvs.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        var all = FleetMerge.merge(hubs: hubs, answers: answers, before: before,
+                                   platforms: extras.compactMapValues(\.platform), now: now)
+        for i in all.indices {
+            let id = all[i].id
+            if extras[id]?.platform == nil, let p = guessPlatform(all[i]) {
+                extras[id, default: TVExtras()].platform = p
+                all[i].platform = p
+            }
             // The webOS app calls itself "LG TV" until it's named on the TV: that's Elliot's Room.
-            if extras[t.id]?.alias == nil && t.name.trimmingCharacters(in: .whitespaces).caseInsensitiveCompare("LG TV") == .orderedSame {
-                extras[t.id, default: TVExtras()].alias = "Elliot’s Room"
+            if extras[id]?.alias == nil && all[i].name.trimmingCharacters(in: .whitespaces).caseInsensitiveCompare("LG TV") == .orderedSame {
+                extras[id, default: TVExtras()].alias = "Elliot’s Room"
             }
-            if let alias = extras[t.id]?.alias, !alias.isEmpty { t.name = alias }
-            t.alertsHidden = t.hasAlerts && hiddenAlerts[t.id] == t.alertSignature
-            return t
+            if let alias = extras[id]?.alias, !alias.isEmpty { all[i].name = alias }
+            all[i].alertsHidden = all[i].hasAlerts && hiddenAlerts[id] == all[i].alertSignature
         }
+        all.sort(by: FleetMerge.order)
         // TVs heard on the Wi‑Fi that no paired TV knows: listed so they can be paired.
         let pairedHosts = Set(hubs.compactMap { $0.connection.base.host })
         let heardAll = discovery.found + lanFound.filter { l in !discovery.found.contains { $0.host == l.host } }
@@ -381,24 +580,41 @@ public final class Fleet {
             let shown = f.name.caseInsensitiveCompare("LG TV") == .orderedSame ? "Elliot’s Room" : f.name
             if all.contains(where: { $0.id == f.id || $0.name.caseInsensitiveCompare(f.name) == .orderedSame
                 || $0.name.caseInsensitiveCompare(shown) == .orderedSame }) { continue }
-            let heard = f.name.caseInsensitiveCompare("LG TV") == .orderedSame ? "Elliot’s Room" : f.name
-            var t = FleetTV(id: f.id, name: extras[f.id]?.alias ?? heard, online: true, onScreen: false, playing: nil, version: nil, seen: nil,
+            var t = FleetTV(id: f.id, name: extras[f.id]?.alias ?? shown, online: true, onScreen: false, playing: nil, version: nil, seen: nil,
                             link: "unpaired", health: nil, hubID: "", routeID: "", platform: extras[f.id]?.platform)
             t.foundAt = f.base
             all.append(t)
         }
+        // Away from home, or every TV gone at once (the Wi‑Fi itself is down): the TVs only look gone from here.
+        let paired = all.filter { !$0.isUnpaired }
+        let quiet = paired.contains(where: { !$0.online }) && (!paired.contains(where: \.online) || !atHome)
+        for tv in paired { notifyIfNeeded(tv, was: before[tv.id], quiet: quiet) }
         if all != tvs { tvs = all }
         var changedLast = false
-        for tv in all { if let p = tv.playing, lastPlaying[tv.id]?.title != p.title { lastPlaying[tv.id] = p; changedLast = true } }
+        for tv in all {
+            if let p = tv.playing, lastPlaying[tv.id]?.title != p.title { lastPlaying[tv.id] = p; changedLast = true }
+        }
         if changedLast { Saved.save("lastPlaying", lastPlaying) }
-        if selectedID == nil || !tvs.contains(where: { $0.id == selectedID && !$0.isUnpaired }) { selectedID = tvs.first { !$0.isUnpaired }?.id }
+        // Pick another TV only when the chosen one is really gone: not while a hub that may know it hasn't
+        // answered yet (a linked TV chosen last time shows up with its hub's first answer).
+        let waiting = hubs.contains { answers[$0.id] == nil }
+        let known = tvs.contains { $0.id == selectedID && !$0.isUnpaired }
+        if selectedID == nil || (!known && !waiting) {
+            if let first = tvs.first(where: { !$0.isUnpaired })?.id, first != selectedID { selectedID = first }
+        }
     }
 
     /// Alerts once per problem: a TV's alert is announced again only when what it says changes, and "went
     /// offline" only after two minutes without an answer (a missed check isn't an outage), once per outage.
-    private func notifyIfNeeded(_ tv: FleetTV, was old: FleetTV?) {
+    /// [quiet]: away from home or the Wi‑Fi is down, so TVs only look gone from here.
+    private func notifyIfNeeded(_ tv: FleetTV, was old: FleetTV?, quiet: Bool) {
+        // A paired TV's alerts come from its own answer only (another hub's relayed copy can lag behind it, and
+        // switching between the two would announce the same problem again and again).
+        let ownWord = tv.isHub || !hubs.contains(where: { $0.id == tv.id })
         let hidden = hiddenAlerts[tv.id] == tv.alertSignature
-        if tv.hasAlerts && !hidden && tv.online {
+        if !ownWord {
+            // Nothing to announce or clear from a relayed copy.
+        } else if tv.hasAlerts && !hidden && tv.online {
             if notifiedAlerts[tv.id] != tv.alertSignature {
                 notifiedAlerts[tv.id] = tv.alertSignature
                 Saved.save("notifiedAlerts", notifiedAlerts)
@@ -416,7 +632,7 @@ public final class Fleet {
         } else if !tv.isUnpaired {
             // Away from home (not on the TVs' Wi‑Fi), or every TV gone at once (the Wi‑Fi itself is down):
             // the TVs only look gone from here, so no "can't reach" and no countdown toward one.
-            if !atHome || !tvs.contains(where: { $0.online && !$0.isUnpaired }) {
+            if quiet {
                 offlineSince[tv.id] = nil
                 return
             }
@@ -450,6 +666,7 @@ public final class Fleet {
         let clean = name.trimmingCharacters(in: .whitespacesAndNewlines)
         extras[tv.id, default: TVExtras()].alias = clean.isEmpty ? "" : String(clean.prefix(40))
         if let i = tvs.firstIndex(where: { $0.id == tv.id }), !clean.isEmpty { tvs[i].name = String(clean.prefix(40)) }
+        rebuild()
         Task { await refresh() }
     }
 
@@ -479,10 +696,15 @@ public final class Fleet {
     public private(set) var library: WatchHome?
 
     public func refreshLibrary() async {
-        // Any TV that answers (the first may be off).
-        for hub in hubs {
+        // Any TV that answers (the first may be off): the ones answering now first.
+        for hub in hubsAnsweringFirst() {
             if let h = try? await TVClient(hub: hub, routeID: "this").watchHome() { library = h; return }
         }
+    }
+
+    /// The paired TVs, the ones answering now first (so a TV that's off never makes the others wait).
+    private func hubsAnsweringFirst() -> [Hub] {
+        hubs.filter { (failures[$0.id] ?? 0) < 2 } + hubs.filter { (failures[$0.id] ?? 0) >= 2 }
     }
 
     /// Pictures found by searching the whole library for a title Home's short lists don't have.
@@ -494,7 +716,7 @@ public final class Fleet {
         if let at = artSearches[key], at.timeIntervalSinceNow > -300 { return }   // at most every 5 minutes per title
         artSearches[key] = Date()
         let query = String(p.title.split(separator: "·").first ?? Substring(p.title)).trimmingCharacters(in: .whitespaces)
-        let hubs = self.hubs
+        let hubs = hubsAnsweringFirst()
         Task { [weak self] in
             for hub in hubs {
                 guard let r = try? await TVClient(hub: hub, routeID: "this").search(query) else { continue }
@@ -558,9 +780,17 @@ public final class Fleet {
     /// The client for [tv]: straight to it when it's paired here, otherwise through the hub that links it.
     public func client(for tv: FleetTV) -> TVClient? {
         if tv.isUnpaired { return nil }
-        if let direct = hubs.first(where: { $0.id == tv.id }) { return TVClient(hub: direct, routeID: "this") }
-        guard let hub = hub(tv.hubID) else { return nil }
-        return TVClient(hub: hub, routeID: tv.routeID)
+        if let direct = hubs.first(where: { $0.id == tv.id }) {
+            // Paired here but not answering this phone, while another TV still reaches it: go through that one.
+            if (failures[direct.id] ?? 0) >= 2, let now = self.tv(tv.id), !now.isHub, now.online, let via = hub(now.hubID) {
+                return TVClient(hub: via, routeID: now.routeID)
+            }
+            return TVClient(hub: direct, routeID: "this")
+        }
+        // The hub that reaches it now (the copy passed in may be from before it moved to another hub).
+        let now = self.tv(tv.id) ?? tv
+        guard let hub = hub(now.hubID) ?? hub(tv.hubID) else { return nil }
+        return TVClient(hub: hub, routeID: hub.id == now.hubID ? now.routeID : tv.routeID)
     }
 
     /// A client for the selected TV's hub, for features that live on the hub (Memories, files, library, notes).
@@ -691,12 +921,34 @@ public final class Fleet {
 
     /// Asks each hub for messages kept for this phone, showing only new ones (by seq within an epoch, and by id).
     public func pollInbox() async {
-        var cursors = Saved.load("inboxCursors", as: [String: InboxCursor].self) ?? [:]
-        var seenOrder = Saved.load("inboxSeen", as: [String].self) ?? []
+        // Every hub that's answering, all at once (one that's off would only make the others wait; it's asked
+        // again once it's back, and keeps what it has for this phone until then).
+        let asking = hubs.filter { (failures[$0.id] ?? 0) < 2 }
+        guard !asking.isEmpty else { return }
+        let startCursors = Saved.load("inboxCursors", as: [String: InboxCursor].self) ?? [:]
+        let phoneID = phone.id
+        var boxes: [String: Inbox] = [:]
+        await withTaskGroup(of: (String, Inbox?).self) { g in
+            for hub in asking {
+                let cur = startCursors[hub.id] ?? InboxCursor()
+                g.addTask {
+                    let box = try? await TVClient(hub: hub, routeID: "this").inbox(phone: phoneID, after: cur.after, epoch: cur.epoch, timeout: 6)
+                    return (hub.id, box)
+                }
+            }
+            for await (id, box) in g {
+                if let box { boxes[id] = box }
+            }
+        }
+        let savedCursors = Saved.load("inboxCursors", as: [String: InboxCursor].self) ?? [:]
+        var cursors = savedCursors
+        let savedSeen = Saved.load("inboxSeen", as: [String].self) ?? []
+        var seenOrder = savedSeen
         var seen = Set(seenOrder)
-        for hub in hubs {
+        let shownBefore = recentMessages
+        for hub in asking {
+            guard let box = boxes[hub.id] else { continue }
             var cur = cursors[hub.id] ?? InboxCursor()
-            guard let box = try? await TVClient(hub: hub, routeID: "this").inbox(phone: phone.id, after: cur.after, epoch: cur.epoch) else { continue }
             if box.epoch != cur.epoch { cur.after = 0; cur.epoch = box.epoch }
             let first = cursors[hub.id] == nil
             for m in box.messages where m.seq > (cur.after ?? 0) && !seen.contains(m.id) {
@@ -710,10 +962,12 @@ public final class Fleet {
             cursors[hub.id] = cur
         }
         let weekAgo = (Date().timeIntervalSince1970 - 7 * 86400) * 1000
-        recentMessages = Array(recentMessages.filter { ($0.at ?? weekAgo + 1) > weekAgo }.prefix(20))
-        Saved.save("recentMessages", recentMessages)
-        Saved.save("inboxSeen", Array(seenOrder.suffix(200)))
-        Saved.save("inboxCursors", cursors)
+        let kept = Array(recentMessages.filter { ($0.at ?? weekAgo + 1) > weekAgo }.prefix(20))
+        if kept != recentMessages { recentMessages = kept }
+        // Written only when something changed (this runs every few seconds).
+        if recentMessages != shownBefore { Saved.save("recentMessages", recentMessages) }
+        if seenOrder != savedSeen { Saved.save("inboxSeen", Array(seenOrder.suffix(200))) }
+        if cursors != savedCursors { Saved.save("inboxCursors", cursors) }
     }
 
     // MARK: Messages
@@ -731,6 +985,79 @@ public final class Fleet {
         if tvs.contains(where: { $0.needsAttention }) { return "exclamationmark.triangle" }
         if tvs.contains(where: { $0.playing != nil }) { return "play.tv" }
         return "tv"
+    }
+}
+
+/// One hub's latest answer to "which TVs, doing what?".
+enum HubAnswer: Equatable, Sendable {
+    case answered([TVListEntry])
+    /// It didn't answer (twice in a row): it's off, or out of reach from here.
+    case unreachable
+
+    var isAnswered: Bool {
+        if case .answered = self { return true }
+        return false
+    }
+}
+
+/// How the TVs every hub reports become one list. Kept apart from `Fleet` so the rules can be tested, and so the
+/// list comes out the same whatever order the hubs answered in.
+enum FleetMerge {
+    /// - A TV's own answer (a hub, about itself) beats one relayed by another hub; a relayed answer saying it's on
+    ///   beats one saying it's off; between equals, the hub paired first wins.
+    /// - A hub that doesn't answer keeps what was known of it, marked off, and so do the linked TVs only it knew
+    ///   (unless another hub reports them). A hub not heard from yet keeps what was shown before.
+    /// - What's playing is laid over what was shown before (`NowPlaying.smoothed`), so progress never jumps back.
+    static func merge(hubs: [Hub], answers: [String: HubAnswer], before: [String: FleetTV],
+                      platforms: [String: TVPlatform], now: Date) -> [FleetTV] {
+        var merged: [String: FleetTV] = [:]
+        var rank: [String: Int] = [:]
+        for hub in hubs {
+            guard case .answered(let list)? = answers[hub.id] else { continue }
+            for e in list {
+                let realID = e.id == "this" ? hub.id : e.id
+                let tv = FleetTV(id: realID, name: e.name, online: e.online, onScreen: e.onScreen ?? false, playing: e.playing,
+                                 version: e.version, seen: e.seen, link: e.link ?? "ok", health: e.health, hubID: hub.id,
+                                 routeID: e.id, platform: platforms[realID])
+                let r = tv.isHub ? 3 : (tv.online ? 2 : 1)
+                if let have = rank[realID], have >= r { continue }
+                merged[realID] = tv
+                rank[realID] = r
+            }
+        }
+        for hub in hubs {
+            let answer = answers[hub.id]
+            if answer?.isAnswered == true { continue }
+            let down = answer == .unreachable
+            if merged[hub.id] == nil {
+                var tv = before[hub.id] ?? FleetTV(id: hub.id, name: hub.name, online: false, onScreen: false, playing: nil, version: nil,
+                                                   seen: nil, link: "ok", health: nil, hubID: hub.id, routeID: "this",
+                                                   platform: platforms[hub.id])
+                tv.hubID = hub.id
+                tv.routeID = "this"
+                tv.foundAt = nil
+                if down { tv.online = false; tv.onScreen = false; tv.playing = nil }
+                merged[hub.id] = tv
+            }
+            for old in before.values where old.hubID == hub.id && old.id != hub.id && !old.isUnpaired && merged[old.id] == nil {
+                var t = old
+                if down { t.online = false; t.onScreen = false; t.playing = nil }
+                merged[old.id] = t
+            }
+        }
+        for (id, tv) in merged {
+            guard let p = tv.playing else { continue }
+            merged[id]?.playing = p.smoothed(after: before[id]?.playing, now: now)
+        }
+        return merged.values.sorted(by: order)
+    }
+
+    /// Paired TVs first, then by name (then by id, so two with the same name never swap places between answers).
+    static func order(_ a: FleetTV, _ b: FleetTV) -> Bool {
+        if a.isHub != b.isHub { return a.isHub }
+        let byName = a.name.localizedStandardCompare(b.name)
+        if byName != .orderedSame { return byName == .orderedAscending }
+        return a.id < b.id
     }
 }
 
@@ -787,7 +1114,7 @@ public struct PhoneIdentity: Codable, Hashable, Sendable {
     func save() { Saved.save("phone", self) }
 }
 
-struct InboxCursor: Codable {
+struct InboxCursor: Codable, Equatable, Sendable {
     var after: Int?
     var epoch: String?
 }
