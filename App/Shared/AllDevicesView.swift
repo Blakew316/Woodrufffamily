@@ -172,7 +172,8 @@ struct AllDevicesView: View {
             return Facts(name: s.name, state: state, on: s.isPlaying, reachable: !s.isOffline, look: .speaker(bar: Self.isSoundbar(s)), tint: .teal)
         case .light(let l):
             let state = l.isOffline ? "Offline" : l.isLit ? "\(l.brightness)%" : "Off"
-            return Facts(name: l.name, state: state, on: l.isLit, reachable: !l.isOffline, look: .light, tint: l.shade)
+            return Facts(name: l.name, state: state, on: l.isLit, reachable: !l.isOffline,
+                         look: l.isFloorLamp ? .floorLamp(level: Double(l.brightness) / 100) : .light, tint: l.shade)
         case .device(let d) where d.product?.hasPrefix("HomePod") == true:
             return Facts(name: d.name, state: d.reachable ? d.status : "Not Responding", on: false, reachable: d.reachable,
                          look: .homePod(mini: d.product == "HomePod mini"), tint: .gray)
@@ -267,6 +268,7 @@ struct DeviceGlyph: View {
         case speaker(bar: Bool)
         case homePod(mini: Bool)
         case light
+        case floorLamp(level: Double)
         case device(HomeDevice.Kind, running: Bool, symbol: String)
     }
 
@@ -301,6 +303,8 @@ struct DeviceGlyph: View {
                     .symbolEffect(.variableColor.iterative, options: .repeating, isActive: on)
                     .symbolEffect(.bounce, value: on)
             }
+        case .floorLamp(let level):
+            FloorLampPicture(level: level, lit: on, color: tint).frame(width: 22, height: 38)
         case .homePod(let mini):
             Image(systemName: mini ? "homepodmini.fill" : "homepod.fill")
                 .font(.system(size: 21, weight: .semibold))

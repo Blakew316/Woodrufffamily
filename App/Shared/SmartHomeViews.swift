@@ -357,12 +357,19 @@ struct LightSheet: View {
         // A light that's off shows the level under the finger too (letting go turns it on at that level).
         let shown = light.isLit || dragging
         return GeometryReader { g in
-            ZStack(alignment: .bottom) {
-                Rectangle().fill(.white.opacity(0.12))
-                Rectangle().fill(shown ? light.shade : .white.opacity(0.3))
-                    .frame(height: g.size.height * (shown ? level / 100 : 0))
+            Group {
+                if light.isFloorLamp {
+                    // The lamp itself: its bar lights from the base up to the level under the finger.
+                    FloorLampPicture(level: level / 100, lit: shown, color: light.shade)
+                } else {
+                    ZStack(alignment: .bottom) {
+                        Rectangle().fill(.white.opacity(0.12))
+                        Rectangle().fill(shown ? light.shade : .white.opacity(0.3))
+                            .frame(height: g.size.height * (shown ? level / 100 : 0))
+                    }
+                    .clipShape(RoundedRectangle(cornerRadius: 30, style: .continuous))
+                }
             }
-            .clipShape(RoundedRectangle(cornerRadius: 30, style: .continuous))
             .contentShape(Rectangle())
             .highPriorityGesture(DragGesture(minimumDistance: 0)
                 .onChanged { v in
@@ -664,5 +671,49 @@ struct LightDetailView: View {
                 .buttonStyle(.plain)
             }
         }
+    }
+}
+
+extension GoveeLight {
+    /// A Govee floor lamp (a tall light bar on a round base): drawn as one, its light rising with the brightness.
+    var isFloorLamp: Bool {
+        name.localizedCaseInsensitiveContains("floor") || ["H6076", "H6072", "H607C", "H6078", "H607A"].contains(sku.uppercased())
+    }
+}
+
+/// A Govee floor lamp: a heavy round base and a slim light bar standing up from it. The bar lights from the base up
+/// like a progress bar: [level] 0…1 of it, in the light's colour, glowing.
+struct FloorLampPicture: View {
+    var level: Double
+    var lit: Bool
+    var color: Color
+
+    var body: some View {
+        GeometryReader { g in
+            let w = g.size.width, h = g.size.height
+            let baseH = max(3, h * 0.07)
+            let poleW = max(3, w * 0.2)
+            let poleH = h - baseH - h * 0.015
+            let fill = lit ? max(0, min(1, level)) : 0
+            ZStack(alignment: .bottom) {
+                // The bar: dark where it isn't lit, the light rising from the base.
+                ZStack(alignment: .bottom) {
+                    Capsule().fill(Color(white: 0.22))
+                    Capsule().fill(color)
+                        .frame(height: max(fill > 0 ? poleW : 0, poleH * fill))
+                        .shadow(color: color.opacity(lit ? 0.9 : 0), radius: w * 0.18)
+                }
+                .frame(width: poleW, height: poleH)
+                .overlay(Capsule().strokeBorder(.white.opacity(0.15), lineWidth: 0.5))
+                .padding(.bottom, baseH * 0.6)
+                // The round base, seen a little from above.
+                Ellipse()
+                    .fill(LinearGradient(colors: [Color(white: 0.42), Color(white: 0.16)], startPoint: .top, endPoint: .bottom))
+                    .frame(width: w * 0.78, height: baseH)
+            }
+            .frame(width: w, height: h, alignment: .bottom)
+        }
+        .animation(.smooth(duration: 0.25), value: level)
+        .animation(.smooth(duration: 0.25), value: lit)
     }
 }
