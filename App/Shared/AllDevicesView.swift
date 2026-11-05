@@ -76,17 +76,7 @@ struct AllDevicesView: View {
     var body: some View {
         let devices = store.all
         let rooms = homeRooms(fleet, devices: devices).filter { $0 != noRoom && !$0.isEmpty }
-        // A thermostat with no room still shows, first, on its own.
-        let roomless = devices.filter { $0.kind == .thermostat && (home.room(of: $0.id) ?? "").isEmpty }
         VStack(alignment: .leading, spacing: 26) {
-            if !roomless.isEmpty {
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("Thermostat").font(.title3.bold())
-                    LazyVGrid(columns: columns, alignment: .leading, spacing: 12) {
-                        ForEach(roomless.map { Item.device($0) }) { item in tile(item) }
-                    }
-                }
-            }
             ForEach(sections(rooms), id: \.title) { section in
                 let items = section.rooms.flatMap { items(in: $0, devices: devices) }
                 if !items.isEmpty {
@@ -411,7 +401,7 @@ struct DeviceGlyph: View {
     }
 }
 
-/// A TV, drawn like a modern one: a thin black panel on a centre stand (a short neck and a slim foot plate). On, its screen glows a deep blue with a soft
+/// A TV, drawn like a modern one: a thin black panel on two slim feet, just below it. On, its screen glows a deep blue with a soft
 /// reflection; while something plays, three bars bounce gently in the middle of it. Off, the glass is dark.
 struct TVPicture: View {
     var on: Bool
@@ -425,13 +415,14 @@ struct TVPicture: View {
             TimelineView(.animation(minimumInterval: 1.0 / 24, paused: !(on && playing) || reduceMotion)) { ctx in
                 let t = ctx.date.timeIntervalSinceReferenceDate
                 ZStack(alignment: .top) {
-                    // The stand, behind and below the panel: a short neck and a slim foot plate.
-                    RoundedRectangle(cornerRadius: 1).fill(LinearGradient(colors: [Color(white: 0.5), Color(white: 0.22)], startPoint: .leading, endPoint: .trailing))
-                        .frame(width: w * 0.08, height: h - panelH)
-                        .offset(y: panelH - 1)
-                    Capsule().fill(LinearGradient(colors: [Color(white: 0.6), Color(white: 0.28)], startPoint: .top, endPoint: .bottom))
-                        .frame(width: w * 0.42, height: max(2, h * 0.06))
-                        .offset(y: h - max(2, h * 0.06))
+                    // Its two slim feet, behind the panel, starting just below it.
+                    HStack {
+                        Capsule().fill(LinearGradient(colors: [Color(white: 0.55), Color(white: 0.25)], startPoint: .top, endPoint: .bottom)).frame(width: 3, height: h - panelH)
+                        Spacer()
+                        Capsule().fill(LinearGradient(colors: [Color(white: 0.55), Color(white: 0.25)], startPoint: .top, endPoint: .bottom)).frame(width: 3, height: h - panelH)
+                    }
+                    .frame(width: w * 0.72)
+                    .offset(y: panelH)
                     // The light the screen throws behind it.
                     if on {
                         RoundedRectangle(cornerRadius: 6).fill(Color(red: 0.25, green: 0.55, blue: 1).opacity(0.45))
