@@ -525,6 +525,19 @@ build_install_helper() {  # "$@" = the signing settings
   return 0
 }
 
+# 0 when this Mac can open the helper $1: its development profile lists the Macs it runs on, and macOS refuses (with
+# a message each time it's started) on any other.
+helper_runs_here() {
+  local prof="$1/Contents/embedded.provisionprofile" plist udid
+  [ -f "$prof" ] || return 0
+  plist=$(security cms -D -i "$prof" 2>/dev/null) || return 0
+  case "$plist" in *ProvisionsAllDevices*) return 0 ;; esac
+  udid=$(system_profiler SPHardwareDataType 2>/dev/null | awk -F': ' '/Provisioning UDID/ {print $2; exit}')
+  [ -n "$udid" ] || return 0
+  case "$plist" in *"<string>$udid</string>"*) return 0 ;; esac
+  return 1
+}
+
 # On a Mac that installs the shared build: the helper the Mac Studio shared, when there is one newer than this one's.
 install_shared_helper() {
   local zip="$SHARE_DIR/$HELPER_NAME.zip" unz="$LOGDIR/helper-shared" hlog="$LOGDIR/helper-install.log"
@@ -532,7 +545,15 @@ install_shared_helper() {
   [ -f "$zip" ] || return 0
   # Only a newer one than the one installed from there last (so the running helper isn't restarted every check).
   local stamp="$HOME/Library/Application Support/Woodruff Family/helper-installed.stamp"
+  local refused="$HOME/Library/Application Support/Woodruff Family/helper-refused.stamp"
+  # One installed that this Mac won't open: taken out, so the Mac app doesn't keep trying to start it.
+  if [ -d "$HELPER_INSTALLED" ] && ! helper_runs_here "$HELPER_INSTALLED"; then
+    pkill -U "$(id -u)" -x "$HELPER_NAME" >/dev/null 2>&1
+    rm -rf "$HELPER_INSTALLED"
+    rm -f "$stamp"
+  fi
   if [ -d "$HELPER_INSTALLED" ] && [ -f "$stamp" ] && [ ! "$zip" -nt "$stamp" ]; then return 0; fi
+  if [ -f "$refused" ] && [ ! "$zip" -nt "$refused" ]; then return 0; fi
   step "Mac: installing $HELPER_NAME (Apple Home on this Mac)"
   rm -rf "$unz"
   mkdir -p "$unz"
@@ -542,6 +563,13 @@ install_shared_helper() {
     rm -rf "$unz"
     return 1
   fi
+  if ! helper_runs_here "$unz/$HELPER_NAME.app"; then
+    warn "$HELPER_NAME isn't installed here: this Mac isn't in its signing profile (register it under Devices at developer.apple.com; the Mac Studio's next build includes it)"
+    mkdir -p "$(dirname "$refused")" && touch "$refused"
+    rm -rf "$unz"
+    return 0
+  fi
+  rm -f "$refused"
   if put_helper "$unz/$HELPER_NAME.app"; then
     mkdir -p "$(dirname "$stamp")" && touch "$stamp"
   fi

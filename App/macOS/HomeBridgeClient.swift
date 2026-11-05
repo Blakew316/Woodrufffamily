@@ -24,6 +24,9 @@ final class HomeBridgeClient {
     @ObservationIgnored private var hash = ""
     @ObservationIgnored private var misses = 0
     @ObservationIgnored private var launchedAt = Date.distantPast
+    /// When macOS last refused to start the helper (it then shows its own message each time): tried again only
+    /// after an hour, so that message isn't shown over and over.
+    @ObservationIgnored private var refusedAt = Date.distantPast
     /// The helper's port and secret as last read from its file: kept until it stops answering (it may have started
     /// again with new ones), instead of read and decoded again every second.
     @ObservationIgnored private var bridgeInfo: HomeBridge.Info?
@@ -84,14 +87,17 @@ final class HomeBridgeClient {
 
     /// Starts the helper in the background (at most every 15 seconds).
     private func launchQuietly() {
-        guard Date().timeIntervalSince(launchedAt) > 15 else { return }
+        guard Date().timeIntervalSince(launchedAt) > 15, Date().timeIntervalSince(refusedAt) > 3600 else { return }
         guard let url = helperURL else { status = .notInstalled; return }
         launchedAt = Date()
         let cfg = NSWorkspace.OpenConfiguration()
         cfg.activates = false
         cfg.hides = true
         cfg.addsToRecentItems = false
-        NSWorkspace.shared.openApplication(at: url, configuration: cfg) { _, _ in }
+        NSWorkspace.shared.openApplication(at: url, configuration: cfg) { _, error in
+            guard error != nil else { return }
+            Task { @MainActor in HomeBridgeClient.shared.refusedAt = Date() }
+        }
     }
 
     /// The helper's port and secret (also looked for in its container, in case macOS gave it one).
