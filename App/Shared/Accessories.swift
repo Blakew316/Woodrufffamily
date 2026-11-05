@@ -756,12 +756,18 @@ struct ThermostatChip: View {
     /// The icon, the temperature now and what it's doing.
     private func summary(_ t: HomeDevice?) -> some View {
         HStack(spacing: 9) {
-            ZStack {
-                Circle().fill(tint(t).gradient)
-                Image(systemName: symbol(t)).font(.system(size: 12, weight: .bold)).foregroundStyle(.white)
-                    .symbolEffect(.pulse, isActive: t?.action == "heating" || t?.action == "cooling")
+            Group {
+                if let t {
+                    // The ecobee itself, small: black, with what it's doing (a turning snowflake, a flickering flame).
+                    EcobeePicture(device: t)
+                } else {
+                    ZStack {
+                        Circle().fill(tint(t).gradient)
+                        Image(systemName: symbol(t)).font(.system(size: 12, weight: .bold)).foregroundStyle(.white)
+                    }
+                }
             }
-            .frame(width: 26, height: 26)
+            .frame(width: 28, height: 28)
             .shadow(color: tint(t).opacity(0.5), radius: 6)
             VStack(alignment: .leading, spacing: -1) {
                 Text(t?.temperature.map { temperatureText($0) } ?? "--")

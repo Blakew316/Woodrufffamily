@@ -75,9 +75,18 @@ struct AllDevicesView: View {
 
     var body: some View {
         let devices = store.all
-        let cameraRooms = NestCameras.shared.cameras.compactMap { home.rooms[$0.id] ?? $0.room }
-        let rooms = Array(Set(homeRooms(fleet, devices: devices) + cameraRooms)).filter { $0 != noRoom && !$0.isEmpty }
+        let rooms = homeRooms(fleet, devices: devices).filter { $0 != noRoom && !$0.isEmpty }
+        // A thermostat with no room still shows, first, on its own.
+        let roomless = devices.filter { $0.kind == .thermostat && (home.room(of: $0.id) ?? "").isEmpty }
         VStack(alignment: .leading, spacing: 26) {
+            if !roomless.isEmpty {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Thermostat").font(.title3.bold())
+                    LazyVGrid(columns: columns, alignment: .leading, spacing: 12) {
+                        ForEach(roomless.map { Item.device($0) }) { item in tile(item) }
+                    }
+                }
+            }
             ForEach(sections(rooms), id: \.title) { section in
                 let items = section.rooms.flatMap { items(in: $0, devices: devices) }
                 if !items.isEmpty {
@@ -117,8 +126,6 @@ struct AllDevicesView: View {
     /// Everything in [room]: TVs first, then speakers, lights and devices, each by name.
     private func items(in room: String, devices: [HomeDevice]) -> [Item] {
         var out: [Item] = []
-        out += NestCameras.shared.cameras.filter { roomMatches(home.rooms[$0.id] ?? $0.room, room) }
-            .sorted { $0.name < $1.name }.map { .camera($0) }
         out += fleet.tvs.filter { !$0.isUnpaired && roomMatches(home.rooms[$0.id] ?? $0.name, room) }
             .sorted { $0.name < $1.name }.map { .tv($0) }
         out += home.speakers.filter { roomMatches(home.room(of: $0.id), room) }.sorted { $0.name < $1.name }.map { .speaker($0) }
@@ -530,9 +537,10 @@ struct CameraPicture: View {
     }
 }
 
-/// An ecobee Smart Thermostat, drawn like the real one: a black rounded square with a glossy edge, the room's
-/// temperature large in the middle, the set temperature in a pill under it, and what it's doing at the top. Cooling,
-/// the snowflake turns slowly in a cool blue glow; heating, a flame flickers in a warm one.
+/// An ecobee Smart Thermostat Enhanced, drawn like the real one: a glossy black rounded square; across the top the
+/// weather, what it's doing (a snowflake cooling, a flame heating) and the menu; the humidity; the room's temperature
+/// large and thin; the set temperature in its blue (or orange) pill; and the ecobee wordmark. Cooling, the snowflake
+/// turns slowly in a cool glow; heating, the flame flickers in a warm one.
 struct EcobeePicture: View {
     var device: HomeDevice
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -559,59 +567,79 @@ struct EcobeePicture: View {
     var body: some View {
         GeometryReader { g in
             let s = min(g.size.width, g.size.height)
-            let accent: Color = heating || mode == "heat" ? .orange : mode == "off" ? .gray : Color(red: 0.2, green: 0.55, blue: 1)
+            let detailed = s >= 90
+            // As small as an icon (Home's thermostat pill): the body and what it's doing, nothing else.
+            let tiny = s < 40
+            let heatLook = heating || (mode == "heat" && !cooling)
+            let accent: Color = heatLook ? .orange : mode == "off" ? .gray : Color(red: 0.16, green: 0.5, blue: 1)
             TimelineView(.animation(minimumInterval: 1.0 / 20, paused: !(cooling || heating) || reduceMotion)) { ctx in
                 let t = ctx.date.timeIntervalSinceReferenceDate
                 let pulse = reduceMotion ? 0.5 : (sin(t * 2) + 1) / 2
                 ZStack {
-                    // The body: black, its edge catching the light.
-                    RoundedRectangle(cornerRadius: s * 0.3, style: .continuous)
-                        .fill(LinearGradient(colors: [Color(white: 0.16), .black], startPoint: .top, endPoint: .bottom))
-                    RoundedRectangle(cornerRadius: s * 0.3, style: .continuous)
-                        .strokeBorder(LinearGradient(colors: [.white.opacity(0.45), .white.opacity(0.06)], startPoint: .top, endPoint: .bottom),
-                                      lineWidth: max(0.6, s * 0.02))
-                    // While it's heating or cooling, its glow.
+                    // The body: glossy black, its edge catching the light from the top left.
+                    RoundedRectangle(cornerRadius: s * 0.27, style: .continuous)
+                        .fill(LinearGradient(colors: [Color(white: 0.13), Color(white: 0.02)], startPoint: .topLeading, endPoint: .bottomTrailing))
+                    RoundedRectangle(cornerRadius: s * 0.27, style: .continuous)
+                        .strokeBorder(LinearGradient(colors: [.white.opacity(0.55), .white.opacity(0.08), .white.opacity(0.25)],
+                                                     startPoint: .topLeading, endPoint: .bottomTrailing),
+                                      lineWidth: max(0.8, s * 0.022))
+                    // A soft reflection across the top of the glass.
+                    RoundedRectangle(cornerRadius: s * 0.22, style: .continuous)
+                        .fill(LinearGradient(colors: [.white.opacity(0.07), .clear], startPoint: .top, endPoint: .center))
+                        .padding(s * 0.05)
                     if cooling || heating {
-                        Circle().fill(accent.opacity(0.18 + 0.17 * pulse)).blur(radius: s * 0.15).frame(width: s * 0.7)
+                        Circle().fill(accent.opacity(0.14 + 0.14 * pulse)).blur(radius: s * 0.14).frame(width: s * 0.62)
                     }
-                    VStack(spacing: s * 0.03) {
-                        // What it's doing, at the top.
-                        Group {
-                            if heating || (mode == "heat" && !cooling) {
-                                Image(systemName: "flame.fill")
-                                    .foregroundStyle(heating ? .orange : .white.opacity(0.7))
-                                    .scaleEffect(heating && !reduceMotion ? 0.9 + 0.15 * pulse : 1, anchor: .bottom)
-                            } else if mode == "off" {
-                                Image(systemName: "power").foregroundStyle(.white.opacity(0.6))
-                            } else {
-                                Image(systemName: "snowflake")
-                                    .foregroundStyle(.white.opacity(cooling ? 1 : 0.7))
-                                    .rotationEffect(.degrees(cooling && !reduceMotion ? t * 25 : 0))
-                            }
+                    if tiny {
+                        modeSymbol(t: t, pulse: pulse).font(.system(size: s * 0.42, weight: .semibold))
+                    } else {
+                    VStack(spacing: 0) {
+                        // Across the top: the weather, what it's doing, the menu.
+                        HStack(alignment: .center) {
+                            if detailed { Image(systemName: "cloud.sun").foregroundStyle(.white.opacity(0.75)) }
+                            Spacer(minLength: 0)
+                            modeSymbol(t: t, pulse: pulse)
+                            Spacer(minLength: 0)
+                            if detailed { Image(systemName: "line.3.horizontal").foregroundStyle(.white.opacity(0.75)) }
                         }
-                        .font(.system(size: s * 0.13, weight: .semibold))
-                        .frame(height: s * 0.15)
-                        // The room's temperature.
+                        .font(.system(size: s * 0.085, weight: .regular))
+                        .frame(height: s * 0.12)
+                        .padding(.horizontal, s * 0.1)
+                        if detailed, let h = device.humidity {
+                            HStack(spacing: s * 0.02) {
+                                Image(systemName: "drop")
+                                Text("\(h)%")
+                                Text("|").opacity(0.5)
+                                Image(systemName: "wind")
+                                Text("Great")
+                            }
+                            .font(.system(size: s * 0.05, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.7))
+                            .padding(.top, s * 0.04)
+                        }
+                        // The room's temperature, large and thin.
                         Text(degrees(device.temperature))
-                            .font(.system(size: s * 0.34, weight: .light, design: .default))
+                            .font(.system(size: s * (detailed ? 0.3 : 0.38), weight: .ultraLight))
                             .foregroundStyle(.white)
                             .monospacedDigit()
                             .minimumScaleFactor(0.5)
                             .lineLimit(1)
+                            .padding(.top, s * (detailed ? 0.01 : 0.02))
                         // The set temperature, in its pill.
                         if let sp = setpoint {
                             Text(sp)
-                                .font(.system(size: s * 0.1, weight: .bold))
+                                .font(.system(size: s * 0.075, weight: .bold))
                                 .foregroundStyle(accent)
-                                .padding(.horizontal, s * 0.07).padding(.vertical, s * 0.02)
-                                .overlay(Capsule().strokeBorder(accent, lineWidth: max(0.6, s * 0.018)))
+                                .padding(.horizontal, s * 0.06).padding(.vertical, s * 0.018)
+                                .overlay(Capsule().strokeBorder(accent, lineWidth: max(0.8, s * 0.016)))
+                        }
+                        Spacer(minLength: 0)
+                        if detailed {
+                            Text("ecobee").font(.system(size: s * 0.055, weight: .regular)).foregroundStyle(.white.opacity(0.35))
                         }
                     }
-                    .padding(s * 0.08)
-                    // The wordmark, faint, at the bottom.
-                    if s > 120 {
-                        Text("ecobee").font(.system(size: s * 0.06, weight: .medium)).foregroundStyle(.white.opacity(0.35))
-                            .frame(maxHeight: .infinity, alignment: .bottom).padding(.bottom, s * 0.05)
+                    .padding(.top, s * 0.11)
+                    .padding(.bottom, s * 0.07)
                     }
                 }
                 .frame(width: s, height: s)
@@ -619,6 +647,21 @@ struct EcobeePicture: View {
             .frame(width: g.size.width, height: g.size.height)
         }
         .aspectRatio(1, contentMode: .fit)
+    }
+
+    /// The snowflake (cooling, turning) or the flame (heating, flickering) or the power sign (off).
+    @ViewBuilder private func modeSymbol(t: Double, pulse: Double) -> some View {
+        if mode == "off" {
+            Image(systemName: "power").foregroundStyle(.white.opacity(0.6))
+        } else if heating || (mode == "heat" && !cooling) {
+            Image(systemName: "flame.fill")
+                .foregroundStyle(heating ? Color.orange : .white.opacity(0.85))
+                .scaleEffect(heating && !reduceMotion ? 0.9 + 0.15 * pulse : 1, anchor: .bottom)
+        } else {
+            Image(systemName: "snowflake")
+                .foregroundStyle(.white)
+                .rotationEffect(.degrees(cooling && !reduceMotion ? t * 25 : 0))
+        }
     }
 }
 
