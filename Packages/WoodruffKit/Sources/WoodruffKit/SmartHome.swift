@@ -861,7 +861,7 @@ public final class SmartHome {
 
     /// A lamp's name with the words that differ between Govee and Apple Home taken out ("Blake's Govee Floor Lamp" and
     /// "Blake's Floor Lamp 2" are both "blakes"): what's left says whose or where it is.
-    public static func sameLampKey(_ name: String) -> String {
+    nonisolated public static func sameLampKey(_ name: String) -> String {
         let generic: Set<String> = ["govee", "floor", "lamp", "light", "lights", "bulb", "strip", "rgbic", "smart", "pro", "basic", "matter", "the"]
         return name.lowercased()
             .components(separatedBy: CharacterSet.alphanumerics.inverted)
