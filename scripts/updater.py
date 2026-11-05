@@ -1287,7 +1287,10 @@ def cmd_run(env, args):
                 env.sleep(QUICK_LOOK_SECONDS)
                 commit, error = updater.find_release()
                 known = (updater.state.get("release") or {}).get("commit")
-                if error or not commit or commit == known:
+                # Again for a new release, or (on a follower) for the shared build it's waiting for: it may have
+                # arrived in iCloud Drive since.
+                waiting = updater.role == "follower" and updater.state["mac"].get("state") == "waiting"
+                if error or not commit or (commit == known and not waiting):
                     continue
                 signal.signal(signal.SIGTERM, previous)
                 updater = Updater(env, config, args.verbose)
