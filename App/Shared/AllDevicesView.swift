@@ -13,6 +13,34 @@ struct AllDevicesView: View {
     @State private var openDevice: HomeDevice?
     @State private var openTV: TitleRef?
     @State private var confirmUnlock: HomeDevice?
+    /// Settings → General: devices that have no room, under Other at the end (off unless asked for).
+    @AppStorage("allDevices.showOther") private var showOther = false
+
+    /// The family's rooms first, in this order and spelled like this; any other room after them, by name.
+    static let order = ["Master Bedroom", "Living Room", "Haley's Sewing Room", "Elliott's Room", "Kyler's Room"]
+
+    /// A room's name to compare by: letters only, lowercase, and Elliot/Elliott the same.
+    static func key(_ room: String) -> String {
+        room.lowercased().filter(\.isLetter).replacingOccurrences(of: "elliott", with: "elliot")
+    }
+
+    /// One room's section: the room as the devices have it, and its heading.
+    struct RoomSection: Hashable { var room: String; var title: String }
+
+    /// The sections, in order.
+    private func sections(_ rooms: [String]) -> [RoomSection] {
+        var out: [RoomSection] = []
+        var used = Set<String>()
+        for title in Self.order {
+            for r in rooms where !used.contains(r) && Self.key(r) == Self.key(title) {
+                out.append(RoomSection(room: r, title: title))
+                used.insert(r)
+            }
+        }
+        for r in rooms.sorted() where !used.contains(r) { out.append(RoomSection(room: r, title: r)) }
+        if showOther { out.append(RoomSection(room: noRoom, title: "Other")) }
+        return out
+    }
 
     #if os(macOS)
     private let columns = [GridItem(.adaptive(minimum: 150, maximum: 190), spacing: 14)]
@@ -39,13 +67,13 @@ struct AllDevicesView: View {
 
     var body: some View {
         let devices = store.all
-        let rooms = homeRooms(fleet, devices: devices) + [noRoom]
+        let rooms = homeRooms(fleet, devices: devices).filter { $0 != noRoom && !$0.isEmpty }
         VStack(alignment: .leading, spacing: 26) {
-            ForEach(rooms, id: \.self) { room in
-                let items = items(in: room, devices: devices)
+            ForEach(sections(rooms), id: \.room) { section in
+                let items = items(in: section.room, devices: devices)
                 if !items.isEmpty {
                     VStack(alignment: .leading, spacing: 10) {
-                        Text(room == noRoom ? "Other" : room).font(.title3.bold())
+                        Text(section.title).font(.title3.bold())
                         LazyVGrid(columns: columns, alignment: .leading, spacing: 12) {
                             ForEach(items) { item in tile(item) }
                         }
@@ -53,6 +81,8 @@ struct AllDevicesView: View {
                 }
             }
         }
+        .onAppear { ArcRoom.place() }
+        .onChange(of: home.speakers.count) { _, _ in ArcRoom.place() }
         .sheet(item: $openSpeaker) { r in
             NavigationStack { SpeakerDetailView(speakerID: r.id, inSheet: true) }.presentationBackground(.clear).macResizable()
         }
@@ -280,5 +310,18 @@ struct DeviceGlyph: View {
         case .garage: return on ? "door.garage.open" : "door.garage.closed"
         default: return nil
         }
+    }
+}
+
+/// The Sonos Arc lives in the Master Bedroom: put there once (moving it later in its settings sticks).
+@MainActor enum ArcRoom {
+    static func place() {
+        guard !UserDefaults.standard.bool(forKey: "arcPlacedInMasterBedroom") else { return }
+        let home = SmartHome.shared
+        guard let arc = home.speakers.first(where: { ($0.model ?? "").localizedCaseInsensitiveContains("arc") || $0.name.localizedCaseInsensitiveContains("arc") }) else { return }
+        let rooms = homeRooms(Fleet.shared)
+        let master = rooms.first { AllDevicesView.key($0) == AllDevicesView.key("Master Bedroom") } ?? "Master Bedroom"
+        home.setRoom(arc.id, master)
+        UserDefaults.standard.set(true, forKey: "arcPlacedInMasterBedroom")
     }
 }

@@ -134,6 +134,8 @@ struct SmartHomeSettingsView: View {
 struct GeneralSettingsView: View {
     @Environment(Fleet.self) private var fleet
     var hub: HubSettings
+    /// Home → All Devices: an Other section for devices that have no room.
+    @AppStorage("allDevices.showOther") private var showOtherDevices = false
     #if os(macOS)
     // Read and written through UserDefaults, so a change synced from another Mac shows here at once.
     @AppStorage("remoteClick") private var remoteClick = true
@@ -145,6 +147,7 @@ struct GeneralSettingsView: View {
                 PageLink("Shortcuts") { ShortcutsView(hub: hub) } label: {
                     IconRow(symbol: "", color: .clear, title: "Shortcuts")
                 }
+                Toggle("Devices Without a Room in All Devices", isOn: $showOtherDevices)
                 PageLink("Scenes") { ScenesSettingsView() } label: {
                     IconRow(symbol: "", color: .clear, title: "Scenes", value: SceneStore.shared.scenes.count == 1 ? "1 Scene" : "\(SceneStore.shared.scenes.count) Scenes")
                 }
