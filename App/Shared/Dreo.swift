@@ -225,6 +225,7 @@ final class Dreo {
         let list = fans.values.map { f -> HomeDevice in
             var d = HomeDevice(id: "dreo:" + f.sn, name: f.name, source: "dreo", kind: .fan, zone: f.room, status: "")
             d.isOn = f.on
+            d.product = f.model
             d.speed = Int((Double(f.level) * 100 / Double(max(1, f.maxSpeed))).rounded())
             d.swing = f.swingKey == nil ? nil : f.swing
             d.reachable = f.online

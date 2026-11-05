@@ -177,6 +177,11 @@ struct AllDevicesView: View {
         case .device(let d) where d.product?.hasPrefix("HomePod") == true:
             return Facts(name: d.name, state: d.reachable ? d.status : "Not Responding", on: false, reachable: d.reachable,
                          look: .homePod(mini: d.product == "HomePod mini"), tint: .gray)
+        case .device(let d) where d.source == "dreo":
+            let on = lit(d)
+            let pedestal = (d.product ?? "").uppercased().contains("HPF") || d.name.localizedCaseInsensitiveContains("pedestal")
+            return Facts(name: d.name, state: d.reachable ? d.status : "Not Responding", on: on, reachable: d.reachable,
+                         look: .dreoFan(pedestal: pedestal, speed: Double(d.speed ?? 50) / 100), tint: .cyan)
         case .device(let d):
             let on = lit(d)
             return Facts(name: d.name, state: d.reachable ? d.status : "Not Responding", on: on, reachable: d.reachable,
@@ -269,6 +274,7 @@ struct DeviceGlyph: View {
         case homePod(mini: Bool)
         case light
         case floorLamp(level: Double)
+        case dreoFan(pedestal: Bool, speed: Double)
         case device(HomeDevice.Kind, running: Bool, symbol: String)
     }
 
@@ -303,6 +309,8 @@ struct DeviceGlyph: View {
                     .symbolEffect(.variableColor.iterative, options: .repeating, isActive: on)
                     .symbolEffect(.bounce, value: on)
             }
+        case .dreoFan(let pedestal, let speed):
+            DreoFanPicture(pedestal: pedestal, on: on, speed: speed).frame(width: 34, height: 40)
         case .floorLamp(let level):
             FloorLampPicture(level: level, lit: on, color: tint).frame(width: 22, height: 38)
         case .homePod(let mini):
@@ -390,6 +398,79 @@ struct TVPicture: View {
             .frame(width: 32, height: 21)
             // The stand.
             Capsule().fill(on ? tint : .secondary).frame(width: 12, height: 2)
+        }
+    }
+}
+
+/// A Dreo air circulator, drawn like the real one: a round head with its spiral grille and centre badge, on a curved
+/// arm over a round base (the table circulator, silver), or on a slim pole (the pedestal one, black). The blades turn
+/// while it's on, faster at higher speeds.
+struct DreoFanPicture: View {
+    var pedestal: Bool
+    var on: Bool
+    /// 0…1.
+    var speed: Double
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: !on || reduceMotion)) { ctx in
+            let t = ctx.date.timeIntervalSinceReferenceDate
+            Canvas { g, size in
+                let w = size.width, h = size.height
+                let body = pedestal ? Color(white: 0.16) : Color(white: 0.72)
+                let bodyDark = pedestal ? Color(white: 0.08) : Color(white: 0.45)
+                // The head: a circle, its rim in the body's colour, the grille dark inside.
+                let r = pedestal ? w * 0.34 : w * 0.38
+                let cx = w / 2, cy = pedestal ? r + 1 : h * 0.4
+                // Below the head: the pedestal's pole and base, or the table one's arm and base.
+                let baseW = pedestal ? w * 0.6 : w * 0.72
+                let baseH = h * (pedestal ? 0.08 : 0.1)
+                let baseRect = CGRect(x: cx - baseW / 2, y: h - baseH, width: baseW, height: baseH)
+                if pedestal {
+                    let pole = CGRect(x: cx - w * 0.035, y: cy + r * 0.8, width: w * 0.07, height: baseRect.minY - (cy + r * 0.8) + 1)
+                    g.fill(Path(roundedRect: pole, cornerRadius: w * 0.035), with: .color(body))
+                    g.stroke(Path(roundedRect: pole, cornerRadius: w * 0.035), with: .color(.white.opacity(0.18)), lineWidth: 0.5)
+                } else {
+                    // The curved arm, round the back of the head down to the base.
+                    var arm = Path()
+                    arm.move(to: CGPoint(x: cx + r * 0.85, y: cy - r * 0.15))
+                    arm.addQuadCurve(to: CGPoint(x: cx, y: cy + r * 1.25), control: CGPoint(x: cx + r * 1.15, y: cy + r * 1.05))
+                    g.stroke(arm, with: .color(body), style: StrokeStyle(lineWidth: w * 0.07, lineCap: .round))
+                    let neck = CGRect(x: cx - w * 0.05, y: cy + r * 1.2, width: w * 0.1, height: baseRect.minY - (cy + r * 1.2) + 1)
+                    g.fill(Path(roundedRect: neck, cornerRadius: w * 0.04), with: .color(body))
+                }
+                g.fill(Path(ellipseIn: baseRect), with: .linearGradient(Gradient(colors: [body, bodyDark]),
+                                                                         startPoint: CGPoint(x: 0, y: baseRect.minY), endPoint: CGPoint(x: 0, y: baseRect.maxY)))
+                g.stroke(Path(ellipseIn: baseRect), with: .color(.white.opacity(0.2)), lineWidth: 0.5)
+                let head = CGRect(x: cx - r, y: cy - r, width: r * 2, height: r * 2)
+                g.fill(Path(ellipseIn: head), with: .color(body))
+                g.stroke(Path(ellipseIn: head), with: .color(.white.opacity(0.25)), lineWidth: 0.6)
+                let grille = head.insetBy(dx: r * 0.12, dy: r * 0.12)
+                g.fill(Path(ellipseIn: grille), with: .color(Color(white: 0.07)))
+                // The spiral grille: curved spokes, turning while it's on.
+                let turn = reduceMotion || !on ? 0 : t * (2 + 6 * max(0.15, speed))
+                let gr = grille.width / 2
+                var spokes = Path()
+                for i in 0..<20 {
+                    let a = Double(i) / 20 * 2 * .pi + turn
+                    let inner = CGPoint(x: cx + cos(a) * gr * 0.28, y: cy + sin(a) * gr * 0.28)
+                    let outer = CGPoint(x: cx + cos(a + 0.9) * gr * 0.95, y: cy + sin(a + 0.9) * gr * 0.95)
+                    let bend = CGPoint(x: cx + cos(a + 0.25) * gr * 0.75, y: cy + sin(a + 0.25) * gr * 0.75)
+                    spokes.move(to: inner)
+                    spokes.addQuadCurve(to: outer, control: bend)
+                }
+                g.stroke(spokes, with: .color(.white.opacity(on ? 0.45 : 0.25)), lineWidth: max(0.4, w * 0.012))
+                // The badge in the middle.
+                let hub = gr * 0.3
+                g.fill(Path(ellipseIn: CGRect(x: cx - hub, y: cy - hub, width: hub * 2, height: hub * 2)),
+                       with: .color(pedestal ? Color(white: 0.7) : Color(white: 0.12)))
+                g.stroke(Path(ellipseIn: CGRect(x: cx - hub, y: cy - hub, width: hub * 2, height: hub * 2)),
+                         with: .color(.white.opacity(0.5)), lineWidth: 0.5)
+                // While it's on, a soft blue light at the hub.
+                if on {
+                    g.fill(Path(ellipseIn: CGRect(x: cx - hub * 0.35, y: cy - hub * 0.35, width: hub * 0.7, height: hub * 0.7)), with: .color(.cyan))
+                }
+            }
         }
     }
 }
