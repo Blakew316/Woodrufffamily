@@ -41,6 +41,12 @@ final class SmartThings {
 
     var clientID: String { Keychain.get("st.client") ?? "" }
 
+    /// Signed in with Samsung (renews by itself for good). A pasted token, which Samsung makes last only 24 hours,
+    /// is then never used, even if an old one comes back from another device.
+    var usesAccount: Bool {
+        Keychain.get("st.refresh") != nil && Keychain.get("st.client") != nil && Keychain.get("st.secret") != nil
+    }
+
     /// Signs in through Samsung with the family's SmartThings app (its Client ID and Secret).
     func signIn(clientID: String, secret: String) async {
         let id = clientID.trimmingCharacters(in: .whitespacesAndNewlines), sec = secret.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -85,7 +91,6 @@ final class SmartThings {
         let t = token.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !t.isEmpty else { return }
         Keychain.set(t, for: "st.token")
-        Keychain.set(nil, for: "st.access"); Keychain.set(nil, for: "st.refresh")
         await refresh(full: true)
     }
 
@@ -113,7 +118,9 @@ final class SmartThings {
     /// The sign-in to use. A renewal runs one at a time (the renewal key works once, so two at once would
     /// sign the loser out); everyone else waits for it.
     private func token(force: Bool = false) async throws -> String {
-        if let pat = Keychain.get("st.token") { return pat }
+        if !usesAccount, let pat = Keychain.get("st.token") { return pat }
+        // An old pasted token alongside the Samsung sign-in: drop it everywhere (the removal syncs).
+        if Keychain.get("st.token") != nil { Keychain.set(nil, for: "st.token") }
         if !force, let a = Keychain.get("st.access"), let e = Keychain.get("st.expires").flatMap(Double.init), e > Date().timeIntervalSince1970 { return a }
         if let running = renewing { return try await running.value }
         let t = Task { try await self.renew() }
@@ -132,7 +139,13 @@ final class SmartThings {
         } catch {
             // Another of the family's devices renewed first (the renewal key works once) and its new key has
             // arrived by sync in the meantime: use that one rather than giving up.
-            guard let newer = Keychain.get("st.refresh"), newer != r else { throw error }
+            var newer = Keychain.get("st.refresh")
+            if newer == r {
+                // Its new key may still be on its way here: wait a moment for it.
+                try? await Task.sleep(nanoseconds: 8_000_000_000)
+                newer = Keychain.get("st.refresh")
+            }
+            guard let newer, newer != r else { throw error }
             if let a = Keychain.get("st.access"), let e = Keychain.get("st.expires").flatMap(Double.init), e > Date().timeIntervalSince1970 {
                 return a
             }
@@ -163,10 +176,14 @@ final class SmartThings {
         let code = answer.code, json = answer.json
         guard (200..<300).contains(code) else {
             // Signed in with an account (not a pasted token) and the sign-in ran out early: renew once and retry.
-            if code == 401, !retried, Keychain.get("st.token") == nil, Keychain.get("st.refresh") != nil {
+            if code == 401, !retried, usesAccount {
                 return try await call(method, path, body, retried: true)
             }
-            if code == 401 { throw OAuthRelay.Failure.refused(Keychain.get("st.token") != nil ? "The SmartThings token expired. Paste a new one or sign in." : "Sign in to SmartThings again.") }
+            if code == 401 {
+                throw OAuthRelay.Failure.refused(usesAccount
+                    ? "Samsung signed this out. Sign In with Samsung again."
+                    : "The pasted token ran out (Samsung makes them last 24 hours). Sign In with Samsung instead: it stays signed in.")
+            }
             throw APIError(code: code, message: Self.errorWords(json) ?? "SmartThings answered \(code).")
         }
         return json
@@ -868,17 +885,21 @@ extension ISO8601DateFormatter {
 struct SmartThingsSection: View {
     private let st = SmartThings.shared
     @State private var clientID = SmartThings.shared.clientID
-    @State private var secret = ""
-    @State private var token = ""
+    // Kept from the last sign-in (and synced), so signing in again is one tap.
+    @State private var secret = Keychain.get("st.secret") ?? ""
     @State private var showSetup = false
 
     var body: some View {
         Section {
-            if st.connected {
+            if st.connected && st.usesAccount {
                 LabeledContent("Samsung SmartThings", value: "\(AccessoryStore.shared.fromSmartThings.count) devices")
                 Button("Refresh") { Task { await st.refresh(full: true) } }
                 Button("Disconnect", role: .destructive) { st.signOut() }
             } else {
+                if st.connected {
+                    // On a 24-hour token: the Samsung sign-in below replaces it for good.
+                    LabeledContent("Samsung SmartThings", value: "24-hour token")
+                }
                 TextField("Client ID", text: $clientID).autocorrectionDisabled().font(.body.monospaced())
                 SecureField("Client Secret", text: $secret)
                 Button {
@@ -899,14 +920,10 @@ struct SmartThingsSection: View {
                     """)
                     .font(.footnote).foregroundStyle(.secondary).textSelection(.enabled)
                 }
-                HStack {
-                    SecureField("Or paste a personal access token", text: $token)
-                    Button("Use") { Task { await st.useToken(token); token = "" } }.disabled(token.isEmpty)
-                }
             }
             if let e = st.error { Text(e).foregroundStyle(Palette.attention) }
         } header: { Text("Samsung SmartThings") } footer: {
-            Text("Washer, dryer, fridge, oven and dishwasher: cycle status and time left, a notification when a cycle finishes, and start, pause or stop when Remote Control is on. A token from account.smartthings.com/tokens works too, but Samsung makes those last only 24 hours.")
+            Text("Washer, dryer, fridge, oven and dishwasher: cycle status and time left, a notification when a cycle finishes, and start, pause or stop when Remote Control is on.")
         }
     }
 }
