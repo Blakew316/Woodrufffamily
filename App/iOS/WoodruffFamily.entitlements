@@ -5,6 +5,9 @@
 	<!-- Apple Home: Cync (Matter) lights next to the Govee ones. -->
 	<key>com.apple.developer.homekit</key>
 	<true/>
+	<!-- Instant alerts while the app is closed: the Macs send the cameras', TVs' and appliances' alerts as pushes. -->
+	<key>aps-environment</key>
+	<string>development</string>
 	<!-- Shared with the widgets: what the Home Screen widgets show. -->
 	<key>com.apple.security.application-groups</key>
 	<array>

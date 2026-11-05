@@ -57,7 +57,8 @@ EXTRA_ENTITLEMENTS = {
     "widget": {"get-task-allow": True},
 }
 
-# Added only when the profile allows them (signing goes on without them otherwise): the widgets' app group.
+# Added only when the profile allows them (signing goes on without them otherwise): the widgets' app group, and
+# push (aps-environment, with the profile's own value) so alerts arrive while the app is closed.
 APP_GROUP = "group.com.woodruff.family"
 OPTIONAL_ENTITLEMENTS = {
     "app": {"com.apple.security.application-groups": [APP_GROUP]},
@@ -616,6 +617,8 @@ def build_entitlements(profile, kind, bundle_id=None):
         for key, value in OPTIONAL_ENTITLEMENTS[kind].items():
             if not subset_problems({key: value}, ents):
                 wanted[key] = value
+        if kind == "app" and ents.get("aps-environment") in ("development", "production"):
+            wanted["aps-environment"] = ents["aps-environment"]
     return (None if problems else wanted), problems
 
 

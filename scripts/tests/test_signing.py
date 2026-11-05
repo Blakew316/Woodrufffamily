@@ -171,5 +171,28 @@ class AppGroup(unittest.TestCase):
         self.assertNotIn("com.apple.security.application-groups", ents)
 
 
+class Push(unittest.TestCase):
+    """Push is signed in with the profile's own aps-environment, only for the app."""
+
+    def profile(self, extra):
+        ents = {"application-identifier": "D8D94SXAG6.com.blakew316.woodruff",
+                "com.apple.developer.team-identifier": "D8D94SXAG6",
+                "get-task-allow": True, "com.apple.developer.homekit": True}
+        ents.update(extra)
+        return {"entitlements": ents}
+
+    def test_profile_with_push(self):
+        ents, _ = signing.build_entitlements(self.profile({"aps-environment": "development"}), "app")
+        self.assertEqual(ents["aps-environment"], "development")
+
+    def test_profile_without_push(self):
+        ents, _ = signing.build_entitlements(self.profile({}), "app")
+        self.assertNotIn("aps-environment", ents)
+
+    def test_not_for_widgets(self):
+        ents, _ = signing.build_entitlements(self.profile({"aps-environment": "development"}), "widget")
+        self.assertNotIn("aps-environment", ents)
+
+
 if __name__ == "__main__":
     unittest.main()
