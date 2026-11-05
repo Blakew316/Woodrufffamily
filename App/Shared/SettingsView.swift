@@ -594,6 +594,8 @@ struct ConnectionsView: View {
     /// This device's sign-ins (their keys are in the Keychain: read as the page opens, and again each time it's back on
     /// screen, not at every redraw).
     @State private var device = DeviceSignIns()
+    /// The TV's health report, for its Google Photos and Calendar sign-ins.
+    @State private var hubHealth: HealthReport?
 
     var body: some View {
         Form {
@@ -601,6 +603,12 @@ struct ConnectionsView: View {
                 Section {
                     PageLink("Google Drive") { DriveView(hub: hub) } label: { IconRow(symbol: "", color: .clear, title: "Google Drive", value: s.google?.statusText) }
                     PageLink("Movie Posters") { PostersView(hub: hub) } label: { IconRow(symbol: "", color: .clear, title: "Movie Posters", value: s.tmdb == true ? "On" : "Off") }
+                    PageLink("Google Photos") { GoogleGrantView(grant: "photos", title: "Google Photos", about: "Brings the photos and videos you pick into Memories on the TVs.") } label: {
+                        IconRow(symbol: "", color: .clear, title: "Google Photos", value: hubHealth?.signIns?.photos?.text)
+                    }
+                    PageLink("Google Calendar") { GoogleGrantView(grant: "calendar", title: "Google Calendar", about: "Today’s events on the TVs’ Home.") } label: {
+                        IconRow(symbol: "", color: .clear, title: "Google Calendar", value: hubHealth?.signIns?.calendar?.text)
+                    }
                     PageLink("Nest Cameras") { CamerasView(hub: hub) } label: { IconRow(symbol: "", color: .clear, title: "Nest Cameras", value: s.nest?.statusText) }
                     PageLink("Mail") { MailView(hub: hub) } label: { IconRow(symbol: "", color: .clear, title: "Mail", value: mailSummary(s)) }
                 } header: { Text("On the TVs") } footer: {
@@ -638,6 +646,7 @@ struct ConnectionsView: View {
         }
         .task { await hub.loadIfNeeded(fleet) }
         .task { await hub.follow(fleet) }
+        .task { hubHealth = try? await fleet.hubClient()?.health() }
     }
 
     private func mailSummary(_ s: TVSettings) -> String {
@@ -657,6 +666,33 @@ struct DeviceSignIns: Equatable {
         DeviceSignIns(govee: SmartHome.shared.goveeKey?.isEmpty == false, smartThings: SmartThings.shared.connected,
                       dreo: Dreo.shared.connected, deco: DecoWifi.shared.connected)
     }
+}
+
+/// Accounts → Google Photos / Google Calendar: how the TV's sign-in stands, and signing it in from here (the TV asks
+/// for the same Google sign-in as on its own Settings → Accounts).
+struct GoogleGrantView: View {
+    @Environment(Fleet.self) private var fleet
+    var grant: String
+    var title: String
+    var about: String
+    @State private var health: HealthReport?
+    @State private var signIn = false
+
+    var body: some View {
+        let row = grant == "photos" ? health?.signIns?.photos : health?.signIns?.calendar
+        Form {
+            Section {
+                LabeledContent("Status", value: row?.text ?? (health == nil ? "Checking…" : "Not connected"))
+                Button(row?.state == "signedIn" ? "Sign In Again" : "Sign In") { signIn = true }
+            } footer: { Text(about) }
+        }
+        .formStyle(.grouped)
+        .navigationTitle(title).inlineTitle()
+        .task { await load() }
+        .sheet(isPresented: $signIn, onDismiss: { Task { await load() } }) { HubSignIn(grant: grant) }
+    }
+
+    private func load() async { health = try? await fleet.hubClient()?.health() }
 }
 
 /// The sign-in for [grant] on the TV that holds the settings (or why there's none).
