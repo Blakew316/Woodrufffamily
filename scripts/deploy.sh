@@ -860,7 +860,7 @@ deploy_iphone() {
   local -a targets usable sign
   local udid name i status identity identity_name cert_expires cert_days app_profile app_uuid app_expires app_days
   local widgets_profile widgets_uuid widgets_expires widgets_days log product copy appex slog vlog
-  local bid item ilog llog installed=0 kept why
+  local bid item ilog llog installed=0 kept why variant ents
 
   step "iPhone: the iPhones paired with this Mac"
   if ! signing devices >"$devs" 2>"$LOGDIR/iphones.log"; then
@@ -976,19 +976,28 @@ deploy_iphone() {
     ${VERSION_SETTINGS[@]+"${VERSION_SETTINGS[@]}"} build </dev/null >"$log" 2>&1
   status=$?
   show_build "$log"
-  if [ "$XCODE_SIGNING" -eq 1 ] && ! build_succeeded "$status" "$log" "$product"; then
-    # Xcode couldn't sign with the widgets' app group (it isn't on the App IDs yet): the app without it, so the
-    # iPhones still update (the Home Screen widgets then say to open the app).
-    warn "the iPhone build with the widgets' app group failed; building it again without the app group"
-    log="$LOGDIR/iphone-build-basic.log"
+  # Xcode couldn't sign with everything: drop only what Apple refused, so the iPhones still update. First without
+  # the widgets' app group (not registered on the account yet; the Home Screen widgets then say to open the app)
+  # but with push, then with neither.
+  for variant in push basic; do
+    if [ "$XCODE_SIGNING" -ne 1 ] || build_succeeded "$status" "$log" "$product"; then break; fi
+    case "$variant" in
+      push) warn "the iPhone build with the widgets' app group failed; building it again without the app group" ;;
+      basic) warn "the iPhone build with push failed too; building it again without push" ;;
+    esac
+    case "$variant" in
+      push) ents=App/iOS/WoodruffFamilyPush.entitlements ;;
+      basic) ents=App/iOS/WoodruffFamilyBasic.entitlements ;;
+    esac
+    log="$LOGDIR/iphone-build-$variant.log"
     xcodebuild -project WoodruffFamily.xcodeproj -scheme WoodruffFamily -destination 'generic/platform=iOS' \
       -configuration Release -derivedDataPath build DEVELOPMENT_TEAM="$TEAM" \
       WOODRUFF_BUNDLE_ID="$IPHONE_BUNDLE_ID" "${sign[@]}" \
-      WOODRUFF_ENTITLEMENTS=App/iOS/WoodruffFamilyBasic.entitlements WOODRUFF_WIDGET_ENTITLEMENTS= \
+      WOODRUFF_ENTITLEMENTS="$ents" WOODRUFF_WIDGET_ENTITLEMENTS= \
       ${VERSION_SETTINGS[@]+"${VERSION_SETTINGS[@]}"} build </dev/null >"$log" 2>&1
     status=$?
     show_build "$log"
-  fi
+  done
   if [ "$XCODE_SIGNING" -eq 1 ] && ! build_succeeded "$status" "$log" "$product" && [ -z "$IPHONE_FALLBACK" ]; then
     # Xcode couldn't sign (no Apple account in Xcode > Settings > Accounts, or its profiles lack something): sign
     # with this Mac's own certificate and profiles instead, so the iPhones still update.
