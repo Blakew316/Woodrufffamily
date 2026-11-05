@@ -518,6 +518,11 @@ build_install_helper() {  # "$@" = the signing settings
     return 1
   fi
   put_helper "$product" || return 1
+  # How many Macs its signing profile lets it open on (a Mac registered since is added at Xcode's next profile).
+  local macs
+  macs=$(security cms -D -i "$product/Contents/embedded.provisionprofile" 2>/dev/null |
+    plutil -extract ProvisionedDevices raw -o - - 2>/dev/null)
+  [ -n "$macs" ] && say "    it opens on the $macs Macs its signing profile lists"
   # For the Macs that install the shared build.
   if mkdir -p "$SHARE_DIR" 2>/dev/null && ditto -c -k --sequesterRsrc --keepParent "$HELPER_INSTALLED" "$LOGDIR/helper.zip" </dev/null >>"$hlog" 2>&1; then
     cp "$LOGDIR/helper.zip" "$SHARE_DIR/$HELPER_NAME.zip" 2>>"$hlog" && say "    shared as Woodruff Family builds/$HELPER_NAME.zip"
