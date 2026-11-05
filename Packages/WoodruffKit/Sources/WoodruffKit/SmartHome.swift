@@ -849,11 +849,19 @@ public final class SmartHome {
         // A Govee light also in Apple Home (over Matter) is one lamp, not two: "Blake's Floor Lamp 2" from Apple Home
         // and "Blake's Govee Floor Lamp" from Govee. The Govee one stays (it has the family's room and name).
         let govee = Set(unique.filter { !$0.isHome }.map { Self.sameLampKey($0.name) }.filter { !$0.isEmpty })
-        unique = unique.filter { l in
+        let twin = { (l: GoveeLight) -> Bool in
             let n = l.name.lowercased()
-            return !(l.isHome && (n.contains("lamp") || n.contains("floor")) && govee.contains(Self.sameLampKey(l.name)))
+            return l.isHome && (n.contains("lamp") || n.contains("floor")) && govee.contains(Self.sameLampKey(l.name))
         }
-        if unique.count != lights.count { lights = unique }
+        // The Govee one takes Apple Home's room when it has none of its own, so it's in its room everywhere.
+        var homeRoom: [String: String] = [:]
+        for l in unique where twin(l) { if let z = l.zone, !z.isEmpty { homeRoom[Self.sameLampKey(l.name)] = z } }
+        unique = unique.filter { !twin($0) }.map { l in
+            var l = l
+            if !l.isHome, (l.zone ?? "").isEmpty, let z = homeRoom[Self.sameLampKey(l.name)] { l.zone = z }
+            return l
+        }
+        if unique != lights { lights = unique }
         Saved.save("smartSpeakers2", speakers)
         Saved.save("smartLights", lights)
         onChange?()

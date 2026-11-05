@@ -96,9 +96,9 @@ struct AllDevicesView: View {
                 }
             }
         }
-        .onAppear { ArcRoom.place() }
-        .onChange(of: home.speakers.count) { _, _ in ArcRoom.place() }
-        .onChange(of: home.lights.count) { _, _ in ArcRoom.place() }
+        .onAppear { store.zones(); ArcRoom.place() }
+        .onChange(of: home.speakers.count) { _, _ in store.zones(); ArcRoom.place() }
+        .onChange(of: home.lights.count) { _, _ in store.zones(); ArcRoom.place() }
         .onChange(of: store.all.count) { _, _ in ArcRoom.place() }
         .cameraPresenter($openCamera)
         .sheet(item: $openSpeaker) { r in

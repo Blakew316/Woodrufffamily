@@ -112,7 +112,8 @@ final class AccessoryStore {
         Saved.save(key, list)
     }
 
-    private func zones() {
+    /// Also when the lights or speakers change (a light found after the devices still gets the room in its name).
+    func zones() {
         var z: [String: String] = [:]
         // The rooms the house already has (the TVs', the family's own, Sonos', the apps').
         let known = Set(SmartHome.shared.rooms.values) .union(Fleet.shared.tvs.map(\.name)).union(SmartHome.shared.extraRooms)
