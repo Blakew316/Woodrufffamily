@@ -353,7 +353,7 @@ struct DeviceGlyph: View {
         case .thermostat(let d):
             EcobeePicture(device: d).frame(width: 52, height: 52)
         case .dreoFan(let pedestal, let speed):
-            DreoFanPicture(pedestal: pedestal, on: on, speed: speed).frame(width: 52, height: 58)
+            DreoFanPicture(pedestal: pedestal, on: on, speed: speed).frame(width: pedestal ? 40 : 52, height: 58)
         case .floorLamp(let level):
             FloorLampPicture(level: level, lit: on, color: tint).frame(width: 34, height: 56)
         case .homePod(let mini):
@@ -411,7 +411,7 @@ struct DeviceGlyph: View {
     }
 }
 
-/// A TV, drawn like a modern one: a thin black panel on two slim feet. On, its screen glows a deep blue with a soft
+/// A TV, drawn like a modern one: a thin black panel on a centre stand (a short neck and a slim foot plate). On, its screen glows a deep blue with a soft
 /// reflection; while something plays, three bars bounce gently in the middle of it. Off, the glass is dark.
 struct TVPicture: View {
     var on: Bool
@@ -425,6 +425,13 @@ struct TVPicture: View {
             TimelineView(.animation(minimumInterval: 1.0 / 24, paused: !(on && playing) || reduceMotion)) { ctx in
                 let t = ctx.date.timeIntervalSinceReferenceDate
                 ZStack(alignment: .top) {
+                    // The stand, behind and below the panel: a short neck and a slim foot plate.
+                    RoundedRectangle(cornerRadius: 1).fill(LinearGradient(colors: [Color(white: 0.5), Color(white: 0.22)], startPoint: .leading, endPoint: .trailing))
+                        .frame(width: w * 0.08, height: h - panelH)
+                        .offset(y: panelH - 1)
+                    Capsule().fill(LinearGradient(colors: [Color(white: 0.6), Color(white: 0.28)], startPoint: .top, endPoint: .bottom))
+                        .frame(width: w * 0.42, height: max(2, h * 0.06))
+                        .offset(y: h - max(2, h * 0.06))
                     // The light the screen throws behind it.
                     if on {
                         RoundedRectangle(cornerRadius: 6).fill(Color(red: 0.25, green: 0.55, blue: 1).opacity(0.45))
@@ -458,25 +465,12 @@ struct TVPicture: View {
                         }
                         .padding(w * 0.03)
                         .frame(width: w, height: panelH)
-                    // Its two slim feet.
-                    HStack {
-                        foot
-                        Spacer()
-                        foot
-                    }
-                    .frame(width: w * 0.72)
-                    .offset(y: panelH - 1)
                 }
                 .frame(width: w, height: h, alignment: .top)
             }
         }
     }
 
-    private var foot: some View {
-        Capsule().fill(LinearGradient(colors: [Color(white: 0.55), Color(white: 0.25)], startPoint: .top, endPoint: .bottom))
-            .frame(width: 3, height: 7)
-            .rotationEffect(.degrees(0))
-    }
 }
 
 /// A Nest camera: the round lens head on its stand (an indoor or outdoor cam), or the tall Nest Doorbell with its
@@ -747,23 +741,39 @@ struct DreoFanPicture: View {
         }
     }
 
+    /// The pedestal circulator: a small black head with its side bracket, a neck tapering into a tall slim pole with a
+    /// silver band near the bottom, and a small dark base.
     private var pedestalFan: some View {
         GeometryReader { g in
             let w = g.size.width, h = g.size.height
-            let d = w * 0.72
-            let cy = d / 2
-            let baseW = w * 0.62, baseH = h * 0.1
+            let d = min(w * 0.7, h * 0.42), r = d / 2
+            let cx = w / 2, cy = r + h * 0.02
+            let baseW = d * 0.95, baseH = h * 0.07
+            let poleW = max(2, w * 0.085)
+            let poleTop = cy + r * 0.85, poleBottom = h - baseH * 0.6
             ZStack(alignment: .topLeading) {
-                Ellipse().fill(.black.opacity(0.35)).frame(width: baseW * 1.08, height: baseH * 0.9).blur(radius: 1)
-                    .position(x: w / 2, y: h - baseH * 0.35)
-                Ellipse().fill(LinearGradient(colors: [Color(white: 0.34), Color(white: 0.1)], startPoint: .top, endPoint: .bottom))
-                    .frame(width: baseW, height: baseH).position(x: w / 2, y: h - baseH * 0.6)
-                Capsule().fill(LinearGradient(colors: [Color(white: 0.3), Color(white: 0.06), Color(white: 0.18)], startPoint: .leading, endPoint: .trailing))
-                    .frame(width: w * 0.08, height: h - baseH - cy)
-                    .position(x: w / 2, y: cy + (h - baseH - cy) / 2)
+                // Its shadow, and the base: a small dark disc, lit along its top.
+                Ellipse().fill(.black.opacity(0.35)).frame(width: baseW * 1.08, height: baseH * 0.8).blur(radius: 1)
+                    .position(x: cx, y: h - baseH * 0.3)
+                Ellipse().fill(LinearGradient(colors: [Color(white: 0.36), Color(white: 0.1)], startPoint: .top, endPoint: .bottom))
+                    .frame(width: baseW, height: baseH).position(x: cx, y: h - baseH * 0.6)
+                // The pole, satin black, with a silver band just above the base.
+                Capsule().fill(LinearGradient(colors: [Color(white: 0.3), Color(white: 0.06), Color(white: 0.2)], startPoint: .leading, endPoint: .trailing))
+                    .frame(width: poleW, height: poleBottom - poleTop)
+                    .position(x: cx, y: (poleTop + poleBottom) / 2)
+                Rectangle().fill(LinearGradient(colors: Self.silver, startPoint: .leading, endPoint: .trailing))
+                    .frame(width: poleW * 0.8, height: h * 0.06)
+                    .position(x: cx, y: poleBottom - h * 0.05)
+                // The neck: widening from the pole up into the bottom of the head.
+                Ellipse().fill(Color(white: 0.1)).frame(width: poleW * 2.4, height: r * 0.6).position(x: cx, y: cy + r * 0.85)
+                // The bracket on its right side.
+                RoundedRectangle(cornerRadius: w * 0.03, style: .continuous)
+                    .fill(LinearGradient(colors: [Color(white: 0.3), Color(white: 0.08)], startPoint: .leading, endPoint: .trailing))
+                    .frame(width: max(2, w * 0.08), height: d * 0.5)
+                    .position(x: cx + r * 1.02, y: cy)
                 head(d, rim: [Color(white: 0.34), Color(white: 0.12), Color(white: 0.05)],
                      badge: [Color(white: 0.92), Color(white: 0.6)])
-                    .position(x: w / 2, y: cy)
+                    .position(x: cx, y: cy)
             }
             .frame(width: w, height: h)
         }
