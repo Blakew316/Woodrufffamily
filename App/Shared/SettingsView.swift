@@ -111,6 +111,10 @@ struct SettingsView: View {
                 PageLink("TVs") { TVsView() } label: { TVsSummaryRow() }
                 // Speakers, lights, cameras, devices and the Wi‑Fi.
                 PageLink("Smart Home") { SmartHomeSettingsView(hub: hub) } label: { SmartHomeSummaryRow() }
+                // The notes kept on the TVs (Command Center → Notes there).
+                PageLink("Notes") { NotesView() } label: {
+                    IconRow(symbol: "", color: .clear, title: "Notes", subtitle: "The notes on the TVs")
+                }
                 #if os(iOS)
                 // Messages, links and files to the TVs and phones: Send has no tab on iPhone (the Mac has it in its
                 // sidebar), so it's here, where it's easy to find.

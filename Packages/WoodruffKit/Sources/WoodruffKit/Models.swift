@@ -583,3 +583,21 @@ public struct RelinkResult: Codable, Sendable {
     public var name: String
     public var id: String
 }
+
+// MARK: - Notes
+
+/// A note kept on the TV (Command Center → Notes there).
+public struct TVNote: Codable, Hashable, Sendable, Identifiable {
+    public var id: String
+    public var title: String
+    public var body: String
+    /// When it was last changed (ms since 1970).
+    public var updated: Double
+    public var pinned: Bool?
+
+    public var isPinned: Bool { pinned ?? false }
+    public var updatedAt: Date { Date(timeIntervalSince1970: updated / 1000) }
+}
+
+struct TVNoteList: Decodable { var notes: [TVNote] }
+struct TVNoteSaved: Decodable { var note: TVNote? }

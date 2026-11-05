@@ -256,6 +256,19 @@ public struct TVClient: Sendable {
     public func deleteMail(_ id: String) async throws -> TVSettings { try await t.post("/api/mail/delete", ["id": id]) }
     public func clearCrash() async throws -> TVSettings { try await t.post("/api/crash/clear") }
 
+    // MARK: Notes (kept on the TV)
+
+    public func notes() async throws -> [TVNote] { (try await t.get("/api/notes") as TVNoteList).notes }
+    /// Adds a note (no id) or changes one; [pinned] nil leaves it as it was.
+    @discardableResult
+    public func saveNote(id: String?, title: String, body: String, pinned: Bool?) async throws -> TVNote? {
+        var b: [String: Any?] = ["title": title, "body": body]
+        if let id { b["id"] = id }
+        if let pinned { b["pinned"] = pinned }
+        return (try await t.post("/api/notes", b) as TVNoteSaved).note
+    }
+    public func deleteNote(_ id: String) async throws { try await t.post("/api/notes/delete", ["id": id]) }
+
     public func startSignIn(_ grant: String) async throws -> SignInStart { try await t.post("/api/signin", ["grant": grant]) }
     public func signInStatus(state: String, grant: String) async throws -> SignInStatus {
         try await t.get("/api/signin/status", ["state": state, "grant": grant])
