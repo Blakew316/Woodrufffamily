@@ -16,6 +16,10 @@ struct HomeScene: Codable, Identifiable, Equatable, Hashable {
     /// The thermostat's temperature (°F): the heat or the cool setting, whichever it's on.
     var thermostat: Double?
     var pauseSonos = false
+    /// Shown as a button on Home (only when added there; missing from scenes saved before it was asked).
+    var onHome: Bool? = nil
+
+    var showsOnHome: Bool { onHome ?? false }
 
     static let movieNight = "movie-night"
     static let bedtime = "bedtime"
@@ -177,10 +181,11 @@ struct ScenesStrip: View {
     @State private var editing: HomeScene?
 
     var body: some View {
-        if !store.scenes.isEmpty {
+        let shown = store.scenes.filter(\.showsOnHome)
+        if !shown.isEmpty {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 10) {
-                    ForEach(store.scenes) { s in
+                    ForEach(shown) { s in
                         Button { run(s) } label: {
                             HStack(spacing: 6) {
                                 if running == s.id {
@@ -199,6 +204,11 @@ struct ScenesStrip: View {
                         .disabled(running != nil)
                         .contextMenu {
                             Button("Edit Scene") { editing = s }
+                            Button("Remove from Home") {
+                                var changed = s
+                                changed.onHome = false
+                                withAnimation(.smooth(duration: 0.3)) { store.save(changed) }
+                            }
                         }
                         .accessibilityHint("Runs the scene")
                     }
@@ -251,7 +261,7 @@ struct ScenesSettingsView: View {
                     adding = HomeScene(id: UUID().uuidString, name: "")
                 }
             } footer: {
-                Text("Scenes run from Home, Control Center, Shortcuts, or Siri: “Movie Night with Woodruff”.")
+                Text("Scenes run from Control Center, Shortcuts, or Siri: “Movie Night with Woodruff”. Turn on Add to Home in a scene to show it on Home.")
             }
         }
         .formStyle(.grouped)
@@ -299,6 +309,9 @@ struct SceneEditor: View {
         Form {
             Section {
                 TextField("Name", text: $scene.name)
+                Toggle("Add to Home", isOn: Binding(get: { scene.showsOnHome }, set: { scene.onHome = $0 }))
+            } footer: {
+                Text("Shows the scene as a button on Home.")
             }
             Section("TVs") {
                 Toggle("Turn Off Every TV", isOn: $scene.allTVsOff)
