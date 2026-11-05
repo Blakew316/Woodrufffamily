@@ -527,8 +527,20 @@ build_install_helper() {  # "$@" = the signing settings
     plutil -extract ProvisionedDevices raw -o - - 2>/dev/null)
   [ -n "$macs" ] && say "    its signing profile lists $macs Mac(s), the Macs it opens on"
   # For the Macs that install the shared build.
-  if mkdir -p "$SHARE_DIR" 2>/dev/null && ditto -c -k --sequesterRsrc --keepParent "$HELPER_INSTALLED" "$LOGDIR/helper.zip" </dev/null >>"$hlog" 2>&1; then
-    cp "$LOGDIR/helper.zip" "$SHARE_DIR/$HELPER_NAME.zip" 2>>"$hlog" && say "    shared as Woodruff Family builds/$HELPER_NAME.zip"
+  # A new name each time: macOS lets only the app that made a file in iCloud Drive change it (one made from Terminal
+  # can't be replaced by the updater), and the other Macs take the newest.
+  local sha12 shared
+  sha12=$(git rev-parse --short=12 HEAD 2>/dev/null)
+  shared="$SHARE_DIR/$HELPER_NAME ${sha12:-$(date +%s)}.zip"
+  if mkdir -p "$SHARE_DIR" 2>/dev/null && ditto -c -k --sequesterRsrc --keepParent "$HELPER_INSTALLED" "$LOGDIR/helper.zip" </dev/null >>"$hlog" 2>&1 &&
+    cp "$LOGDIR/helper.zip" "$shared" 2>>"$hlog"; then
+    say "    shared as Woodruff Family builds/$(basename "$shared")"
+    local f
+    for f in "$SHARE_DIR/$HELPER_NAME"*.zip; do
+      [ "$f" = "$shared" ] || rm -f "$f" 2>/dev/null
+    done
+  else
+    warn "$HELPER_NAME wasn't shared in iCloud Drive (log $hlog): the other Macs keep the one they have"
   fi
   return 0
 }
@@ -548,9 +560,21 @@ helper_runs_here() {
 
 # On a Mac that installs the shared build: the helper the Mac Studio shared, when there is one newer than this one's.
 install_shared_helper() {
-  local zip="$SHARE_DIR/$HELPER_NAME.zip" unz="$LOGDIR/helper-shared" hlog="$LOGDIR/helper-install.log"
-  if command -v brctl >/dev/null 2>&1; then brctl download "$zip" </dev/null >/dev/null 2>&1; fi
-  [ -f "$zip" ] || return 0
+  local zip="" f unz="$LOGDIR/helper-shared" hlog="$LOGDIR/helper-install.log"
+  # The newest one shared ("Woodruff Home Helper <commit>.zip", or the older plain name); downloaded first if iCloud
+  # only has a placeholder.
+  if command -v brctl >/dev/null 2>&1; then
+    for f in "$SHARE_DIR/.$HELPER_NAME"*.zip.icloud; do
+      [ -e "$f" ] || continue
+      f=${f%.icloud}
+      brctl download "$SHARE_DIR/${f##*/.}" </dev/null >/dev/null 2>&1
+    done
+  fi
+  for f in "$SHARE_DIR/$HELPER_NAME"*.zip; do
+    [ -f "$f" ] || continue
+    if [ -z "$zip" ] || [ "$f" -nt "$zip" ]; then zip=$f; fi
+  done
+  [ -n "$zip" ] || return 0
   # Only a newer one than the one installed from there last (so the running helper isn't restarted every check).
   local stamp="$HOME/Library/Application Support/Woodruff Family/helper-installed.stamp"
   local refused="$HOME/Library/Application Support/Woodruff Family/helper-refused.stamp"
