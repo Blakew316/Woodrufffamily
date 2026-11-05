@@ -41,7 +41,7 @@ targets:
     settings:
       base:
         # Set WOODRUFF_BUNDLE_ID on the command line to sign with your own id; the widgets follow it.
-        WOODRUFF_BUNDLE_ID: com.woodruff.family.remote
+        WOODRUFF_BUNDLE_ID: com.blakew316.woodruff
         PRODUCT_BUNDLE_IDENTIFIER: $(WOODRUFF_BUNDLE_ID)
         # Apple Home (Cync over Matter). If signing ever refuses HomeKit, build with
         # WOODRUFF_HOMEKIT=NO WOODRUFF_ENTITLEMENTS= and everything else still works.
@@ -96,7 +96,7 @@ targets:
       - package: WoodruffKit
     settings:
       base:
-        WOODRUFF_BUNDLE_ID: com.woodruff.family.remote
+        WOODRUFF_BUNDLE_ID: com.blakew316.woodruff
         PRODUCT_BUNDLE_IDENTIFIER: $(WOODRUFF_BUNDLE_ID).widgets
         PRODUCT_NAME: WoodruffWidgets
         TARGETED_DEVICE_FAMILY: "1,2"
