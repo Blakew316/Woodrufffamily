@@ -56,6 +56,19 @@ enum TVIntentActions {
     }
 
     @MainActor static func key(_ key: String) async {
+        // Volume and mute go straight to the TV the remote is on (no refreshing every TV first), and are given up
+        // on after 2 seconds: a Control Center button stays lit until this returns.
+        if key != "playpause", let tv = Fleet.shared.selected {
+            let fleet = Fleet.shared
+            await within(2) {
+                if key == "mute", let lg = fleet.lg(for: tv) {
+                    if let v = try? await lg.volume() { try? await lg.setMute(!v.muted) }
+                } else {
+                    try? await fleet.client(for: tv)?.key(key)
+                }
+            }
+            return
+        }
         guard let found = await target() else { return }
         let fleet = found.0
         let tv = found.1
@@ -68,6 +81,22 @@ enum TVIntentActions {
         // Volume changes nothing on the Lock Screen; play/pause does, as soon as the TV has made it.
         guard key == "playpause" else { return }
         await settle(fleet, tv.id) { $0?.isPlaying != was?.isPlaying || $0?.title != was?.title }
+    }
+
+    /// Runs [work], returning after [seconds] at most (the work carries on by itself).
+    @MainActor static func within(_ seconds: Double, _ work: @escaping @MainActor () async -> Void) async {
+        final class Once { var done = false }
+        let once = Once()
+        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+            Task { @MainActor in
+                await work()
+                if !once.done { once.done = true; c.resume() }
+            }
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                if !once.done { once.done = true; c.resume() }
+            }
+        }
     }
 
     @MainActor static func media(_ action: String) async {
@@ -162,7 +191,7 @@ struct OpenRemoteIntent: AppIntent {
 struct LightsOffControlIntent: LiveActivityIntent {
     static let title: LocalizedStringResource = "Turn Off the Lights"
     @MainActor func perform() async throws -> some IntentResult {
-        if let run = ControlHook.lights { await run(false) } else { SmartHome.shared.allLights(false) }
+        if let run = ControlHook.lights { await TVIntentActions.within(3) { await run(false) } } else { SmartHome.shared.allLights(false) }
         return .result()
     }
 }
@@ -170,7 +199,7 @@ struct LightsOffControlIntent: LiveActivityIntent {
 struct LightsOnControlIntent: LiveActivityIntent {
     static let title: LocalizedStringResource = "Turn On the Lights"
     @MainActor func perform() async throws -> some IntentResult {
-        if let run = ControlHook.lights { await run(true) } else { SmartHome.shared.allLights(true) }
+        if let run = ControlHook.lights { await TVIntentActions.within(3) { await run(true) } } else { SmartHome.shared.allLights(true) }
         return .result()
     }
 }
@@ -196,7 +225,11 @@ struct SonosVolumeControlIntent: LiveActivityIntent {
     init() {}
     init(up: Bool) { self.up = up }
     @MainActor func perform() async throws -> some IntentResult {
-        if let run = ControlHook.sonosVolume { await run(up); return .result() }
+        if let run = ControlHook.sonosVolume {
+            let up = up
+            await TVIntentActions.within(2) { await run(up) }
+            return .result()
+        }
         if SmartHome.shared.speakers.isEmpty { await SmartHome.shared.findSonos() }
         guard let r0 = SmartHome.shared.lastSpeaker else { return .result() }
         let r = await Sonos.refresh(r0)
