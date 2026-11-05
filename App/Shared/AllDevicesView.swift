@@ -737,10 +737,10 @@ struct DreoFanPicture: View {
     private var pedestalFan: some View {
         GeometryReader { g in
             let w = g.size.width, h = g.size.height
-            let d = min(w * 0.7, h * 0.42), r = d / 2
+            let d = min(w * 0.52, h * 0.33), r = d / 2
             let cx = w / 2, cy = r + h * 0.02
-            let baseW = d * 0.95, baseH = h * 0.07
-            let poleW = max(2, w * 0.085)
+            let baseW = d * 0.78, baseH = h * 0.055
+            let poleW = max(1.8, w * 0.06)
             let poleTop = cy + r * 0.85, poleBottom = h - baseH * 0.6
             ZStack(alignment: .topLeading) {
                 // Its shadow, and the base: a small dark disc, lit along its top.
