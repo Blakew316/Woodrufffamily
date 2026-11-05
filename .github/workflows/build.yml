@@ -18,13 +18,14 @@ permissions:
 jobs:
   # The quick check a release waits for (about a minute): the scripts every Mac runs. The Mac Studio's own build is
   # the real gate: when it fails, nothing is installed anywhere. The full build below still runs for the record.
+  # On Linux: it starts at once (GitHub's Mac machines can keep a job waiting for minutes).
   check:
-    runs-on: macos-26
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - name: Script tests
-        run: /bin/bash -n scripts/deploy.sh && /usr/bin/python3 -m unittest discover -s scripts/tests -p 'test_*.py' -v
+        run: bash -n scripts/deploy.sh && python3 -m unittest discover -s scripts/tests -p 'test_*.py' -v
 
   build:
     runs-on: macos-26
