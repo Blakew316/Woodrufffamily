@@ -596,7 +596,7 @@ install_shared_helper() {
     return 1
   fi
   if ! helper_runs_here "$unz/$HELPER_NAME.app"; then
-    warn "$HELPER_NAME isn't installed here: this Mac isn't in its signing profile (register it under Devices at developer.apple.com; the Mac Studio's next build includes it)"
+    warn "$HELPER_NAME isn't installed here: this Mac isn't in its signing profile (register it under Devices at developer.apple.com with the platform macOS, not iOS; the Mac Studio's next build includes it)"
     mkdir -p "$(dirname "$refused")" && touch "$refused"
     rm -rf "$unz"
     return 0
