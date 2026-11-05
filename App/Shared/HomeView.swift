@@ -63,13 +63,14 @@ struct HomeView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 30) {
                 #if os(iOS)
-                // The greeting with its one-liner at the top, then the weather and Edit on the left and the thermostat
+                // The greeting with its one-liner floating at the top, then the weather and Edit on the left and the thermostat
                 // on the right under it. (While arranging, Done stays pinned at the top right instead.)
                 VStack(spacing: 14) {
+                    // Floating on the background (no card behind it), with a soft shadow to keep it crisp.
                     GreetingText()
                         .frame(maxWidth: .infinity)
-                        .padding(.vertical, 14).padding(.horizontal, 16)
-                        .glass(RoundedRectangle(cornerRadius: 22, style: .continuous), interactive: false)
+                        .padding(.top, 6).padding(.horizontal, 8)
+                        .shadow(color: .black.opacity(0.35), radius: 8, y: 2)
                     HStack(alignment: .center, spacing: 10) {
                         WeatherPill()
                         if !arranging {
