@@ -243,6 +243,8 @@ final class HomeLayout {
 
 /// The Favorites choice in Home's room bar.
 let favoritesKey = "\u{1}favorites"
+/// The room bar's All Devices tab.
+let allDevicesKey = "\u{1}alldevices"
 
 /// "Add to Favorites" / "Remove from Favorites", for any tile's menu.
 struct FavoriteButton: View {

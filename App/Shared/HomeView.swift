@@ -40,7 +40,7 @@ struct HomeView: View {
     /// bar hidden there's no way to pick a room, so everything shows.
     private func shownRoom(_ rooms: [String]) -> String {
         if layout.hiddenSections.contains("rooms") { return "" }
-        return picked == favoritesKey || picked.isEmpty || rooms.contains(picked) ? picked : ""
+        return picked == favoritesKey || picked == allDevicesKey || picked.isEmpty || rooms.contains(picked) ? picked : ""
     }
 
     #if os(macOS)
@@ -90,10 +90,14 @@ struct HomeView: View {
                 ForEach(layout.visibleSections.filter { $0 == "status" || $0 == "rooms" }, id: \.self) { key in
                     section(key, c)
                 }
+                if room == allDevicesKey {
+                    // Every device, room by room: tap to turn on or off, press and hold for its controls.
+                    AllDevicesView()
+                }
                 if room == favoritesKey || (room.isEmpty && !layout.favorites.isEmpty) {
                     favoritesGroup(c)
                 }
-                if room != favoritesKey {
+                if room != favoritesKey && room != allDevicesKey {
                     if !room.isEmpty {
                         // One room picked in the room bar: its tiles, to arrange as you like.
                         let tiles = roomTiles(room, c)
@@ -352,9 +356,9 @@ struct HomeView: View {
         let inMore = room.isEmpty || others.contains(room)
         return ScrollView(.horizontal) {
             HStack(spacing: 8) {
-                ForEach([favoritesKey] + pinned, id: \.self) { r in
+                ForEach([favoritesKey, allDevicesKey] + pinned, id: \.self) { r in
                     Button { withAnimation(.smooth) { picked = r } } label: {
-                        chip(r == favoritesKey ? "Favorites" : r, selected: room == r)
+                        chip(r == favoritesKey ? "Favorites" : r == allDevicesKey ? "All Devices" : r, selected: room == r)
                     }
                     .buttonStyle(.plain)
                     .glass(Capsule())
