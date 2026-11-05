@@ -20,7 +20,12 @@ struct AllDevicesView: View {
     @AppStorage("allDevices.showOther") private var showOther = false
 
     /// The family's rooms first, in this order and spelled like this; any other room after them, by name.
-    static let order = ["Master Bedroom", "Living Room", "Haley's Sewing Room", "Elliott's Room", "Kyler's Room"]
+    static let order = ["Master Bedroom", "Living Room", "Haley's Sewing Room", "Elliott's Room", "Kyler's Room", "Kitchen", "Laundry Room"]
+
+    /// The washer or dryer, unless the family put it in a room of their own in Woodruff: in the Laundry Room.
+    static func inLaundry(_ d: HomeDevice) -> Bool {
+        (d.kind == .washer || d.kind == .dryer) && SmartHome.shared.rooms[d.id] == nil
+    }
 
     /// A room's name to compare by: letters only, lowercase, and Elliot/Elliott the same.
     static func key(_ room: String) -> String {
@@ -75,7 +80,9 @@ struct AllDevicesView: View {
 
     var body: some View {
         let devices = store.all
-        let rooms = homeRooms(fleet, devices: devices).filter { $0 != noRoom && !$0.isEmpty }
+        // The washer and dryer always have a Laundry Room here.
+        let laundry = devices.contains { Self.inLaundry($0) } ? ["Laundry Room"] : []
+        let rooms = Array(Set(homeRooms(fleet, devices: devices) + laundry)).filter { $0 != noRoom && !$0.isEmpty }
         VStack(alignment: .leading, spacing: 26) {
             ForEach(sections(rooms), id: \.title) { section in
                 let items = section.rooms.flatMap { items(in: $0, devices: devices) }
@@ -120,7 +127,7 @@ struct AllDevicesView: View {
             .sorted { $0.name < $1.name }.map { .tv($0) }
         out += home.speakers.filter { roomMatches(home.room(of: $0.id), room) }.sorted { $0.name < $1.name }.map { .speaker($0) }
         out += home.lights.filter { roomMatches(home.room(of: $0.id), room) }.sorted { $0.name < $1.name }.map { .light($0) }
-        out += devices.filter { roomMatches(home.room(of: $0.id), room) }.sorted { $0.name < $1.name }.map { .device($0) }
+        out += devices.filter { roomMatches(Self.inLaundry($0) ? "Laundry Room" : home.room(of: $0.id), room) }.sorted { $0.name < $1.name }.map { .device($0) }
         return out
     }
 
