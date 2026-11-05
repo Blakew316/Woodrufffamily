@@ -681,9 +681,9 @@ extension GoveeLight {
     }
 }
 
-/// A Govee Floor Lamp 2: a small black cylinder base and a hair-thin pole standing up from it. The pole lights from
-/// the base up like a progress bar, [level] 0…1 of it, in the light's colour, with a soft glow around the lit part;
-/// the base's foot glows too while it's on.
+/// A Govee Floor Lamp 2: a small satin-black cylinder base and a slim pole standing up from it. The pole lights from
+/// the base up like a progress bar, [level] 0…1 of it, in the light's colour: a bright core, a close glow and a wide
+/// soft one, with light spilling onto the floor round the base. Off, it's a dark pole on its base.
 struct FloorLampPicture: View {
     var level: Double
     var lit: Bool
@@ -692,40 +692,59 @@ struct FloorLampPicture: View {
     var body: some View {
         GeometryReader { g in
             let w = g.size.width, h = g.size.height
-            let baseW = max(5, w * 0.34), baseH = max(5, h * 0.12)
-            let poleW = max(1.6, w * 0.07)
-            let poleH = h - baseH
-            let fill = lit ? max(0, min(1, level)) : 0
-            ZStack(alignment: .bottom) {
-                // The glow around the lit part of the pole.
-                if fill > 0 {
-                    Capsule()
-                        .fill(color.opacity(0.55))
-                        .frame(width: poleW * 5, height: max(poleW * 5, poleH * fill))
-                        .blur(radius: max(3, w * 0.16))
-                        .padding(.bottom, baseH)
+            let baseW = max(6, w * 0.34), baseH = max(5, h * 0.11)
+            let capH = baseW * 0.22
+            let poleW = max(2, w * 0.065)
+            let floorY = h - capH * 0.5
+            let poleBottom = floorY - baseH
+            let poleH = poleBottom - h * 0.01
+            let fill = lit ? max(0.01, min(1, level)) : 0
+            let litH = poleH * fill
+            ZStack(alignment: .topLeading) {
+                // Light on the floor round the base, and its shadow.
+                Ellipse().fill(.black.opacity(0.45)).frame(width: baseW * 1.5, height: capH * 1.2).blur(radius: 1.5)
+                    .position(x: w / 2, y: floorY)
+                if lit {
+                    Ellipse().fill(color.opacity(0.55)).frame(width: baseW * 2.6, height: capH * 2.4).blur(radius: max(3, w * 0.12))
+                        .position(x: w / 2, y: floorY)
                 }
-                // The pole: near black where it isn't lit, the light rising from the base.
-                ZStack(alignment: .bottom) {
-                    Capsule().fill(Color(white: 0.16))
-                    Capsule().fill(color)
-                        .frame(height: fill > 0 ? max(poleW, poleH * fill) : 0)
+                // The glow round the lit part of the pole: wide and soft, then close.
+                if lit {
+                    Capsule().fill(color.opacity(0.4)).frame(width: poleW * 9, height: litH + poleW * 4)
+                        .blur(radius: max(4, w * 0.22)).position(x: w / 2, y: poleBottom - litH / 2)
+                    Capsule().fill(color.opacity(0.85)).frame(width: poleW * 2.6, height: litH + poleW)
+                        .blur(radius: max(1.5, poleW * 0.8)).position(x: w / 2, y: poleBottom - litH / 2)
                 }
-                .frame(width: poleW, height: poleH)
-                .padding(.bottom, baseH * 0.9)
-                // The base: a small black cylinder, its foot glowing while the lamp is on.
-                ZStack(alignment: .bottom) {
-                    RoundedRectangle(cornerRadius: baseW * 0.12, style: .continuous)
-                        .fill(LinearGradient(colors: [Color(white: 0.24), Color(white: 0.08)], startPoint: .leading, endPoint: .trailing))
-                    if lit {
-                        RoundedRectangle(cornerRadius: baseW * 0.12, style: .continuous)
-                            .fill(LinearGradient(colors: [.clear, color.opacity(0.85)], startPoint: .top, endPoint: .bottom))
-                            .frame(height: baseH * 0.45)
+                // The pole: satin black, rounded at the top.
+                Capsule()
+                    .fill(LinearGradient(colors: [Color(white: 0.3), Color(white: 0.08), Color(white: 0.18)], startPoint: .leading, endPoint: .trailing))
+                    .frame(width: poleW, height: poleH)
+                    .position(x: w / 2, y: poleBottom - poleH / 2)
+                // Its light, rising from the base: the colour with a bright core down the middle.
+                if lit {
+                    Capsule().fill(color).frame(width: poleW, height: max(poleW, litH))
+                        .overlay(Capsule().fill(.white.opacity(0.75)).frame(width: poleW * 0.35))
+                        .position(x: w / 2, y: poleBottom - max(poleW, litH) / 2)
+                }
+                // The base: a cylinder, its side catching the light, its top a lighter ellipse.
+                RoundedRectangle(cornerRadius: baseW * 0.08, style: .continuous)
+                    .fill(LinearGradient(colors: [Color(white: 0.07), Color(white: 0.32), Color(white: 0.12), Color(white: 0.05)],
+                                         startPoint: .leading, endPoint: .trailing))
+                    .frame(width: baseW, height: baseH)
+                    .overlay(alignment: .bottom) {
+                        if lit {
+                            RoundedRectangle(cornerRadius: baseW * 0.08, style: .continuous)
+                                .fill(LinearGradient(colors: [.clear, color.opacity(0.9)], startPoint: .top, endPoint: .bottom))
+                                .frame(height: baseH * 0.35)
+                        }
                     }
-                }
-                .frame(width: baseW, height: baseH)
+                    .position(x: w / 2, y: floorY - baseH / 2)
+                Ellipse()
+                    .fill(LinearGradient(colors: [Color(white: 0.38), Color(white: 0.18)], startPoint: .top, endPoint: .bottom))
+                    .frame(width: baseW, height: capH)
+                    .position(x: w / 2, y: poleBottom)
             }
-            .frame(width: w, height: h, alignment: .bottom)
+            .frame(width: w, height: h)
         }
         .animation(.smooth(duration: 0.25), value: level)
         .animation(.smooth(duration: 0.25), value: lit)

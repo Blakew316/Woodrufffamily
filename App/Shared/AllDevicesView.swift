@@ -14,6 +14,7 @@ struct AllDevicesView: View {
     @State private var openTV: TitleRef?
     /// The small remote for a TV, from a tap on its tile.
     @State private var miniTV: TitleRef?
+    @State private var openCamera: NestCameras.Camera?
     @State private var confirmUnlock: HomeDevice?
     /// Settings → General: devices that have no room, under Other at the end (off unless asked for).
     @AppStorage("allDevices.showOther") private var showOther = false
@@ -27,20 +28,23 @@ struct AllDevicesView: View {
     }
 
     /// One room's section: the room as the devices have it, and its heading.
-    struct RoomSection: Hashable { var room: String; var title: String }
+    struct RoomSection: Hashable { var rooms: [String]; var title: String }
 
     /// The sections, in order.
     private func sections(_ rooms: [String]) -> [RoomSection] {
         var out: [RoomSection] = []
         var used = Set<String>()
+        // Every spelling of a room ("Elliot's Room" and "Elliott's Room") in one section.
         for title in Self.order {
-            for r in rooms where !used.contains(r) && Self.key(r) == Self.key(title) {
-                out.append(RoomSection(room: r, title: title))
-                used.insert(r)
-            }
+            let same = rooms.filter { !used.contains($0) && Self.key($0) == Self.key(title) }
+            if !same.isEmpty { out.append(RoomSection(rooms: same, title: title)); used.formUnion(same) }
         }
-        for r in rooms.sorted() where !used.contains(r) { out.append(RoomSection(room: r, title: r)) }
-        if showOther { out.append(RoomSection(room: noRoom, title: "Other")) }
+        for r in rooms.sorted() where !used.contains(r) {
+            let same = rooms.filter { !used.contains($0) && Self.key($0) == Self.key(r) }
+            out.append(RoomSection(rooms: same, title: r))
+            used.formUnion(same)
+        }
+        if showOther { out.append(RoomSection(rooms: [noRoom], title: "Other")) }
         return out
     }
 
@@ -52,6 +56,7 @@ struct AllDevicesView: View {
 
     /// One device on the tab, whatever kind it is.
     enum Item: Identifiable {
+        case camera(NestCameras.Camera)
         case tv(FleetTV)
         case speaker(SonosRoom)
         case light(GoveeLight)
@@ -59,6 +64,7 @@ struct AllDevicesView: View {
 
         var id: String {
             switch self {
+            case .camera(let c): return "cam-" + c.id
             case .tv(let t): return "tv-" + t.id
             case .speaker(let s): return "sp-" + s.id
             case .light(let l): return "li-" + l.id
@@ -69,10 +75,11 @@ struct AllDevicesView: View {
 
     var body: some View {
         let devices = store.all
-        let rooms = homeRooms(fleet, devices: devices).filter { $0 != noRoom && !$0.isEmpty }
+        let cameraRooms = NestCameras.shared.cameras.compactMap { home.rooms[$0.id] ?? $0.room }
+        let rooms = Array(Set(homeRooms(fleet, devices: devices) + cameraRooms)).filter { $0 != noRoom && !$0.isEmpty }
         VStack(alignment: .leading, spacing: 26) {
-            ForEach(sections(rooms), id: \.room) { section in
-                let items = items(in: section.room, devices: devices)
+            ForEach(sections(rooms), id: \.title) { section in
+                let items = section.rooms.flatMap { items(in: $0, devices: devices) }
                 if !items.isEmpty {
                     VStack(alignment: .leading, spacing: 10) {
                         Text(section.title).font(.title3.bold())
@@ -85,6 +92,7 @@ struct AllDevicesView: View {
         }
         .onAppear { ArcRoom.place() }
         .onChange(of: home.speakers.count) { _, _ in ArcRoom.place() }
+        .cameraPresenter($openCamera)
         .sheet(item: $openSpeaker) { r in
             NavigationStack { SpeakerDetailView(speakerID: r.id, inSheet: true) }.presentationBackground(.clear).macResizable()
         }
@@ -109,6 +117,8 @@ struct AllDevicesView: View {
     /// Everything in [room]: TVs first, then speakers, lights and devices, each by name.
     private func items(in room: String, devices: [HomeDevice]) -> [Item] {
         var out: [Item] = []
+        out += NestCameras.shared.cameras.filter { roomMatches(home.rooms[$0.id] ?? $0.room, room) }
+            .sorted { $0.name < $1.name }.map { .camera($0) }
         out += fleet.tvs.filter { !$0.isUnpaired && roomMatches(home.rooms[$0.id] ?? $0.name, room) }
             .sorted { $0.name < $1.name }.map { .tv($0) }
         out += home.speakers.filter { roomMatches(home.room(of: $0.id), room) }.sorted { $0.name < $1.name }.map { .speaker($0) }
@@ -123,7 +133,7 @@ struct AllDevicesView: View {
         let f = facts(item)
         return VStack(alignment: .leading, spacing: 0) {
             DeviceGlyph(look: f.look, on: f.on, tint: f.tint)
-                .frame(width: 46, height: 46)
+                .frame(width: 58, height: 56, alignment: .leading)
             Spacer(minLength: 8)
             Text(f.name).font(.footnote.weight(.semibold)).lineLimit(2).multilineTextAlignment(.leading)
             // Two lines, so a TV's title reads in full more often.
@@ -161,6 +171,9 @@ struct AllDevicesView: View {
 
     private func facts(_ item: Item) -> Facts {
         switch item {
+        case .camera(let c):
+            return Facts(name: c.name, state: c.online ? (c.doorbell ? "Doorbell" : "Live") : "Offline", on: c.online, reachable: c.online,
+                         look: .camera(doorbell: c.doorbell), tint: .green)
         case .tv(let tv):
             let p = tv.nowPlaying
             // What's on it: the title while it plays.
@@ -218,6 +231,8 @@ struct AllDevicesView: View {
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
         #endif
         switch item {
+        case .camera(let c):
+            openCamera = c
         case .tv(let tv):
             // A small remote for it (waking it if it's off).
             if !tv.online { fleet.wake(tv) }
@@ -254,6 +269,7 @@ struct AllDevicesView: View {
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         #endif
         switch item {
+        case .camera(let c): openCamera = c
         case .tv(let tv): openTV = TitleRef(id: tv.id)
         case .speaker(let s): openSpeaker = s
         case .light(let l): openLight = l
@@ -273,6 +289,7 @@ private struct TileGlass: ViewModifier {
 struct DeviceGlyph: View {
     enum Look: Equatable {
         case tv(playing: Bool)
+        case camera(doorbell: Bool)
         case speaker(bar: Bool)
         case homePod(mini: Bool)
         case light
@@ -286,13 +303,24 @@ struct DeviceGlyph: View {
     var on: Bool
     var tint: Color
 
+    /// Drawn as the product itself (no circle behind it).
+    private var drawn: Bool {
+        switch look {
+        case .tv, .camera, .floorLamp, .dreoFan, .thermostat: return true
+        case .speaker(let bar): return bar
+        default: return false
+        }
+    }
+
     var body: some View {
         ZStack {
-            Circle()
-                .fill(on ? AnyShapeStyle(tint.opacity(0.22)) : AnyShapeStyle(Color.white.opacity(0.12)))
-            if on {
-                // A soft glow behind it while it's on.
-                Circle().fill(tint.opacity(0.35)).blur(radius: 10).scaleEffect(0.8)
+            if !drawn {
+                Circle()
+                    .fill(on ? AnyShapeStyle(tint.opacity(0.22)) : AnyShapeStyle(Color.white.opacity(0.12)))
+                if on {
+                    // A soft glow behind it while it's on.
+                    Circle().fill(tint.opacity(0.35)).blur(radius: 10).scaleEffect(0.8)
+                }
             }
             picture
         }
@@ -302,10 +330,12 @@ struct DeviceGlyph: View {
     @ViewBuilder private var picture: some View {
         switch look {
         case .tv(let playing):
-            TVPicture(on: on, playing: playing, tint: tint).frame(width: 32, height: 26)
+            TVPicture(on: on, playing: playing).frame(width: 56, height: 44)
+        case .camera(let doorbell):
+            CameraPicture(doorbell: doorbell, on: on).frame(width: 44, height: 52)
         case .speaker(let bar):
             if bar {
-                SoundbarPicture(on: on, tint: tint).frame(width: 40, height: 30)
+                SoundbarPicture(on: on, tint: tint).frame(width: 58, height: 40)
             } else {
                 Image(systemName: on ? "hifispeaker.fill" : "hifispeaker")
                     .font(.system(size: 20, weight: .semibold))
@@ -314,11 +344,11 @@ struct DeviceGlyph: View {
                     .symbolEffect(.bounce, value: on)
             }
         case .thermostat(let d):
-            EcobeePicture(device: d).frame(width: 40, height: 40)
+            EcobeePicture(device: d).frame(width: 52, height: 52)
         case .dreoFan(let pedestal, let speed):
-            DreoFanPicture(pedestal: pedestal, on: on, speed: speed).frame(width: 34, height: 40)
+            DreoFanPicture(pedestal: pedestal, on: on, speed: speed).frame(width: 46, height: 56)
         case .floorLamp(let level):
-            FloorLampPicture(level: level, lit: on, color: tint).frame(width: 22, height: 38)
+            FloorLampPicture(level: level, lit: on, color: tint).frame(width: 34, height: 56)
         case .homePod(let mini):
             Image(systemName: mini ? "homepodmini.fill" : "homepod.fill")
                 .font(.system(size: 21, weight: .semibold))
@@ -374,37 +404,129 @@ struct DeviceGlyph: View {
     }
 }
 
-/// A TV: its screen lights up when it's on, and three bars bounce inside it while something plays.
+/// A TV, drawn like a modern one: a thin black panel on two slim feet. On, its screen glows a deep blue with a soft
+/// reflection; while something plays, three bars bounce gently in the middle of it. Off, the glass is dark.
 struct TVPicture: View {
     var on: Bool
     var playing: Bool
-    var tint: Color
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        VStack(spacing: 2) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 4, style: .continuous)
-                    .fill(on ? AnyShapeStyle(tint.opacity(0.9)) : AnyShapeStyle(Color.secondary.opacity(0.25)))
-                RoundedRectangle(cornerRadius: 4, style: .continuous)
-                    .strokeBorder(on ? tint : .secondary, lineWidth: 1.6)
-                if on && playing {
-                    TimelineView(.animation(minimumInterval: 1.0 / 20, paused: reduceMotion)) { ctx in
-                        let t = ctx.date.timeIntervalSinceReferenceDate
-                        HStack(alignment: .bottom, spacing: 2.5) {
-                            ForEach(0..<3) { i in
-                                let phase = reduceMotion ? 0.6 : (sin(t * 6 + Double(i) * 1.3) + 1) / 2
-                                Capsule().fill(.white).frame(width: 3, height: 4 + 8 * phase)
+        GeometryReader { g in
+            let w = g.size.width, h = g.size.height
+            let panelH = h * 0.8
+            TimelineView(.animation(minimumInterval: 1.0 / 24, paused: !(on && playing) || reduceMotion)) { ctx in
+                let t = ctx.date.timeIntervalSinceReferenceDate
+                ZStack(alignment: .top) {
+                    // The light the screen throws behind it.
+                    if on {
+                        RoundedRectangle(cornerRadius: 6).fill(Color(red: 0.25, green: 0.55, blue: 1).opacity(0.45))
+                            .frame(width: w * 0.9, height: panelH * 0.8).blur(radius: 9).offset(y: panelH * 0.1)
+                    }
+                    // The panel: a hairline black bezel round the glass.
+                    RoundedRectangle(cornerRadius: w * 0.04, style: .continuous)
+                        .fill(LinearGradient(colors: [Color(white: 0.2), Color(white: 0.05)], startPoint: .top, endPoint: .bottom))
+                        .frame(width: w, height: panelH)
+                    RoundedRectangle(cornerRadius: w * 0.025, style: .continuous)
+                        .fill(on ? AnyShapeStyle(LinearGradient(colors: [Color(red: 0.12, green: 0.32, blue: 0.85), Color(red: 0.02, green: 0.1, blue: 0.35)],
+                                                                 startPoint: .topLeading, endPoint: .bottomTrailing))
+                                 : AnyShapeStyle(LinearGradient(colors: [Color(white: 0.13), Color(white: 0.03)], startPoint: .topLeading, endPoint: .bottomTrailing)))
+                        .overlay {
+                            // A diagonal reflection across the glass.
+                            LinearGradient(colors: [.white.opacity(on ? 0.16 : 0.1), .clear], startPoint: .topLeading, endPoint: .center)
+                                .clipShape(RoundedRectangle(cornerRadius: w * 0.025, style: .continuous))
+                        }
+                        .overlay {
+                            if on && playing {
+                                HStack(alignment: .bottom, spacing: w * 0.045) {
+                                    ForEach(0..<3) { i in
+                                        let phase = reduceMotion ? 0.6 : (sin(t * 4 + Double(i) * 1.4) + 1) / 2
+                                        Capsule().fill(.white.opacity(0.95))
+                                            .frame(width: w * 0.055, height: panelH * (0.18 + 0.32 * phase))
+                                    }
+                                }
+                                .frame(height: panelH * 0.55, alignment: .bottom)
+                                .shadow(color: .white.opacity(0.5), radius: 3)
                             }
                         }
-                        .frame(height: 12, alignment: .bottom)
+                        .padding(w * 0.03)
+                        .frame(width: w, height: panelH)
+                    // Its two slim feet.
+                    HStack {
+                        foot
+                        Spacer()
+                        foot
                     }
+                    .frame(width: w * 0.72)
+                    .offset(y: panelH - 1)
                 }
+                .frame(width: w, height: h, alignment: .top)
             }
-            .frame(width: 32, height: 21)
-            // The stand.
-            Capsule().fill(on ? tint : .secondary).frame(width: 12, height: 2)
         }
+    }
+
+    private var foot: some View {
+        Capsule().fill(LinearGradient(colors: [Color(white: 0.55), Color(white: 0.25)], startPoint: .top, endPoint: .bottom))
+            .frame(width: 3, height: 7)
+            .rotationEffect(.degrees(0))
+    }
+}
+
+/// A Nest camera: the round lens head on its stand (an indoor or outdoor cam), or the tall Nest Doorbell with its
+/// lens at the top and its ring button below. Its status light glows green while it's streaming.
+struct CameraPicture: View {
+    var doorbell: Bool
+    var on: Bool
+
+    var body: some View {
+        GeometryReader { g in
+            let w = g.size.width, h = g.size.height
+            if doorbell {
+                let bw = w * 0.5
+                ZStack {
+                    RoundedRectangle(cornerRadius: bw / 2, style: .continuous)
+                        .fill(LinearGradient(colors: [Color(white: 0.96), Color(white: 0.78)], startPoint: .leading, endPoint: .trailing))
+                        .overlay(RoundedRectangle(cornerRadius: bw / 2, style: .continuous).strokeBorder(.black.opacity(0.15), lineWidth: 0.5))
+                    VStack(spacing: h * 0.07) {
+                        lens(size: bw * 0.62)
+                        Spacer()
+                        // The button, ringed in light.
+                        Circle().fill(Color(white: 0.2)).frame(width: bw * 0.5)
+                            .overlay(Circle().strokeBorder(on ? Color(red: 0.4, green: 0.85, blue: 1) : Color(white: 0.6), lineWidth: 1.5))
+                            .shadow(color: on ? .cyan.opacity(0.7) : .clear, radius: 3)
+                    }
+                    .padding(.vertical, bw * 0.18)
+                }
+                .frame(width: bw, height: h * 0.96)
+                .frame(width: w, height: h)
+            } else {
+                let r = w * 0.36
+                ZStack(alignment: .top) {
+                    // The stand.
+                    Capsule().fill(Color(white: 0.85)).frame(width: w * 0.12, height: h * 0.32).offset(y: r * 1.7)
+                    Ellipse().fill(LinearGradient(colors: [Color(white: 0.92), Color(white: 0.7)], startPoint: .top, endPoint: .bottom))
+                        .frame(width: w * 0.6, height: h * 0.1).offset(y: h * 0.86)
+                    // The head: white, round, the black face with its lens.
+                    Circle().fill(LinearGradient(colors: [Color(white: 0.98), Color(white: 0.78)], startPoint: .topLeading, endPoint: .bottomTrailing))
+                        .frame(width: r * 2)
+                        .overlay(Circle().fill(Color(white: 0.08)).padding(r * 0.18))
+                        .overlay(lens(size: r * 0.85))
+                        .offset(y: h * 0.04)
+                }
+                .frame(width: w, height: h, alignment: .top)
+            }
+        }
+    }
+
+    private func lens(size: CGFloat) -> some View {
+        ZStack {
+            Circle().fill(RadialGradient(colors: [Color(red: 0.2, green: 0.25, blue: 0.4), .black], center: .center, startRadius: 0, endRadius: size / 2))
+            Circle().fill(.white.opacity(0.55)).frame(width: size * 0.22).offset(x: -size * 0.15, y: -size * 0.15)
+            // Its status light.
+            Circle().fill(on ? Color.green : Color(white: 0.3)).frame(width: size * 0.16).offset(y: size * 0.62)
+                .shadow(color: on ? .green : .clear, radius: 2)
+        }
+        .frame(width: size, height: size)
     }
 }
 
@@ -537,14 +659,26 @@ struct DreoFanPicture: View {
                     let neck = CGRect(x: cx - w * 0.05, y: cy + r * 1.2, width: w * 0.1, height: baseRect.minY - (cy + r * 1.2) + 1)
                     g.fill(Path(roundedRect: neck, cornerRadius: w * 0.04), with: .color(body))
                 }
-                g.fill(Path(ellipseIn: baseRect), with: .linearGradient(Gradient(colors: [body, bodyDark]),
-                                                                         startPoint: CGPoint(x: 0, y: baseRect.minY), endPoint: CGPoint(x: 0, y: baseRect.maxY)))
+                // Its shadow on the floor, then the base: a disc, its top catching the light.
+                g.fill(Path(ellipseIn: baseRect.insetBy(dx: -w * 0.04, dy: 0).offsetBy(dx: 0, dy: baseH * 0.3)), with: .color(.black.opacity(0.35)))
+                g.fill(Path(ellipseIn: baseRect), with: .linearGradient(Gradient(colors: [bodyDark, body, bodyDark]),
+                                                                         startPoint: CGPoint(x: baseRect.minX, y: 0), endPoint: CGPoint(x: baseRect.maxX, y: 0)))
+                g.fill(Path(ellipseIn: baseRect.insetBy(dx: baseW * 0.06, dy: baseH * 0.12).offsetBy(dx: 0, dy: -baseH * 0.12)),
+                       with: .color(.white.opacity(pedestal ? 0.08 : 0.25)))
                 g.stroke(Path(ellipseIn: baseRect), with: .color(.white.opacity(0.2)), lineWidth: 0.5)
                 let head = CGRect(x: cx - r, y: cy - r, width: r * 2, height: r * 2)
-                g.fill(Path(ellipseIn: head), with: .color(body))
-                g.stroke(Path(ellipseIn: head), with: .color(.white.opacity(0.25)), lineWidth: 0.6)
+                // The rim: brushed metal (or satin black), lit from the top left.
+                g.fill(Path(ellipseIn: head), with: .linearGradient(Gradient(colors: [pedestal ? Color(white: 0.3) : Color(white: 0.92), body, bodyDark]),
+                                                                     startPoint: CGPoint(x: head.minX, y: head.minY), endPoint: CGPoint(x: head.maxX, y: head.maxY)))
+                g.stroke(Path(ellipseIn: head), with: .color(.white.opacity(0.3)), lineWidth: 0.6)
                 let grille = head.insetBy(dx: r * 0.12, dy: r * 0.12)
-                g.fill(Path(ellipseIn: grille), with: .color(Color(white: 0.07)))
+                g.fill(Path(ellipseIn: grille), with: .radialGradient(Gradient(colors: [Color(white: 0.14), Color(white: 0.03)]),
+                                                                       center: CGPoint(x: cx, y: cy), startRadius: 0, endRadius: grille.width / 2))
+                // The grille's rings, faint.
+                for k in 1...3 {
+                    let ring = grille.insetBy(dx: grille.width * 0.12 * CGFloat(k), dy: grille.width * 0.12 * CGFloat(k))
+                    g.stroke(Path(ellipseIn: ring), with: .color(.white.opacity(0.07)), lineWidth: 0.4)
+                }
                 // The spiral grille: curved spokes, turning while it's on.
                 let turn = reduceMotion || !on ? 0 : t * (2 + 6 * max(0.15, speed))
                 let gr = grille.width / 2
@@ -557,7 +691,16 @@ struct DreoFanPicture: View {
                     spokes.move(to: inner)
                     spokes.addQuadCurve(to: outer, control: bend)
                 }
-                g.stroke(spokes, with: .color(.white.opacity(on ? 0.45 : 0.25)), lineWidth: max(0.4, w * 0.012))
+                g.stroke(spokes, with: .color(.white.opacity(on ? 0.3 : 0.32)), lineWidth: max(0.4, w * 0.012))
+                // Spinning, the blades blur into a soft disc.
+                if on {
+                    g.fill(Path(ellipseIn: grille.insetBy(dx: grille.width * 0.12, dy: grille.width * 0.12)),
+                           with: .color(.white.opacity(0.06 + 0.06 * min(1, speed))))
+                }
+                // A sheen across the top of the grille.
+                var sheen = Path()
+                sheen.addArc(center: CGPoint(x: cx, y: cy), radius: grille.width * 0.46, startAngle: .degrees(200), endAngle: .degrees(290), clockwise: false)
+                g.stroke(sheen, with: .color(.white.opacity(0.18)), lineWidth: max(0.6, w * 0.02))
                 // The badge in the middle.
                 let hub = gr * 0.3
                 g.fill(Path(ellipseIn: CGRect(x: cx - hub, y: cy - hub, width: hub * 2, height: hub * 2)),
