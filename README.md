@@ -128,6 +128,10 @@ then does someone need to sign in to Xcode once on that Mac. The same goes for a
 yet. The current iPhone profiles expire on November 4, 2027; each Mac's certificate has its own date, and
 `deploy.sh` warns 30 days ahead.
 
+Woodruff Home Helper (Apple Home on the Macs) is development-signed by the Mac Studio, so it opens only on Macs
+registered under Devices at developer.apple.com. A Mac that isn't registered skips the shared helper; once it's
+registered, the Mac Studio's next build includes it.
+
 ### By hand
 
 `scripts/deploy.sh` is what the updater runs. It also works by hand, in Terminal from the repository folder:
