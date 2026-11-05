@@ -665,9 +665,10 @@ struct EcobeePicture: View {
     }
 }
 
-/// A Dreo air circulator: a round head with a polished rim and five broad curved blades behind it round a centre hub,
-/// on a curved arm over a round base (the silver table circulator) or on a slim pole (the black pedestal one). The
-/// blades turn while it's on, faster at higher speeds, softening into motion.
+/// A Dreo fan, drawn like the real ones. The TurboPoly Table Fan 511S: a round head (thin silver rim, black spiral
+/// grille, silver ring badge) held in a silver U-shaped yoke that wraps under it and pivots at both sides, on a short
+/// column with a black front, on a wide two-tone round base. The pedestal circulator: a black head on a slim pole.
+/// The blades turn behind the grille while it's on, faster at higher speeds.
 struct DreoFanPicture: View {
     var pedestal: Bool
     var on: Bool
@@ -676,65 +677,116 @@ struct DreoFanPicture: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
+        if pedestal { pedestalFan } else { tableFan }
+    }
+
+    private static let silver = [Color(white: 0.96), Color(white: 0.74), Color(white: 0.5)]
+
+    /// The black grille with its spiral ribs, the blades turning behind it, and the badge.
+    private func head(_ d: CGFloat, rim: [Color], badge: [Color]) -> some View {
+        ZStack {
+            Circle().fill(LinearGradient(colors: rim, startPoint: .topLeading, endPoint: .bottomTrailing))
+            Circle().fill(Color(white: 0.04)).padding(d * 0.045)
+            // The blades behind the grille, turning while it's on.
+            TimelineView(.animation(minimumInterval: 1.0 / 30, paused: !on || reduceMotion)) { ctx in
+                let turn = on && !reduceMotion ? ctx.date.timeIntervalSinceReferenceDate * (200 + 500 * max(0.1, speed)) : 0
+                FanBlades()
+                    .fill(Color(white: on ? 0.3 : 0.22))
+                    .rotationEffect(.degrees(turn))
+                    .blur(radius: on && !reduceMotion ? d * 0.01 : 0)
+            }
+            .padding(d * 0.1)
+            // The grille: spiral ribs from the badge to the rim.
+            SpiralGrille().stroke(Color(white: 0.32), lineWidth: max(0.35, d * 0.012)).padding(d * 0.05)
+            // The badge: a silver ring round a black centre.
+            Circle().fill(LinearGradient(colors: badge, startPoint: .topLeading, endPoint: .bottomTrailing)).frame(width: d * 0.28)
+            Circle().fill(Color(white: 0.06)).frame(width: d * 0.21)
+            if on { Circle().fill(Color.cyan).frame(width: d * 0.05).shadow(color: .cyan, radius: 2) }
+        }
+        .frame(width: d, height: d)
+    }
+
+    private var tableFan: some View {
         GeometryReader { g in
             let w = g.size.width, h = g.size.height
-            let d = pedestal ? w * 0.72 : w * 0.84
-            let headY = pedestal ? d / 2 : h * 0.42
-            let metal: [Color] = pedestal ? [Color(white: 0.34), Color(white: 0.12), Color(white: 0.05)]
-                                          : [Color(white: 0.97), Color(white: 0.72), Color(white: 0.45)]
-            let baseW = pedestal ? w * 0.62 : w * 0.78
-            let baseH = h * 0.1
+            let d = w * 0.7, r = d / 2
+            let cx = w / 2, cy = r + h * 0.07
+            let yokeR = r * 1.14
+            let baseW = w * 0.86, baseH = h * 0.13
+            let baseTop = h - baseH
+            let columnTop = cy + yokeR - h * 0.02
             ZStack(alignment: .topLeading) {
-                // Its shadow on the floor, and the base: a disc with a lit top.
-                Ellipse().fill(.black.opacity(0.35)).frame(width: baseW * 1.08, height: baseH * 0.9).blur(radius: 1)
-                    .position(x: w / 2, y: h - baseH * 0.35)
-                Ellipse().fill(LinearGradient(colors: metal, startPoint: .top, endPoint: .bottom))
-                    .frame(width: baseW, height: baseH).position(x: w / 2, y: h - baseH * 0.6)
-                if pedestal {
-                    // The pole, satin black, from the head to the base.
-                    Capsule().fill(LinearGradient(colors: [Color(white: 0.3), Color(white: 0.06), Color(white: 0.18)], startPoint: .leading, endPoint: .trailing))
-                        .frame(width: w * 0.08, height: h - baseH - headY)
-                        .position(x: w / 2, y: headY + (h - baseH - headY) / 2)
-                } else {
-                    // The arm: a smooth curve from the side of the head down to a short neck on the base.
-                    FanArm()
-                        .stroke(LinearGradient(colors: metal, startPoint: .topTrailing, endPoint: .bottomLeading),
-                                style: StrokeStyle(lineWidth: w * 0.09, lineCap: .round))
-                        .frame(width: d, height: h - headY)
-                        .position(x: w / 2, y: headY + (h - headY) / 2 - baseH * 0.3)
+                // The base: a wide disc, silver on top, dark below, its shadow on the table.
+                Ellipse().fill(.black.opacity(0.35)).frame(width: baseW * 1.05, height: baseH * 0.7).blur(radius: 1)
+                    .position(x: cx, y: h - baseH * 0.25)
+                Capsule().fill(LinearGradient(colors: [Color(white: 0.32), Color(white: 0.14)], startPoint: .top, endPoint: .bottom))
+                    .frame(width: baseW, height: baseH * 0.75).position(x: cx, y: h - baseH * 0.42)
+                Ellipse().fill(LinearGradient(colors: Self.silver, startPoint: .top, endPoint: .bottom))
+                    .frame(width: baseW, height: baseH * 0.6).position(x: cx, y: baseTop + baseH * 0.3)
+                // The column, silver with its black front panel.
+                RoundedRectangle(cornerRadius: w * 0.03, style: .continuous)
+                    .fill(LinearGradient(colors: Self.silver, startPoint: .leading, endPoint: .trailing))
+                    .frame(width: w * 0.26, height: baseTop - columnTop + baseH * 0.3)
+                    .overlay(RoundedRectangle(cornerRadius: w * 0.02, style: .continuous).fill(Color(white: 0.06)).padding(w * 0.03).padding(.bottom, baseH * 0.2))
+                    .position(x: cx, y: (columnTop + baseTop + baseH * 0.3) / 2)
+                // The yoke: a silver U round the bottom of the head, up to its pivots at both sides.
+                Circle().trim(from: 0.0, to: 0.5)
+                    .stroke(LinearGradient(colors: Self.silver, startPoint: .top, endPoint: .bottom),
+                            style: StrokeStyle(lineWidth: w * 0.065, lineCap: .round))
+                    .frame(width: yokeR * 2, height: yokeR * 2)
+                    .position(x: cx, y: cy)
+                ForEach([-1.0, 1.0], id: \.self) { side in
+                    RoundedRectangle(cornerRadius: w * 0.02, style: .continuous)
+                        .fill(LinearGradient(colors: Self.silver, startPoint: .top, endPoint: .bottom))
+                        .frame(width: w * 0.07, height: r * 0.5)
+                        .position(x: cx + CGFloat(side) * yokeR, y: cy - r * 0.05)
                 }
-                // The head.
-                ZStack {
-                    Circle().fill(LinearGradient(colors: metal, startPoint: .topLeading, endPoint: .bottomTrailing))
-                    Circle().fill(RadialGradient(colors: [Color(white: 0.16), Color(white: 0.02)], center: .center, startRadius: 0, endRadius: d * 0.42))
-                        .padding(d * 0.08)
-                    TimelineView(.animation(minimumInterval: 1.0 / 30, paused: !on || reduceMotion)) { ctx in
-                        let turn = on && !reduceMotion ? ctx.date.timeIntervalSinceReferenceDate * (200 + 500 * max(0.1, speed)) : 0
-                        FanBlades()
-                            .fill(LinearGradient(colors: [Color(white: 0.55), Color(white: 0.28)], startPoint: .top, endPoint: .bottom))
-                            .rotationEffect(.degrees(turn))
-                            .opacity(on ? 0.75 : 1)
-                            .blur(radius: on && !reduceMotion ? d * 0.012 : 0)
-                    }
-                    .padding(d * 0.13)
-                    // The guard: a few fine rings over the blades.
-                    Circle().strokeBorder(.white.opacity(0.12), lineWidth: 0.5).padding(d * 0.2)
-                    Circle().strokeBorder(.white.opacity(0.1), lineWidth: 0.5).padding(d * 0.3)
-                    // The hub with its badge, and a soft light while it runs.
-                    Circle().fill(LinearGradient(colors: pedestal ? [Color(white: 0.9), Color(white: 0.6)] : [Color(white: 0.25), Color(white: 0.08)],
-                                                 startPoint: .topLeading, endPoint: .bottomTrailing))
-                        .frame(width: d * 0.26)
-                        .overlay(Circle().strokeBorder(.white.opacity(0.4), lineWidth: 0.5))
-                        .overlay(Circle().fill(on ? Color.cyan : .clear).frame(width: d * 0.07).shadow(color: .cyan, radius: on ? 2 : 0))
-                    // Light catching the rim at the top left.
-                    Circle().trim(from: 0.55, to: 0.75).stroke(.white.opacity(pedestal ? 0.25 : 0.5), style: StrokeStyle(lineWidth: d * 0.025, lineCap: .round))
-                        .padding(d * 0.03)
-                }
-                .frame(width: d, height: d)
-                .position(x: w / 2, y: headY)
+                head(d, rim: Self.silver, badge: Self.silver).position(x: cx, y: cy)
             }
             .frame(width: w, height: h)
         }
+    }
+
+    private var pedestalFan: some View {
+        GeometryReader { g in
+            let w = g.size.width, h = g.size.height
+            let d = w * 0.72
+            let cy = d / 2
+            let baseW = w * 0.62, baseH = h * 0.1
+            ZStack(alignment: .topLeading) {
+                Ellipse().fill(.black.opacity(0.35)).frame(width: baseW * 1.08, height: baseH * 0.9).blur(radius: 1)
+                    .position(x: w / 2, y: h - baseH * 0.35)
+                Ellipse().fill(LinearGradient(colors: [Color(white: 0.34), Color(white: 0.1)], startPoint: .top, endPoint: .bottom))
+                    .frame(width: baseW, height: baseH).position(x: w / 2, y: h - baseH * 0.6)
+                Capsule().fill(LinearGradient(colors: [Color(white: 0.3), Color(white: 0.06), Color(white: 0.18)], startPoint: .leading, endPoint: .trailing))
+                    .frame(width: w * 0.08, height: h - baseH - cy)
+                    .position(x: w / 2, y: cy + (h - baseH - cy) / 2)
+                head(d, rim: [Color(white: 0.34), Color(white: 0.12), Color(white: 0.05)],
+                     badge: [Color(white: 0.92), Color(white: 0.6)])
+                    .position(x: w / 2, y: cy)
+            }
+            .frame(width: w, height: h)
+        }
+    }
+}
+
+/// A fan grille's ribs: curved spokes spiralling from the middle out to the rim.
+private struct SpiralGrille: Shape {
+    func path(in rect: CGRect) -> Path {
+        let c = CGPoint(x: rect.midX, y: rect.midY)
+        let r = min(rect.width, rect.height) / 2
+        var p = Path()
+        for i in 0..<24 {
+            let a = Double(i) / 24 * 2 * .pi
+            func pt(_ angle: Double, _ radius: CGFloat) -> CGPoint {
+                CGPoint(x: c.x + cos(angle) * radius, y: c.y + sin(angle) * radius)
+            }
+            p.move(to: pt(a, r * 0.16))
+            p.addQuadCurve(to: pt(a + 1.1, r), control: pt(a + 0.35, r * 0.72))
+        }
+        // A ring part way out.
+        p.addEllipse(in: CGRect(x: c.x - r * 0.55, y: c.y - r * 0.55, width: r * 1.1, height: r * 1.1))
+        return p
     }
 }
 
@@ -759,15 +811,6 @@ private struct FanBlades: Shape {
     }
 }
 
-/// The table circulator's arm: from the side of the head round to the middle of the base.
-private struct FanArm: Shape {
-    func path(in rect: CGRect) -> Path {
-        var p = Path()
-        p.move(to: CGPoint(x: rect.maxX * 0.94, y: rect.minY))
-        p.addQuadCurve(to: CGPoint(x: rect.midX, y: rect.maxY), control: CGPoint(x: rect.maxX * 1.02, y: rect.maxY * 0.85))
-        return p
-    }
-}
 
 /// A Sonos Arc, drawn like the real thing: a long, slim, rounded bar in matte black with its perforated grille wrapping
 /// the whole front, a soft sheen along the top and its small status light; while it plays, sound ripples out above it.
