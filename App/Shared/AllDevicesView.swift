@@ -683,6 +683,10 @@ struct DreoFanPicture: View {
             .padding(d * 0.1)
             // The grille: spiral ribs from the badge to the rim.
             SpiralGrille().stroke(Color(white: 0.32), lineWidth: max(0.35, d * 0.012)).padding(d * 0.05)
+            // Light catching the rim at the top left, and a soft edge all round.
+            Circle().trim(from: 0.56, to: 0.78).stroke(.white.opacity(0.55), style: StrokeStyle(lineWidth: max(0.6, d * 0.022), lineCap: .round))
+                .padding(d * 0.012)
+            Circle().strokeBorder(.white.opacity(0.14), lineWidth: 0.5)
             // The badge: a silver ring round a black centre.
             Circle().fill(LinearGradient(colors: badge, startPoint: .topLeading, endPoint: .bottomTrailing)).frame(width: d * 0.28)
             Circle().fill(Color(white: 0.06)).frame(width: d * 0.21)
@@ -748,20 +752,22 @@ struct DreoFanPicture: View {
                     .position(x: cx, y: h - baseH * 0.3)
                 Ellipse().fill(LinearGradient(colors: [Color(white: 0.36), Color(white: 0.1)], startPoint: .top, endPoint: .bottom))
                     .frame(width: baseW, height: baseH).position(x: cx, y: h - baseH * 0.6)
+                // Light along the top of the base.
+                Ellipse().fill(.white.opacity(0.12)).frame(width: baseW * 0.8, height: baseH * 0.45)
+                    .position(x: cx, y: h - baseH * 0.78)
                 // The pole, satin black, with a silver band just above the base.
-                Capsule().fill(LinearGradient(colors: [Color(white: 0.3), Color(white: 0.06), Color(white: 0.2)], startPoint: .leading, endPoint: .trailing))
+                Capsule().fill(LinearGradient(colors: [Color(white: 0.34), Color(white: 0.07), Color(white: 0.2)], startPoint: .leading, endPoint: .trailing))
                     .frame(width: poleW, height: poleBottom - poleTop)
                     .position(x: cx, y: (poleTop + poleBottom) / 2)
+                // A fine highlight down its left edge.
+                Capsule().fill(.white.opacity(0.18)).frame(width: max(0.5, poleW * 0.2), height: (poleBottom - poleTop) * 0.9)
+                    .position(x: cx - poleW * 0.28, y: (poleTop + poleBottom) / 2)
                 Rectangle().fill(LinearGradient(colors: Self.silver, startPoint: .leading, endPoint: .trailing))
                     .frame(width: poleW * 0.8, height: h * 0.06)
                     .position(x: cx, y: poleBottom - h * 0.05)
-                // The neck: widening from the pole up into the bottom of the head.
-                Ellipse().fill(Color(white: 0.1)).frame(width: poleW * 2.4, height: r * 0.6).position(x: cx, y: cy + r * 0.85)
-                // The bracket on its right side.
-                RoundedRectangle(cornerRadius: w * 0.03, style: .continuous)
-                    .fill(LinearGradient(colors: [Color(white: 0.3), Color(white: 0.08)], startPoint: .leading, endPoint: .trailing))
-                    .frame(width: max(2, w * 0.08), height: d * 0.5)
-                    .position(x: cx + r * 1.02, y: cy)
+                // The neck: widening smoothly from the pole up into the bottom of the head.
+                Capsule().fill(LinearGradient(colors: [Color(white: 0.28), Color(white: 0.07), Color(white: 0.16)], startPoint: .leading, endPoint: .trailing))
+                    .frame(width: poleW * 2, height: r * 0.7).position(x: cx, y: cy + r * 0.9)
                 head(d, rim: [Color(white: 0.34), Color(white: 0.12), Color(white: 0.05)],
                      badge: [Color(white: 0.92), Color(white: 0.6)])
                     .position(x: cx, y: cy)
