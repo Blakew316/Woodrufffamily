@@ -155,15 +155,24 @@ struct AllDevicesView: View {
                          look: .tv(playing: p?.isPlaying == true), tint: .blue)
         case .speaker(let s):
             let state = s.isOffline ? "Offline" : s.isPlaying ? (s.title ?? "Playing") : "Paused"
-            return Facts(name: s.name, state: state, on: s.isPlaying, reachable: !s.isOffline, look: .speaker, tint: .teal)
+            return Facts(name: s.name, state: state, on: s.isPlaying, reachable: !s.isOffline, look: .speaker(bar: Self.isSoundbar(s)), tint: .teal)
         case .light(let l):
             let state = l.isOffline ? "Offline" : l.isLit ? "\(l.brightness)%" : "Off"
             return Facts(name: l.name, state: state, on: l.isLit, reachable: !l.isOffline, look: .light, tint: l.shade)
+        case .device(let d) where d.product?.hasPrefix("HomePod") == true:
+            return Facts(name: d.name, state: d.reachable ? d.status : "Not Responding", on: false, reachable: d.reachable,
+                         look: .homePod(mini: d.product == "HomePod mini"), tint: .gray)
         case .device(let d):
             let on = lit(d)
             return Facts(name: d.name, state: d.reachable ? d.status : "Not Responding", on: on, reachable: d.reachable,
                          look: .device(d.kind, running: d.isRunning, symbol: deviceSymbol(d)), tint: d.alert ? Palette.attention : .orange)
         }
+    }
+
+    /// A Sonos soundbar (Arc, Beam, Ray, Playbar): drawn as a bar, not a speaker.
+    static func isSoundbar(_ s: SonosRoom) -> Bool {
+        let m = (s.model ?? "") + " " + s.name
+        return ["arc", "beam", "ray", "playbar", "playbase"].contains { m.localizedCaseInsensitiveContains($0) }
     }
 
     private func lit(_ d: HomeDevice) -> Bool {
@@ -239,7 +248,8 @@ private struct TileGlass: ViewModifier {
 struct DeviceGlyph: View {
     enum Look: Equatable {
         case tv(playing: Bool)
-        case speaker
+        case speaker(bar: Bool)
+        case homePod(mini: Bool)
         case light
         case device(HomeDevice.Kind, running: Bool, symbol: String)
     }
@@ -269,12 +279,20 @@ struct DeviceGlyph: View {
                 .foregroundStyle(on ? tint : .secondary)
                 .symbolEffect(.pulse, options: .repeating, isActive: on && playing)
                 .symbolEffect(.bounce, value: on)
-        case .speaker:
-            Image(systemName: on ? "hifispeaker.and.homepod.fill" : "hifispeaker")
-                .font(.system(size: 20, weight: .semibold))
-                .foregroundStyle(on ? tint : .secondary)
-                .symbolEffect(.variableColor.iterative, options: .repeating, isActive: on)
-                .symbolEffect(.bounce, value: on)
+        case .speaker(let bar):
+            if bar {
+                SoundbarPicture(on: on, tint: tint).frame(width: 36, height: 30)
+            } else {
+                Image(systemName: on ? "hifispeaker.fill" : "hifispeaker")
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundStyle(on ? tint : .secondary)
+                    .symbolEffect(.variableColor.iterative, options: .repeating, isActive: on)
+                    .symbolEffect(.bounce, value: on)
+            }
+        case .homePod(let mini):
+            Image(systemName: mini ? "homepodmini.fill" : "homepod.fill")
+                .font(.system(size: 21, weight: .semibold))
+                .foregroundStyle(.secondary)
         case .light:
             Image(systemName: on ? "lightbulb.max.fill" : "lightbulb")
                 .font(.system(size: 21, weight: .semibold))
@@ -323,5 +341,39 @@ struct DeviceGlyph: View {
         let master = rooms.first { AllDevicesView.key($0) == AllDevicesView.key("Master Bedroom") } ?? "Master Bedroom"
         home.setRoom(arc.id, master)
         UserDefaults.standard.set(true, forKey: "arcPlacedInMasterBedroom")
+    }
+}
+
+/// A Sonos Arc: a long, low bar with its grille, and sound rising from it while it plays.
+struct SoundbarPicture: View {
+    var on: Bool
+    var tint: Color
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 20, paused: !on || reduceMotion)) { ctx in
+            let t = ctx.date.timeIntervalSinceReferenceDate
+            ZStack(alignment: .bottom) {
+                // Sound rising from the bar while it plays.
+                if on {
+                    HStack(spacing: 4) {
+                        ForEach(0..<3) { i in
+                            let phase = reduceMotion ? 0.6 : (sin(t * 6 + Double(i) * 1.3) + 1) / 2
+                            Capsule().fill(tint).frame(width: 3, height: 5 + 9 * phase)
+                        }
+                    }
+                    .padding(.bottom, 13)
+                }
+                // The bar, its ends rounded, a grille of holes along it.
+                ZStack {
+                    Capsule().fill(on ? Color(white: 0.15) : Color(white: 0.45))
+                    HStack(spacing: 2.2) {
+                        ForEach(0..<9) { _ in Circle().fill(.white.opacity(on ? 0.35 : 0.25)).frame(width: 1.8, height: 1.8) }
+                    }
+                }
+                .frame(width: 36, height: 9)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+        }
     }
 }

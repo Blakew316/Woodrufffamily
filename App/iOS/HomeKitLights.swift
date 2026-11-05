@@ -154,7 +154,7 @@ final class HomeKitLights: NSObject, HMHomeManagerDelegate, HMHomeDelegate, HMAc
             for a in home.accessories {
                 guard let s = bulb(a) else {
                     // Everything else: plugs, locks, thermostats, sensors, blinds, HomePod temperature…
-                    guard primary(a) != nil else { continue }
+                    guard primary(a) != nil || Self.isHomePod(a) else { continue }
                     a.delegate = self
                     others[id(a)] = a
                     for sv in a.services where sv.serviceType != HMServiceTypeAccessoryInformation {
@@ -262,7 +262,23 @@ final class HomeKitLights: NSObject, HMHomeManagerDelegate, HMHomeDelegate, HMAc
         return nil
     }
 
+    /// A HomePod (its temperature and humidity are all Apple Home gives other apps of it; playing is only Apple's).
+    private static func isHomePod(_ a: HMAccessory) -> Bool {
+        (a.model ?? "").localizedCaseInsensitiveContains("homepod") || a.name.localizedCaseInsensitiveContains("homepod")
+    }
+
     private func device(_ a: HMAccessory) -> HomeDevice? {
+        if Self.isHomePod(a) {
+            var d = HomeDevice(id: id(a), name: a.name, source: "home", kind: .sensor, zone: a.room?.name, status: "")
+            d.reachable = a.isReachable
+            let mini = (a.model ?? "").localizedCaseInsensitiveContains("mini") || a.name.localizedCaseInsensitiveContains("mini")
+            d.product = mini ? "HomePod mini" : "HomePod"
+            var bits: [String] = []
+            if let t = num(a, HMCharacteristicTypeCurrentTemperature) { d.temperature = t; bits.append(temperatureText(t)) }
+            if let h = num(a, HMCharacteristicTypeCurrentRelativeHumidity) { d.humidity = Int(h); bits.append("\(Int(h))% Humidity") }
+            d.status = bits.isEmpty ? (d.product ?? "HomePod") : bits.joined(separator: " · ")
+            return d
+        }
         guard let p = primary(a) else { return nil }
         var d = HomeDevice(id: id(a), name: a.name, source: "home", kind: .sensor, zone: a.room?.name, status: "")
         d.reachable = a.isReachable

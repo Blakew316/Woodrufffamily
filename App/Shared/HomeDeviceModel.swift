@@ -38,6 +38,8 @@ struct HomeDevice: Identifiable, Hashable, Codable {
     var coolTo: Double?           // °C
     var humidity: Int?
     var action: String?           // heating / cooling / idle
+    /// What it is, when that says more than its kind: "HomePod", "HomePod mini".
+    var product: String? = nil
 
     /// Busy right now (for the running animations).
     var isRunning: Bool {
