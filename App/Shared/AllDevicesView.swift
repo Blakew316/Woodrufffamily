@@ -98,6 +98,8 @@ struct AllDevicesView: View {
         }
         .onAppear { ArcRoom.place() }
         .onChange(of: home.speakers.count) { _, _ in ArcRoom.place() }
+        .onChange(of: home.lights.count) { _, _ in ArcRoom.place() }
+        .onChange(of: store.all.count) { _, _ in ArcRoom.place() }
         .cameraPresenter($openCamera)
         .sheet(item: $openSpeaker) { r in
             NavigationStack { SpeakerDetailView(speakerID: r.id, inSheet: true) }.presentationBackground(.clear).macResizable()
@@ -395,16 +397,33 @@ struct DeviceGlyph: View {
     }
 }
 
-/// The Sonos Arc lives in the Master Bedroom: put there once (moving it later in its settings sticks).
+/// The Sonos Arc and the sync devices (a TV sync box, synced backlights…) live in the Master Bedroom: each put there
+/// once (moving one later in its settings sticks).
 @MainActor enum ArcRoom {
     static func place() {
-        guard !UserDefaults.standard.bool(forKey: "arcPlacedInMasterBedroom") else { return }
         let home = SmartHome.shared
-        guard let arc = home.speakers.first(where: { ($0.model ?? "").localizedCaseInsensitiveContains("arc") || $0.name.localizedCaseInsensitiveContains("arc") }) else { return }
         let rooms = homeRooms(Fleet.shared)
         let master = rooms.first { AllDevicesView.key($0) == AllDevicesView.key("Master Bedroom") } ?? "Master Bedroom"
-        home.setRoom(arc.id, master)
-        UserDefaults.standard.set(true, forKey: "arcPlacedInMasterBedroom")
+        let defaults = UserDefaults.standard
+        if !defaults.bool(forKey: "arcPlacedInMasterBedroom"),
+           let arc = home.speakers.first(where: { ($0.model ?? "").localizedCaseInsensitiveContains("arc") || $0.name.localizedCaseInsensitiveContains("arc") }) {
+            home.setRoom(arc.id, master)
+            defaults.set(true, forKey: "arcPlacedInMasterBedroom")
+        }
+        var placed = Set(defaults.stringArray(forKey: "syncPlacedInMasterBedroom") ?? [])
+        let before = placed.count
+        func isSync(_ words: String?...) -> Bool {
+            words.contains { ($0 ?? "").range(of: "sync", options: .caseInsensitive) != nil }
+        }
+        var ids: [String] = []
+        ids += home.lights.filter { isSync($0.name, Govee.product($0.sku)) }.map(\.id)
+        ids += home.speakers.filter { isSync($0.name, $0.model) }.map(\.id)
+        ids += AccessoryStore.shared.all.filter { isSync($0.name, $0.product) }.map(\.id)
+        for id in ids where !placed.contains(id) {
+            home.setRoom(id, master)
+            placed.insert(id)
+        }
+        if placed.count != before { defaults.set(Array(placed), forKey: "syncPlacedInMasterBedroom") }
     }
 }
 
