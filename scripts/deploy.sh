@@ -65,6 +65,9 @@ MAC_BUNDLE_ID="com.woodruff.family.mac"
 HOMEKIT="com.apple.developer.homekit"
 APP_NAME="Woodruff Family"
 MAC_INSTALLED="/Applications/Woodruff Family.app"
+# The small Mac Catalyst app that reads Apple Home for the Mac app (a Mac app can't use HomeKit itself).
+HELPER_NAME="Woodruff Home Helper"
+HELPER_INSTALLED="/Applications/$HELPER_NAME.app"
 ICLOUD="$HOME/Library/Mobile Documents/com~apple~CloudDocs"
 SHARE_DIR="$ICLOUD/Woodruff Family builds"
 SHARE_WAIT=1200   # seconds mac-shared waits for the zip to arrive (--wait)
@@ -473,6 +476,76 @@ deploy_mac() {
   done
 
   install_mac "$product" "signed by $identity ($name), certificate $(valid_until "$cert_expires")"
+  status=$?
+  # The Apple Home helper too (only Xcode's signing can give it Apple Home); a failure here leaves the Mac app as
+  # it is, without Apple Home's devices.
+  if [ "$status" -eq 0 ] && [ "$XCODE_SIGNING" -eq 1 ]; then
+    build_install_helper "${sign[@]}"
+  fi
+  return $status
+}
+
+# Puts the Apple Home helper in /Applications: quits the running one, swaps the new one in, starts it (the first time
+# macOS asks once to allow access to Home), and shares it in iCloud Drive for the other Macs. $1 = a staged copy.
+put_helper() {
+  local new=$1 hlog="$LOGDIR/helper-install.log" staged="${HELPER_INSTALLED%.app}.new.app"
+  pkill -U "$(id -u)" -x "$HELPER_NAME" >/dev/null 2>&1
+  rm -rf "$staged"
+  if ! ditto "$new" "$staged" </dev/null >>"$hlog" 2>&1; then
+    warn "couldn't copy $HELPER_NAME into /Applications (log $hlog)"
+    rm -rf "$staged"
+    return 1
+  fi
+  rm -rf "$HELPER_INSTALLED"
+  if ! mv "$staged" "$HELPER_INSTALLED" 2>>"$hlog"; then
+    warn "couldn't put $HELPER_NAME in /Applications (log $hlog)"
+    return 1
+  fi
+  open -g -j "$HELPER_INSTALLED" </dev/null >/dev/null 2>&1
+  say "    $HELPER_NAME installed in /Applications (Apple Home on this Mac)"
+  return 0
+}
+
+build_install_helper() {  # "$@" = the signing settings
+  local hlog="$LOGDIR/helper-build.log" product="$ROOT/build-helper/Build/Products/Release-maccatalyst/$HELPER_NAME.app"
+  step "Mac: building $HELPER_NAME (Apple Home on the Macs)"
+  xcodebuild -project WoodruffFamily.xcodeproj -scheme WoodruffHomeHelper -destination 'generic/platform=macOS,variant=Mac Catalyst' \
+    -configuration Release -derivedDataPath build-helper DEVELOPMENT_TEAM="$TEAM" "$@" \
+    ${VERSION_SETTINGS[@]+"${VERSION_SETTINGS[@]}"} build </dev/null >"$hlog" 2>&1
+  if [ ! -d "$product" ] || ! codesign --verify --deep --strict "$product" </dev/null >>"$hlog" 2>&1; then
+    show_build "$hlog"
+    warn "$HELPER_NAME didn't build (log $hlog): the Mac app works, without Apple Home's devices"
+    return 1
+  fi
+  put_helper "$product" || return 1
+  # For the Macs that install the shared build.
+  if mkdir -p "$SHARE_DIR" 2>/dev/null && ditto -c -k --sequesterRsrc --keepParent "$HELPER_INSTALLED" "$LOGDIR/helper.zip" </dev/null >>"$hlog" 2>&1; then
+    cp "$LOGDIR/helper.zip" "$SHARE_DIR/$HELPER_NAME.zip" 2>>"$hlog" && say "    shared as Woodruff Family builds/$HELPER_NAME.zip"
+  fi
+  return 0
+}
+
+# On a Mac that installs the shared build: the helper the Mac Studio shared, when there is one newer than this one's.
+install_shared_helper() {
+  local zip="$SHARE_DIR/$HELPER_NAME.zip" unz="$LOGDIR/helper-shared" hlog="$LOGDIR/helper-install.log"
+  if command -v brctl >/dev/null 2>&1; then brctl download "$zip" </dev/null >/dev/null 2>&1; fi
+  [ -f "$zip" ] || return 0
+  # Only a newer one than the one installed from there last (so the running helper isn't restarted every check).
+  local stamp="$HOME/Library/Application Support/Woodruff Family/helper-installed.stamp"
+  if [ -d "$HELPER_INSTALLED" ] && [ -f "$stamp" ] && [ ! "$zip" -nt "$stamp" ]; then return 0; fi
+  step "Mac: installing $HELPER_NAME (Apple Home on this Mac)"
+  rm -rf "$unz"
+  mkdir -p "$unz"
+  if ! ditto -x -k "$zip" "$unz" </dev/null >>"$hlog" 2>&1 || [ ! -d "$unz/$HELPER_NAME.app" ] ||
+    ! codesign --verify --deep --strict "$unz/$HELPER_NAME.app" </dev/null >>"$hlog" 2>&1; then
+    warn "the shared $HELPER_NAME couldn't be used (log $hlog)"
+    rm -rf "$unz"
+    return 1
+  fi
+  if put_helper "$unz/$HELPER_NAME.app"; then
+    mkdir -p "$(dirname "$stamp")" && touch "$stamp"
+  fi
+  rm -rf "$unz"
 }
 
 gone_within() {  # $1 = seconds: 0 once Woodruff Family isn't running any more
@@ -832,6 +905,7 @@ deploy_mac_shared() {
   say "    signed by $new_sha1 ($new_cn), the installed app's certificate name"
   install_mac "$product" "signed by $new_sha1 ($new_cn) on ${built_on:-another Mac}, shared in iCloud Drive"
   status=$?
+  if [ "$status" -eq 0 ]; then install_shared_helper; fi
   if [ "$MAC_OK" -eq 1 ]; then
     rm -rf "$unz"
   fi
