@@ -693,7 +693,7 @@ deploy_mac_shared() {
   local head sha12 name zip manifest copy="$LOGDIR/shared.zip" meta="$LOGDIR/shared.json"
   local check="$LOGDIR/shared-check.json" clog="$LOGDIR/shared-check.log" unz="$LOGDIR/shared"
   local product waited=0 got=0 final=0 pause built_on vlog="$LOGDIR/mac-verify-shared.log" new_sha1 new_cn new_team
-  local old_cn status why
+  local old_cn status why i
   MAC_PART="mac-shared"
   step "Mac: installing the build another Mac shared in iCloud Drive"
   if [ ! -d "$ICLOUD" ]; then
@@ -711,11 +711,17 @@ deploy_mac_shared() {
     say "    looking for Woodruff Family builds/$name.zip"
   fi
   while :; do
-    if [ -f "$manifest" ] && [ -f "$zip" ]; then
-      if command -v brctl >/dev/null 2>&1; then   # asks iCloud for the contents if only a placeholder is here
-        brctl download "$manifest" </dev/null >/dev/null 2>&1
-        brctl download "$zip" </dev/null >/dev/null 2>&1
+    # With Optimize Mac Storage a file iCloud hasn't brought down yet is only a placeholder (.NAME.icloud), so it
+    # isn't there by its own name until it's asked for: ask every time round, before looking.
+    if command -v brctl >/dev/null 2>&1; then
+      brctl download "$manifest" </dev/null >/dev/null 2>&1
+      brctl download "$zip" </dev/null >/dev/null 2>&1
+      if [ ! -f "$zip" ] && [ -e "$SHARE_DIR/.$name.zip.icloud" ]; then
+        i=0   # it's on its way down: give it up to a minute
+        while [ "$i" -lt 30 ] && [ ! -f "$zip" ]; do sleep 2; i=$((i + 1)); done
       fi
+    fi
+    if [ -f "$manifest" ] && [ -f "$zip" ]; then
       if cp "$manifest" "$meta" 2>"$clog" && cp "$zip" "$copy" 2>>"$clog"; then
         signing check-share --manifest "$meta" --zip "$copy" --commit "$head" --team "$TEAM" >"$check" 2>>"$clog"
         status=$?
