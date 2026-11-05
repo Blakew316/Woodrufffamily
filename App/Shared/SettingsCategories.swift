@@ -129,7 +129,7 @@ struct SmartHomeSettingsView: View {
     }
 }
 
-/// Settings → General: Away From Home, Shortcuts, the Mac's click sound, keeping every device in step, the TV's last
+/// Settings → General: Shortcuts, Scenes, the Mac's click sound, keeping every device in step, the TV's last
 /// crash when there is one, and which build of Woodruff Family this is (on a Mac, with how its updates are going).
 struct GeneralSettingsView: View {
     @Environment(Fleet.self) private var fleet
@@ -142,9 +142,6 @@ struct GeneralSettingsView: View {
     var body: some View {
         Form {
             Section {
-                PageLink("Away From Home") { AwayView(hub: hub) } label: {
-                    IconRow(symbol: "", color: .clear, title: "Away From Home", value: awaySummary)
-                }
                 PageLink("Shortcuts") { ShortcutsView(hub: hub) } label: {
                     IconRow(symbol: "", color: .clear, title: "Shortcuts")
                 }
@@ -179,12 +176,6 @@ struct GeneralSettingsView: View {
         // seconds for a minute after Check Now.
         .task { await UpdaterStatus.shared.follow() }
         #endif
-    }
-
-    /// On or Off once the settings are read (nothing before then, rather than a guess).
-    private var awaySummary: String? {
-        guard let s = hub.s else { return nil }
-        return (s.awayUrl ?? "").isEmpty ? "Off" : "On"
     }
 }
 

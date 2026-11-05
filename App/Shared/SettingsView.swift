@@ -94,8 +94,8 @@ struct HubSettingsPending: View {
 
 /// Settings in five rows, grouped as iOS Settings groups things: TVs (every TV, Software Update, and one tap for all
 /// of them) and Smart Home (speakers, lights, cameras, devices, the Wi‑Fi), with Send beside them on iPhone (it has no
-/// tab there); Notifications, and Accounts (every sign-in, the TVs' and this device's); and General (Away From Home,
-/// Shortcuts, Sync Across Devices, the TV's last crash).
+/// tab there); Notifications, and Accounts (every sign-in, the TVs' and this device's); and General
+/// (Shortcuts, Sync Across Devices, the TV's last crash).
 struct SettingsView: View {
     @Environment(Fleet.self) private var fleet
     /// The TVs' settings as last read (shown at once), read again as the page opens.
@@ -134,7 +134,7 @@ struct SettingsView: View {
             }
 
             Section {
-                // Away From Home, Shortcuts, Sync Across Devices, and the TV's last crash. Only a crash report shows
+                // Shortcuts, Sync Across Devices, and the TV's last crash. Only a crash report shows
                 // beside it: Sync Across Devices, inside, says how syncing is really going (read here, it would redraw
                 // Settings at every sync round, every 12 seconds).
                 PageLink("General") { GeneralSettingsView(hub: hub) } label: {
@@ -861,31 +861,6 @@ struct MailView: View {
             do { try await hub.save({ try await $0.deleteMail(m.id) }, on: fleet.hubClient()) }
             catch { fleet.show(error) }
         }
-    }
-}
-
-struct AwayView: View {
-    @Environment(Fleet.self) private var fleet
-    var hub: HubSettings
-    var body: some View {
-        Form {
-            if let a = hub.s?.awayUrl, !a.isEmpty {
-                Section {
-                    Text(a).font(.footnote.monospaced()).textSelection(.enabled)
-                    if let link = URL(string: a) { Button("Use This Link Here") { fleet.handle(url: link) } }
-                    Button("Copy Link") { copyToClipboard(a) }
-                } footer: { Text("Works anywhere through Tailscale, encrypted.") }
-            } else if hub.s != nil {
-                Section { Text("Install Tailscale on the TV and this device, signed in to the same account. The TV then offers a link that works from anywhere.") }
-            } else {
-                // Not read yet: never "Install Tailscale" for a TV that may well have its link.
-                HubSettingsPending(hub: hub)
-            }
-        }
-        .formStyle(.grouped)
-        .navigationTitle("Away From Home").inlineTitle()
-        // Opened before the settings were read (the read General started stops as this page opens).
-        .task { await hub.loadIfNeeded(fleet) }
     }
 }
 
