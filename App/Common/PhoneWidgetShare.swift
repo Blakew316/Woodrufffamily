@@ -45,7 +45,7 @@ enum PhoneWidgetShare {
     }
 
     /// What a widget says before it has anything: without the app group there is nothing opening the app would fix.
-    static var emptyText: String { container == nil ? "Needs setting up on the Mac" : "Open the app once" }
+    static var emptyText: String { container == nil ? "Ready after the next update" : "Open Woodruff once" }
 
     static func artURL(_ name: String) -> URL? { container?.appendingPathComponent(name) }
 }
