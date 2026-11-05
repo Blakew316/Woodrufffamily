@@ -80,6 +80,7 @@ struct WoodruffApp: App {
                     SmartHome.shared.start()
                     SmartThings.shared.start()
                     Dreo.shared.start()
+                    Cync.shared.start()
                     NestCameras.shared.start()
                     #if os(iOS)
                     HomeKitLights.shared.start()

@@ -302,6 +302,7 @@ struct LightSheet: View {
 
     /// Why an unreachable light might be, in a line.
     static func offlineHint(_ l: GoveeLight) -> String {
+        if l.isCync { return "Not answering in Cync. Check it’s switched on at the wall; it comes back here by itself." }
         if l.isHome {
             #if os(iOS)
             return "Not responding in Apple Home. Check it’s switched on at the wall."
@@ -638,7 +639,12 @@ struct LightDetailView: View {
                     .padding(.vertical, 10)
                 }
                 NameAndRoom(id: l.id, current: l.name, original: nil)
-                if l.isHome {
+                if l.isCync {
+                    Section("Cync") {
+                        LabeledContent("Connection", value: l.isOffline ? "Cync · Not Responding" : "Cync account")
+                        if let z = l.zone { LabeledContent("Cync Room", value: z) }
+                    }
+                } else if l.isHome {
                     Section("Apple Home") {
                         LabeledContent("Maker", value: l.sku)
                         if let z = l.zone { LabeledContent("Apple Home Room", value: z) }

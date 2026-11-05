@@ -417,7 +417,7 @@ struct DeviceGlyph: View {
             words.contains { w in ["cync", "ge lighting", "savant"].contains { (w ?? "").range(of: $0, options: .caseInsensitive) != nil } }
         }
         var ids: [String] = []
-        ids += home.lights.filter { $0.isHome && isCync($0.name, $0.sku) }.map(\.id)
+        ids += home.lights.filter { $0.isCync || ($0.isHome && isCync($0.name, $0.sku)) }.map(\.id)
         ids += AccessoryStore.shared.all.filter { $0.source == "home" && isCync($0.name, $0.product) }.map(\.id)
         for id in ids where !placed.contains(id) {
             home.setRoom(id, master)

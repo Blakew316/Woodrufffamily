@@ -483,6 +483,7 @@ struct DevicesListView: View {
             }
             SmartThingsSection()
             DreoSection()
+            CyncSection()
         }
         .formStyle(.grouped)
         .navigationTitle("Devices")

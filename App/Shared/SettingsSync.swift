@@ -40,6 +40,7 @@ final class SettingsSync {
         "st.client", "st.secret", "st.access", "st.refresh", "st.expires", "st.token",
         "nest.project", "nest.client", "nest.secret", "nest.access", "nest.refresh", "nest.expires", "nest.scopes", "nest.subscription",
         "github.token", "dreo.email", "dreo.password", "deco.host", "deco.password",
+        "cync.email", "cync.access", "cync.refresh", "cync.authorize", "cync.user", "cync.expires",
         "apns.key", "apns.keyid", "apns.team",
     ]
     /// Saved settings that travel (JSON in UserDefaults).
@@ -551,12 +552,17 @@ final class SettingsSync {
         let nestOut = had("kc:nest.refresh") && !has("kc:nest.refresh")
         let dreoIn = any(["kc:dreo."]) && has("kc:dreo.email") && has("kc:dreo.password")
         let dreoOut = had("kc:dreo.email") && had("kc:dreo.password") && !(has("kc:dreo.email") && has("kc:dreo.password"))
+        // Cync: a new sign-in elsewhere (not a token refresh) starts it here; a sign-out there signs this one out.
+        let cyncIn = keys.contains("kc:cync.authorize") && has("kc:cync.authorize") && has("kc:cync.access")
+        let cyncOut = had("kc:cync.authorize") && !has("kc:cync.authorize")
         let decoIn = any(["kc:deco."]) && has("kc:deco.password")
         let decoOut = had("kc:deco.password") && !has("kc:deco.password")
         let github = keys.contains("kc:github.token")
         if stOut { SmartThings.shared.signOut() }
         if nestOut { NestCameras.shared.signOut() }
         if dreoOut { Dreo.shared.signOut() }
+        if cyncOut { Cync.shared.signOut() }
+        if cyncIn { Cync.shared.start() }
         if decoOut { DecoWifi.shared.signOut() }
         if nestIn { NestCameras.shared.start() }   // loads the cameras and keeps them up to date
         guard goveeKey || stIn || dreoIn || decoIn || github else { return }

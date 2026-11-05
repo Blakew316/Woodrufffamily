@@ -442,7 +442,8 @@ public struct GoveeLight: Identifiable, Hashable, Sendable, Codable {
     public var brightness = 100    // 1…100
     public var color: LightColor?
     public var kelvin: Int?
-    /// Where it's controlled: "govee", or "home" (an Apple Home light, e.g. Cync over Matter).
+    /// Where it's controlled: "govee", "home" (an Apple Home light, e.g. Cync over Matter) or "cync" (a Cync
+    /// light through the Cync account).
     public var source: String? = nil
     /// Its room in Apple Home, used until one is chosen here.
     public var zone: String? = nil
@@ -453,6 +454,7 @@ public struct GoveeLight: Identifiable, Hashable, Sendable, Codable {
     public var kelvinMin: Int? = nil
     public var kelvinMax: Int? = nil
     public var isHome: Bool { source == "home" }
+    public var isCync: Bool { source == "cync" }
     public var isOffline: Bool { offline == true }
     /// Lit, as far as anyone can tell (an unreachable light isn't shown as on).
     public var isLit: Bool { on && !isOffline }
@@ -848,7 +850,7 @@ public final class SmartHome {
         var unique = lights.filter { seen.insert($0.id).inserted }
         // A Govee light also in Apple Home (over Matter) is one lamp, not two: "Blake's Floor Lamp 2" from Apple Home
         // and "Blake's Govee Floor Lamp" from Govee. The Govee one stays (it has the family's room and name).
-        let govee = Set(unique.filter { !$0.isHome }.map { Self.sameLampKey($0.name) }.filter { !$0.isEmpty })
+        let govee = Set(unique.filter { !$0.isHome && !$0.isCync }.map { Self.sameLampKey($0.name) }.filter { !$0.isEmpty })
         let twin = { (l: GoveeLight) -> Bool in
             let n = l.name.lowercased()
             return l.isHome && (n.contains("lamp") || n.contains("floor")) && govee.contains(Self.sameLampKey(l.name))
@@ -883,6 +885,28 @@ public final class SmartHome {
 
     /// Carries out a change to an Apple Home light (set by the iPhone app).
     public var homeControl: ((GoveeLight, LightCommand) -> Void)?
+
+    /// Carries out a change to a Cync light (set by the app once it's signed in to Cync).
+    public var cyncControl: ((GoveeLight, LightCommand) -> Void)?
+
+    /// The Cync account's lights, as the app reads them; replaces the ones from before.
+    public func setCyncLights(_ list: [GoveeLight]) {
+        var next = lights.filter { !$0.isCync }
+        for var l in list {
+            if let n = names[l.id], !n.isEmpty { l.name = n }
+            l = holding(l)
+            next.append(l)
+        }
+        next.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        if next != lights { lights = next; persist() }
+        checkReachable()
+    }
+
+    /// A change to a Cync light that didn't go through.
+    public func cyncControlFailed(_ id: String, _ message: String) {
+        held[id] = nil
+        goveeError = message
+    }
 
     /// A change to an Apple Home light that didn't go through: say so where the lights are, and stop holding
     /// what was asked so the light shows how it really is.
@@ -1533,6 +1557,8 @@ public final class SmartHome {
             if l.isHome {
                 // Apple Home says (through the iPhone app); with nothing here to reach it (the Mac), it's out of reach.
                 offline = homeControl == nil || l.isOffline
+            } else if l.isCync {
+                offline = cyncControl == nil || l.isOffline
             } else {
                 let cloudUp = cloudUsable(l, hasKey: hasKey) && cloudOnline[l.id] != false
                 offline = lanSilent(l) && !cloudUp
@@ -1770,6 +1796,17 @@ public final class SmartHome {
             }
             hold(l, for: 6)
             homeControl(l, c)
+            return
+        }
+        if l.isCync {
+            guard let cyncControl else {
+                goveeError = "Sign in to Cync in Settings to control \(l.name)."
+                restore(before, seq: seq)
+                return
+            }
+            hold(l, for: 6)
+            if turnOn { cyncControl(l, .power(true)) }
+            cyncControl(l, c)
             return
         }
         #if canImport(Network)
