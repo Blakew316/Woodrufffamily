@@ -76,6 +76,8 @@ def all_ok(env, opts):
 
 
 class FakeEnv(updater.Env):
+    quick_looks = 0   # one check per run, as the tests expect
+
     def __init__(self, root, platform="darwin"):
         self.root = root
         self.repo = os.path.join(root, "repo")

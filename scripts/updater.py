@@ -63,6 +63,10 @@ TESTING = "WOODRUFF_UPDATER_TESTING"   # set by the tests: install works off mac
 BUSY = "An update is running right now; run this again once it has finished (python3 scripts/updater.py status)."
 
 DEFAULT_INTERVAL = 300
+# Between the LaunchAgent's starts, a run looks again this often for a new release (a cheap ls-remote), this many
+# times, so a release arrives within about a minute instead of up to five.
+QUICK_LOOK_SECONDS = 60
+QUICK_LOOKS = 3
 BACKOFF = (15 * 60, 30 * 60, 60 * 60, 2 * 3600, 4 * 3600, 8 * 3600)   # after the 1st, 2nd, ... failure
 UNREACHABLE_RETRY = 10 * 60
 COURTESY_IDLE = 120          # seconds without input before the app counts as not in use
@@ -274,6 +278,9 @@ class Env(object):
 
     def sleep(self, seconds):
         time.sleep(seconds)
+
+    # How many quick looks for a new release a run makes after its check (the tests make none).
+    quick_looks = QUICK_LOOKS
 
     def uid(self):
         return os.getuid() if self._uid is None else self._uid
@@ -1275,7 +1282,18 @@ def cmd_run(env, args):
         updater = Updater(env, config, args.verbose)
         previous = signal.signal(signal.SIGTERM, updater.on_term)
         try:
-            return updater.run()
+            status = updater.run()
+            for _ in range(env.quick_looks):
+                env.sleep(QUICK_LOOK_SECONDS)
+                commit, error = updater.find_release()
+                known = (updater.state.get("release") or {}).get("commit")
+                if error or not commit or commit == known:
+                    continue
+                signal.signal(signal.SIGTERM, previous)
+                updater = Updater(env, config, args.verbose)
+                signal.signal(signal.SIGTERM, updater.on_term)
+                status = updater.run()
+            return status
         except SystemExit:
             updater.interrupted()
             raise
