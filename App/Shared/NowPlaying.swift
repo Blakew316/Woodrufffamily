@@ -349,6 +349,21 @@ struct NowPlayingSheet: View {
                         .accessibilityLabel("Close")
                 }
                 if tvID == nil { ToolbarItem(placement: .principal) { TVPicker() }.sharedBackgroundVisibility(.hidden) }
+                // Carry on in another room: the same title, from the same spot, on another TV (this one pauses).
+                if let tv, let now = tv.nowPlaying, let key = now.key, !key.isEmpty, !otherTVs(than: tv).isEmpty {
+                    ToolbarItem(placement: .primaryAction) {
+                        Menu {
+                            Section("Move to") {
+                                ForEach(otherTVs(than: tv)) { other in
+                                    Button(other.name) { move(now, key: key, from: tv, to: other) }
+                                }
+                            }
+                        } label: {
+                            Image(systemName: "arrow.right.circle")
+                        }
+                        .accessibilityLabel("Move to Another TV")
+                    }
+                }
                 if tv.map({ fleet.platform(of: $0) != .webOS && $0.onScreen }) ?? false {
                     ToolbarItem(placement: .primaryAction) {
                         Button { withAnimation(.smooth) { showScreen.toggle() } } label: {
@@ -364,6 +379,24 @@ struct NowPlayingSheet: View {
         #if os(macOS)
         .frame(minWidth: 480, idealWidth: 480, maxWidth: .infinity, minHeight: 720, idealHeight: 720, maxHeight: .infinity)
         #endif
+    }
+
+    private func otherTVs(than tv: FleetTV) -> [FleetTV] {
+        fleet.tvs.filter { $0.id != tv.id && !$0.isUnpaired }
+    }
+
+    /// Starts [now] on [other] where it is right now, pauses it here, and follows it there.
+    private func move(_ now: NowPlaying, key: String, from tv: FleetTV, to other: FleetTV) {
+        #if os(iOS)
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        #endif
+        let action = PlayAction(key: key, title: now.title, position: now.estimatedPosition(at: Date()), label: nil,
+                                duration: now.duration, resume: nil, latest: nil)
+        if !other.online { fleet.wake(other) }
+        guard PlayRouter.start(action, fleet: fleet, on: other) else { return }
+        if now.isPlaying, let c = fleet.client(for: tv) { Task { try? await c.key("playpause") } }
+        // The sheet (when it follows the remote's TV) and the remote move with it.
+        if tvID == nil { fleet.selectedID = other.id } else { dismiss() }
     }
 
     /// The picture: the video's thumbnail, the title's backdrop, or the TV's screen (Woodruff's own menus). Plain black
