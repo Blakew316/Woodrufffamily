@@ -12,6 +12,8 @@ struct AllDevicesView: View {
     @State private var openLight: GoveeLight?
     @State private var openDevice: HomeDevice?
     @State private var openTV: TitleRef?
+    /// The small remote for a TV, from a tap on its tile.
+    @State private var miniTV: TitleRef?
     @State private var confirmUnlock: HomeDevice?
     /// Settings → General: devices that have no room, under Other at the end (off unless asked for).
     @AppStorage("allDevices.showOther") private var showOther = false
@@ -89,6 +91,16 @@ struct AllDevicesView: View {
         .sheet(item: $openLight) { l in LightSheet(lightID: l.id).macResizable(width: 520, height: 640) }
         .sheet(item: $openDevice) { d in NavigationStack { DeviceDetailView(deviceID: d.id, inSheet: true) }.macResizable() }
         .sheet(item: $openTV) { t in NavigationStack { TVDetailView(tvID: t.id) }.macResizable() }
+        .sheet(item: $miniTV) { t in
+            MiniRemote(tvID: t.id)
+                #if os(iOS)
+                .presentationDetents([.height(300)])
+                .presentationBackground(.clear)
+                .presentationDragIndicator(.visible)
+                #else
+                .frame(width: 360, height: 300)
+                #endif
+        }
         .confirmationDialog("Unlock \(confirmUnlock?.name ?? "")?", isPresented: Binding(get: { confirmUnlock != nil }, set: { if !$0 { confirmUnlock = nil } }), titleVisibility: .visible) {
             Button("Unlock") { if let d = confirmUnlock { store.send(d, .lock(false)) }; confirmUnlock = nil }
         }
@@ -198,15 +210,9 @@ struct AllDevicesView: View {
         #endif
         switch item {
         case .tv(let tv):
-            // Off: wake it. On: its remote, on that TV, to control it.
+            // A small remote for it (waking it if it's off).
             if !tv.online { fleet.wake(tv) }
-            fleet.remoteAll = false
-            fleet.selectedID = tv.id
-            #if os(macOS)
-            fleet.remotePanel = true
-            #else
-            UserDefaults.standard.set("remote", forKey: "section")
-            #endif
+            miniTV = TitleRef(id: tv.id)
         case .speaker(let s):
             guard !s.isOffline else { open(item); return }
             let playing = s.isPlaying
@@ -384,6 +390,79 @@ struct SoundbarPicture: View {
                 .frame(width: 36, height: 9)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+        }
+    }
+}
+
+/// A small remote for one TV, from All Devices: what it's playing, play or pause, back and ahead, mute and volume, on
+/// clear Liquid Glass.
+struct MiniRemote: View {
+    var tvID: String
+    @Environment(Fleet.self) private var fleet
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        let tv = fleet.tv(tvID)
+        let p = tv?.nowPlaying
+        VStack(spacing: 18) {
+            VStack(spacing: 3) {
+                Text(tv?.name ?? "TV").font(.headline)
+                Text(tv?.online == false ? "Turning on…" : p?.title ?? "Nothing playing")
+                    .font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+            }
+            HStack(spacing: 14) {
+                key("gobackward.10", "Back 10 Seconds") { await media("back10") }
+                key(p?.isPlaying == true ? "pause.fill" : "play.fill", p?.isPlaying == true ? "Pause" : "Play", big: true) { await press("playpause") }
+                key("goforward.30", "Ahead 30 Seconds") { await media("fwd30") }
+            }
+            HStack(spacing: 14) {
+                key("speaker.minus.fill", "Volume Down") { await press("voldown") }
+                key("speaker.slash.fill", "Mute") { await mute() }
+                key("speaker.plus.fill", "Volume Up") { await press("volup") }
+            }
+        }
+        .padding(22)
+        .frame(maxWidth: .infinity)
+        .glass(RoundedRectangle(cornerRadius: 34, style: .continuous))
+        .padding(.horizontal, 12)
+        .padding(.bottom, 8)
+        .frame(maxHeight: .infinity, alignment: .bottom)
+    }
+
+    private func key(_ symbol: String, _ label: String, big: Bool = false, _ action: @escaping () async -> Void) -> some View {
+        Button {
+            #if os(iOS)
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            #endif
+            Task { await action() }
+        } label: {
+            Image(systemName: symbol)
+                .font(.system(size: big ? 26 : 20, weight: .semibold))
+                .frame(width: big ? 76 : 64, height: big ? 64 : 52)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .glass(Capsule(), interactive: true)
+        .accessibilityLabel(label)
+    }
+
+    private func press(_ key: String) async {
+        guard let tv = fleet.tv(tvID), let c = fleet.client(for: tv) else { return }
+        do { try await c.key(key) } catch { fleet.show(error) }
+    }
+
+    private func media(_ action: String) async {
+        guard let tv = fleet.tv(tvID), let c = fleet.client(for: tv) else { return }
+        do { _ = try await c.media(action) } catch { fleet.show(error) }
+    }
+
+    /// LG's own mute when it's linked (it knows whether it's muted); otherwise the mute key.
+    private func mute() async {
+        guard let tv = fleet.tv(tvID) else { return }
+        if let lg = fleet.lg(for: tv), let v = try? await lg.volume() {
+            try? await lg.setMute(!v.muted)
+        } else {
+            await press("mute")
         }
     }
 }
