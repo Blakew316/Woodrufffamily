@@ -353,7 +353,7 @@ struct DeviceGlyph: View {
         case .thermostat(let d):
             EcobeePicture(device: d).frame(width: 52, height: 52)
         case .dreoFan(let pedestal, let speed):
-            DreoFanPicture(pedestal: pedestal, on: on, speed: speed).frame(width: 46, height: 56)
+            DreoFanPicture(pedestal: pedestal, on: on, speed: speed).frame(width: 52, height: 58)
         case .floorLamp(let level):
             FloorLampPicture(level: level, lit: on, color: tint).frame(width: 34, height: 56)
         case .homePod(let mini):
@@ -709,10 +709,10 @@ struct DreoFanPicture: View {
     private var tableFan: some View {
         GeometryReader { g in
             let w = g.size.width, h = g.size.height
-            let d = w * 0.7, r = d / 2
-            let cx = w / 2, cy = r + h * 0.07
-            let yokeR = r * 1.14
-            let baseW = w * 0.86, baseH = h * 0.13
+            let d = w * 0.8, r = d / 2
+            let cx = w / 2, cy = r + h * 0.03
+            let yokeR = r * 1.1
+            let baseW = w * 0.6, baseH = h * 0.09
             let baseTop = h - baseH
             let columnTop = cy + yokeR - h * 0.02
             ZStack(alignment: .topLeading) {
@@ -726,19 +726,19 @@ struct DreoFanPicture: View {
                 // The column, silver with its black front panel.
                 RoundedRectangle(cornerRadius: w * 0.03, style: .continuous)
                     .fill(LinearGradient(colors: Self.silver, startPoint: .leading, endPoint: .trailing))
-                    .frame(width: w * 0.26, height: baseTop - columnTop + baseH * 0.3)
+                    .frame(width: w * 0.22, height: baseTop - columnTop + baseH * 0.3)
                     .overlay(RoundedRectangle(cornerRadius: w * 0.02, style: .continuous).fill(Color(white: 0.06)).padding(w * 0.03).padding(.bottom, baseH * 0.2))
                     .position(x: cx, y: (columnTop + baseTop + baseH * 0.3) / 2)
                 // The yoke: a silver U round the bottom of the head, up to its pivots at both sides.
                 Circle().trim(from: 0.0, to: 0.5)
                     .stroke(LinearGradient(colors: Self.silver, startPoint: .top, endPoint: .bottom),
-                            style: StrokeStyle(lineWidth: w * 0.065, lineCap: .round))
+                            style: StrokeStyle(lineWidth: w * 0.05, lineCap: .round))
                     .frame(width: yokeR * 2, height: yokeR * 2)
                     .position(x: cx, y: cy)
                 ForEach([-1.0, 1.0], id: \.self) { side in
                     RoundedRectangle(cornerRadius: w * 0.02, style: .continuous)
                         .fill(LinearGradient(colors: Self.silver, startPoint: .top, endPoint: .bottom))
-                        .frame(width: w * 0.07, height: r * 0.5)
+                        .frame(width: w * 0.055, height: r * 0.42)
                         .position(x: cx + CGFloat(side) * yokeR, y: cy - r * 0.05)
                 }
                 head(d, rim: Self.silver, badge: Self.silver).position(x: cx, y: cy)
