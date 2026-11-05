@@ -509,6 +509,9 @@ put_helper() {
 build_install_helper() {  # "$@" = the signing settings
   local hlog="$LOGDIR/helper-build.log" product="$ROOT/build-helper/Build/Products/Release-maccatalyst/$HELPER_NAME.app"
   step "Mac: building $HELPER_NAME (Apple Home on the Macs)"
+  # From scratch: built on top of the last one, Xcode can put a new profile in without signing again ("a sealed
+  # resource is missing or invalid"). It's small, so this takes seconds.
+  rm -rf "$ROOT/build-helper/Build/Products"
   xcodebuild -project WoodruffFamily.xcodeproj -scheme WoodruffHomeHelper -destination 'generic/platform=macOS,variant=Mac Catalyst' \
     -configuration Release -derivedDataPath build-helper DEVELOPMENT_TEAM="$TEAM" "$@" \
     ${VERSION_SETTINGS[@]+"${VERSION_SETTINGS[@]}"} build </dev/null >"$hlog" 2>&1
@@ -522,7 +525,7 @@ build_install_helper() {  # "$@" = the signing settings
   local macs
   macs=$(security cms -D -i "$product/Contents/embedded.provisionprofile" 2>/dev/null |
     plutil -extract ProvisionedDevices raw -o - - 2>/dev/null)
-  [ -n "$macs" ] && say "    it opens on the $macs Macs its signing profile lists"
+  [ -n "$macs" ] && say "    its signing profile lists $macs Mac(s), the Macs it opens on"
   # For the Macs that install the shared build.
   if mkdir -p "$SHARE_DIR" 2>/dev/null && ditto -c -k --sequesterRsrc --keepParent "$HELPER_INSTALLED" "$LOGDIR/helper.zip" </dev/null >>"$hlog" 2>&1; then
     cp "$LOGDIR/helper.zip" "$SHARE_DIR/$HELPER_NAME.zip" 2>>"$hlog" && say "    shared as Woodruff Family builds/$HELPER_NAME.zip"
