@@ -150,7 +150,8 @@ struct AllDevicesView: View {
         switch item {
         case .tv(let tv):
             let p = tv.nowPlaying
-            let state = !tv.online ? "Off" : p.map { $0.isPlaying ? $0.title : "Paused" } ?? "On"
+            // What it's doing, plainly (the title, which can read like a status, is on the Remote and Now Playing).
+            let state = !tv.online ? "Off" : p.map { $0.isPlaying ? "Playing" : "Paused" } ?? "On"
             return Facts(name: tv.name, state: state, on: tv.online, reachable: true,
                          look: .tv(playing: p?.isPlaying == true), tint: .blue)
         case .speaker(let s):
@@ -196,7 +197,20 @@ struct AllDevicesView: View {
         #endif
         switch item {
         case .tv(let tv):
-            if tv.online { Task { if let e = await SceneRunner.turnOff(tv) { fleet.say("TV", e) } } } else { fleet.wake(tv) }
+            if !tv.online {
+                fleet.wake(tv)
+            } else if fleet.lg(for: tv) != nil {
+                Task { if let e = await SceneRunner.turnOff(tv) { fleet.say("TV", e) } }
+            } else {
+                // Only an LG with its own control link can be switched off from here: any other TV opens its remote.
+                fleet.remoteAll = false
+                fleet.selectedID = tv.id
+                #if os(macOS)
+                fleet.remotePanel = true
+                #else
+                UserDefaults.standard.set("remote", forKey: "section")
+                #endif
+            }
         case .speaker(let s):
             guard !s.isOffline else { open(item); return }
             let playing = s.isPlaying
