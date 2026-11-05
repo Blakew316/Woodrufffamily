@@ -282,6 +282,7 @@ final class HomeKitLights: NSObject, HMHomeManagerDelegate, HMHomeDelegate, HMAc
         guard let p = primary(a) else { return nil }
         var d = HomeDevice(id: id(a), name: a.name, source: "home", kind: .sensor, zone: a.room?.name, status: "")
         d.reachable = a.isReachable
+        d.product = a.manufacturer   // who made it ("GE Lighting" for a Cync plug…)
         let power = num(a, HMCharacteristicTypePowerState).map { $0 != 0 } ?? num(a, HMCharacteristicTypeActive).map { $0 != 0 }
         switch p.serviceType {
         case HMServiceTypeLockMechanism:

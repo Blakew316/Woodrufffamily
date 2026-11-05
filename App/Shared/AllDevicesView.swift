@@ -397,8 +397,8 @@ struct DeviceGlyph: View {
     }
 }
 
-/// The Sonos Arc and the sync devices (a TV sync box, synced backlights…) live in the Master Bedroom: each put there
-/// once (moving one later in its settings sticks).
+/// The Sonos Arc and the Cync devices (GE's lights and plugs, in Apple Home) live in the Master Bedroom: each put
+/// there once (moving one later in its settings sticks).
 @MainActor enum ArcRoom {
     static func place() {
         let home = SmartHome.shared
@@ -410,20 +410,20 @@ struct DeviceGlyph: View {
             home.setRoom(arc.id, master)
             defaults.set(true, forKey: "arcPlacedInMasterBedroom")
         }
-        var placed = Set(defaults.stringArray(forKey: "syncPlacedInMasterBedroom") ?? [])
+        var placed = Set(defaults.stringArray(forKey: "cyncPlacedInMasterBedroom") ?? [])
         let before = placed.count
-        func isSync(_ words: String?...) -> Bool {
-            words.contains { ($0 ?? "").range(of: "sync", options: .caseInsensitive) != nil }
+        // Cync's name, or its maker's as Apple Home gives it (GE Lighting, or Savant, who make Cync now).
+        func isCync(_ words: String?...) -> Bool {
+            words.contains { w in ["cync", "ge lighting", "savant"].contains { (w ?? "").range(of: $0, options: .caseInsensitive) != nil } }
         }
         var ids: [String] = []
-        ids += home.lights.filter { isSync($0.name, Govee.product($0.sku)) }.map(\.id)
-        ids += home.speakers.filter { isSync($0.name, $0.model) }.map(\.id)
-        ids += AccessoryStore.shared.all.filter { isSync($0.name, $0.product) }.map(\.id)
+        ids += home.lights.filter { $0.isHome && isCync($0.name, $0.sku) }.map(\.id)
+        ids += AccessoryStore.shared.all.filter { $0.source == "home" && isCync($0.name, $0.product) }.map(\.id)
         for id in ids where !placed.contains(id) {
             home.setRoom(id, master)
             placed.insert(id)
         }
-        if placed.count != before { defaults.set(Array(placed), forKey: "syncPlacedInMasterBedroom") }
+        if placed.count != before { defaults.set(Array(placed), forKey: "cyncPlacedInMasterBedroom") }
     }
 }
 
