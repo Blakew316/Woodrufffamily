@@ -194,5 +194,23 @@ class Push(unittest.TestCase):
         self.assertNotIn("aps-environment", ents)
 
 
+class Devices(unittest.TestCase):
+    """Virtual devices the Mac lists (iPhone Mirroring) are left out: apps can't be installed on them."""
+
+    def doc(self, *devices):
+        return {"result": {"devices": [
+            {"hardwareProperties": dict({"platform": "iOS", "udid": u}, **extra), "deviceProperties": {"name": n}}
+            for u, n, extra in devices]}}
+
+    def test_real_and_virtual(self):
+        out = signing.parse_devices(self.doc(
+            ("00008150-001E68E80A32401C", "Blakes IPhone", {}),
+            ("24EB21A0-3973-43C6-905D-A86431AA3398", "iPhone Duo", {}),
+            ("00008150-0002615C3C87801C", "iPhone", {"reality": "virtual"}),
+            ("a" * 40, "Old iPhone", {"reality": "physical"}),
+        ))
+        self.assertEqual([d["name"] for d in out], ["Blakes IPhone", "Old iPhone"])
+
+
 if __name__ == "__main__":
     unittest.main()

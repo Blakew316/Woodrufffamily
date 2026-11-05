@@ -1103,6 +1103,19 @@ def _dict(value):
     return value if isinstance(value, dict) else {}
 
 
+VIRTUAL_UDID = re.compile(r"^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$")
+
+
+def physical_iphone(hardware, udid):
+    """A real iPhone, not a virtual one the Mac lists (iPhone Mirroring and the like), which apps can't be installed
+    on: those say reality "virtual", or have a UUID-shaped identifier where a real iPhone's is 0000xxxx-... or 40
+    hex digits."""
+    reality = hardware.get("reality")
+    if isinstance(reality, str) and reality.lower() != "physical":
+        return False
+    return not VIRTUAL_UDID.match(udid)
+
+
 def parse_devices(doc):
     """`devicectl list devices --json-output` -> [{"udid", "name", ...}] for iOS devices (missing keys are fine)."""
     devices = _dict(_dict(doc).get("result")).get("devices")
@@ -1115,7 +1128,7 @@ def parse_devices(doc):
         if hardware.get("platform") != "iOS" or not isinstance(udid, str) or not udid.strip():
             continue
         udid = udid.strip()
-        if udid in seen:
+        if udid in seen or not physical_iphone(hardware, udid):
             continue
         seen.add(udid)
         name = props.get("name")
