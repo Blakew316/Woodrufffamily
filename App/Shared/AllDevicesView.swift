@@ -85,12 +85,12 @@ struct AllDevicesView: View {
         let rooms = Array(Set(homeRooms(fleet, devices: devices) + laundry)).filter { $0 != noRoom && !$0.isEmpty }
         VStack(alignment: .leading, spacing: 26) {
             ForEach(sections(rooms), id: \.title) { section in
-                let items = section.rooms.flatMap { items(in: $0, devices: devices) }
-                if !items.isEmpty {
+                let list = section.rooms.flatMap { self.items(in: $0, devices: devices) }
+                if !list.isEmpty {
                     VStack(alignment: .leading, spacing: 10) {
                         Text(section.title).font(.title3.bold())
                         LazyVGrid(columns: columns, alignment: .leading, spacing: 12) {
-                            ForEach(items) { item in tile(item) }
+                            ForEach(list) { item in tile(item) }
                         }
                     }
                 }
