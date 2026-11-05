@@ -297,7 +297,7 @@ struct DeviceGlyph: View {
                 .symbolEffect(.bounce, value: on)
         case .speaker(let bar):
             if bar {
-                SoundbarPicture(on: on, tint: tint).frame(width: 36, height: 30)
+                SoundbarPicture(on: on, tint: tint).frame(width: 40, height: 30)
             } else {
                 Image(systemName: on ? "hifispeaker.fill" : "hifispeaker")
                     .font(.system(size: 20, weight: .semibold))
@@ -360,36 +360,64 @@ struct DeviceGlyph: View {
     }
 }
 
-/// A Sonos Arc: a long, low bar with its grille, and sound rising from it while it plays.
+/// A Sonos Arc, drawn like the real thing: a long, slim, rounded bar in matte black with its perforated grille wrapping
+/// the whole front, a soft sheen along the top and its small status light; while it plays, sound ripples out above it.
 struct SoundbarPicture: View {
     var on: Bool
     var tint: Color
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 20, paused: !on || reduceMotion)) { ctx in
+        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: !on || reduceMotion)) { ctx in
             let t = ctx.date.timeIntervalSinceReferenceDate
-            ZStack(alignment: .bottom) {
-                // Sound rising from the bar while it plays.
+            Canvas { g, size in
+                let w = size.width, h = size.height
+                let bar = CGRect(x: 0.5, y: h * 0.68, width: w - 1, height: h * 0.2)
+                let shape = Path(roundedRect: bar, cornerRadius: bar.height / 2, style: .continuous)
+
+                // Sound rippling out above it while it plays: three soft arcs, each fading as it rises.
                 if on {
-                    HStack(spacing: 4) {
-                        ForEach(0..<3) { i in
-                            let phase = reduceMotion ? 0.6 : (sin(t * 6 + Double(i) * 1.3) + 1) / 2
-                            Capsule().fill(tint).frame(width: 3, height: 5 + 9 * phase)
-                        }
-                    }
-                    .padding(.bottom, 13)
-                }
-                // The bar, its ends rounded, a grille of holes along it.
-                ZStack {
-                    Capsule().fill(on ? Color(white: 0.15) : Color(white: 0.45))
-                    HStack(spacing: 2.2) {
-                        ForEach(0..<9) { _ in Circle().fill(.white.opacity(on ? 0.35 : 0.25)).frame(width: 1.8, height: 1.8) }
+                    for i in 0..<3 {
+                        let phase = reduceMotion ? Double(i) / 3 : (t * 0.9 + Double(i) / 3).truncatingRemainder(dividingBy: 1)
+                        let rise = bar.minY - 2.5 - CGFloat(phase) * h * 0.45
+                        let spread = w * (0.28 + 0.24 * CGFloat(phase))
+                        var arc = Path()
+                        arc.move(to: CGPoint(x: w / 2 - spread / 2, y: rise + 3))
+                        arc.addQuadCurve(to: CGPoint(x: w / 2 + spread / 2, y: rise + 3), control: CGPoint(x: w / 2, y: rise - 2))
+                        g.stroke(arc, with: .color(tint.opacity(0.85 * (1 - phase))), style: StrokeStyle(lineWidth: 1.3, lineCap: .round))
                     }
                 }
-                .frame(width: 36, height: 9)
+
+                // The body: matte black, lighter along the top as the real one catches the light.
+                let top = on ? Color(white: 0.30) : Color(white: 0.55)
+                let bottom = on ? Color(white: 0.06) : Color(white: 0.32)
+                g.fill(shape, with: .linearGradient(Gradient(colors: [top, bottom]),
+                                                    startPoint: CGPoint(x: 0, y: bar.minY), endPoint: CGPoint(x: 0, y: bar.maxY)))
+                // The grille: fine holes in staggered rows across almost all of the front.
+                g.clip(to: shape)
+                let hole: CGFloat = 0.6
+                let stepX: CGFloat = 1.25, stepY: CGFloat = 1.05
+                var y = bar.minY + 0.9
+                var row = 0
+                while y < bar.maxY - 0.6 {
+                    var x = bar.minX + bar.height * 0.45 + (row % 2 == 0 ? 0 : stepX / 2)
+                    while x < bar.maxX - bar.height * 0.45 {
+                        g.fill(Path(ellipseIn: CGRect(x: x, y: y, width: hole, height: hole)), with: .color(.black.opacity(on ? 0.55 : 0.35)))
+                        x += stepX
+                    }
+                    y += stepY
+                    row += 1
+                }
+                // A thin sheen along the top edge.
+                var sheen = Path()
+                sheen.move(to: CGPoint(x: bar.minX + bar.height / 2, y: bar.minY + 0.6))
+                sheen.addLine(to: CGPoint(x: bar.maxX - bar.height / 2, y: bar.minY + 0.6))
+                g.stroke(sheen, with: .color(.white.opacity(0.18)), lineWidth: 0.5)
+                // Its status light, on the top in the middle: white while it plays.
+                if on {
+                    g.fill(Path(ellipseIn: CGRect(x: w / 2 - 0.6, y: bar.minY + 0.3, width: 1.2, height: 1.2)), with: .color(.white))
+                }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
         }
     }
 }
