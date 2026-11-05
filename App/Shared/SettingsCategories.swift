@@ -148,6 +148,9 @@ struct GeneralSettingsView: View {
                 PageLink("Shortcuts") { ShortcutsView(hub: hub) } label: {
                     IconRow(symbol: "", color: .clear, title: "Shortcuts")
                 }
+                PageLink("Scenes") { ScenesSettingsView() } label: {
+                    IconRow(symbol: "", color: .clear, title: "Scenes", value: SceneStore.shared.scenes.count == 1 ? "1 Scene" : "\(SceneStore.shared.scenes.count) Scenes")
+                }
             }
             #if os(macOS)
             Section {

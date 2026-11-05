@@ -37,6 +37,9 @@ struct WoodruffApp: App {
         #if os(macOS)
         // An update replacing the app asks it to quit first (a notification from deploy.sh): it quits itself.
         UpdaterStatus.listenForQuit()
+        #else
+        // Control Center's Movie Night and Bedtime run here, in the app (their intents land in this process).
+        SceneHook.run = { id in _ = await SceneRunner.run(id: id) }
         #endif
     }
 

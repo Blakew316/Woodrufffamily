@@ -15,6 +15,41 @@ struct WoodruffWidgets: WidgetBundle {
         SonosPlayPauseControl()
         SonosVolumeUpControl()
         SonosVolumeDownControl()
+        SceneControls().body
+    }
+}
+
+// MARK: - Scenes
+
+/// Movie Night and Bedtime in Control Center (their own bundle: one bundle holds ten at most).
+struct SceneControls: WidgetBundle {
+    var body: some Widget {
+        MovieNightControl()
+        BedtimeControl()
+    }
+}
+
+struct MovieNightControl: ControlWidget {
+    var body: some ControlWidgetConfiguration {
+        StaticControlConfiguration(kind: "com.woodruff.family.control.movienight") {
+            ControlWidgetButton(action: RunSceneControlIntent(sceneID: "movie-night")) {
+                Label("Movie Night", systemImage: "popcorn.fill")
+            }
+        }
+        .displayName("Movie Night")
+        .description("Runs your Movie Night scene.")
+    }
+}
+
+struct BedtimeControl: ControlWidget {
+    var body: some ControlWidgetConfiguration {
+        StaticControlConfiguration(kind: "com.woodruff.family.control.bedtime") {
+            ControlWidgetButton(action: RunSceneControlIntent(sceneID: "bedtime")) {
+                Label("Bedtime", systemImage: "moon.zzz.fill")
+            }
+        }
+        .displayName("Bedtime")
+        .description("Runs your Bedtime scene.")
     }
 }
 

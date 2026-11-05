@@ -207,3 +207,24 @@ struct SonosVolumeControlIntent: LiveActivityIntent {
         return .result()
     }
 }
+
+// MARK: - Scenes from Control Center
+
+/// Runs a scene in the app (set by the app as it starts): a control's LiveActivityIntent runs in the app's process,
+/// where the scenes, the TVs' keys and the lights are.
+enum SceneHook {
+    @MainActor static var run: ((String) async -> Void)?
+}
+
+struct RunSceneControlIntent: LiveActivityIntent {
+    static let title: LocalizedStringResource = "Run a Scene"
+    @Parameter(title: "Scene") var sceneID: String
+
+    init() {}
+    init(sceneID: String) { self.sceneID = sceneID }
+
+    @MainActor func perform() async throws -> some IntentResult {
+        await SceneHook.run?(sceneID)
+        return .result()
+    }
+}

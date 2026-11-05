@@ -132,6 +132,19 @@ struct OpenWoodruffRemoteIntent: AppIntent {
 /// The phrases Siri and Spotlight offer without any setup.
 struct WoodruffShortcuts: AppShortcutsProvider {
     static var appShortcuts: [AppShortcut] {
+        AppShortcut(intent: RunSceneIntent(), phrases: [
+            "\(\.$scene) with \(.applicationName)",
+            "Run \(\.$scene) in \(.applicationName)",
+            "Start \(\.$scene) with \(.applicationName)",
+        ], shortTitle: "Run Scene", systemImageName: "sparkles")
+        AppShortcut(intent: PlayOnTVIntent(), phrases: [
+            "Play something on \(\.$tv) with \(.applicationName)",
+            "Play on \(\.$tv) in \(.applicationName)",
+        ], shortTitle: "Play on TV", systemImageName: "play.tv")
+        AppShortcut(intent: TurnOffTVsIntent(), phrases: [
+            "Turn off \(\.$tv) with \(.applicationName)",
+            "Turn off the TVs with \(.applicationName)",
+        ], shortTitle: "Turn Off TV", systemImageName: "power")
         AppShortcut(intent: PauseTVsIntent(), phrases: [
             "Pause \(\.$tv) with \(.applicationName)",
             "Play or pause \(\.$tv) in \(.applicationName)",
@@ -145,18 +158,11 @@ struct WoodruffShortcuts: AppShortcutsProvider {
             "What’s playing on \(\.$tv) in \(.applicationName)",
             "What’s playing in \(.applicationName)",
         ], shortTitle: "What’s Playing", systemImageName: "tv")
-        AppShortcut(intent: OpenWoodruffRemoteIntent(), phrases: [
-            "Open the \(.applicationName) remote",
-            "Open the \(.applicationName) remote for \(\.$tv)",
-        ], shortTitle: "Remote", systemImageName: "appletvremote.gen4.fill")
-        AppShortcut(intent: LightOnIntent(), phrases: [
-            "Turn on \(\.$light) with \(.applicationName)",
-            "Turn \(\.$light) on in \(.applicationName)",
-        ], shortTitle: "Turn On Light", systemImageName: "lightbulb.fill")
-        AppShortcut(intent: LightOffIntent(), phrases: [
-            "Turn off \(\.$light) with \(.applicationName)",
-            "Turn \(\.$light) off in \(.applicationName)",
-        ], shortTitle: "Turn Off Light", systemImageName: "lightbulb")
+        // One phrase set for on and off (Siri allows 10 sets per app).
+        AppShortcut(intent: SetLightPowerIntent(), phrases: [
+            "Turn \(\.$power) \(\.$light) with \(.applicationName)",
+            "Turn \(\.$light) \(\.$power) in \(.applicationName)",
+        ], shortTitle: "Light On or Off", systemImageName: "lightbulb.fill")
         AppShortcut(intent: SetRoomLightsIntent(), phrases: [
             "Turn off the \(\.$room) lights with \(.applicationName)",
             "Turn the \(\.$room) lights off in \(.applicationName)",
@@ -170,9 +176,5 @@ struct WoodruffShortcuts: AppShortcutsProvider {
             "Play or pause Sonos with \(.applicationName)",
             "Pause the Sonos with \(.applicationName)",
         ], shortTitle: "Sonos Play/Pause", systemImageName: "hifispeaker.fill")
-        AppShortcut(intent: SonosWhatsPlayingIntent(), phrases: [
-            "What’s playing on Sonos in \(.applicationName)",
-            "What’s playing in \(\.$speaker) on \(.applicationName)",
-        ], shortTitle: "Sonos Now Playing", systemImageName: "music.note")
     }
 }

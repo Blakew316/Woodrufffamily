@@ -79,8 +79,12 @@ struct HomeView: View {
                         if !arranging { ThermostatChip(compact: true) }
                     }
                     .frame(minHeight: 40)
+                    // Movie Night, Bedtime and the family's own scenes: one tap each.
+                    if !arranging { ScenesStrip() }
                 }
                 .padding(.bottom, -10)
+                #else
+                if !arranging { ScenesStrip().padding(.bottom, -14) }
                 #endif
                 ForEach(layout.visibleSections.filter { $0 == "status" || $0 == "rooms" }, id: \.self) { key in
                     section(key, c)
