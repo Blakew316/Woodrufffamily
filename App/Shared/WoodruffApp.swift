@@ -297,6 +297,7 @@ struct RootView: View {
             // The Home Screen widgets: what's playing, the weather and the thermostat.
             .onChange(of: fleet.selected?.nowPlaying) { _, _ in PhoneWidgetSync.update(fleet) }
             .onChange(of: fleet.selectedID) { _, _ in PhoneWidgetSync.update(fleet) }
+            .onChange(of: fleet.tvs.map { "\($0.id)|\($0.online)|\($0.nowPlaying?.title ?? "")|\($0.nowPlaying?.isPlaying ?? false)" }) { _, _ in PhoneWidgetSync.update(fleet) }
             .onChange(of: HomeWeather.shared.now) { _, _ in PhoneWidgetSync.update(fleet) }
             .onChange(of: AccessoryStore.shared.thermostat) { _, _ in PhoneWidgetSync.update(fleet) }
             .onChange(of: fleet.artwork(for: fleet.selected?.nowPlaying)) { _, _ in PhoneWidgetSync.update(fleet) }

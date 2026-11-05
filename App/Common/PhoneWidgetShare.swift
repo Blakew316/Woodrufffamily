@@ -24,6 +24,18 @@ enum PhoneWidgetShare {
         var thermostatSet: String?
         /// heating / cooling / idle / off.
         var thermostatAction: String?
+        /// Every TV, in the app's order, with what each is playing.
+        var tvs: [TVLine]? = nil
+    }
+
+    /// One TV on the Now Playing widget.
+    struct TVLine: Codable, Equatable, Identifiable {
+        var id: String
+        var name: String
+        var online: Bool
+        /// What's on it (nil: nothing).
+        var title: String?
+        var isPlaying: Bool
     }
 
     static var container: URL? {

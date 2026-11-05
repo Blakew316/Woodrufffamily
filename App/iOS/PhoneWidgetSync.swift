@@ -33,6 +33,9 @@ enum PhoneWidgetSync {
                 s.art = await art(fleet, p)
             }
         }
+        s.tvs = fleet.tvs.filter { !$0.isUnpaired }.map { tv in
+            PhoneWidgetShare.TVLine(id: tv.id, name: tv.name, online: tv.online, title: tv.nowPlaying?.title, isPlaying: tv.nowPlaying?.isPlaying ?? false)
+        }
         if let w = HomeWeather.shared.now {
             s.weatherTemp = w.tempText
             s.weatherSymbol = w.sky.symbol

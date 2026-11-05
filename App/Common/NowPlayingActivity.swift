@@ -135,6 +135,27 @@ struct PlayPauseTVIntent: LiveActivityIntent {
     }
 }
 
+/// Play or pause one TV (the Now Playing widget's buttons, one per TV).
+struct PlayPauseTVOnIntent: LiveActivityIntent {
+    static let title: LocalizedStringResource = "Play or Pause a TV"
+    static var isDiscoverable: Bool { false }
+    @Parameter(title: "TV") var tvID: String
+
+    init() {}
+    init(tvID: String) { self.tvID = tvID }
+
+    @MainActor func perform() async throws -> some IntentResult {
+        let fleet = Fleet.shared
+        if fleet.tv(tvID) == nil || !(fleet.refreshedAt.map { Date().timeIntervalSince($0) < 3 } ?? false) { await fleet.refresh() }
+        guard let tv = fleet.tv(tvID) else { return .result() }
+        let was = tv.playing
+        try? await fleet.client(for: tv)?.key("playpause")
+        await TVIntentActions.settle(fleet, tv.id) { $0?.isPlaying != was?.isPlaying || $0?.title != was?.title }
+        await TVIntentActions.updateActivity?(fleet)
+        return .result()
+    }
+}
+
 struct SkipBackTVIntent: LiveActivityIntent {
     static let title: LocalizedStringResource = "Back 10 Seconds"
     func perform() async throws -> some IntentResult {
