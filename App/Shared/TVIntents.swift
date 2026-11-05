@@ -160,8 +160,9 @@ struct WoodruffShortcuts: AppShortcutsProvider {
         ], shortTitle: "What’s Playing", systemImageName: "tv")
         // One phrase set for on and off (Siri allows 10 sets per app).
         AppShortcut(intent: SetLightPowerIntent(), phrases: [
-            "Turn \(\.$power) \(\.$light) with \(.applicationName)",
-            "Turn \(\.$light) \(\.$power) in \(.applicationName)",
+            // One parameter per phrase: Siri asks on or off.
+            "Switch \(\.$light) with \(.applicationName)",
+            "Turn on or off \(\.$light) in \(.applicationName)",
         ], shortTitle: "Light On or Off", systemImageName: "lightbulb.fill")
         AppShortcut(intent: SetRoomLightsIntent(), phrases: [
             "Turn off the \(\.$room) lights with \(.applicationName)",

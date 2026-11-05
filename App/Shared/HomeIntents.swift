@@ -241,7 +241,8 @@ struct SetLightPowerIntent: AppIntent {
     static let title: LocalizedStringResource = "Turn a Light On or Off"
     static let description = IntentDescription("Turns a light on or off.")
     @Parameter(title: "Light") var light: LightEntity
-    @Parameter(title: "On or Off", default: .on) var power: PowerChoice
+    // No default: from Siri ("Switch the lamp…") it asks.
+    @Parameter(title: "On or Off", requestValueDialog: "On or off?") var power: PowerChoice
 
     @MainActor func perform() async throws -> some IntentResult & ProvidesDialog {
         let said = await turn(light, on: power == .on)
