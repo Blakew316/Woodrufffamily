@@ -114,8 +114,9 @@ struct AllDevicesView: View {
                 .frame(width: 46, height: 46)
             Spacer(minLength: 8)
             Text(f.name).font(.footnote.weight(.semibold)).lineLimit(2).multilineTextAlignment(.leading)
+            // Two lines, so a TV's title reads in full more often.
             Text(f.state).font(.caption)
-                .foregroundStyle(f.on ? Color.black.opacity(0.55) : .secondary).lineLimit(1)
+                .foregroundStyle(f.on ? Color.black.opacity(0.55) : .secondary).lineLimit(2)
         }
         .foregroundStyle(f.on ? Color.black : .primary)
         .padding(12)
@@ -150,8 +151,8 @@ struct AllDevicesView: View {
         switch item {
         case .tv(let tv):
             let p = tv.nowPlaying
-            // What it's doing, plainly (the title, which can read like a status, is on the Remote and Now Playing).
-            let state = !tv.online ? "Off" : p.map { $0.isPlaying ? "Playing" : "Paused" } ?? "On"
+            // What's on it: the title while it plays.
+            let state = !tv.online ? "Off" : p.map { $0.isPlaying ? $0.title : "Paused" } ?? "On"
             return Facts(name: tv.name, state: state, on: tv.online, reachable: true,
                          look: .tv(playing: p?.isPlaying == true), tint: .blue)
         case .speaker(let s):
@@ -197,34 +198,15 @@ struct AllDevicesView: View {
         #endif
         switch item {
         case .tv(let tv):
-            if !tv.online {
-                fleet.wake(tv)
-            } else if fleet.lg(for: tv) != nil {
-                Task { if let e = await SceneRunner.turnOff(tv) { fleet.say("TV", e) } }
-            } else if fleet.platform(of: tv) == .webOS, let host = fleet.extras[tv.id]?.lastHost, !host.isEmpty {
-                // An LG not linked yet: link it (the TV asks "Allow?" once), then switch it off. From then on a tap does it.
-                fleet.say(tv.name, "Choose Allow on \(tv.name) so Woodruff can turn it off and on. It only asks once.")
-                Task {
-                    do {
-                        try await fleet.connectLG(tv, host: host)
-                        if let e = await SceneRunner.turnOff(tv) { fleet.say("TV", e) }
-                    } catch {
-                        fleet.say(tv.name, "\(tv.name) didn’t allow it. Tap it again to ask once more.")
-                    }
-                }
-            } else {
-                // A Google TV: Android doesn't let apps switch it off, so its remote opens instead.
-                if fleet.platform(of: tv) == .android {
-                    fleet.say(tv.name, "Google TVs don’t let apps turn them off. Use its remote’s power button.")
-                }
-                fleet.remoteAll = false
-                fleet.selectedID = tv.id
-                #if os(macOS)
-                fleet.remotePanel = true
-                #else
-                UserDefaults.standard.set("remote", forKey: "section")
-                #endif
-            }
+            // Off: wake it. On: its remote, on that TV, to control it.
+            if !tv.online { fleet.wake(tv) }
+            fleet.remoteAll = false
+            fleet.selectedID = tv.id
+            #if os(macOS)
+            fleet.remotePanel = true
+            #else
+            UserDefaults.standard.set("remote", forKey: "section")
+            #endif
         case .speaker(let s):
             guard !s.isOffline else { open(item); return }
             let playing = s.isPlaying
