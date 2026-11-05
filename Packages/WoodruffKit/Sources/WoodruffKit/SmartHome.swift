@@ -845,11 +845,29 @@ public final class SmartHome {
     private func persist() {
         // Never the same light twice (found on the Wi‑Fi and through the account at the same moment).
         var seen = Set<String>()
-        let unique = lights.filter { seen.insert($0.id).inserted }
+        var unique = lights.filter { seen.insert($0.id).inserted }
+        // A Govee light also in Apple Home (over Matter) is one lamp, not two: "Blake's Floor Lamp 2" from Apple Home
+        // and "Blake's Govee Floor Lamp" from Govee. The Govee one stays (it has the family's room and name).
+        let govee = Set(unique.filter { !$0.isHome }.map { Self.sameLampKey($0.name) }.filter { !$0.isEmpty })
+        unique = unique.filter { l in
+            let n = l.name.lowercased()
+            return !(l.isHome && (n.contains("lamp") || n.contains("floor")) && govee.contains(Self.sameLampKey(l.name)))
+        }
         if unique.count != lights.count { lights = unique }
         Saved.save("smartSpeakers2", speakers)
         Saved.save("smartLights", lights)
         onChange?()
+    }
+
+    /// A lamp's name with the words that differ between Govee and Apple Home taken out ("Blake's Govee Floor Lamp" and
+    /// "Blake's Floor Lamp 2" are both "blakes"): what's left says whose or where it is.
+    public static func sameLampKey(_ name: String) -> String {
+        let generic: Set<String> = ["govee", "floor", "lamp", "light", "lights", "bulb", "strip", "rgbic", "smart", "pro", "basic", "matter", "the"]
+        return name.lowercased()
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty && !generic.contains($0) && Int($0) == nil }
+            .joined(separator: " ")
+            .replacingOccurrences(of: " s", with: "s")
     }
 
     /// Rooms other devices report themselves (Apple Home, SmartThings), used until one is chosen here.
