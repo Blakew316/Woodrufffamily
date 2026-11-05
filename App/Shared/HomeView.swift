@@ -726,8 +726,8 @@ struct LibrarySearchResults: View {
     }
 }
 
-/// Home's background: a slow, quiet gradient in the app's blues that drifts over half a minute, warmed by a
-/// soft blur of whatever's playing.
+/// Home's background: a slow, quiet gradient in the app's blues that drifts over half a minute. Always blue: what's
+/// playing doesn't tint it.
 struct HomeBackdrop: View {
     @Environment(Fleet.self) private var fleet
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -758,22 +758,9 @@ struct HomeBackdrop: View {
                 ])
                 .opacity(0.9)
             }
-            if hasPicture(fleet, playing) {
-                GeometryReader { g in
-                    NowPlayingArt(playing: playing, backdrop: true, maxPixel: 1800)
-                        .frame(width: g.size.width, height: g.size.height)
-                        .blur(radius: 110, opaque: true)
-                        .saturation(1.2)
-                        .clipped()
-                }
-                .opacity(0.32)
-                .transition(.opacity)
-                .id(playing?.title)
-            }
             LinearGradient(colors: [.clear, .black.opacity(0.35)], startPoint: .top, endPoint: .bottom)
         }
         .ignoresSafeArea()
-        .animation(.easeInOut(duration: 1.2), value: playing?.title)
         .allowsHitTesting(false)
         .task {
             // As it is now (it may have changed while Home was away), then as it changes.
