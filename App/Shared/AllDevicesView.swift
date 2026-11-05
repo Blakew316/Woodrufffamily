@@ -408,7 +408,7 @@ struct SoundbarPicture: View {
                 // Sound rippling out above it while it plays: three soft arcs, each fading as it rises.
                 if on {
                     for i in 0..<3 {
-                        let phase = reduceMotion ? Double(i) / 3 : (t * 0.9 + Double(i) / 3).truncatingRemainder(dividingBy: 1)
+                        let phase = reduceMotion ? Double(i) / 3 : (t * 0.6 + Double(i) / 3).truncatingRemainder(dividingBy: 1)
                         let rise = bar.minY - 2.5 - CGFloat(phase) * h * 0.45
                         let spread = w * (0.28 + 0.24 * CGFloat(phase))
                         var arc = Path()
