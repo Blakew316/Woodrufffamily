@@ -290,11 +290,7 @@ struct DeviceGlyph: View {
     @ViewBuilder private var picture: some View {
         switch look {
         case .tv(let playing):
-            Image(systemName: on ? "tv.fill" : "tv")
-                .font(.system(size: 21, weight: .semibold))
-                .foregroundStyle(on ? tint : .secondary)
-                .symbolEffect(.pulse, options: .repeating, isActive: on && playing)
-                .symbolEffect(.bounce, value: on)
+            TVPicture(on: on, playing: playing, tint: tint).frame(width: 32, height: 26)
         case .speaker(let bar):
             if bar {
                 SoundbarPicture(on: on, tint: tint).frame(width: 40, height: 30)
@@ -357,6 +353,40 @@ struct DeviceGlyph: View {
         let master = rooms.first { AllDevicesView.key($0) == AllDevicesView.key("Master Bedroom") } ?? "Master Bedroom"
         home.setRoom(arc.id, master)
         UserDefaults.standard.set(true, forKey: "arcPlacedInMasterBedroom")
+    }
+}
+
+/// A TV: its screen lights up when it's on, and three bars bounce inside it while something plays.
+struct TVPicture: View {
+    var on: Bool
+    var playing: Bool
+    var tint: Color
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        VStack(spacing: 2) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    .fill(on ? AnyShapeStyle(tint.opacity(0.9)) : AnyShapeStyle(Color.secondary.opacity(0.25)))
+                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    .strokeBorder(on ? tint : .secondary, lineWidth: 1.6)
+                if on && playing {
+                    TimelineView(.animation(minimumInterval: 1.0 / 20, paused: reduceMotion)) { ctx in
+                        let t = ctx.date.timeIntervalSinceReferenceDate
+                        HStack(alignment: .bottom, spacing: 2.5) {
+                            ForEach(0..<3) { i in
+                                let phase = reduceMotion ? 0.6 : (sin(t * 6 + Double(i) * 1.3) + 1) / 2
+                                Capsule().fill(.white).frame(width: 3, height: 4 + 8 * phase)
+                            }
+                        }
+                        .frame(height: 12, alignment: .bottom)
+                    }
+                }
+            }
+            .frame(width: 32, height: 21)
+            // The stand.
+            Capsule().fill(on ? tint : .secondary).frame(width: 12, height: 2)
+        }
     }
 }
 
