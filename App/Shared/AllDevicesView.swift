@@ -417,9 +417,9 @@ struct TVPicture: View {
                 ZStack(alignment: .top) {
                     // Its two slim feet, behind the panel, starting just below it.
                     HStack {
-                        Capsule().fill(LinearGradient(colors: [Color(white: 0.55), Color(white: 0.25)], startPoint: .top, endPoint: .bottom)).frame(width: 3, height: h - panelH)
+                        Capsule().fill(LinearGradient(colors: [Color(white: 0.55), Color(white: 0.25)], startPoint: .top, endPoint: .bottom)).frame(width: 3, height: (h - panelH) * 0.5)
                         Spacer()
-                        Capsule().fill(LinearGradient(colors: [Color(white: 0.55), Color(white: 0.25)], startPoint: .top, endPoint: .bottom)).frame(width: 3, height: h - panelH)
+                        Capsule().fill(LinearGradient(colors: [Color(white: 0.55), Color(white: 0.25)], startPoint: .top, endPoint: .bottom)).frame(width: 3, height: (h - panelH) * 0.5)
                     }
                     .frame(width: w * 0.72)
                     .offset(y: panelH)
