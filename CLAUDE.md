@@ -8,9 +8,11 @@ All work happens on `claude/native-apps`; `README.md` explains the apps, the bui
 Every feature request or bug fix ends with exactly one release:
 
 1. The final commit of the request has `[release]` in its message and is pushed to `claude/native-apps`.
-2. CI (`.github/workflows/build.yml`) builds everything. Only if the `build` job succeeds does the `release` job
-   fast-forward the `release` branch to that commit.
-3. Every device then updates itself. Each Mac's updater (`scripts/updater.py`, every 5 minutes) sees the new
+2. CI (`.github/workflows/build.yml`) runs the quick `check` job (the script tests, about a minute); once it passes,
+   the `release` job fast-forwards the `release` branch to that commit. The full `build` job still runs alongside for
+   the record, but nothing waits for it: the Mac Studio's own build is the gate, and when it fails nothing is
+   installed anywhere (so parse-check every changed Swift file before pushing a `[release]` commit).
+3. Every device then updates itself. Each Mac's updater (`scripts/updater.py`, within about a minute) sees the new
    `release`: the Mac Studio builds and installs the Mac app, installs the iPhone app on both iPhones and shares
    its Mac build in iCloud Drive; the other Macs install that build, or build it themselves.
 
@@ -21,8 +23,8 @@ Every feature request or bug fix ends with exactly one release:
   Commits without it are built but not shipped.
 - After pushing, check that the `release` job in that commit's Actions run went green (for example
   `gh run list --branch claude/native-apps`, then `gh run watch <id>`), and tell the user so: "Released abc1234
-  (build 412)". The apps show the same build in Settings > General. If the build failed, nothing shipped: fix it
-  and push a new `[release]` commit. If the `release` job failed for a one-off reason such as a network error,
+  (build 412)". The apps show the same build in Settings > General. If the Mac Studio's build failed (its status
+  says so), nothing was installed: fix it and push a new `[release]` commit. If the `release` job failed for a one-off reason such as a network error,
   re-run it (`gh run rerun <id> --failed`).
 - If the `release` job says GitHub won't let its token move `release` past a change to `.github/workflows`, push
   it yourself once the build job is green: `git push origin <sha>:release` (a fast-forward, never `--force`).
