@@ -201,8 +201,22 @@ struct AllDevicesView: View {
                 fleet.wake(tv)
             } else if fleet.lg(for: tv) != nil {
                 Task { if let e = await SceneRunner.turnOff(tv) { fleet.say("TV", e) } }
+            } else if fleet.platform(of: tv) == .webOS, let host = fleet.extras[tv.id]?.lastHost, !host.isEmpty {
+                // An LG not linked yet: link it (the TV asks "Allow?" once), then switch it off. From then on a tap does it.
+                fleet.say(tv.name, "Choose Allow on \(tv.name) so Woodruff can turn it off and on. It only asks once.")
+                Task {
+                    do {
+                        try await fleet.connectLG(tv, host: host)
+                        if let e = await SceneRunner.turnOff(tv) { fleet.say("TV", e) }
+                    } catch {
+                        fleet.say(tv.name, "\(tv.name) didn’t allow it. Tap it again to ask once more.")
+                    }
+                }
             } else {
-                // Only an LG with its own control link can be switched off from here: any other TV opens its remote.
+                // A Google TV: Android doesn't let apps switch it off, so its remote opens instead.
+                if fleet.platform(of: tv) == .android {
+                    fleet.say(tv.name, "Google TVs don’t let apps turn them off. Use its remote’s power button.")
+                }
                 fleet.remoteAll = false
                 fleet.selectedID = tv.id
                 #if os(macOS)
