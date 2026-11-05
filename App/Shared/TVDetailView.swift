@@ -170,7 +170,7 @@ struct TVDetailView: View {
         case "signin":
             if fleet.hub(tv.id) != nil, let g = a.grant { Button("Sign In from Here") { signIn = g } }
             else { Text("Sign in on \(tv.name): its screen shows a code to scan.") }
-        case "update": Button("Check for Updates") { run { try await fleet.pushUpdate(tv); fleet.say("Checking for Updates", "\(tv.name) checks now.") } }
+        case "update": Button("Update Now") { run { try await fleet.pushUpdate(tv, now: true); fleet.say("Updating", "\(tv.name) is updating now. It restarts into the new version in a minute or two (after the film, if one is playing).") } }
         case "install":
             Button("Open Woodruff on \(tv.name)") {
                 run {
@@ -205,8 +205,8 @@ struct TVDetailView: View {
             if let i = report?.installedBy?.summary { LabeledContent("Installs", value: i) }
             if let l = report?.lastUpdateTry?.text { LabeledContent("Last Try", value: l) }
             if fleet.platform(of: tv) != .webOS {
-                ActionButton(action: { try await fleet.pushUpdate(tv); fleet.say("Checking for Updates", "\(tv.name) checks GitHub now and installs once nobody’s watching.") }) {
-                    Text("Check for Updates")
+                ActionButton(action: { try await fleet.pushUpdate(tv, now: true); fleet.say("Updating", "\(tv.name) is updating now. It restarts into the new version in a minute or two (after the film, if one is playing).") }) {
+                    Text("Update Now")
                 }
                 .disabled(!tv.online)
             }

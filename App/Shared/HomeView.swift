@@ -606,11 +606,11 @@ struct HomeTVTile: View, Equatable {
                 UserDefaults.standard.set("remote", forKey: "section")
                 #endif
             }
-            Button("Check for Updates") {
+            Button("Update Now") {
                 Task {
                     do {
-                        try await fleet.pushUpdate(tv)
-                        fleet.say("Checking for Updates", "\(tv.name) checks GitHub now and installs once nobody’s watching.")
+                        try await fleet.pushUpdate(tv, now: true)
+                        fleet.say("Updating", "\(tv.name) is updating now. It restarts into the new version in a minute or two (after the film, if one is playing).")
                     } catch { fleet.show(error) }
                 }
             }

@@ -1053,17 +1053,18 @@ public final class Fleet {
     public var attentionCount: Int { tvs.filter(\.needsAttention).count }
 
     /// Asks one Android TV to update now (it downloads the newest release and installs it once nobody's using it).
-    public func pushUpdate(_ tv: FleetTV) async throws {
+    /// [now]: Update was pressed: the TV installs the newest build at once (unless a film is playing).
+    public func pushUpdate(_ tv: FleetTV, now: Bool = false) async throws {
         guard let c = client(for: tv) else { throw TVError.notPaired }
-        try await c.checkForUpdates()
+        try await c.checkForUpdates(now: now)
     }
 
-    /// Asks every reachable Android TV to update. Returns (asked, failures).
-    public func pushUpdateToAll() async -> (Int, [String]) {
+    /// Asks every reachable Android TV to update ([now]: at once). Returns (asked, failures).
+    public func pushUpdateToAll(now: Bool = false) async -> (Int, [String]) {
         var asked = 0
         var failed: [String] = []
         for tv in tvs where tv.online && !tv.isUnpaired && platform(of: tv) != .webOS {
-            do { try await pushUpdate(tv); asked += 1 } catch { failed.append("\(tv.name): \(error.localizedDescription)") }
+            do { try await pushUpdate(tv, now: now); asked += 1 } catch { failed.append("\(tv.name): \(error.localizedDescription)") }
         }
         return (asked, failed)
     }

@@ -89,9 +89,10 @@ public struct TVClient: Sendable {
         throw TVError.from(status: status, data: d)
     }
 
-    /// Android: checks GitHub now and installs the newest build once nobody's using the TV.
-    public func checkForUpdates() async throws {
-        try await t.post("/api/tvs/update/check", ["id": routeID])
+    /// Android: checks GitHub now and installs the newest build once nobody's using the TV; [now]: the newest build,
+    /// installed at once unless a film is playing (a TV from before only checks).
+    public func checkForUpdates(now: Bool = false) async throws {
+        try await t.post("/api/tvs/update/check", ["id": routeID, "now": now])
     }
 
     public func relink(code: String) async throws -> RelinkResult {

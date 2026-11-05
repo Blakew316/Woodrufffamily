@@ -433,6 +433,8 @@ struct SoftwareUpdateView: View {
     @Environment(Fleet.self) private var fleet
     @State private var log: [String] = []
     @State private var installing: Set<String> = []
+    /// When Update was pressed for each TV (it shows Updating for 15 minutes, or until the TV is up to date).
+    @State private var requested: [String: Date] = [:]
 
     var body: some View {
         Form {
@@ -514,8 +516,18 @@ struct SoftwareUpdateView: View {
                     Text("On the Mac").font(.caption).foregroundStyle(.secondary)
                     #endif
                 } else {
-                    ActionButton(action: { try await fleet.pushUpdate(tv); log.insert("\(tv.name): checking for the update now.", at: 0) }) { Text("Update") }
-                        .buttonStyle(.glass).disabled(!tv.online)
+                    if let at = requested[tv.id], Date().timeIntervalSince(at) < 900 {
+                        // Asked: it downloads and restarts into the new version (a minute or two; later if a film is playing).
+                        HStack(spacing: 6) { ProgressView().controlSize(.small); Text("Updating").font(.subheadline).foregroundStyle(.secondary) }
+                    } else {
+                        ActionButton(action: {
+                            try await fleet.pushUpdate(tv, now: true)
+                            requested[tv.id] = Date()
+                            log.insert("\(tv.name): updating now.", at: 0)
+                            followUp()
+                        }) { Text("Update") }
+                            .buttonStyle(.glass).disabled(!tv.online)
+                    }
                 }
             } else if tv.version != nil {
                 Text("Up to Date").font(.subheadline).foregroundStyle(.secondary)
@@ -534,8 +546,21 @@ struct SoftwareUpdateView: View {
         await fleet.loadAllHealth()
     }
 
+    /// Reads every TV's version again for a few minutes after an update was asked for, so the row turns to Up to Date.
+    private func followUp() {
+        Task {
+            for _ in 0..<8 {
+                try? await Task.sleep(nanoseconds: 30_000_000_000)
+                await fleet.refresh()
+                await fleet.loadAllHealth()
+            }
+        }
+    }
+
     private func updateAll() async {
-        let (n, failed) = await fleet.pushUpdateToAll()
+        let (n, failed) = await fleet.pushUpdateToAll(now: true)
+        for tv in fleet.tvs where tv.online && !tv.isUnpaired && fleet.platform(of: tv) != .webOS && fleet.isBehind(tv) { requested[tv.id] = Date() }
+        followUp()
         log.insert("Asked \(n) Android TV\(n == 1 ? "" : "s") to update." + (failed.isEmpty ? "" : " " + failed.joined(separator: "; ")), at: 0)
         #if os(macOS)
         for tv in fleet.tvs where fleet.platform(of: tv) == .webOS && fleet.isBehind(tv) && fleet.extras[tv.id]?.ssh != nil { await installWebOS(tv) }
