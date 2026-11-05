@@ -177,6 +177,9 @@ struct AllDevicesView: View {
         case .device(let d) where d.product?.hasPrefix("HomePod") == true:
             return Facts(name: d.name, state: d.reachable ? d.status : "Not Responding", on: false, reachable: d.reachable,
                          look: .homePod(mini: d.product == "HomePod mini"), tint: .gray)
+        case .device(let d) where d.kind == .thermostat:
+            return Facts(name: d.name, state: d.reachable ? d.status : "Not Responding", on: lit(d), reachable: d.reachable,
+                         look: .thermostat(d), tint: d.action == "heating" ? .orange : .blue)
         case .device(let d) where d.source == "dreo":
             let on = lit(d)
             let pedestal = (d.product ?? "").uppercased().contains("HPF") || d.name.localizedCaseInsensitiveContains("pedestal")
@@ -275,6 +278,7 @@ struct DeviceGlyph: View {
         case light
         case floorLamp(level: Double)
         case dreoFan(pedestal: Bool, speed: Double)
+        case thermostat(HomeDevice)
         case device(HomeDevice.Kind, running: Bool, symbol: String)
     }
 
@@ -309,6 +313,8 @@ struct DeviceGlyph: View {
                     .symbolEffect(.variableColor.iterative, options: .repeating, isActive: on)
                     .symbolEffect(.bounce, value: on)
             }
+        case .thermostat(let d):
+            EcobeePicture(device: d).frame(width: 40, height: 40)
         case .dreoFan(let pedestal, let speed):
             DreoFanPicture(pedestal: pedestal, on: on, speed: speed).frame(width: 34, height: 40)
         case .floorLamp(let level):
@@ -399,6 +405,98 @@ struct TVPicture: View {
             // The stand.
             Capsule().fill(on ? tint : .secondary).frame(width: 12, height: 2)
         }
+    }
+}
+
+/// An ecobee Smart Thermostat, drawn like the real one: a black rounded square with a glossy edge, the room's
+/// temperature large in the middle, the set temperature in a pill under it, and what it's doing at the top. Cooling,
+/// the snowflake turns slowly in a cool blue glow; heating, a flame flickers in a warm one.
+struct EcobeePicture: View {
+    var device: HomeDevice
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var cooling: Bool { device.action == "cooling" }
+    private var heating: Bool { device.action == "heating" }
+    private var mode: String { device.thermostatMode ?? (device.heatTo != nil && device.coolTo == nil ? "heat" : "cool") }
+
+    /// "72" from °C.
+    private func degrees(_ c: Double?) -> String {
+        guard let c else { return "--" }
+        return String(temperatureText(c).filter(\.isNumber))
+    }
+
+    private var setpoint: String? {
+        switch mode {
+        case "off": return nil
+        case "heat": return degrees(device.heatTo ?? device.target)
+        case "cool": return degrees(device.coolTo ?? device.target)
+        default: return [device.heatTo, device.coolTo].compactMap { $0 }.map(degrees).joined(separator: "–")
+        }
+    }
+
+    var body: some View {
+        GeometryReader { g in
+            let s = min(g.size.width, g.size.height)
+            let accent: Color = heating || mode == "heat" ? .orange : mode == "off" ? .gray : Color(red: 0.2, green: 0.55, blue: 1)
+            TimelineView(.animation(minimumInterval: 1.0 / 20, paused: !(cooling || heating) || reduceMotion)) { ctx in
+                let t = ctx.date.timeIntervalSinceReferenceDate
+                let pulse = reduceMotion ? 0.5 : (sin(t * 2) + 1) / 2
+                ZStack {
+                    // The body: black, its edge catching the light.
+                    RoundedRectangle(cornerRadius: s * 0.3, style: .continuous)
+                        .fill(LinearGradient(colors: [Color(white: 0.16), .black], startPoint: .top, endPoint: .bottom))
+                    RoundedRectangle(cornerRadius: s * 0.3, style: .continuous)
+                        .strokeBorder(LinearGradient(colors: [.white.opacity(0.45), .white.opacity(0.06)], startPoint: .top, endPoint: .bottom),
+                                      lineWidth: max(0.6, s * 0.02))
+                    // While it's heating or cooling, its glow.
+                    if cooling || heating {
+                        Circle().fill(accent.opacity(0.18 + 0.17 * pulse)).blur(radius: s * 0.15).frame(width: s * 0.7)
+                    }
+                    VStack(spacing: s * 0.03) {
+                        // What it's doing, at the top.
+                        Group {
+                            if heating || (mode == "heat" && !cooling) {
+                                Image(systemName: "flame.fill")
+                                    .foregroundStyle(heating ? .orange : .white.opacity(0.7))
+                                    .scaleEffect(heating && !reduceMotion ? 0.9 + 0.15 * pulse : 1, anchor: .bottom)
+                            } else if mode == "off" {
+                                Image(systemName: "power").foregroundStyle(.white.opacity(0.6))
+                            } else {
+                                Image(systemName: "snowflake")
+                                    .foregroundStyle(.white.opacity(cooling ? 1 : 0.7))
+                                    .rotationEffect(.degrees(cooling && !reduceMotion ? t * 25 : 0))
+                            }
+                        }
+                        .font(.system(size: s * 0.13, weight: .semibold))
+                        .frame(height: s * 0.15)
+                        // The room's temperature.
+                        Text(degrees(device.temperature))
+                            .font(.system(size: s * 0.34, weight: .light, design: .default))
+                            .foregroundStyle(.white)
+                            .monospacedDigit()
+                            .minimumScaleFactor(0.5)
+                            .lineLimit(1)
+                        // The set temperature, in its pill.
+                        if let sp = setpoint {
+                            Text(sp)
+                                .font(.system(size: s * 0.1, weight: .bold))
+                                .foregroundStyle(accent)
+                                .padding(.horizontal, s * 0.07).padding(.vertical, s * 0.02)
+                                .overlay(Capsule().strokeBorder(accent, lineWidth: max(0.6, s * 0.018)))
+                        }
+                    }
+                    .padding(s * 0.08)
+                    // The wordmark, faint, at the bottom.
+                    if s > 120 {
+                        Text("ecobee").font(.system(size: s * 0.06, weight: .medium)).foregroundStyle(.white.opacity(0.35))
+                            .frame(maxHeight: .infinity, alignment: .bottom).padding(.bottom, s * 0.05)
+                    }
+                }
+                .frame(width: s, height: s)
+            }
+            .frame(width: g.size.width, height: g.size.height)
+        }
+        .aspectRatio(1, contentMode: .fit)
     }
 }
 

@@ -303,10 +303,15 @@ struct DeviceDetailView: View {
             ScrollView {
                 VStack(spacing: 16) {
                     VStack(spacing: 12) {
-                        Image(systemName: deviceSymbol(d))
-                            .font(.system(size: 44, weight: .semibold))
-                            .foregroundStyle(d.alert ? Palette.attention : .primary)
-                            .frame(height: 56)
+                        if d.kind == .thermostat {
+                            // The ecobee itself, large, heating or cooling as it is.
+                            EcobeePicture(device: d).frame(width: 200, height: 200)
+                        } else {
+                            Image(systemName: deviceSymbol(d))
+                                .font(.system(size: 44, weight: .semibold))
+                                .foregroundStyle(d.alert ? Palette.attention : .primary)
+                                .frame(height: 56)
+                        }
                         Text(d.reachable ? d.status : "Not Responding").font(.title3.weight(.semibold)).multilineTextAlignment(.center)
                         controls(d)
                             .disabled(!d.reachable)
@@ -875,6 +880,7 @@ struct ThermostatPanel: View {
                         .buttonStyle(.glass)
                 }
                 if let t = store.thermostat {
+                    EcobeePicture(device: t).frame(width: 180, height: 180).frame(maxWidth: .infinity)
                     ThermostatControls(device: t, showsFailure: true)
                 } else {
                     ThermostatSetup()
