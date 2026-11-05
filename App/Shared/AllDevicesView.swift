@@ -622,9 +622,9 @@ struct EcobeePicture: View {
     }
 }
 
-/// A Dreo air circulator, drawn like the real one: a round head with its spiral grille and centre badge, on a curved
-/// arm over a round base (the table circulator, silver), or on a slim pole (the pedestal one, black). The blades turn
-/// while it's on, faster at higher speeds.
+/// A Dreo air circulator: a round head with a polished rim and five broad curved blades behind it round a centre hub,
+/// on a curved arm over a round base (the silver table circulator) or on a slim pole (the black pedestal one). The
+/// blades turn while it's on, faster at higher speeds, softening into motion.
 struct DreoFanPicture: View {
     var pedestal: Bool
     var on: Bool
@@ -633,86 +633,96 @@ struct DreoFanPicture: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: !on || reduceMotion)) { ctx in
-            let t = ctx.date.timeIntervalSinceReferenceDate
-            Canvas { g, size in
-                let w = size.width, h = size.height
-                let body = pedestal ? Color(white: 0.16) : Color(white: 0.72)
-                let bodyDark = pedestal ? Color(white: 0.08) : Color(white: 0.45)
-                // The head: a circle, its rim in the body's colour, the grille dark inside.
-                let r = pedestal ? w * 0.34 : w * 0.38
-                let cx = w / 2, cy = pedestal ? r + 1 : h * 0.4
-                // Below the head: the pedestal's pole and base, or the table one's arm and base.
-                let baseW = pedestal ? w * 0.6 : w * 0.72
-                let baseH = h * (pedestal ? 0.08 : 0.1)
-                let baseRect = CGRect(x: cx - baseW / 2, y: h - baseH, width: baseW, height: baseH)
+        GeometryReader { g in
+            let w = g.size.width, h = g.size.height
+            let d = pedestal ? w * 0.72 : w * 0.84
+            let headY = pedestal ? d / 2 : h * 0.42
+            let metal: [Color] = pedestal ? [Color(white: 0.34), Color(white: 0.12), Color(white: 0.05)]
+                                          : [Color(white: 0.97), Color(white: 0.72), Color(white: 0.45)]
+            let baseW = pedestal ? w * 0.62 : w * 0.78
+            let baseH = h * 0.1
+            ZStack(alignment: .topLeading) {
+                // Its shadow on the floor, and the base: a disc with a lit top.
+                Ellipse().fill(.black.opacity(0.35)).frame(width: baseW * 1.08, height: baseH * 0.9).blur(radius: 1)
+                    .position(x: w / 2, y: h - baseH * 0.35)
+                Ellipse().fill(LinearGradient(colors: metal, startPoint: .top, endPoint: .bottom))
+                    .frame(width: baseW, height: baseH).position(x: w / 2, y: h - baseH * 0.6)
                 if pedestal {
-                    let pole = CGRect(x: cx - w * 0.035, y: cy + r * 0.8, width: w * 0.07, height: baseRect.minY - (cy + r * 0.8) + 1)
-                    g.fill(Path(roundedRect: pole, cornerRadius: w * 0.035), with: .color(body))
-                    g.stroke(Path(roundedRect: pole, cornerRadius: w * 0.035), with: .color(.white.opacity(0.18)), lineWidth: 0.5)
+                    // The pole, satin black, from the head to the base.
+                    Capsule().fill(LinearGradient(colors: [Color(white: 0.3), Color(white: 0.06), Color(white: 0.18)], startPoint: .leading, endPoint: .trailing))
+                        .frame(width: w * 0.08, height: h - baseH - headY)
+                        .position(x: w / 2, y: headY + (h - baseH - headY) / 2)
                 } else {
-                    // The curved arm, round the back of the head down to the base.
-                    var arm = Path()
-                    arm.move(to: CGPoint(x: cx + r * 0.85, y: cy - r * 0.15))
-                    arm.addQuadCurve(to: CGPoint(x: cx, y: cy + r * 1.25), control: CGPoint(x: cx + r * 1.15, y: cy + r * 1.05))
-                    g.stroke(arm, with: .color(body), style: StrokeStyle(lineWidth: w * 0.07, lineCap: .round))
-                    let neck = CGRect(x: cx - w * 0.05, y: cy + r * 1.2, width: w * 0.1, height: baseRect.minY - (cy + r * 1.2) + 1)
-                    g.fill(Path(roundedRect: neck, cornerRadius: w * 0.04), with: .color(body))
+                    // The arm: a smooth curve from the side of the head down to a short neck on the base.
+                    FanArm()
+                        .stroke(LinearGradient(colors: metal, startPoint: .topTrailing, endPoint: .bottomLeading),
+                                style: StrokeStyle(lineWidth: w * 0.09, lineCap: .round))
+                        .frame(width: d, height: h - headY)
+                        .position(x: w / 2, y: headY + (h - headY) / 2 - baseH * 0.3)
                 }
-                // Its shadow on the floor, then the base: a disc, its top catching the light.
-                g.fill(Path(ellipseIn: baseRect.insetBy(dx: -w * 0.04, dy: 0).offsetBy(dx: 0, dy: baseH * 0.3)), with: .color(.black.opacity(0.35)))
-                g.fill(Path(ellipseIn: baseRect), with: .linearGradient(Gradient(colors: [bodyDark, body, bodyDark]),
-                                                                         startPoint: CGPoint(x: baseRect.minX, y: 0), endPoint: CGPoint(x: baseRect.maxX, y: 0)))
-                g.fill(Path(ellipseIn: baseRect.insetBy(dx: baseW * 0.06, dy: baseH * 0.12).offsetBy(dx: 0, dy: -baseH * 0.12)),
-                       with: .color(.white.opacity(pedestal ? 0.08 : 0.25)))
-                g.stroke(Path(ellipseIn: baseRect), with: .color(.white.opacity(0.2)), lineWidth: 0.5)
-                let head = CGRect(x: cx - r, y: cy - r, width: r * 2, height: r * 2)
-                // The rim: brushed metal (or satin black), lit from the top left.
-                g.fill(Path(ellipseIn: head), with: .linearGradient(Gradient(colors: [pedestal ? Color(white: 0.3) : Color(white: 0.92), body, bodyDark]),
-                                                                     startPoint: CGPoint(x: head.minX, y: head.minY), endPoint: CGPoint(x: head.maxX, y: head.maxY)))
-                g.stroke(Path(ellipseIn: head), with: .color(.white.opacity(0.3)), lineWidth: 0.6)
-                let grille = head.insetBy(dx: r * 0.12, dy: r * 0.12)
-                g.fill(Path(ellipseIn: grille), with: .radialGradient(Gradient(colors: [Color(white: 0.14), Color(white: 0.03)]),
-                                                                       center: CGPoint(x: cx, y: cy), startRadius: 0, endRadius: grille.width / 2))
-                // The grille's rings, faint.
-                for k in 1...3 {
-                    let ring = grille.insetBy(dx: grille.width * 0.12 * CGFloat(k), dy: grille.width * 0.12 * CGFloat(k))
-                    g.stroke(Path(ellipseIn: ring), with: .color(.white.opacity(0.07)), lineWidth: 0.4)
+                // The head.
+                ZStack {
+                    Circle().fill(LinearGradient(colors: metal, startPoint: .topLeading, endPoint: .bottomTrailing))
+                    Circle().fill(RadialGradient(colors: [Color(white: 0.16), Color(white: 0.02)], center: .center, startRadius: 0, endRadius: d * 0.42))
+                        .padding(d * 0.08)
+                    TimelineView(.animation(minimumInterval: 1.0 / 30, paused: !on || reduceMotion)) { ctx in
+                        let turn = on && !reduceMotion ? ctx.date.timeIntervalSinceReferenceDate * (200 + 500 * max(0.1, speed)) : 0
+                        FanBlades()
+                            .fill(LinearGradient(colors: [Color(white: 0.55), Color(white: 0.28)], startPoint: .top, endPoint: .bottom))
+                            .rotationEffect(.degrees(turn))
+                            .opacity(on ? 0.75 : 1)
+                            .blur(radius: on && !reduceMotion ? d * 0.012 : 0)
+                    }
+                    .padding(d * 0.13)
+                    // The guard: a few fine rings over the blades.
+                    Circle().strokeBorder(.white.opacity(0.12), lineWidth: 0.5).padding(d * 0.2)
+                    Circle().strokeBorder(.white.opacity(0.1), lineWidth: 0.5).padding(d * 0.3)
+                    // The hub with its badge, and a soft light while it runs.
+                    Circle().fill(LinearGradient(colors: pedestal ? [Color(white: 0.9), Color(white: 0.6)] : [Color(white: 0.25), Color(white: 0.08)],
+                                                 startPoint: .topLeading, endPoint: .bottomTrailing))
+                        .frame(width: d * 0.26)
+                        .overlay(Circle().strokeBorder(.white.opacity(0.4), lineWidth: 0.5))
+                        .overlay(Circle().fill(on ? Color.cyan : .clear).frame(width: d * 0.07).shadow(color: .cyan, radius: on ? 2 : 0))
+                    // Light catching the rim at the top left.
+                    Circle().trim(from: 0.55, to: 0.75).stroke(.white.opacity(pedestal ? 0.25 : 0.5), style: StrokeStyle(lineWidth: d * 0.025, lineCap: .round))
+                        .padding(d * 0.03)
                 }
-                // The spiral grille: curved spokes, turning while it's on.
-                let turn = reduceMotion || !on ? 0 : t * (2 + 6 * max(0.15, speed))
-                let gr = grille.width / 2
-                var spokes = Path()
-                for i in 0..<20 {
-                    let a = Double(i) / 20 * 2 * .pi + turn
-                    let inner = CGPoint(x: cx + cos(a) * gr * 0.28, y: cy + sin(a) * gr * 0.28)
-                    let outer = CGPoint(x: cx + cos(a + 0.9) * gr * 0.95, y: cy + sin(a + 0.9) * gr * 0.95)
-                    let bend = CGPoint(x: cx + cos(a + 0.25) * gr * 0.75, y: cy + sin(a + 0.25) * gr * 0.75)
-                    spokes.move(to: inner)
-                    spokes.addQuadCurve(to: outer, control: bend)
-                }
-                g.stroke(spokes, with: .color(.white.opacity(on ? 0.3 : 0.32)), lineWidth: max(0.4, w * 0.012))
-                // Spinning, the blades blur into a soft disc.
-                if on {
-                    g.fill(Path(ellipseIn: grille.insetBy(dx: grille.width * 0.12, dy: grille.width * 0.12)),
-                           with: .color(.white.opacity(0.06 + 0.06 * min(1, speed))))
-                }
-                // A sheen across the top of the grille.
-                var sheen = Path()
-                sheen.addArc(center: CGPoint(x: cx, y: cy), radius: grille.width * 0.46, startAngle: .degrees(200), endAngle: .degrees(290), clockwise: false)
-                g.stroke(sheen, with: .color(.white.opacity(0.18)), lineWidth: max(0.6, w * 0.02))
-                // The badge in the middle.
-                let hub = gr * 0.3
-                g.fill(Path(ellipseIn: CGRect(x: cx - hub, y: cy - hub, width: hub * 2, height: hub * 2)),
-                       with: .color(pedestal ? Color(white: 0.7) : Color(white: 0.12)))
-                g.stroke(Path(ellipseIn: CGRect(x: cx - hub, y: cy - hub, width: hub * 2, height: hub * 2)),
-                         with: .color(.white.opacity(0.5)), lineWidth: 0.5)
-                // While it's on, a soft blue light at the hub.
-                if on {
-                    g.fill(Path(ellipseIn: CGRect(x: cx - hub * 0.35, y: cy - hub * 0.35, width: hub * 0.7, height: hub * 0.7)), with: .color(.cyan))
-                }
+                .frame(width: d, height: d)
+                .position(x: w / 2, y: headY)
             }
+            .frame(width: w, height: h)
         }
+    }
+}
+
+/// Five broad blades, each sweeping round from the hub.
+private struct FanBlades: Shape {
+    func path(in rect: CGRect) -> Path {
+        let c = CGPoint(x: rect.midX, y: rect.midY)
+        let r = min(rect.width, rect.height) / 2
+        var p = Path()
+        for i in 0..<5 {
+            let a = Double(i) / 5 * 2 * .pi
+            func pt(_ angle: Double, _ radius: CGFloat) -> CGPoint {
+                CGPoint(x: c.x + cos(angle) * radius, y: c.y + sin(angle) * radius)
+            }
+            p.move(to: pt(a, r * 0.2))
+            p.addQuadCurve(to: pt(a + 0.55, r * 0.98), control: pt(a - 0.15, r * 0.75))
+            p.addQuadCurve(to: pt(a + 0.95, r * 0.6), control: pt(a + 0.95, r * 1.0))
+            p.addQuadCurve(to: pt(a + 0.6, r * 0.2), control: pt(a + 0.75, r * 0.3))
+            p.closeSubpath()
+        }
+        return p
+    }
+}
+
+/// The table circulator's arm: from the side of the head round to the middle of the base.
+private struct FanArm: Shape {
+    func path(in rect: CGRect) -> Path {
+        var p = Path()
+        p.move(to: CGPoint(x: rect.maxX * 0.94, y: rect.minY))
+        p.addQuadCurve(to: CGPoint(x: rect.midX, y: rect.maxY), control: CGPoint(x: rect.maxX * 1.02, y: rect.maxY * 0.85))
+        return p
     }
 }
 
