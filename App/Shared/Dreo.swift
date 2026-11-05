@@ -419,7 +419,7 @@ struct DreoSection: View {
     var body: some View {
         Section {
             if dreo.connected {
-                LabeledContent("Dreo", value: "\(AccessoryStore.shared.fromDreo.count) fan\(AccessoryStore.shared.fromDreo.count == 1 ? "" : "s")")
+                LabeledContent("Fans", value: "\(AccessoryStore.shared.fromDreo.count)")
                 Button("Refresh") { Task { await dreo.refresh(full: true) } }
                 Button("Disconnect", role: .destructive) { dreo.signOut() }
             } else {

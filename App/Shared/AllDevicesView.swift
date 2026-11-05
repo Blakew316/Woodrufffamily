@@ -675,14 +675,21 @@ struct DreoFanPicture: View {
             // The blades behind the grille, turning while it's on.
             TimelineView(.animation(minimumInterval: 1.0 / 30, paused: !on || reduceMotion)) { ctx in
                 let turn = on && !reduceMotion ? ctx.date.timeIntervalSinceReferenceDate * (200 + 500 * max(0.1, speed)) : 0
-                FanBlades()
-                    .fill(Color(white: on ? 0.3 : 0.22))
-                    .rotationEffect(.degrees(turn))
-                    .blur(radius: on && !reduceMotion ? d * 0.01 : 0)
+                ZStack {
+                    FanBlades()
+                        .fill(LinearGradient(colors: [Color(white: on ? 0.42 : 0.34), Color(white: on ? 0.2 : 0.14)],
+                                             startPoint: .topLeading, endPoint: .bottomTrailing))
+                    FanBlades().stroke(.white.opacity(0.12), lineWidth: max(0.3, d * 0.006))
+                }
+                .rotationEffect(.degrees(turn))
+                .blur(radius: on && !reduceMotion ? d * 0.01 : 0)
             }
             .padding(d * 0.1)
             // The grille: spiral ribs from the badge to the rim.
             SpiralGrille().stroke(Color(white: 0.32), lineWidth: max(0.35, d * 0.012)).padding(d * 0.05)
+            // A soft reflection across the grille's front.
+            Circle().fill(LinearGradient(colors: [.white.opacity(0.1), .clear], startPoint: .topLeading, endPoint: .center))
+                .padding(d * 0.05)
             // Light catching the rim at the top left, and a soft edge all round.
             Circle().trim(from: 0.56, to: 0.78).stroke(.white.opacity(0.55), style: StrokeStyle(lineWidth: max(0.6, d * 0.022), lineCap: .round))
                 .padding(d * 0.012)

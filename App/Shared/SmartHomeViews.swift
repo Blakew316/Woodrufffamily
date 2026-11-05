@@ -692,7 +692,7 @@ struct FloorLampPicture: View {
     var body: some View {
         GeometryReader { g in
             let w = g.size.width, h = g.size.height
-            let baseW = max(6, w * 0.34), baseH = max(5, h * 0.11)
+            let baseW = max(6, w * 0.34), baseH = max(10, h * 0.22)
             let capH = baseW * 0.22
             let poleW = max(2, w * 0.065)
             let floorY = h - capH * 0.5

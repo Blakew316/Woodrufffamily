@@ -892,13 +892,13 @@ struct SmartThingsSection: View {
     var body: some View {
         Section {
             if st.connected && st.usesAccount {
-                LabeledContent("Samsung SmartThings", value: "\(AccessoryStore.shared.fromSmartThings.count) devices")
+                LabeledContent("Devices", value: "\(AccessoryStore.shared.fromSmartThings.count)")
                 Button("Refresh") { Task { await st.refresh(full: true) } }
                 Button("Disconnect", role: .destructive) { st.signOut() }
             } else {
                 if st.connected {
                     // On a 24-hour token: the Samsung sign-in below replaces it for good.
-                    LabeledContent("Samsung SmartThings", value: "24-hour token")
+                    LabeledContent("Signed In With", value: "24-hour token")
                 }
                 TextField("Client ID", text: $clientID).autocorrectionDisabled().font(.body.monospaced())
                 SecureField("Client Secret", text: $secret)
