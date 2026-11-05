@@ -54,6 +54,10 @@ set -u
 unset CDPATH   # an exported CDPATH would make `cd scripts/..` print the folder and spoil ROOT
 
 TEAM="D8D94SXAG6"
+# An App Store Connect API key (AuthKey_<KEYID>.p8, and issuer.txt with its Issuer ID) lets Xcode's automatic signing
+# make and renew the profiles without the account signed in to Xcode, which command-line builds often can't use
+# ("No Accounts"). Optional: without it, Xcode's signed-in account is used as before.
+ASC_DIR="$HOME/Library/Application Support/Woodruff Family/AppStoreConnect"
 BRANCH="claude/native-apps"
 IPHONE_BUNDLE_ID="com.blakew316.woodruff"          # always this id on the iPhones
 IPHONE_WIDGETS_ID="com.blakew316.woodruff.widgets"
@@ -192,6 +196,22 @@ show_build() {  # $1 = xcodebuild log
 
 build_succeeded() {  # $1 = xcodebuild status, $2 = its log, $3 = the product it should have made
   [ "$1" -eq 0 ] && grep -q '\*\* BUILD SUCCEEDED \*\*' "$2" 2>/dev/null && [ -d "$3" ]
+}
+
+asc_key_args() {  # adds the API key to "sign" when there is one (see ASC_DIR)
+  local key id issuer
+  for key in "$ASC_DIR"/AuthKey_*.p8; do
+    [ -f "$key" ] || continue
+    id=$(basename "$key" .p8)
+    id=${id#AuthKey_}
+    issuer=$(tr -d ' \t\r\n' <"$ASC_DIR/issuer.txt" 2>/dev/null)
+    if [ -n "$issuer" ]; then
+      sign+=(-authenticationKeyPath "$key" -authenticationKeyID "$id" -authenticationKeyIssuerID "$issuer")
+      say "    signing with the App Store Connect key $id"
+    fi
+    return 0
+  done
+  return 0
 }
 
 hints() {  # $1 = a log; plain-English hints for failures seen before
@@ -389,6 +409,7 @@ deploy_mac() {
     name="team $TEAM"
     cert_expires=""
     sign=(CODE_SIGN_STYLE=Automatic -allowProvisioningUpdates)
+    asc_key_args
     step "Mac: signing with Xcode's account (team $TEAM)"
   else
     step "Mac: choosing the signing identity"
@@ -970,6 +991,7 @@ deploy_iphone() {
   if [ "$XCODE_SIGNING" -eq 1 ]; then
     step "iPhone: building (Release, signed by Xcode's account, team $TEAM)"
     sign=(CODE_SIGN_STYLE=Automatic -allowProvisioningUpdates)
+    asc_key_args
   else
     step "iPhone: building (Release, unsigned)"
     sign=(CODE_SIGNING_ALLOWED=NO)
