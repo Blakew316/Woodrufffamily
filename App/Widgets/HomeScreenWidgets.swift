@@ -63,7 +63,7 @@ struct NowPlayingWidgetView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Spacer(minLength: 0)
                     Text(s?.tvName ?? "Woodruff").font(.caption.weight(.semibold)).foregroundStyle(.white.opacity(0.8)).lineLimit(1)
-                    Text(s?.title ?? (s == nil ? "Open the app once" : "Nothing playing"))
+                    Text(s?.title ?? (s == nil ? PhoneWidgetShare.emptyText : "Nothing playing"))
                         .font(family == .systemSmall ? .headline : .title3.weight(.semibold))
                         .foregroundStyle(.white).lineLimit(2)
                     if family == .systemMedium, let d = s?.detail, !d.isEmpty {
@@ -168,7 +168,7 @@ struct HomeWidgetView: View {
                 Image(systemName: s?.weatherSymbol ?? "cloud").symbolRenderingMode(.multicolor).font(.title3)
                 Text(s?.weatherTemp ?? "--").font(.system(size: 30, weight: .semibold, design: .rounded))
             }
-            Text(s?.weatherWords ?? (s == nil ? "Open the app once" : "Weather")).font(.caption.weight(.medium)).lineLimit(1)
+            Text(s?.weatherWords ?? (s == nil ? PhoneWidgetShare.emptyText : "Weather")).font(.caption.weight(.medium)).lineLimit(1)
             if let hl = s?.highLow { Text(hl).font(.caption2).foregroundStyle(.secondary).lineLimit(1) }
         }
     }

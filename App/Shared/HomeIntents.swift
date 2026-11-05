@@ -476,3 +476,33 @@ enum SiriVocabulary {
         return (lights + ["#"] + speakers + ["#"] + tvs).joined(separator: ";")
     }
 }
+
+// MARK: - Control Center
+
+/// The Control Center buttons' work (see `ControlHook`).
+enum ControlActions {
+    /// Every light on or off, once they're found (a button may have just started Woodruff).
+    @MainActor static func lights(_ on: Bool) async {
+        let cold = startHome()
+        var waited = 0
+        while SmartHome.shared.lights.isEmpty && waited < 12 {
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            waited += 1
+        }
+        let list = SmartHome.shared.lights
+        guard !list.isEmpty else { return }
+        _ = await turnAll(list, on: on, what: "every light", cold: cold)
+    }
+
+    /// The Sonos room that's playing (else the last one used) up or down 5.
+    @MainActor static func sonosVolume(up: Bool) async {
+        let h = SmartHome.shared
+        h.start()
+        if h.speakers.isEmpty { await h.findSonos() }
+        await h.refreshSpeakers()
+        guard let r0 = h.speakers.first(where: \.isPlaying) ?? h.lastSpeaker else { return }
+        let r = await Sonos.refresh(r0)
+        let v = max(0, min(100, r.volume + (up ? 5 : -5)))
+        await h.sonos(r) { try await Sonos.setVolume($0, v) }
+    }
+}

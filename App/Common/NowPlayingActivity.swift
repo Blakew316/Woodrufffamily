@@ -162,8 +162,7 @@ struct OpenRemoteIntent: AppIntent {
 struct LightsOffControlIntent: LiveActivityIntent {
     static let title: LocalizedStringResource = "Turn Off the Lights"
     @MainActor func perform() async throws -> some IntentResult {
-        SmartHome.shared.allLights(false)
-        try? await Task.sleep(nanoseconds: 400_000_000)
+        if let run = ControlHook.lights { await run(false) } else { SmartHome.shared.allLights(false) }
         return .result()
     }
 }
@@ -171,8 +170,7 @@ struct LightsOffControlIntent: LiveActivityIntent {
 struct LightsOnControlIntent: LiveActivityIntent {
     static let title: LocalizedStringResource = "Turn On the Lights"
     @MainActor func perform() async throws -> some IntentResult {
-        SmartHome.shared.allLights(true)
-        try? await Task.sleep(nanoseconds: 400_000_000)
+        if let run = ControlHook.lights { await run(true) } else { SmartHome.shared.allLights(true) }
         return .result()
     }
 }
@@ -198,11 +196,11 @@ struct SonosVolumeControlIntent: LiveActivityIntent {
     init() {}
     init(up: Bool) { self.up = up }
     @MainActor func perform() async throws -> some IntentResult {
+        if let run = ControlHook.sonosVolume { await run(up); return .result() }
         if SmartHome.shared.speakers.isEmpty { await SmartHome.shared.findSonos() }
         guard let r0 = SmartHome.shared.lastSpeaker else { return .result() }
         let r = await Sonos.refresh(r0)
         try? await Sonos.setVolume(r, r.volume + (up ? 5 : -5))
-        // The app's speaker tiles show the new level at once.
         await SmartHome.shared.refreshSpeakers()
         return .result()
     }
@@ -212,6 +210,13 @@ struct SonosVolumeControlIntent: LiveActivityIntent {
 
 /// Runs a scene in the app (set by the app as it starts): a control's LiveActivityIntent runs in the app's process,
 /// where the scenes, the TVs' keys and the lights are.
+/// What the Control Center buttons for the lights and Sonos do, set by the app (the same work Siri's do: they find
+/// the lights and speakers first when the button has just started Woodruff, and reach Apple Home's lights too).
+enum ControlHook {
+    @MainActor static var lights: ((Bool) async -> Void)?
+    @MainActor static var sonosVolume: ((Bool) async -> Void)?
+}
+
 enum SceneHook {
     @MainActor static var run: ((String) async -> Void)?
 }

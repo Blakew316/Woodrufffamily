@@ -27,6 +27,8 @@ struct SceneControls: WidgetBundle {
         MovieNightControl()
         BedtimeControl()
         ApplianceLiveActivity()
+        TVVolumeUpControl()
+        TVVolumeDownControl()
         NowPlayingWidget()
         HomeWidget()
     }
@@ -238,6 +240,30 @@ struct MuteControl: ControlWidget {
         }
         .displayName("Mute TV")
         .description("Mutes or unmutes the remote’s TV.")
+    }
+}
+
+struct TVVolumeUpControl: ControlWidget {
+    var body: some ControlWidgetConfiguration {
+        StaticControlConfiguration(kind: "com.woodruff.family.control.tvvolup") {
+            ControlWidgetButton(action: VolumeUpTVIntent()) {
+                Label("TV Volume Up", systemImage: "speaker.plus.fill")
+            }
+        }
+        .displayName("TV Volume Up")
+        .description("Turns the remote’s TV up.")
+    }
+}
+
+struct TVVolumeDownControl: ControlWidget {
+    var body: some ControlWidgetConfiguration {
+        StaticControlConfiguration(kind: "com.woodruff.family.control.tvvoldown") {
+            ControlWidgetButton(action: VolumeDownTVIntent()) {
+                Label("TV Volume Down", systemImage: "speaker.minus.fill")
+            }
+        }
+        .displayName("TV Volume Down")
+        .description("Turns the remote’s TV down.")
     }
 }
 

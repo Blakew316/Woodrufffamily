@@ -40,6 +40,8 @@ struct WoodruffApp: App {
         #else
         // Control Center's Movie Night and Bedtime run here, in the app (their intents land in this process).
         SceneHook.run = { id in _ = await SceneRunner.run(id: id) }
+        ControlHook.lights = { on in await ControlActions.lights(on) }
+        ControlHook.sonosVolume = { up in await ControlActions.sonosVolume(up: up) }
         #endif
     }
 
