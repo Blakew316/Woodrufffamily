@@ -664,6 +664,9 @@ final class SmartThings {
 
     /// "The washer is done" when a cycle ends while the app is open.
     private func notifyIfFinished(_ d: HomeDevice) {
+        #if os(iOS)
+        ApplianceActivitySync.shared.update(d)
+        #endif
         guard let now = d.machineState else { return }   // not known this time (or offline): nothing has finished
         let was = lastMachine[d.id]
         lastMachine[d.id] = now

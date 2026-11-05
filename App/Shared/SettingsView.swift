@@ -216,6 +216,7 @@ struct PhoneSettingsView: View {
     // Read and written through UserDefaults, so a change synced from another device shows here at once. (The Mac's
     // click sound for the remote's keys is in General.)
     @AppStorage("liveActivity") private var liveActivity = true
+    @AppStorage("applianceActivity") private var applianceActivity = true
     @AppStorage("notifyFleet") private var notifyFleet = true
     // This device's camera alerts, as `NestAlerts` keeps them (read here for the row's summary only).
     @AppStorage("nest.alert.doorbell") private var doorbellAlerts = true
@@ -227,6 +228,7 @@ struct PhoneSettingsView: View {
             Section {
                 #if os(iOS)
                 Toggle("Now Playing on Lock Screen", isOn: $liveActivity)
+                Toggle("Appliances on Lock Screen", isOn: $applianceActivity)
                 #endif
                 Toggle("TV Alerts", isOn: $notifyFleet)
             } footer: {
@@ -281,6 +283,7 @@ struct PhoneSettingsView: View {
         #if os(iOS)
         // Takes effect at once: the Lock Screen's Now Playing ends (or starts) right away.
         .onChange(of: liveActivity) { _, _ in LiveActivitySync.shared.sync(fleet) }
+        .onChange(of: applianceActivity) { _, on in if !on { ApplianceActivitySync.shared.endAll() } }
         #endif
         .onChange(of: notifyFleet) { _, on in if on { Notifier.requestPermission() } }
         .task { await retireNtfyAlerts() }

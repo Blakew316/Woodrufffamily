@@ -101,6 +101,10 @@ struct WoodruffApp: App {
                 .onOpenURL { url in
                     // woodruff://remote (widgets, Control Center): open the remote; anything else is a pairing link.
                     if url.scheme == "woodruff" && url.host == "signed-in" { return }  // the end of a camera/Samsung sign-in
+                    if url.scheme == "woodruff" && url.host == "home" {   // an appliance's Live Activity
+                        UserDefaults.standard.set("home", forKey: "section")
+                        return
+                    }
                     if url.scheme == "woodruff" && url.host == "remote" {
                         #if os(macOS)
                         fleet.remotePanel = true

@@ -26,6 +26,7 @@ struct SceneControls: WidgetBundle {
     var body: some Widget {
         MovieNightControl()
         BedtimeControl()
+        ApplianceLiveActivity()
     }
 }
 
@@ -295,5 +296,110 @@ struct SonosVolumeDownControl: ControlWidget {
             }
         }
         .displayName("Sonos Volume Down")
+    }
+}
+
+// MARK: - Appliances
+
+/// A washer, dryer, dishwasher or oven's cycle: a countdown on the Lock Screen and in the Dynamic Island.
+struct ApplianceLiveActivity: Widget {
+    var body: some WidgetConfiguration {
+        ActivityConfiguration(for: ApplianceAttributes.self) { context in
+            ApplianceLockScreen(attributes: context.attributes, state: context.state)
+                .activityBackgroundTint(Color.black.opacity(0.55))
+                .activitySystemActionForegroundColor(.white)
+                .widgetURL(URL(string: "woodruff://home"))
+        } dynamicIsland: { context in
+            let a = context.attributes
+            let s = context.state
+            return DynamicIsland {
+                DynamicIslandExpandedRegion(.leading) {
+                    Image(systemName: a.symbol).font(.title2).foregroundStyle(s.done ? .green : .accentColor)
+                        .frame(width: 42, height: 42)
+                }
+                DynamicIslandExpandedRegion(.center) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(a.name).font(.headline).lineLimit(1)
+                        Text(s.phase).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                DynamicIslandExpandedRegion(.trailing) {
+                    ApplianceTimeLeft(state: s).font(.title3.weight(.semibold)).padding(.trailing, 4)
+                }
+                DynamicIslandExpandedRegion(.bottom) {
+                    ApplianceProgress(state: s).padding(.horizontal, 4)
+                }
+            } compactLeading: {
+                Image(systemName: a.symbol).font(.caption.weight(.semibold)).foregroundStyle(s.done ? .green : .accentColor)
+            } compactTrailing: {
+                ApplianceTimeLeft(state: s).font(.caption.weight(.semibold)).frame(maxWidth: 52)
+            } minimal: {
+                Image(systemName: a.symbol).font(.caption.weight(.semibold)).foregroundStyle(s.done ? .green : .accentColor)
+            }
+            .widgetURL(URL(string: "woodruff://home"))
+            .keylineTint(.accentColor)
+        }
+    }
+}
+
+struct ApplianceLockScreen: View {
+    let attributes: ApplianceAttributes
+    let state: ApplianceAttributes.ContentState
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 12) {
+                Image(systemName: attributes.symbol).font(.title2)
+                    .foregroundStyle(state.done ? .green : .white)
+                    .frame(width: 40, height: 40)
+                    .background(.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(attributes.name).font(.headline).lineLimit(1)
+                    Text(state.phase).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                }
+                Spacer(minLength: 8)
+                ApplianceTimeLeft(state: state).font(.title2.weight(.semibold))
+            }
+            ApplianceProgress(state: state)
+        }
+        .foregroundStyle(.white)
+        .padding(16)
+    }
+}
+
+/// Minutes left, counting down by itself; "Done" when finished.
+struct ApplianceTimeLeft: View {
+    let state: ApplianceAttributes.ContentState
+
+    var body: some View {
+        if state.done {
+            Text("Done").foregroundStyle(.green)
+        } else if let end = state.endsAt, end > state.startedAt, !state.paused {
+            Text(timerInterval: Date()...end, countsDown: true, showsHours: true)
+                .monospacedDigit().multilineTextAlignment(.trailing)
+        } else if state.paused {
+            Text("Paused").foregroundStyle(.secondary)
+        } else {
+            EmptyView()
+        }
+    }
+}
+
+/// A bar from when the cycle started to when it ends, moving by itself.
+struct ApplianceProgress: View {
+    let state: ApplianceAttributes.ContentState
+
+    var body: some View {
+        Group {
+            if state.done {
+                ProgressView(value: 1)
+            } else if let end = state.endsAt, end > state.startedAt, !state.paused {
+                ProgressView(timerInterval: state.startedAt...end, countsDown: false) { EmptyView() } currentValueLabel: { EmptyView() }
+            } else {
+                ProgressView(value: 0)
+            }
+        }
+        .tint(state.done ? .green : .white)
     }
 }
