@@ -69,6 +69,7 @@ QUIT_NOTIFICATION="com.woodruff.family.mac.quit-for-update"   # the Mac app quit
 DETACH=0          # --branch: check out origin/$BRANCH detached instead of pulling claude/native-apps
 BRANCH_OPT=""     # "--branch <name> " for the commands this suggests
 KEEP_IPHONE=""    # --keep-iphone
+IPHONE_FALLBACK=""   # set while the iPhone is signed with this Mac's own profiles after Xcode couldn't
 XCODE_SIGNING=0   # --xcode-signing: Xcode's automatic signing with its signed-in (paid) account
 LAUNCH_IPHONE=1   # 0 with --no-launch
 RESULTS=""        # --results
@@ -203,6 +204,9 @@ hints() {  # $1 = a log; plain-English hints for failures seen before
   fi
   if grep -qiE 'requires a provisioning profile|No profiles for' "$1"; then
     say "    hint: the build now wants a provisioning profile, and this script never makes one."
+  fi
+  if grep -q 'No Accounts' "$1"; then
+    say "    hint: sign in to Xcode once on this Mac (Xcode > Settings > Accounts > +, Apple ID of team D8D94SXAG6)."
   fi
   if grep -qi 'developer mode' "$1"; then
     say "    hint: turn on Developer Mode on the iPhone (Settings > Privacy & Security > Developer Mode)."
@@ -984,6 +988,24 @@ deploy_iphone() {
       ${VERSION_SETTINGS[@]+"${VERSION_SETTINGS[@]}"} build </dev/null >"$log" 2>&1
     status=$?
     show_build "$log"
+  fi
+  if [ "$XCODE_SIGNING" -eq 1 ] && ! build_succeeded "$status" "$log" "$product" && [ -z "$IPHONE_FALLBACK" ]; then
+    # Xcode couldn't sign (no Apple account in Xcode > Settings > Accounts, or its profiles lack something): sign
+    # with this Mac's own certificate and profiles instead, so the iPhones still update.
+    hints "$log"
+    if grep -q 'No Accounts' "$log" 2>/dev/null; then
+      warn "Xcode isn't signed in to an Apple account on this Mac (Xcode > Settings > Accounts), so it can't sign the"
+      warn "iPhone app by itself; signing it with this Mac's own certificate and profiles instead."
+    else
+      warn "Xcode couldn't sign the iPhone app; signing it with this Mac's own certificate and profiles instead."
+    fi
+    IPHONE_FALLBACK=1
+    XCODE_SIGNING=0
+    deploy_iphone
+    status=$?
+    XCODE_SIGNING=1
+    IPHONE_FALLBACK=""
+    return "$status"
   fi
   if ! build_succeeded "$status" "$log" "$product"; then
     hints "$log"
