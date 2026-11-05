@@ -10,40 +10,49 @@ struct NotesView: View {
     @State private var error: String?
     @State private var editing: TVNote?
 
+    private var pinned: [TVNote] { notes.filter(\.isPinned) }
+    private var rest: [TVNote] { notes.filter { !$0.isPinned } }
+
     var body: some View {
         Form {
             if let error {
                 Section { Text(error).foregroundStyle(Palette.attention) }
             }
-            let pinned = notes.filter(\.isPinned)
-            let rest = notes.filter { !$0.isPinned }
             if !pinned.isEmpty {
-                Section("Pinned") { ForEach(pinned) { row($0) } }
+                Section {
+                    ForEach(pinned) { n in row(n) }
+                } header: { Text("Pinned") }
             }
-            Section {
-                ForEach(rest) { row($0) }
-                Button("New Note") { editing = TVNote(id: "", title: "", body: "", updated: 0, pinned: false) }
-            } header: {
-                if !pinned.isEmpty { Text("Notes") }
-            } footer: {
-                if loaded && notes.isEmpty { Text("Notes you write here show on the TVs, in Command Center → Notes.") }
-            }
+            notesSection
         }
         .formStyle(.grouped)
         .navigationTitle("Notes")
         .inlineTitle()
         .task { await load() }
         .refreshable { await load() }
-        .sheet(item: $editing) { n in
-            NavigationStack {
-                NoteEditor(note: n) { title, body in
-                    await save(n, title: title, body: body, pinned: n.id.isEmpty ? false : nil)
-                }
-            }
-            #if os(macOS)
-            .frame(minWidth: 460, minHeight: 420)
-            #endif
+        .sheet(item: $editing) { n in editor(n) }
+    }
+
+    private var notesSection: some View {
+        Section {
+            ForEach(rest) { n in row(n) }
+            Button("New Note") { editing = TVNote(id: "", title: "", body: "", updated: 0, pinned: false) }
+        } header: {
+            Text(pinned.isEmpty ? "" : "Notes")
+        } footer: {
+            Text(loaded && notes.isEmpty ? "Notes you write here show on the TVs, in Command Center → Notes." : "")
         }
+    }
+
+    private func editor(_ n: TVNote) -> some View {
+        NavigationStack {
+            NoteEditor(note: n) { title, body in
+                await save(n, title: title, body: body, pinned: n.id.isEmpty ? false : nil)
+            }
+        }
+        #if os(macOS)
+        .frame(minWidth: 460, minHeight: 420)
+        #endif
     }
 
     private func row(_ n: TVNote) -> some View {
@@ -53,7 +62,7 @@ struct NotesView: View {
                 if !n.body.isEmpty {
                     Text(n.body).font(.subheadline).foregroundStyle(.secondary).lineLimit(2)
                 }
-                Text(n.updatedAt, format: .relative(presentation: .named)).font(.caption).foregroundStyle(.tertiary)
+                Text(n.updatedAt, style: .relative).font(.caption).foregroundStyle(.tertiary)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())

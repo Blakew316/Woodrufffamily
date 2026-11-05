@@ -595,6 +595,14 @@ public struct TVNote: Codable, Hashable, Sendable, Identifiable {
     public var updated: Double
     public var pinned: Bool?
 
+    public init(id: String, title: String, body: String, updated: Double, pinned: Bool? = nil) {
+        self.id = id
+        self.title = title
+        self.body = body
+        self.updated = updated
+        self.pinned = pinned
+    }
+
     public var isPinned: Bool { pinned ?? false }
     public var updatedAt: Date { Date(timeIntervalSince1970: updated / 1000) }
 }
