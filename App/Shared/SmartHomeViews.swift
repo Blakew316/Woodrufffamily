@@ -681,8 +681,9 @@ extension GoveeLight {
     }
 }
 
-/// A Govee floor lamp: a heavy round base and a slim light bar standing up from it. The bar lights from the base up
-/// like a progress bar: [level] 0…1 of it, in the light's colour, glowing.
+/// A Govee Floor Lamp 2: a small black cylinder base and a hair-thin pole standing up from it. The pole lights from
+/// the base up like a progress bar, [level] 0…1 of it, in the light's colour, with a soft glow around the lit part;
+/// the base's foot glows too while it's on.
 struct FloorLampPicture: View {
     var level: Double
     var lit: Bool
@@ -691,25 +692,38 @@ struct FloorLampPicture: View {
     var body: some View {
         GeometryReader { g in
             let w = g.size.width, h = g.size.height
-            let baseH = max(3, h * 0.07)
-            let poleW = max(3, w * 0.2)
-            let poleH = h - baseH - h * 0.015
+            let baseW = max(5, w * 0.34), baseH = max(5, h * 0.12)
+            let poleW = max(1.6, w * 0.07)
+            let poleH = h - baseH
             let fill = lit ? max(0, min(1, level)) : 0
             ZStack(alignment: .bottom) {
-                // The bar: dark where it isn't lit, the light rising from the base.
+                // The glow around the lit part of the pole.
+                if fill > 0 {
+                    Capsule()
+                        .fill(color.opacity(0.55))
+                        .frame(width: poleW * 5, height: max(poleW * 5, poleH * fill))
+                        .blur(radius: max(3, w * 0.16))
+                        .padding(.bottom, baseH)
+                }
+                // The pole: near black where it isn't lit, the light rising from the base.
                 ZStack(alignment: .bottom) {
-                    Capsule().fill(Color(white: 0.22))
+                    Capsule().fill(Color(white: 0.16))
                     Capsule().fill(color)
-                        .frame(height: max(fill > 0 ? poleW : 0, poleH * fill))
-                        .shadow(color: color.opacity(lit ? 0.9 : 0), radius: w * 0.18)
+                        .frame(height: fill > 0 ? max(poleW, poleH * fill) : 0)
                 }
                 .frame(width: poleW, height: poleH)
-                .overlay(Capsule().strokeBorder(.white.opacity(0.15), lineWidth: 0.5))
-                .padding(.bottom, baseH * 0.6)
-                // The round base, seen a little from above.
-                Ellipse()
-                    .fill(LinearGradient(colors: [Color(white: 0.42), Color(white: 0.16)], startPoint: .top, endPoint: .bottom))
-                    .frame(width: w * 0.78, height: baseH)
+                .padding(.bottom, baseH * 0.9)
+                // The base: a small black cylinder, its foot glowing while the lamp is on.
+                ZStack(alignment: .bottom) {
+                    RoundedRectangle(cornerRadius: baseW * 0.12, style: .continuous)
+                        .fill(LinearGradient(colors: [Color(white: 0.24), Color(white: 0.08)], startPoint: .leading, endPoint: .trailing))
+                    if lit {
+                        RoundedRectangle(cornerRadius: baseW * 0.12, style: .continuous)
+                            .fill(LinearGradient(colors: [.clear, color.opacity(0.85)], startPoint: .top, endPoint: .bottom))
+                            .frame(height: baseH * 0.45)
+                    }
+                }
+                .frame(width: baseW, height: baseH)
             }
             .frame(width: w, height: h, alignment: .bottom)
         }
