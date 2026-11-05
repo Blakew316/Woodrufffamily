@@ -292,6 +292,13 @@ struct RootView: View {
             .onChange(of: fleet.selected?.nowPlaying) { _, _ in LiveActivitySync.shared.sync(fleet) }
             .onChange(of: fleet.selectedID) { _, _ in LiveActivitySync.shared.sync(fleet) }
             .onChange(of: fleet.remoteAll) { _, _ in LiveActivitySync.shared.sync(fleet) }
+            // The Home Screen widgets: what's playing, the weather and the thermostat.
+            .onChange(of: fleet.selected?.nowPlaying) { _, _ in PhoneWidgetSync.update(fleet) }
+            .onChange(of: fleet.selectedID) { _, _ in PhoneWidgetSync.update(fleet) }
+            .onChange(of: HomeWeather.shared.now) { _, _ in PhoneWidgetSync.update(fleet) }
+            .onChange(of: AccessoryStore.shared.thermostat) { _, _ in PhoneWidgetSync.update(fleet) }
+            .onChange(of: fleet.artwork(for: fleet.selected?.nowPlaying)) { _, _ in PhoneWidgetSync.update(fleet) }
+            .task { PhoneWidgetSync.update(fleet) }
     }
 
     private var tabView: some View {

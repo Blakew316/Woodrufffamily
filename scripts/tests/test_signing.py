@@ -143,5 +143,33 @@ class Commands(unittest.TestCase):
         self.assertEqual(record["devices"], [{"udid": "P1", "name": "P1"}])
 
 
+class AppGroup(unittest.TestCase):
+    """The widgets' app group is signed in only when the profile allows it."""
+
+    def profile(self, extra):
+        ents = {"application-identifier": "D8D94SXAG6.com.blakew316.woodruff",
+                "com.apple.developer.team-identifier": "D8D94SXAG6",
+                "get-task-allow": True, "com.apple.developer.homekit": True}
+        ents.update(extra)
+        return {"entitlements": ents}
+
+    def test_without_group(self):
+        ents, problems = signing.build_entitlements(self.profile({}), "app")
+        self.assertEqual(problems, [])
+        self.assertNotIn("com.apple.security.application-groups", ents)
+
+    def test_with_group(self):
+        p = self.profile({"com.apple.security.application-groups": ["group.com.woodruff.family"]})
+        ents, problems = signing.build_entitlements(p, "app")
+        self.assertEqual(problems, [])
+        self.assertEqual(ents["com.apple.security.application-groups"], ["group.com.woodruff.family"])
+
+    def test_other_group(self):
+        p = self.profile({"com.apple.security.application-groups": ["group.other"]})
+        ents, problems = signing.build_entitlements(p, "app")
+        self.assertEqual(problems, [])
+        self.assertNotIn("com.apple.security.application-groups", ents)
+
+
 if __name__ == "__main__":
     unittest.main()

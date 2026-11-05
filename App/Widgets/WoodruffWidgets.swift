@@ -27,6 +27,8 @@ struct SceneControls: WidgetBundle {
         MovieNightControl()
         BedtimeControl()
         ApplianceLiveActivity()
+        NowPlayingWidget()
+        HomeWidget()
     }
 }
 

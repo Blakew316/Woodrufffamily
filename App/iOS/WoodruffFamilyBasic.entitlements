@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Apple Home only, without the widgets' app group: what deploy.sh signs with when Xcode can't add the group. -->
+	<key>com.apple.developer.homekit</key>
+	<true/>
+</dict>
+</plist>

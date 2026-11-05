@@ -46,6 +46,7 @@ targets:
         # Apple Home (Cync over Matter). If signing ever refuses HomeKit, build with
         # WOODRUFF_HOMEKIT=NO WOODRUFF_ENTITLEMENTS= and everything else still works.
         WOODRUFF_HOMEKIT: "YES"
+        # With the widgets' app group; App/iOS/WoodruffFamilyBasic.entitlements is the same without it.
         WOODRUFF_ENTITLEMENTS: App/iOS/WoodruffFamily.entitlements
         CODE_SIGN_ENTITLEMENTS: $(WOODRUFF_ENTITLEMENTS)
         PRODUCT_NAME: Woodruff Family
@@ -99,6 +100,9 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: $(WOODRUFF_BUNDLE_ID).widgets
         PRODUCT_NAME: WoodruffWidgets
         TARGETED_DEVICE_FAMILY: "1,2"
+        # The app group shared with the app (empty: none).
+        WOODRUFF_WIDGET_ENTITLEMENTS: App/Widgets/WoodruffWidgets.entitlements
+        CODE_SIGN_ENTITLEMENTS: $(WOODRUFF_WIDGET_ENTITLEMENTS)
         SKIP_INSTALL: YES
     info:
       path: App/Widgets/Info.plist

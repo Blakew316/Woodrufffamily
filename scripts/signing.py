@@ -57,6 +57,13 @@ EXTRA_ENTITLEMENTS = {
     "widget": {"get-task-allow": True},
 }
 
+# Added only when the profile allows them (signing goes on without them otherwise): the widgets' app group.
+APP_GROUP = "group.com.woodruff.family"
+OPTIONAL_ENTITLEMENTS = {
+    "app": {"com.apple.security.application-groups": [APP_GROUP]},
+    "widget": {"com.apple.security.application-groups": [APP_GROUP]},
+}
+
 NO_IDENTITY = "isn't for any valid signing identity on this Mac"
 WIDGET_ROLES = ("widgets", "widgets-wildcard")
 
@@ -580,7 +587,8 @@ def build_entitlements(profile, kind, bundle_id=None):
     """(entitlements, problems) to sign the "app" or the "widget" with this profile.
 
     application-identifier and com.apple.developer.team-identifier come from the profile (with the bundle id
-    filled in where the profile has a wildcard), plus EXTRA_ENTITLEMENTS[kind]; nothing else. The result
+    filled in where the profile has a wildcard), plus EXTRA_ENTITLEMENTS[kind], plus whatever of
+    OPTIONAL_ENTITLEMENTS[kind] the profile allows; nothing else. The result
     must be a subset of the profile's Entitlements, else entitlements is None and problems says why.
     """
     if kind not in EXTRA_ENTITLEMENTS:
@@ -604,6 +612,10 @@ def build_entitlements(profile, kind, bundle_id=None):
     wanted = {"application-identifier": app_identifier, "com.apple.developer.team-identifier": team_id}
     wanted.update(EXTRA_ENTITLEMENTS[kind])
     problems = subset_problems(wanted, ents)
+    if not problems:
+        for key, value in OPTIONAL_ENTITLEMENTS[kind].items():
+            if not subset_problems({key: value}, ents):
+                wanted[key] = value
     return (None if problems else wanted), problems
 
 

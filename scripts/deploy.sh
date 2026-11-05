@@ -972,6 +972,19 @@ deploy_iphone() {
     ${VERSION_SETTINGS[@]+"${VERSION_SETTINGS[@]}"} build </dev/null >"$log" 2>&1
   status=$?
   show_build "$log"
+  if [ "$XCODE_SIGNING" -eq 1 ] && ! build_succeeded "$status" "$log" "$product"; then
+    # Xcode couldn't sign with the widgets' app group (it isn't on the App IDs yet): the app without it, so the
+    # iPhones still update (the Home Screen widgets then say to open the app).
+    warn "the iPhone build with the widgets' app group failed; building it again without the app group"
+    log="$LOGDIR/iphone-build-basic.log"
+    xcodebuild -project WoodruffFamily.xcodeproj -scheme WoodruffFamily -destination 'generic/platform=iOS' \
+      -configuration Release -derivedDataPath build DEVELOPMENT_TEAM="$TEAM" \
+      WOODRUFF_BUNDLE_ID="$IPHONE_BUNDLE_ID" "${sign[@]}" \
+      WOODRUFF_ENTITLEMENTS=App/iOS/WoodruffFamilyBasic.entitlements WOODRUFF_WIDGET_ENTITLEMENTS= \
+      ${VERSION_SETTINGS[@]+"${VERSION_SETTINGS[@]}"} build </dev/null >"$log" 2>&1
+    status=$?
+    show_build "$log"
+  fi
   if ! build_succeeded "$status" "$log" "$product"; then
     hints "$log"
     problem "the iPhone app didn't build"
