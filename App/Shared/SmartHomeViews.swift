@@ -45,8 +45,15 @@ struct SpeakerTile: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            SpeakerArt(url: room.art, size: 38)
-                .opacity(room.isOffline ? 0.45 : 1)
+            Group {
+                if AllDevicesView.isSoundbar(room) && room.art == nil {
+                    // The Arc as on All Devices, sound rising while it plays.
+                    SoundbarPicture(on: room.isPlaying, tint: .teal).frame(width: 44, height: 38)
+                } else {
+                    SpeakerArt(url: room.art, size: 38)
+                }
+            }
+            .opacity(room.isOffline ? 0.45 : 1)
             VStack(alignment: .leading, spacing: 1) {
                 Text(room.name).font(.footnote.weight(.semibold)).lineLimit(1)
                 if let e = home.speakerErrors[room.id] {
@@ -205,6 +212,11 @@ struct LightTile: View {
         let lit = light.isLit
         // Compact, like the Home app: the light's colour on the left, its name and state beside it.
         HStack(spacing: 10) {
+            if light.isFloorLamp {
+                // The lamp as on All Devices: its pole lit from the base up to the brightness.
+                FloorLampPicture(level: Double(light.brightness) / 100, lit: lit, color: light.shade)
+                    .frame(width: 24, height: 44)
+            } else {
             Circle()
                 .fill(lit ? light.shade : .white.opacity(0.18))
                 .frame(width: 24, height: 24)
@@ -212,6 +224,7 @@ struct LightTile: View {
                 .overlay {
                     if light.isOffline { Image(systemName: "wifi.slash").font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary) }
                 }
+            }
             VStack(alignment: .leading, spacing: 1) {
                 Text(light.name).font(.footnote.weight(.semibold)).lineLimit(2)
                 Text(light.isOffline ? "Offline" : lit ? "\(light.brightness)%" : "Off").font(.caption)

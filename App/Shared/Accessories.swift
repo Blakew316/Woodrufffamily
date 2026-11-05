@@ -114,9 +114,35 @@ final class AccessoryStore {
 
     private func zones() {
         var z: [String: String] = [:]
-        for d in fromHome + fromSmartThings + fromDreo { if let r = d.zone { z[d.id] = r } }
+        // The rooms the house already has (the TVs', the family's own, Sonos', the apps').
+        let known = Set(SmartHome.shared.rooms.values) .union(Fleet.shared.tvs.map(\.name)).union(SmartHome.shared.extraRooms)
+            .union((fromHome + fromSmartThings + fromDreo).compactMap(\.zone))
+        for d in fromHome + fromSmartThings + fromDreo {
+            if let r = d.zone, !r.isEmpty { z[d.id] = r } else if let r = Self.likelyRoom(d, known: known) { z[d.id] = r }
+        }
+        // Lights and speakers without a room of their own: one named in their name.
+        let h = SmartHome.shared
+        for (id, name, zone) in h.lights.map({ ($0.id, $0.name, $0.zone) }) + h.speakers.map({ ($0.id, $0.name, Optional($0.zone)) })
+            where (zone ?? "").isEmpty && h.rooms[id] == nil {
+            let n = name.lowercased()
+            if let r = known.filter({ !$0.isEmpty && n.contains($0.lowercased()) }).max(by: { $0.count < $1.count }) { z[id] = r }
+        }
         // Only a real change: every room on Home is worked out again from these.
         if SmartHome.shared.externalZones != z { SmartHome.shared.externalZones = z }
+    }
+
+    /// Where a device with no room in its own app most likely is, so it shows somewhere instead of nowhere: a room
+    /// named in its name ("Kitchen Light"), else the kitchen for a fridge, oven or dishwasher and the laundry room
+    /// for a washer or dryer. A room set for it in Woodruff always comes first (SmartHome.room(of:)).
+    static func likelyRoom(_ d: HomeDevice, known: Set<String>) -> String? {
+        let name = d.name.lowercased()
+        if let r = known.filter({ !$0.isEmpty && name.contains($0.lowercased()) }).max(by: { $0.count < $1.count }) { return r }
+        func existing(_ word: String) -> String? { known.first { $0.lowercased().contains(word) } }
+        switch d.kind {
+        case .fridge, .oven, .dishwasher: return existing("kitchen") ?? "Kitchen"
+        case .washer, .dryer: return existing("laundry") ?? "Laundry Room"
+        default: return nil
+        }
     }
 }
 
@@ -178,8 +204,15 @@ struct DeviceTile: View, Equatable {
         // Compact, like the Home app: icon on the left, name and state beside it.
         HStack(spacing: 10) {
             Group {
+                // The drawn ones, as on All Devices: the Dreo fans and the ecobee.
+                if device.source == "dreo" {
+                    DreoFanPicture(pedestal: (device.product ?? "").uppercased().contains("HPF") || device.name.localizedCaseInsensitiveContains("pedestal"),
+                                   on: lit, speed: Double(device.speed ?? 50) / 100)
+                        .frame(width: 36, height: 42)
+                } else if device.kind == .thermostat {
+                    EcobeePicture(device: device).frame(width: 34, height: 34)
                 // A fridge is always "running": on a tile it's its still symbol (its page shows the snow falling).
-                if device.source == "smartthings" && device.isRunning && device.kind != .fridge && ApplianceArt.animates(device.kind) {
+                } else if device.source == "smartthings" && device.isRunning && device.kind != .fridge && ApplianceArt.animates(device.kind) {
                     ApplianceArt(kind: device.kind, running: true, alert: device.alert, minimumInterval: 1.0 / 20)
                         .frame(width: 30, height: 30)
                         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
@@ -190,7 +223,7 @@ struct DeviceTile: View, Equatable {
                         .contentTransition(.symbolEffect(.replace))
                 }
             }
-            .frame(width: 30, height: 30)
+            .frame(minWidth: 30, minHeight: 30)
             VStack(alignment: .leading, spacing: 1) {
                 Text(device.name).font(.footnote.weight(.semibold)).lineLimit(2)
                 Text(device.reachable ? device.status : "Not Responding").font(.caption)
