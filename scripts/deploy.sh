@@ -608,6 +608,13 @@ install_shared_helper() {
   rm -rf "$unz"
 }
 
+# 0 once file $1's contents are on this Mac (not an iCloud placeholder: the dataless flag, 0x40000000, is clear).
+icloud_here() {
+  local flags
+  flags=$(stat -f %f "$1" 2>/dev/null) || return 1
+  [ $((flags & 1073741824)) -eq 0 ]
+}
+
 gone_within() {  # $1 = seconds: 0 once Woodruff Family isn't running any more
   local waited=0
   while pgrep -U "$(id -u)" -x "$APP_NAME" >/dev/null 2>&1; do
@@ -873,6 +880,12 @@ deploy_mac_shared() {
       if [ ! -f "$zip" ] && [ -e "$SHARE_DIR/.$name.zip.icloud" ]; then
         i=0   # it's on its way down: give it up to a minute
         while [ "$i" -lt 30 ] && [ ! -f "$zip" ]; do sleep 2; i=$((i + 1)); done
+      fi
+      # Newer macOS keeps a file's name but not its contents ("dataless"), and won't let the updater, running by
+      # itself, bring them down by reading it ("Resource deadlock avoided"): wait for iCloud's own download.
+      if [ -f "$zip" ] && { ! icloud_here "$manifest" || ! icloud_here "$zip"; }; then
+        i=0
+        while [ "$i" -lt 60 ] && { ! icloud_here "$manifest" || ! icloud_here "$zip"; }; do sleep 2; i=$((i + 1)); done
       fi
     fi
     if [ -f "$manifest" ] && [ -f "$zip" ]; then
