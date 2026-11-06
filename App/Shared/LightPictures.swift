@@ -429,7 +429,7 @@ extension GoveeLight {
     }
 }
 
-/// Govee Glide Hexa panels: six hexagons in a zigzag down the diagonal, frosted grey when off. Turned on, they light
+/// Govee Glide Hexa panels: seven hexagons in a layered honeycomb stepping down to the right, frosted grey when off. Turned on, they light
 /// one after another, each glowing from its centre, a little lighter or deeper than its neighbours as the real ones
 /// blend, with a glow round them that grows with the brightness.
 struct HexPanelsPicture: View {
@@ -485,12 +485,13 @@ private struct HexPanelsDrawing: View, Animatable {
     private func draw(_ ctx: GraphicsContext, w: CGFloat, h: CGFloat) {
         let power = CGFloat(max(0, min(1, self.power)))
         let lv = CGFloat(0.08 + 0.92 * max(0, min(1, level)))
-        // The panels on a honeycomb (unit size): down-right, right, down-right… from the top left.
+        // Seven panels on a honeycomb (unit size), in layers stepping down to the right from the top left.
         let s3 = CGFloat(3).squareRoot()
         var cells: [CGPoint] = [.zero]
-        for move in ["dr", "r", "dr", "r", "dr"] {
+        for move in ["dr", "r", "dr", "ur", "dr", "r"] {
             let last = cells[cells.count - 1]
-            cells.append(move == "r" ? CGPoint(x: last.x + s3, y: last.y) : CGPoint(x: last.x + s3 / 2, y: last.y + 1.5))
+            cells.append(move == "r" ? CGPoint(x: last.x + s3, y: last.y)
+                         : CGPoint(x: last.x + s3 / 2, y: last.y + (move == "ur" ? -1.5 : 1.5)))
         }
         let minX = cells.map(\.x).min()! - s3 / 2, maxX = cells.map(\.x).max()! + s3 / 2
         let minY = cells.map(\.y).min()! - 1, maxY = cells.map(\.y).max()! + 1

@@ -372,7 +372,7 @@ struct DeviceGlyph: View {
         case .underShelf(let level):
             UnderShelfPicture(level: level, lit: on, color: tint).frame(width: 64, height: 56)
         case .hexPanels(let level):
-            HexPanelsPicture(level: level, lit: on, color: tint).frame(width: 64, height: 56)
+            HexPanelsPicture(level: level, lit: on, color: tint).frame(width: 72, height: 56)
         case .homePod(let mini):
             Image(systemName: mini ? "homepodmini.fill" : "homepod.fill")
                 .font(.system(size: 21, weight: .semibold))
