@@ -264,7 +264,9 @@ struct RecentMessagesView: View {
         Form {
             Section {
                 if fleet.recentMessages.isEmpty { Text("No messages in the last week.").foregroundStyle(.secondary) }
-                ForEach(fleet.recentMessages) { m in
+                // By position, not by the message's id: two TVs can send messages with the same id ("seq-1"), and a
+                // list with a repeated id crashes the Mac's form.
+                ForEach(Array(fleet.recentMessages.enumerated()), id: \.offset) { _, m in
                     VStack(alignment: .leading, spacing: 3) {
                         Text(m.title).font(.subheadline.weight(.semibold))
                         // (A TV not yet updated names Settings pages as they used to be.)

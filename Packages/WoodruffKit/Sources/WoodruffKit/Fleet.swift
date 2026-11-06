@@ -1229,7 +1229,9 @@ public final class Fleet {
             cursors[hub.id] = cur
         }
         let weekAgo = (Date().timeIntervalSince1970 - 7 * 86400) * 1000
-        let kept = Array(recentMessages.filter { ($0.at ?? weekAgo + 1) > weekAgo }.prefix(20))
+        // Each message once (the same one can come from two TVs, or again after the seen list was trimmed).
+        var once = Set<String>()
+        let kept = Array(recentMessages.filter { ($0.at ?? weekAgo + 1) > weekAgo && once.insert("\($0.id)|\($0.title)|\($0.at ?? 0)").inserted }.prefix(20))
         if kept != recentMessages { recentMessages = kept }
         // Written only when something changed (this runs every few seconds).
         if recentMessages != shownBefore { Saved.save("recentMessages", recentMessages) }
