@@ -596,6 +596,10 @@ struct CameraLiveView: View {
     var camera: NestCameras.Camera
     @Environment(\.dismiss) private var dismiss
     @State private var muted = true
+    /// iPhone and iPad: the live view filling the whole screen.
+    @State private var fullScreen = false
+    /// Bumped when full screen closes, so the live view takes the picture back.
+    @State private var reattach = 0
     private let streams = CameraStreams.shared
 
     var body: some View {
@@ -655,6 +659,7 @@ struct CameraLiveView: View {
         if streams.full == camera.id { withAnimation(.smooth(duration: 0.25)) { streams.full = nil } } else { dismiss() }
     }
 
+    #if os(iOS)
     private func phoneBody(_ player: LivePlayer) -> some View {
         VStack(spacing: 14) {
             HStack {
@@ -675,17 +680,28 @@ struct CameraLiveView: View {
                 EventReplayView(replay: r)
                 Text("Live").font(.subheadline.weight(.semibold)).frame(maxWidth: .infinity, alignment: .leading)
             }
-            LiveWebView(player: player)
-                .aspectRatio(16 / 9, contentMode: .fit)
-                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(.black))
+            ZStack(alignment: .topTrailing) {
+                // The picture is in one place at a time: here, or full screen.
+                if fullScreen { Color.black } else { LiveWebView(player: player).id(reattach) }
+                GlassCircle(symbol: "arrow.up.left.and.arrow.down.right", size: 34) { fullScreen = true }
+                    .environment(\.colorScheme, .dark)
+                    .padding(10)
+                    .accessibilityLabel("Full Screen")
+            }
+            .aspectRatio(16 / 9, contentMode: .fit)
+            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(.black))
             Spacer(minLength: 0)
         }
         .padding(20)
         // As wide as the phone (a fixed minimum wider than an iPhone pushed the close button off the edge).
         .frame(maxWidth: .infinity, minHeight: 340, alignment: .top)
         .presentationDetents(streams.replay?.camera == camera.id ? [.large] : [.medium, .large])
+        .fullScreenCover(isPresented: $fullScreen, onDismiss: { reattach += 1 }) {
+            CameraFullScreen(camera: camera, player: player, muted: $muted)
+        }
     }
+    #endif
 }
 
 /// One camera's WebRTC session: the web view makes the offer, Google answers through Device Access, and
@@ -901,8 +917,61 @@ final class ScriptProxy: NSObject, WKScriptMessageHandler {
 #if os(iOS)
 struct LiveWebView: UIViewRepresentable {
     var player: LivePlayer
-    func makeUIView(context: Context) -> WKWebView { player.web }
-    func updateUIView(_ v: WKWebView, context: Context) {}
+    /// The stream's one web view, held in a frame of its own: it can move to full screen and come back.
+    func makeUIView(context: Context) -> UIView {
+        let host = UIView()
+        host.backgroundColor = .black
+        host.clipsToBounds = true
+        Self.attach(player.web, to: host)
+        return host
+    }
+    func updateUIView(_ host: UIView, context: Context) {
+        if player.web.superview !== host { Self.attach(player.web, to: host) }
+    }
+    static func attach(_ web: WKWebView, to host: UIView) {
+        web.removeFromSuperview()
+        web.frame = host.bounds
+        web.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        host.addSubview(web)
+    }
+}
+
+/// A camera's live view filling the screen (turn the phone sideways for the widest picture). The arrows in the corner
+/// come back out.
+struct CameraFullScreen: View {
+    let camera: NestCameras.Camera
+    let player: LivePlayer
+    @Binding var muted: Bool
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+            LiveWebView(player: player)
+                .aspectRatio(16 / 9, contentMode: .fit)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .ignoresSafeArea()
+        }
+        .overlay(alignment: .topLeading) {
+            Text(camera.name).font(.headline).foregroundStyle(.white)
+                .shadow(color: .black.opacity(0.6), radius: 6)
+                .padding(20)
+        }
+        .overlay(alignment: .topTrailing) {
+            HStack(spacing: 10) {
+                GlassCircle(symbol: muted ? "speaker.slash.fill" : "speaker.wave.2.fill", size: 40) {
+                    muted.toggle(); player.setMuted(muted)
+                }
+                .accessibilityLabel(muted ? "Turn Sound On" : "Turn Sound Off")
+                GlassCircle(symbol: "arrow.down.right.and.arrow.up.left", size: 40) { dismiss() }
+                    .accessibilityLabel("Exit Full Screen")
+            }
+            .environment(\.colorScheme, .dark)
+            .padding(16)
+        }
+        .statusBarHidden()
+        .persistentSystemOverlays(.hidden)
+    }
 }
 #else
 struct LiveWebView: NSViewRepresentable {
