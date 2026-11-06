@@ -88,6 +88,8 @@ struct SmartHomeSettingsView: View {
     /// Whether the Deco is signed in: its password is in the Keychain, read as the page opens (and each time it's back
     /// on screen), not every time a speaker or light reports and the page redraws.
     @State private var decoSignedIn = false
+    /// Home → All Devices: an Other section for devices that have no room.
+    @AppStorage("allDevices.showOther") private var showOtherDevices = false
 
     var body: some View {
         Form {
@@ -110,6 +112,12 @@ struct SmartHomeSettingsView: View {
             } footer: {
                 Text("Rename things and choose their rooms on their pages; Govee, Samsung, Dreo, the cameras and the Deco sign in there too.")
             }
+            Section {
+                PageLink("Scenes") { ScenesSettingsView() } label: {
+                    IconRow(symbol: "", color: .clear, title: "Scenes", value: SceneStore.shared.scenes.count == 1 ? "1 Scene" : "\(SceneStore.shared.scenes.count) Scenes")
+                }
+                Toggle("Show Devices Without a Room", isOn: $showOtherDevices)
+            }
         }
         .formStyle(.grouped)
         .navigationTitle("Smart Home")
@@ -129,13 +137,11 @@ struct SmartHomeSettingsView: View {
     }
 }
 
-/// Settings → General: Shortcuts, Scenes, the Mac's click sound, keeping every device in step, the TV's last
+/// Settings → General: Shortcuts, the Mac's click sound, keeping every device in step, the TV's last
 /// crash when there is one, and which build of Woodruff Family this is (on a Mac, with how its updates are going).
 struct GeneralSettingsView: View {
     @Environment(Fleet.self) private var fleet
     var hub: HubSettings
-    /// Home → All Devices: an Other section for devices that have no room.
-    @AppStorage("allDevices.showOther") private var showOtherDevices = false
     #if os(macOS)
     // Read and written through UserDefaults, so a change synced from another Mac shows here at once.
     @AppStorage("remoteClick") private var remoteClick = true
@@ -146,10 +152,6 @@ struct GeneralSettingsView: View {
             Section {
                 PageLink("Shortcuts") { ShortcutsView(hub: hub) } label: {
                     IconRow(symbol: "", color: .clear, title: "Shortcuts")
-                }
-                Toggle("Devices Without a Room in All Devices", isOn: $showOtherDevices)
-                PageLink("Scenes") { ScenesSettingsView() } label: {
-                    IconRow(symbol: "", color: .clear, title: "Scenes", value: SceneStore.shared.scenes.count == 1 ? "1 Scene" : "\(SceneStore.shared.scenes.count) Scenes")
                 }
             }
             #if os(macOS)

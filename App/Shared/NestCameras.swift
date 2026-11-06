@@ -1010,8 +1010,10 @@ struct CamerasPhoneView: View {
                         .buttonStyle(.plain)
                         .disabled(!cam.webRTC || !cam.online)
                     }
-                } footer: { Text("Tap a camera to watch it live. They also sit on Home.") }
-                AlertsSection()
+                } footer: { Text("Tap a camera to watch it live. Their alerts are in Notifications → Camera Alerts.") }
+                if !NestCameras.shared.canAlert {
+                    Section { Button("Connect Again to Turn On Alerts") { NestCameras.shared.signOut() } }
+                }
                 Section {
                     Button("Refresh") { Task { await nest.load() } }
                     Button("Disconnect", role: .destructive) { nest.signOut() }

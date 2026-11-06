@@ -231,17 +231,6 @@ struct AlertsSection: View {
     }
 }
 
-/// Settings → Notifications → Camera Alerts → On This Device: the doorbell's and cameras' alerts on this iPhone or Mac
-/// (the same switches as Smart Home → Cameras, where the cameras are connected).
-struct DeviceCameraAlertsView: View {
-    var body: some View {
-        Form { AlertsSection(title: "Doorbell & Cameras", showsReconnect: false) }
-            .formStyle(.grouped)
-            .navigationTitle("Camera Alerts on This Device")
-            .inlineTitle()
-    }
-}
-
 /// This device's own lasting id (the same one settings sync uses), made once.
 enum DeviceID {
     static var value: String {
