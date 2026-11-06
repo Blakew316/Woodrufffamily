@@ -852,7 +852,7 @@ public final class SmartHome {
         unique = unique.filter { l in
             guard l.isHome, !cync.isEmpty else { return true }
             let sku = l.sku.lowercased()
-            let maker = sku.contains("ge") || sku.contains("savant") || sku.contains("cync")
+            let maker = sku.contains("ge lighting") || sku == "ge" || sku.contains("savant") || sku.contains("cync")
             return !(maker && cync.contains(Self.sameLampKey(l.name)))
         }
         let govee = Set(unique.filter { !$0.isHome && !$0.isCync }.map { Self.sameLampKey($0.name) }.filter { !$0.isEmpty })
