@@ -18,8 +18,6 @@ struct PhonePlay: Identifiable {
 @Observable @MainActor
 final class PhonePlayback {
     static let shared = PhonePlayback()
-    /// A play for the Mac's window to show in the player.
-    var request: PhonePlay?
 
     /// Settings → Watch: the Play button plays on this device instead of the TV.
     static var playsHere: Bool { UserDefaults.standard.string(forKey: "watch.playOn") == "here" }
@@ -81,95 +79,6 @@ final class PhonePlayback {
         case .url:
             return error?.localizedDescription ?? "The TV couldn’t send it. Check the TV is on, or play it on a TV instead."
         }
-    }
-}
-
-/// Apple's player, full screen on iPhone and iPad, in a window-sized sheet on the Mac.
-struct PhonePlayerView: View {
-    let play: PhonePlay
-    @Environment(\.dismiss) private var dismiss
-    @State private var player = AVPlayer()
-    @State private var failed: String?
-    /// Kept while a Drive video plays (it fetches the parts the player asks for).
-    @State private var stream: DriveStream?
-    @State private var ticker: Any?
-
-    var body: some View {
-        ZStack(alignment: .topLeading) {
-            Color.black.ignoresSafeArea()
-            VideoPlayer(player: player).ignoresSafeArea()
-            if let failed {
-                VStack(spacing: 10) {
-                    Text("Can’t Play This Here").font(.headline)
-                    Text(failed).font(.subheadline).multilineTextAlignment(.center).foregroundStyle(.secondary)
-                }
-                .foregroundStyle(.white)
-                .padding(24)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-            Button { dismiss() } label: {
-                Image(systemName: "xmark").font(.headline).foregroundStyle(.white)
-                    .frame(width: 40, height: 40).glass(Circle()).environment(\.colorScheme, .dark)
-            }
-            .buttonStyle(.plain)
-            .padding(16)
-            .accessibilityLabel("Close")
-        }
-        #if os(macOS)
-        .frame(minWidth: 900, minHeight: 540)
-        #endif
-        .task { await begin() }
-        .onDisappear {
-            report()
-            DriveLibrary.shared.flush()
-            Task { await DriveLibrary.shared.sync() }
-            if let t = ticker { player.removeTimeObserver(t) }
-            player.pause()
-            player.replaceCurrentItem(with: nil)
-        }
-    }
-
-    private func begin() async {
-        #if os(iOS)
-        // Sound even with the ring switch on silent, like any video app.
-        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
-        try? AVAudioSession.sharedInstance().setActive(true)
-        #endif
-        let item: AVPlayerItem
-        switch play.source {
-        case .url(let u):
-            item = AVPlayerItem(url: u)
-        case .drive(let id):
-            let s = DriveStream(fileID: id)
-            stream = s
-            item = AVPlayerItem(asset: s.asset())
-        }
-        player.replaceCurrentItem(with: item)
-        // Where it's got to, every 10 seconds (and when it closes), for Continue Watching.
-        ticker = player.addPeriodicTimeObserver(forInterval: CMTime(seconds: 10, preferredTimescale: 1), queue: .main) { _ in
-            Task { @MainActor in report() }
-        }
-        if play.start > 5 {
-            await player.seek(to: CMTime(seconds: play.start, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
-        }
-        player.play()
-        // A file Apple's player can't open, or the TV out of reach: said over the player.
-        for _ in 0..<40 {
-            try? await Task.sleep(nanoseconds: 500_000_000)
-            if item.status == .failed {
-                failed = PhonePlayback.failure(item.error, play)
-                return
-            }
-            if item.status == .readyToPlay { return }
-        }
-    }
-}
-
-extension PhonePlayerView {
-    @MainActor fileprivate func report() {
-        let pos = player.currentTime().seconds, dur = player.currentItem?.duration.seconds ?? 0
-        guard pos.isFinite, pos > 0 else { return }
-        DriveLibrary.shared.played(play.key, title: play.title, pos: pos * 1000, dur: dur.isFinite ? dur * 1000 : 0)
     }
 }
 

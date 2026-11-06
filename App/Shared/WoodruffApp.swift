@@ -296,9 +296,6 @@ struct RootView: View {
             get: { requested },
             set: { if $0 == nil { CameraStreams.shared.requested = nil } }
         ))
-        #if os(macOS)
-        .modifier(HerePlayer())
-        #endif
     }
 
     #if os(iOS)
@@ -373,16 +370,6 @@ struct FleetSideEffects: View {
 }
 
 #if os(macOS)
-/// A Play set to play on this Mac (Settings → Watch), in a window-sized sheet. Shown from the window's root, so it
-/// opens from any page (Watch, Search, the command palette).
-private struct HerePlayer: ViewModifier {
-    func body(content: Content) -> some View {
-        // Read here so the window notices the moment a Play asks.
-        let request = PhonePlayback.shared.request
-        return content.sheet(item: Binding(get: { request }, set: { PhonePlayback.shared.request = $0 })) { PhonePlayerView(play: $0) }
-    }
-}
-
 /// Mac: a glass sidebar (Home, Watch, Send, Memories, Settings, and the TVs like rooms), Woodruff's own bar across the
 /// top of the page (search on the left; the remote, Edit Home and the thermostat on the right; Back under the search
 /// when there's somewhere to go back to), and the remote as a sidebar on the right that slides out when it's wanted.
