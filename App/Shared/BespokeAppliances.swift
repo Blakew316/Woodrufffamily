@@ -137,7 +137,18 @@ private struct Drawing {
             // A soft reflection streak, and shade towards the floor.
             c.fill(rect(dx, dy, dw, dh), with: linear(x, 0, x + bw, 0, [(0, .white.opacity(0)), (0.3, .white.opacity(0.28)), (0.36, .white.opacity(0)), (1, .white.opacity(0))]))
             c.fill(rect(dx, dy, dw, dh), with: linear(0, y, 0, y + bh, [(0, .white.opacity(0.08)), (1, .black.opacity(0.18))]))
-            ctx.stroke(d, with: .color(.white.opacity(0.5)), lineWidth: max(0.3, bw * 0.008))
+            // Its edges: lit on the left and top, in shade on the right and bottom.
+            let e = max(0.5, bw * 0.016)
+            c.fill(rect(dx, dy, e, dh), with: .color(.white.opacity(0.55)))
+            c.fill(rect(dx, dy, dw, e * 0.7), with: .color(.white.opacity(0.55)))
+            c.fill(rect(dx + dw - e, dy, e, dh), with: .color(.black.opacity(0.22)))
+            c.fill(rect(dx, dy + dh - e * 0.7, dw, e * 0.7), with: .color(.black.opacity(0.22)))
+        }
+        // The kick plate under the drawer, with its vent slots.
+        let kp = y + bh, kh = h * 0.035
+        ctx.fill(rect(x + bw * 0.04, kp - kh * 0.2, bw * 0.92, kh * 0.7), with: linear(0, kp - kh, 0, kp, [(0, rgb(0x1D1E20)), (1, rgb(0x0B0B0C))]))
+        for i in 0..<16 {
+            ctx.fill(rect(x + bw * (0.12 + CGFloat(i) * 0.048), kp - kh * 0.05, max(0.3, bw * 0.02), kh * 0.35), with: .color(.white.opacity(0.1)))
         }
         // The black band where the doors meet the drawer, and the hinge covers on top.
         ctx.fill(rect(x, y + top, bw, gap * 2.2), with: .color(rgb(0x1B1C1E)))
@@ -168,31 +179,25 @@ private struct Drawing {
             let blue = Color(red: 0.35, green: 0.67, blue: 1)
             c.fill(circle(.zero, bw * 0.55), with: radial(0, 0, 0, bw * 0.55, [(0, blue.opacity(0.55)), (1, blue.opacity(0))]))
         }
-        // The top strip, its recess and the lip below it.
-        let strip = bh * 0.11
-        ctx.fill(box(x, y, bw, strip, top: bw * 0.015, bottom: 0), with: linear(0, y, 0, y + strip, [(0, rgb(0x4A4C51)), (0.5, rgb(0x3A3C40)), (1, rgb(0x26272A))]))
-        ctx.fill(rect(x + bw * 0.05, y + strip * 0.3, bw * 0.9, strip * 0.38), with: .color(rgb(0x141517)))
-        ctx.fill(rect(x + bw * 0.04, y + strip * 0.62, bw * 0.92, strip * 0.38), with: linear(0, y + strip * 0.62, 0, y + strip, [(0, rgb(0x5A5D63)), (1, rgb(0x3A3C40))]))
-        ctx.fill(rect(x + bw * 0.04, y + strip * 0.62, bw * 0.92, max(0.3, strip * 0.05)), with: .color(.white.opacity(0.35)))
-        ctx.fill(rect(x + bw * 0.06, y + strip * 0.42, max(0.4, bw * 0.006), strip * 0.12), with: .color(.white.opacity(0.35)))
-        ctx.fill(rect(x + bw * 0.13, y + strip * 0.42, max(0.4, bw * 0.006), strip * 0.12), with: .color(.white.opacity(0.35)))
-        if running {
-            let k = 0.6 + 0.4 * sin(t * 2.5)
-            ctx.fill(circle(CGPoint(x: x + bw * 0.88, y: y + strip * 0.48), max(0.6, bw * 0.012)), with: .color(Color(red: 0.43, green: 0.75, blue: 1).opacity(k)))
-        }
-        // The door: dark brushed steel, lit softly from the top left.
-        let dy = y + strip, dh = bh * 0.8
-        let door = box(x + bw * 0.005, dy, bw * 0.99, dh, top: 0, bottom: bw * 0.01)
-        ctx.fill(door, with: linear(x, dy, x + bw, dy + dh, [(0, rgb(0x5D6066)), (0.4, rgb(0x45474C)), (1, rgb(0x2E3034))]))
-        brushed(door, x, dy, bw, dh, vertical: false, 0.035)
+        // One continuous panel of dark brushed steel (the top band as plain as the door), a fine seam between them.
+        let strip = bh * 0.11, dy = y + strip, dh = bh * 0.8, ky = dy + dh
+        let panel = box(x, y, bw, ky - y, top: bw * 0.012, bottom: bw * 0.01)
+        ctx.fill(panel, with: linear(x, y, x + bw, ky, [(0, rgb(0x62656B)), (0.35, rgb(0x4A4C51)), (1, rgb(0x2D2F33))]))
+        brushed(panel, x, y, bw, ky - y, vertical: false, 0.035)
         var lit = ctx
-        lit.clip(to: door)
-        lit.fill(rect(x, dy, bw, dh), with: radial(x + bw * 0.25, dy + dh * 0.15, 0, bw * 0.9, [(0, .white.opacity(0.14)), (1, .white.opacity(0))]))
-        ctx.stroke(door, with: .color(.white.opacity(0.12)), lineWidth: max(0.3, bw * 0.006))
-        // The toe kick and feet.
-        let ky = dy + dh
+        lit.clip(to: panel)
+        lit.fill(rect(x, y, bw, ky - y), with: radial(x + bw * 0.25, y + bh * 0.12, 0, bw * 0.95, [(0, .white.opacity(0.16)), (1, .white.opacity(0))]))
+        lit.fill(rect(x, y, bw, ky - y), with: linear(x, 0, x + bw, 0, [(0, .black.opacity(0.18)), (0.06, .black.opacity(0)), (0.94, .black.opacity(0)), (1, .black.opacity(0.22))]))
+        let seam = max(0.35, bh * 0.006)
+        ctx.fill(rect(x + bw * 0.01, dy, bw * 0.98, seam), with: .color(.black.opacity(0.4)))
+        ctx.fill(rect(x + bw * 0.01, dy + seam, bw * 0.98, max(0.3, bh * 0.004)), with: .color(.white.opacity(0.1)))
+        ctx.stroke(panel, with: .color(.white.opacity(0.14)), lineWidth: max(0.3, bw * 0.006))
+        // The toe kick with its vent slots, and the feet.
         ctx.fill(rect(x + bw * 0.01, ky, bw * 0.98, y + bh - ky), with: linear(0, ky, 0, y + bh, [(0, rgb(0x0E0E10)), (1, rgb(0x050506))]))
         ctx.fill(rect(x + bw * 0.01, ky, bw * 0.98, max(0.3, bh * 0.006)), with: .color(.white.opacity(0.08)))
+        for i in 0..<14 {
+            ctx.fill(rect(x + bw * (0.2 + CGFloat(i) * 0.045), ky + (y + bh - ky) * 0.35, max(0.3, bw * 0.018), (y + bh - ky) * 0.35), with: .color(.white.opacity(0.06)))
+        }
         feet(x + bw * 0.02, x + bw * 0.98, y + bh, bw * 0.06, h * 0.025)
     }
 
@@ -210,6 +215,8 @@ private struct Drawing {
         let zone = GraphicsContext.Shading.color(.white.opacity(0.12)), line = max(0.3, bw * 0.005)
         ctx.stroke(Path(ellipseIn: CGRect(x: x + bw * 0.18, y: y + ct * 0.27, width: bw * 0.24, height: ct * 0.56)), with: zone, lineWidth: line)
         ctx.stroke(Path(ellipseIn: CGRect(x: x + bw * 0.6, y: y + ct * 0.31, width: bw * 0.2, height: ct * 0.48)), with: zone, lineWidth: line)
+        ctx.fill(rect(x, y + ct - max(0.3, ct * 0.06), bw, max(0.3, ct * 0.06)), with: .color(.white.opacity(0.18)))
+        if running { ctx.fill(rect(x + bw * 0.47, y + ct * 0.35, bw * 0.06, ct * 0.12), with: .color(rgb(0xFF5A3C, 0.9))) }
         // The control strip: white glass, a black band with its small red display.
         let sy = y + ct, sh = bh * 0.12
         ctx.fill(rect(x, sy, bw, sh), with: linear(0, sy, 0, sy + sh, [(0, .white), (1, rgb(0xE7E9EB))]))
@@ -236,6 +243,7 @@ private struct Drawing {
             element.move(to: CGPoint(x: wx + ww * 0.18, y: wy + wh * 0.22)); element.addLine(to: CGPoint(x: wx + ww * 0.82, y: wy + wh * 0.22))
             g.stroke(element, with: .color(Color(red: 1, green: 0.47, blue: 0.16).opacity(0.9 * k)), lineWidth: max(0.4, bw * 0.01))
         }
+        g.stroke(box(wx + ww * 0.03, wy + wh * 0.05, ww * 0.94, wh * 0.9, top: bw * 0.008, bottom: bw * 0.008), with: .color(.white.opacity(0.1)), lineWidth: max(0.3, bw * 0.004))
         let rackColor = GraphicsContext.Shading.color(running ? Color(red: 1, green: 0.78, blue: 0.59).opacity(0.35) : .white.opacity(0.12))
         g.stroke(inner, with: rackColor, lineWidth: line)
         for k: CGFloat in [0.42, 0.62] {
@@ -249,7 +257,12 @@ private struct Drawing {
         ctx.fill(rect(x, ry, bw, bh * 0.025), with: .color(rgb(0x141517)))
         ctx.fill(rect(x, ry + bh * 0.025, bw, y + bh - ry - bh * 0.025), with: linear(0, ry, 0, y + bh, [(0, rgb(0xF6F7F8)), (1, rgb(0xDCDFE2))]))
         ctx.fill(rect(x, ry + bh * 0.09, bw, bh * 0.012), with: .color(rgb(0x141517)))
+        // A soft sheen across the white glass, darker towards the sides.
+        let sheen = linear(x, 0, x + bw, 0, [(0, .black.opacity(0.1)), (0.08, .black.opacity(0)), (0.92, .black.opacity(0)), (1, .black.opacity(0.12))])
+        ctx.fill(rect(x, sy, bw, dh + sh), with: sheen)
+        ctx.fill(rect(x, ry + bh * 0.025, bw, y + bh - ry - bh * 0.025), with: sheen)
         ctx.stroke(rect(x, sy, bw, y + bh - sy), with: .color(.black.opacity(0.25)), lineWidth: line)
+        feet(x + bw * 0.04, x + bw * 0.96, y + bh, bw * 0.06, h * 0.02)
     }
 
     // MARK: Washer and dryer, forest green
@@ -257,7 +270,10 @@ private struct Drawing {
     func laundry(dryer: Bool, running: Bool) {
         let bw = min(w * 0.86, h * 0.82), bh = h * 0.9, x = (w - bw) / 2, y = h * 0.03, cx = w / 2
         shadowUnder(cx, y + bh + h * 0.02, bw * 0.65)
-        feet(x + bw * 0.08, x + bw * 0.92, y + bh - h * 0.005, bw * 0.06, h * 0.025)
+        // Chrome feet.
+        let chrome = linear(0, y + bh, 0, y + bh + h * 0.025, [(0, rgb(0xC9CDD1)), (1, rgb(0x6D7277))])
+        ctx.fill(rect(x + bw * 0.08, y + bh - h * 0.005, bw * 0.06, h * 0.025), with: chrome)
+        ctx.fill(rect(x + bw * 0.86, y + bh - h * 0.005, bw * 0.06, h * 0.025), with: chrome)
         // The body: brushed forest green.
         let body = box(x, y, bw, bh, top: bw * 0.02, bottom: bw * 0.015)
         ctx.fill(body, with: linear(x, y, x + bw, y + bh, [(0, rgb(0x2F4538)), (0.45, rgb(0x1E3027)), (1, rgb(0x152219))]))
@@ -281,6 +297,12 @@ private struct Drawing {
         }
         ctx.fill(rect(x + bw * 0.6, dial.y - ph * 0.08, bw * 0.06, ph * 0.07), with: .color(.white.opacity(0.45)))
         ctx.fill(rect(x + bw * 0.6, dial.y + ph * 0.04, bw * 0.045, ph * 0.05), with: .color(.white.opacity(0.45)))
+        // The Wi‑Fi mark.
+        for k: CGFloat in [0.05, 0.09] {
+            var arc = Path()
+            arc.addArc(center: CGPoint(x: x + bw * 0.88, y: dial.y + ph * 0.06), radius: ph * k * 1.6, startAngle: .radians(.pi * 1.25), endAngle: .radians(.pi * 1.75), clockwise: false)
+            ctx.stroke(arc, with: .color(.white.opacity(0.55)), lineWidth: max(0.25, ph * 0.03))
+        }
         if running { ctx.fill(circle(CGPoint(x: x + bw * 0.4, y: dial.y), max(0.5, ph * 0.05)), with: .color(Color(red: 0.47, green: 0.86, blue: 1).opacity(0.9))) }
 
         // The door: a chrome ring round dark tinted glass, the drum inside.
@@ -289,6 +311,9 @@ private struct Drawing {
         ctx.fill(circle(dc, R), with: radial(dc.x - R * 0.3, dc.y - R * 0.35, 0, R * 1.2, [(0, rgb(0x2B3047)), (0.6, rgb(0x0D0F1C)), (1, rgb(0x05060B))]))
         ctx.stroke(circle(dc, R), with: linear(dc.x - R, dc.y - R, dc.x + R, dc.y + R, [(0, rgb(0xF4F6F8)), (0.5, rgb(0x8D9297)), (1, rgb(0xE6E8EA))]),
                    lineWidth: max(0.6, R * 0.035))
+        // The wide dark rim inside the chrome ring, then the glass porthole with its own soft edge.
+        ctx.fill(circle(dc, R * 0.97), with: radial(dc.x - R * 0.25, dc.y - R * 0.3, R * 0.2, R * 1.1, [(0, rgb(0x1B2036)), (0.7, rgb(0x0A0C17)), (1, rgb(0x04050A))]))
+        ctx.fill(circle(dc, R * 0.74), with: radial(dc.x, dc.y, R * 0.66, R * 0.74, [(0, .white.opacity(0)), (0.5, .white.opacity(0.1)), (1, .white.opacity(0))]))
         let r2 = R * 0.62, angle = running ? t * (dryer ? 2.2 : 3.2) : 0
         var drum = ctx
         drum.clip(to: circle(dc, r2))
