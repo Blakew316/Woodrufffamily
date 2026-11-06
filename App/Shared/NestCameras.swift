@@ -58,6 +58,9 @@ final class NestCameras {
         if canAlert != alerts { canAlert = alerts }
         guard connected, !Demo.isOn else { return }
         shareSignIn()
+        #if os(iOS)
+        CameraEventMedia.prune()
+        #endif
         if poll == nil { startPolling(now: true) } else { Task { await load() } }
     }
 
@@ -429,6 +432,10 @@ final class CameraStreams {
     func background() { backgroundAt = Date(); letGoSoon(after: 60) }
 
     func foreground() {
+        #if os(iOS)
+        // Replays older than ten minutes go each time the app comes back.
+        CameraEventMedia.prune()
+        #endif
         idle?.cancel(); idle = nil
         // Away more than a minute: iOS froze the streams, so start them fresh.
         let long = backgroundAt.map { $0.timeIntervalSinceNow < -60 } ?? false

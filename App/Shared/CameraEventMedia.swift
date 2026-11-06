@@ -4,7 +4,7 @@ import UserNotifications
 /// What a camera saw for an alert, from Google: the event's short clip (newer Nest cameras and doorbells send one) or
 /// a snapshot of the moment (the older ones; Google makes it only within 30 seconds of the event). Fetched the moment
 /// an alert arrives, by the notification extension for a push and by the app for its own alerts, attached to the
-/// notification and kept for a day in the family's app group, so tapping the alert replays it above the live view.
+/// notification and kept for ten minutes in the family's app group, so tapping the alert replays it above the live view.
 ///
 /// The extension can't read the app's keychain, so the app keeps the cameras' Google sign-in in the app group as well
 /// (this iPhone's own container, shared only with Woodruff's extensions).
@@ -59,14 +59,28 @@ enum CameraEventMedia {
 
     // MARK: The clip or snapshot
 
-    /// What's kept for an alert (its short id), if it was fetched.
+    /// How long a replay is kept: long enough to tap the alert and watch it, short enough that nothing piles up.
+    static let keptFor: TimeInterval = 600
+
+    /// What's kept for an alert (its short id), if it was fetched and is still fresh.
     static func cached(_ key: String) -> URL? {
         guard let f = folder else { return nil }
         for ext in ["mp4", "jpg"] {
             let u = f.appendingPathComponent("\(key).\(ext)")
-            if FileManager.default.fileExists(atPath: u.path) { return u }
+            guard FileManager.default.fileExists(atPath: u.path) else { continue }
+            if let d = (try? u.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate,
+               d.timeIntervalSinceNow < -keptFor {
+                try? FileManager.default.removeItem(at: u)
+                continue
+            }
+            return u
         }
         return nil
+    }
+
+    /// Lets go of every replay older than ten minutes (when an alert arrives, and each time the app opens).
+    static func prune() {
+        if let f = folder { prune(f) }
     }
 
     /// The event's clip (from [clipURL]) or else its snapshot (by [eventID]), saved under [key]; nil when Google has
@@ -112,9 +126,9 @@ enum CameraEventMedia {
         return try? UNNotificationAttachment(identifier: "media", url: copy, options: nil)
     }
 
-    /// Clips and snapshots older than a day are let go.
+    /// Clips and snapshots older than ten minutes are let go, and anything left from the alerts' attachments.
     private static func prune(_ f: URL) {
-        let old = Date().addingTimeInterval(-86_400)
+        let old = Date().addingTimeInterval(-keptFor)
         for u in (try? FileManager.default.contentsOfDirectory(at: f, includingPropertiesForKeys: [.contentModificationDateKey])) ?? [] {
             if let d = (try? u.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate, d < old {
                 try? FileManager.default.removeItem(at: u)
