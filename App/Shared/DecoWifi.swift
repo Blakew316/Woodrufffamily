@@ -1,4 +1,5 @@
 import SwiftUI
+import CryptoKit
 import UserNotifications
 import WoodruffKit
 
@@ -109,6 +110,7 @@ final class DecoWifi {
         loop?.cancel(); loop = nil
         restartWatch?.cancel(); restartWatch = nil
         Keychain.set(nil, for: "deco.password")
+        LocalTrust.forget()
         stok = nil; nodes = []; clients = []; restarts = [:]; seenDown = []
         error = nil; updated = nil; wasUp = nil
     }
@@ -393,23 +395,47 @@ final class DecoWifi {
     }
 }
 
-/// Trusts the Deco's own self-signed certificate on the home network (and only addresses on it).
+/// Trusts the Deco's own self-signed certificate on the home network (and only addresses on it), pinned on first
+/// use: the certificate seen the first time is remembered per address, and a different one later is refused (someone
+/// else answering at the Deco's address never gets its password).
 final class LocalTrust: NSObject, URLSessionDelegate, @unchecked Sendable {
     static let shared = LocalTrust()
+    private static let pinsKey = "deco.pins"
+    private let lock = NSLock()
+    /// The last address refused because its certificate changed (Settings says so).
+    private(set) var refused: String?
+
     /// 172.16.0.0–172.31.255.255 only (the rest of 172.* is the public internet).
     static func private172(_ host: String) -> Bool {
         let p = host.split(separator: ".")
         return p.count == 4 && p[0] == "172" && (Int(p[1]).map { (16...31).contains($0) } ?? false)
     }
+
+    /// Forgets the remembered certificates (signing out, or connecting again after the Deco was replaced).
+    static func forget() { UserDefaults.standard.removeObject(forKey: pinsKey); shared.refused = nil }
+
     func urlSession(_ session: URLSession, didReceive challenge: URLAuthenticationChallenge,
                     completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
         let host = challenge.protectionSpace.host
-        let local = host.hasPrefix("192.168.") || host.hasPrefix("10.") || Self.private172(host) || host.hasSuffix(".local") || host == "tplinkdeco.net"
-        if local, challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust, let t = challenge.protectionSpace.serverTrust {
-            completionHandler(.useCredential, URLCredential(trust: t))
-        } else {
+        let local = host.hasPrefix("192.168.") || host.hasPrefix("10.") || Self.private172(host) || host.hasSuffix(".local")
+        guard local, challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
+              let trust = challenge.protectionSpace.serverTrust,
+              let leaf = (SecTrustCopyCertificateChain(trust) as? [SecCertificate])?.first else {
             completionHandler(.performDefaultHandling, nil)
+            return
         }
+        let der = SecCertificateCopyData(leaf) as Data
+        let print = SHA256.hash(data: der).map { String(format: "%02x", $0) }.joined()
+        lock.lock(); defer { lock.unlock() }
+        var pins = UserDefaults.standard.dictionary(forKey: Self.pinsKey) as? [String: String] ?? [:]
+        if let pinned = pins[host], pinned != print {
+            refused = host
+            completionHandler(.cancelAuthenticationChallenge, nil)
+            return
+        }
+        if pins[host] == nil { pins[host] = print; UserDefaults.standard.set(pins, forKey: Self.pinsKey) }
+        refused = nil
+        completionHandler(.useCredential, URLCredential(trust: trust))
     }
 }
 
