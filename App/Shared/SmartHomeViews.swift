@@ -301,7 +301,7 @@ struct LightTile: View {
             Spacer(minLength: 0)
         }
         .foregroundStyle(lit ? Color.black : .primary)
-        .opacity(light.isOffline ? 0.6 : 1)
+        .opacity(light.isOffline && !light.isHexPanels ? 0.6 : 1)
         .padding(.horizontal, 12).padding(.vertical, 10)
         .frame(maxWidth: .infinity, minHeight: 64, maxHeight: .infinity, alignment: .leading)
         .background {

@@ -185,7 +185,13 @@ struct AllDevicesView: View {
         var reachable: Bool
         var look: DeviceGlyph.Look
         var tint: Color
-        var isAppliance: Bool { if case .bespoke = look { return true } else { return false } }
+        /// Drawn as the thing itself and kept clear while it's out of reach (its state under it says so).
+        var isAppliance: Bool {
+            switch look {
+            case .bespoke, .hexPanels: return true
+            default: return false
+            }
+        }
     }
 
     private func facts(_ item: Item) -> Facts {

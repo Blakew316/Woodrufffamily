@@ -505,7 +505,7 @@ private struct HexPanelsDrawing: View, Animatable {
 
         // A soft light behind the panels, so their detail shows on a dark tile while they're off (fading as they light).
         let cx = w / 2, cy = h / 2
-        glow(ctx, at: CGPoint(x: cx, y: cy), radius: max(w, h) * 0.62, [(0, Color.white.opacity(0.16 * Double(1 - power))), (1, Color.white.opacity(0))])
+        glow(ctx, at: CGPoint(x: cx, y: cy), radius: max(w, h) * 0.62, [(0, Color.white.opacity(0.22 * Double(1 - power))), (1, Color.white.opacity(0))])
         // The glow behind the panels.
         for (i, p) in points.enumerated() {
             let b = each(i)
@@ -522,14 +522,14 @@ private struct HexPanelsDrawing: View, Animatable {
             let face = hexagon(p, r)
             // The edge showing below the face: the panel's thickness.
             let edge = hexagon(CGPoint(x: p.x, y: p.y + th), r)
-            ctx.fill(edge, with: down(p.y, p.y + r + th, [(0, hex(0x3A3A3E)), (1, hex(0x1C1C1F))]))
+            ctx.fill(edge, with: down(p.y, p.y + r + th, [(0, hex(0x6A6A70)), (1, hex(0x3A3A3F))]))
             if b > 0 {
                 var e = ctx
                 e.opacity = b * 0.55
                 e.fill(edge, with: .color(color.mix(with: .black, by: 0.35)))
             }
             // The face: frosted, lighter at the top.
-            ctx.fill(face, with: down(p.y - r, p.y + r, [(0, hex(0xCFCFD4)), (1, hex(0x9A9AA0))]))
+            ctx.fill(face, with: down(p.y - r, p.y + r, [(0, hex(0xF2F2F5)), (0.55, hex(0xD6D6DB)), (1, hex(0xB4B4BA))]))
             if b > 0 {
                 // A little lighter or deeper by its place, as the real panels blend.
                 let c = i % 3 == 0 ? color.mix(with: .white, by: 0.22) : i % 3 == 2 ? color.mix(with: .black, by: 0.08) : color
@@ -538,6 +538,36 @@ private struct HexPanelsDrawing: View, Animatable {
                 l.fill(face, with: .radialGradient(stops([(0, c.mix(with: .white, by: 0.62 + 0.3 * lv)), (0.55, c.mix(with: .white, by: 0.2 * lv)),
                                                           (1, c.mix(with: .black, by: 0.18 * (1 - lv)))]),
                                                    center: CGPoint(x: p.x, y: p.y - r * 0.15), startRadius: 0, endRadius: r * 1.05))
+            }
+            // Facets: the diffuser's middle hexagon joined to the corners, each part catching the light differently.
+            var facets = ctx
+            facets.clip(to: face)
+            let ir = r * 0.5
+            let corners = (0..<6).map { j -> CGPoint in
+                let a = CGFloat.pi / 180 * (60 * CGFloat(j) - 90)
+                return CGPoint(x: cos(a), y: sin(a))
+            }
+            let light: [Double] = [0.22, 0.1, -0.06, -0.12, -0.02, 0.14]
+            let soft = b > 0 ? 0.6 : 1.0
+            for j in 0..<6 {
+                let c0 = corners[j], c1 = corners[(j + 1) % 6]
+                var part = Path()
+                part.move(to: CGPoint(x: p.x + c0.x * ir, y: p.y + c0.y * ir))
+                part.addLine(to: CGPoint(x: p.x + c0.x * r, y: p.y + c0.y * r))
+                part.addLine(to: CGPoint(x: p.x + c1.x * r, y: p.y + c1.y * r))
+                part.addLine(to: CGPoint(x: p.x + c1.x * ir, y: p.y + c1.y * ir))
+                part.closeSubpath()
+                let v = light[j] * soft
+                facets.fill(part, with: .color(v > 0 ? .white.opacity(v) : .black.opacity(-v)))
+            }
+            let seam = GraphicsContext.Shading.color(.white.opacity(b > 0 ? 0.35 : 0.7))
+            let seamWidth = max(0.35, r * 0.025)
+            facets.stroke(hexagon(p, ir, round: 0.1), with: seam, lineWidth: seamWidth)
+            for c in corners {
+                var line = Path()
+                line.move(to: CGPoint(x: p.x + c.x * ir, y: p.y + c.y * ir))
+                line.addLine(to: CGPoint(x: p.x + c.x * r * 0.97, y: p.y + c.y * r * 0.97))
+                facets.stroke(line, with: seam, lineWidth: seamWidth)
             }
             // A bevel, lit along the top edges and in shade along the bottom ones, and a sheen across the top.
             var bevel = ctx
