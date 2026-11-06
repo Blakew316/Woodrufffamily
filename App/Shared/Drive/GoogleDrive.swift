@@ -11,7 +11,7 @@ import WoodruffKit
 enum GoogleDrive {
     static let redirect = "https://blakew316.github.io/woodrufffiles/oauth.html"
     static let scopes = "https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/drive.appdata"
-    static let filesBase = "https://www.googleapis.com/drive/v3/files"
+    nonisolated static let filesBase = "https://www.googleapis.com/drive/v3/files"
 
     // MARK: Keys and tokens
 
@@ -158,7 +158,7 @@ enum GoogleDrive {
         var added: Double { (GoogleDrive.time(createdTime) ?? GoogleDrive.time(modifiedTime) ?? 0) * 1000 }
     }
 
-    static func time(_ s: String?) -> Double? {
+    nonisolated static func time(_ s: String?) -> Double? {
         guard let s else { return nil }
         let f = ISO8601DateFormatter()
         f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -195,7 +195,7 @@ enum GoogleDrive {
         return c.url!
     }
 
-    static let fileFields = "nextPageToken,files(id,name,mimeType,size,modifiedTime,createdTime,thumbnailLink)"
+    nonisolated static let fileFields = "nextPageToken,files(id,name,mimeType,size,modifiedTime,createdTime,thumbnailLink)"
 
     /// Every file matching [q] (all pages, up to [limit]).
     static func files(_ q: String, orderBy: String? = "folder,name_natural", fields: String = fileFields, limit: Int = 20_000) async throws -> [File] {

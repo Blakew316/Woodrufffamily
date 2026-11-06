@@ -42,6 +42,10 @@ final class PhonePlayback {
     /// What to play [a] here, or nil (and it says why) when it can't be.
     static func play(_ a: PlayAction, fleet: Fleet, fromStart: Bool = false) -> PhonePlay? {
         let start = fromStart ? 0 : max(0, (a.position ?? 0) / 1000)
+        // Downloaded here: from the device, with or without a connection.
+        if a.key.hasPrefix("drive:"), let file = DriveDownloads.shared.local(a.key) {
+            return PhonePlay(source: .url(file), key: a.key, title: a.title, start: start)
+        }
         // A Drive video with Drive signed in here: straight from Google, at home or away.
         if a.key.hasPrefix("drive:"), GoogleDrive.signedIn {
             return PhonePlay(source: .drive(String(a.key.dropFirst(6))), key: a.key, title: a.title, start: start)
@@ -93,6 +97,7 @@ struct PhonePlayerView: View {
         .task { await begin() }
         .onDisappear {
             report()
+            Task { await DriveLibrary.shared.sync() }
             if let t = ticker { player.removeTimeObserver(t) }
             player.pause()
             player.replaceCurrentItem(with: nil)

@@ -46,6 +46,12 @@ struct WatchSettingsView: View {
             }
 
             Section {
+                NavigationLink("Downloads") { DownloadsView() }
+            } footer: {
+                Text("Films and episodes kept on this device, to watch with no connection.")
+            }
+
+            Section {
                 if signedIn {
                     LabeledContent("Status", value: "Signed in")
                     LabeledContent("Titles", value: library.busy ? "Reading Drive…" : "\(library.titleCount)")

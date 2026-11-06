@@ -91,6 +91,12 @@ final class DriveLibrary: WatchSource {
         var folders: [String: [GoogleDrive.File]] = [:]
         var spots: [String: Spot] = [:]
         var watched: [String: Double] = [:]
+        /// Taken off Continue Watching (ms), and ✓ taken off: shared with the TVs like the rest.
+        var gone: [String: Double] = [:]
+        var unwatched: [String: Double] = [:]
+        /// This device's progress file in Drive's hidden app folder.
+        var syncFile: String?
+        var synced: Double?
     }
 
     private var saved: Saved
@@ -229,7 +235,9 @@ final class DriveLibrary: WatchSource {
         s.pos = pos; s.dur = dur; s.at = nowMS; s.next = false
         if dur > 0 && (dur - pos < 5_000 || pos >= 0.95 * dur) {
             saved.spots[key] = nil
+            saved.gone[key] = nowMS
             saved.watched[key] = nowMS
+            saved.unwatched[key] = nil
             upNext(after: key)
         } else if pos > 0 {
             saved.spots[key] = s
@@ -260,15 +268,22 @@ final class DriveLibrary: WatchSource {
 
     func markWatched(_ keys: [String], _ on: Bool) async throws {
         for k in keys {
-            if on { saved.watched[k] = nowMS; saved.spots[k] = nil } else { saved.watched[k] = nil }
+            if on {
+                saved.watched[k] = nowMS; saved.unwatched[k] = nil
+                if saved.spots[k] != nil { saved.spots[k] = nil; saved.gone[k] = nowMS }
+            } else {
+                saved.watched[k] = nil; saved.unwatched[k] = nowMS
+            }
         }
         store()
+        Task { await sync() }
     }
 
     func removeContinue(key: String, title: String) async throws {
         let show = saved.spots[key]?.titleId
-        for (k, s) in saved.spots where k == key || (show != nil && s.titleId == show) { saved.spots[k] = nil }
+        for (k, s) in saved.spots where k == key || (show != nil && s.titleId == show) { saved.spots[k] = nil; saved.gone[k] = nowMS }
         store()
+        Task { await sync() }
     }
 
     // MARK: Answers in Watch's shapes (the TV's JSON)
@@ -359,6 +374,8 @@ final class DriveLibrary: WatchSource {
         } else {
             Task { await refresh() }
         }
+        // The TVs' progress (and this device's to them), every couple of minutes while Watch is open.
+        if nowMS - (saved.synced ?? 0) > 120_000 { Task { await sync() } }
         if saved.movies.isEmpty && saved.shows.isEmpty {
             if let e = error { throw GoogleDrive.Failure(e) }
             return try decode(["state": busy ? "loading" : "empty"])
@@ -559,6 +576,168 @@ final class DriveLibrary: WatchSource {
         guard var s, s.hasPrefix("http") else { return nil }
         if small { s = s.replacingOccurrences(of: "/t/p/w1280/", with: "/t/p/w300/") }
         return URL(string: s)
+    }
+
+    // MARK: Sharing progress with the TVs (their FamilySync files in Drive's hidden app folder)
+
+    private var syncing = false
+
+    /// Reads every TV's progress file, merges them in (per title the newest wins; a removal at least as new as the
+    /// progress takes it away), then writes this device's file for the TVs to read.
+    func sync() async {
+        guard GoogleDrive.signedIn, !syncing else { return }
+        syncing = true
+        defer { syncing = false }
+        do {
+            let list = try await GoogleDrive.get(appDataList())
+            let files = (list["files"] as? [[String: Any]] ?? []).compactMap { f -> (id: String, name: String)? in
+                guard let id = f["id"] as? String, let name = f["name"] as? String else { return nil }
+                return (id, name)
+            }
+            let mine = "woodruff-app-\(deviceID).json"
+            if saved.syncFile == nil { saved.syncFile = files.first { $0.name == mine }?.id }
+            var others: [[String: Any]] = []
+            for f in files where f.name != mine && f.name.hasPrefix("woodruff-") && f.name.hasSuffix(".json") {
+                if let j = try? await download(f.id) { others.append(j) }
+            }
+            merge(others)
+            saved.syncFile = try await upload(mine)
+            saved.synced = nowMS
+            store()
+            await resolveContexts()
+        } catch {
+            // Tried again next time Watch opens or something stops playing.
+        }
+    }
+
+    private var deviceID: String {
+        if let d = UserDefaults.standard.string(forKey: "watch.deviceID") { return d }
+        let d = UUID().uuidString.lowercased()
+        UserDefaults.standard.set(d, forKey: "watch.deviceID")
+        return d
+    }
+
+    private func appDataList() -> URL {
+        var c = URLComponents(string: GoogleDrive.filesBase)!
+        c.queryItems = [.init(name: "spaces", value: "appDataFolder"), .init(name: "pageSize", value: "100"),
+                        .init(name: "fields", value: "files(id,name,modifiedTime)")]
+        return c.url!
+    }
+
+    private func download(_ id: String) async throws -> [String: Any] {
+        var c = URLComponents(string: "\(GoogleDrive.filesBase)/\(id)")!
+        c.queryItems = [.init(name: "alt", value: "media")]
+        return try await GoogleDrive.get(c.url!)
+    }
+
+    private func merge(_ others: [[String: Any]]) {
+        func num(_ v: Any?) -> Double { (v as? NSNumber)?.doubleValue ?? 0 }
+        func times(_ v: Any?) -> [String: Double] {
+            var out: [String: Double] = [:]
+            for (k, t) in v as? [String: Any] ?? [:] where k.hasPrefix("drive:") { out[k] = num(t) }
+            return out
+        }
+        var latest = saved.spots
+        var removed = saved.gone
+        for o in others {
+            for r in o["recent"] as? [[String: Any]] ?? [] {
+                guard let key = r["key"] as? String, key.hasPrefix("drive:") else { continue }
+                let at = num(r["at"])
+                if let had = latest[key], had.at >= at { continue }
+                var s = latest[key] ?? context[key] ?? Spot(title: r["title"] as? String ?? "", pos: 0, dur: 0, at: 0)
+                s.title = (r["title"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? s.title
+                s.pos = max(0, num(r["pos"])); s.dur = max(0, num(r["dur"])); s.at = at
+                s.next = (r["nx"] as? Bool) ?? false
+                latest[key] = s
+            }
+            for (k, at) in times(o["gone"]) where at > (removed[k] ?? -1) { removed[k] = at }
+        }
+        // A removal as new as the progress takes it away; progress newer than a removal brings it back.
+        let kept = latest.filter { $0.value.at > (removed[$0.key] ?? -1) }
+        for k in kept.keys { removed[k] = nil }
+        saved.spots = Dictionary(uniqueKeysWithValues: kept.sorted { $0.value.at > $1.value.at }.prefix(30).map { ($0.key, $0.value) })
+        saved.gone = Dictionary(uniqueKeysWithValues: removed.sorted { $0.value > $1.value }.prefix(200).map { ($0.key, $0.value) })
+        var marks = saved.watched, unmarks = saved.unwatched
+        for o in others {
+            for (k, at) in times(o["watched"]) where at > (marks[k] ?? -1) { marks[k] = at }
+            for (k, at) in times(o["unwatched"]) where at > (unmarks[k] ?? -1) { unmarks[k] = at }
+        }
+        saved.watched = marks.filter { $0.value > (unmarks[$0.key] ?? -1) }
+        saved.unwatched = unmarks.filter { saved.watched[$0.key] == nil }
+    }
+
+    /// This device's file, in the TVs' format.
+    private func upload(_ name: String) async throws -> String {
+        let recent: [[String: Any]] = saved.spots.sorted { $0.value.at > $1.value.at }.prefix(30).map { k, s in
+            var r: [String: Any] = ["key": k, "title": s.title, "pos": Int64(s.pos), "dur": Int64(s.dur), "at": Int64(s.at)]
+            if s.next { r["nx"] = true }
+            return r
+        }
+        let body: [String: Any] = ["v": 1, "tv": "app-\(deviceID)", "name": PhonePlayback.deviceName, "at": Int64(nowMS),
+                                   "recent": recent, "gone": saved.gone.mapValues { Int64($0) },
+                                   "watched": saved.watched.mapValues { Int64($0) }, "unwatched": saved.unwatched.mapValues { Int64($0) },
+                                   "shows": [String: Any]()]
+        let data = try JSONSerialization.data(withJSONObject: body)
+        let upload = "https://www.googleapis.com/upload/drive/v3/files"
+        if let id = saved.syncFile {
+            var r = URLRequest(url: URL(string: "\(upload)/\(id)?uploadType=media&fields=id")!)
+            r.httpMethod = "PATCH"
+            r.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            r.setValue("Bearer \(try await GoogleDrive.token())", forHTTPHeaderField: "Authorization")
+            r.httpBody = data
+            let (_, resp) = try await URLSession.shared.data(for: r)
+            let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+            if code == 200 { return id }
+            if code != 404 { throw GoogleDrive.Failure("Drive answered \(code).") }
+        }
+        let boundary = "woodruff\(Int(nowMS))"
+        let meta = try JSONSerialization.data(withJSONObject: ["name": name, "parents": ["appDataFolder"]] as [String: Any])
+        var multipart = Data("--\(boundary)\r\nContent-Type: application/json\r\n\r\n".utf8)
+        multipart += meta
+        multipart += Data("\r\n--\(boundary)\r\nContent-Type: application/json\r\n\r\n".utf8)
+        multipart += data
+        multipart += Data("\r\n--\(boundary)--\r\n".utf8)
+        var r = URLRequest(url: URL(string: "\(upload)?uploadType=multipart&fields=id")!)
+        r.httpMethod = "POST"
+        r.setValue("multipart/related; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        r.setValue("Bearer \(try await GoogleDrive.token())", forHTTPHeaderField: "Authorization")
+        r.httpBody = multipart
+        let (d, resp) = try await URLSession.shared.data(for: r)
+        guard (resp as? HTTPURLResponse)?.statusCode == 200,
+              let id = (try? JSONSerialization.jsonObject(with: d) as? [String: Any])?["id"] as? String else {
+            throw GoogleDrive.Failure("Drive didn’t keep the progress file.")
+        }
+        return id
+    }
+
+    /// Progress from a TV names only the file: which film or show it belongs to, from the library (a film's video)
+    /// or its folders in Drive (an episode's season and show).
+    private func resolveContexts() async {
+        var changed = false
+        for (key, s) in saved.spots where s.titleId == nil {
+            let file = String(key.dropFirst(6))
+            if let e = saved.movies.first(where: { $0.file == file }) {
+                saved.spots[key]?.titleId = e.id; saved.spots[key]?.kind = "movie"; saved.spots[key]?.name = e.title
+                saved.spots[key]?.poster = e.poster
+                changed = true
+                continue
+            }
+            var at = file
+            for _ in 0..<3 {
+                guard let j = try? await GoogleDrive.get(URL(string: "\(GoogleDrive.filesBase)/\(at)?fields=parents,name&supportsAllDrives=true")!),
+                      let parent = (j["parents"] as? [String])?.first else { break }
+                if let show = saved.shows.first(where: { $0.id == parent }) {
+                    let n = TitleNames.episodeNumber(s.title, season: nil)
+                    saved.spots[key]?.titleId = show.id; saved.spots[key]?.kind = "show"; saved.spots[key]?.name = show.title
+                    saved.spots[key]?.poster = show.poster
+                    if let n { saved.spots[key]?.code = n.season.map { "S\($0) E\(n.number)" } ?? "E\(n.number)" }
+                    changed = true
+                    break
+                }
+                at = parent
+            }
+        }
+        if changed { store() }
     }
 
     // MARK: Settings
