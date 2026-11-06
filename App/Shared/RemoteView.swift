@@ -60,14 +60,13 @@ struct RemoteView: View {
                 Clickpad(size: pad) { send($0) } onRepeat: { send($0, repeat: $1) }
                     .opacity(isOff ? 0.35 : 1)
                     .allowsHitTesting(!isOff)
-                    // Home and the keyboard sit in the clickpad's top corners, matched.
+                    // Home and power sit in the clickpad's top corners, matched.
                     .overlay(alignment: .topLeading) {
                         CornerKey(symbol: "house.fill", label: "Home", size: key * 0.8) { send("home") }
                             .offset(x: -(geo.size.width - pad) / 2 + 22 > -8 ? -8 : -(geo.size.width - pad) / 2 + 22, y: -6)
                     }
                     .overlay(alignment: .topTrailing) {
-                        CornerKey(symbol: "keyboard", label: "Keyboard", size: key * 0.8, tint: field?.field != nil && !all ? Color.accentColor : nil) { typing = true }
-                            .disabled(all)
+                        CornerKey(symbol: "power", label: "Power", size: key * 0.8) { send("power") }
                             .offset(x: (geo.size.width - pad) / 2 - 22 < 8 ? 8 : (geo.size.width - pad) / 2 - 22, y: -6)
                     }
                 Spacer(minLength: 16)
@@ -174,18 +173,22 @@ struct RemoteView: View {
         }
     }
 
-    /// Back and Mute beside the volume rocker. OK on the clickpad plays and pauses; Home is in the top bar.
+    /// Back and Mute, the keyboard in the middle, the volume rocker. OK on the clickpad plays and pauses.
     private func keys(_ key: CGFloat, _ gap: CGFloat) -> some View {
-        HStack(alignment: .top, spacing: 0) {
+        HStack(alignment: .center, spacing: 0) {
             VStack(spacing: gap) {
                 RoundKey(symbol: "chevron.backward", label: "Back", size: key) { send("back") }
                 RoundKey(symbol: "speaker.slash.fill", label: "Mute", size: key) { send("mute") }
             }
             .frame(maxWidth: .infinity)
+            // The TV's text box open: it lights up.
+            RoundKey(symbol: "keyboard", label: "Keyboard", size: key, tint: field?.field != nil && !all ? Color.accentColor : nil) { typing = true }
+                .disabled(all)
+                .frame(maxWidth: .infinity)
             VolumeRocker(width: key, height: key * 2 + gap) { up, n in send(up ? "volup" : "voldown", repeat: n) }
                 .frame(maxWidth: .infinity)
         }
-        .frame(maxWidth: 300)
+        .frame(maxWidth: 340)
         .glassGroup(spacing: gap)
     }
 
@@ -448,15 +451,16 @@ struct RoundKey: View {
     var symbol: String
     var label: String
     var size: CGFloat = 64
+    var tint: Color? = nil
     var action: () -> Void
     var body: some View {
         Button(action: action) {
             Image(systemName: symbol)
                 .font(.system(size: size * 0.33, weight: .semibold))
-                .foregroundStyle(.primary)
+                .foregroundStyle(tint == nil ? Color.primary : .white)
                 .frame(width: size, height: size)
                 .contentShape(Circle())
-                .glass(Circle())
+                .glass(Circle(), tint: tint)
         }
         .buttonStyle(PressScale())
         .accessibilityLabel(label)
@@ -553,6 +557,7 @@ enum LGKeyMap {
         case "volup": return { try await $0.volumeUp() }
         case "voldown": return { try await $0.volumeDown() }
         case "mute": return { lg in let v = try await lg.volume(); try await lg.setMute(!v.muted) }
+        case "power": return { try await $0.turnOff() }
         case "netflix": return { try await $0.launch("netflix") }
         case "youtube": return { try await $0.launch("youtube.leanback.v4") }
         case "home": return { try await $0.launch("com.woodruff.family") }
