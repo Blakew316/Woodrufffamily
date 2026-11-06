@@ -80,6 +80,7 @@ struct SpeakerTile: View {
                 }
                 .buttonStyle(.plain)
                 .glass(Circle())
+                .accessibilityLabel(room.isPlaying ? "Pause \(room.name)" : "Play \(room.name)")
             } else if room.isOffline {
                 Image(systemName: "wifi.slash").font(.caption).foregroundStyle(.secondary)
                     .accessibilityLabel("Offline")
@@ -277,6 +278,9 @@ struct LightTile: View {
         }
         .accessibilityElement(children: .combine)
         .accessibilityValue(light.isOffline ? "Offline" : lit ? "On, \(light.brightness)%" : "Off")
+        .accessibilityAddTraits(.isButton)
+        .accessibilityHint(light.isOffline ? "Shows why it isn’t answering" : "Turns it on or off")
+        .accessibilityAction(named: "Controls", openControls)
     }
 }
 
@@ -304,6 +308,9 @@ struct LightSheet: View {
         LightColor(r: 94, g: 92, b: 230), LightColor(r: 191, g: 90, b: 242), LightColor(r: 255, g: 45, b: 85),
     ]
     static let whites = [2700, 4000, 5500, 6500]
+    /// What VoiceOver says for each colour (in the order of `colors`) and white.
+    static let colorNames = ["Red", "Orange", "Yellow", "Green", "Teal", "Blue", "Indigo", "Purple", "Pink"]
+    static func whiteName(_ k: Int) -> String { k <= 3000 ? "Warm White" : k <= 4500 ? "Neutral White" : k <= 6000 ? "Daylight" : "Cool White" }
 
     /// Showing this white (within a little: Apple Home rounds through mireds, Govee to its own range).
     static func isWhite(_ l: GoveeLight, _ k: Int) -> Bool {
@@ -336,6 +343,7 @@ struct LightSheet: View {
                     }
                     Spacer()
                     GlassCircle(symbol: "xmark", size: 34) { dismiss() }
+                        .accessibilityLabel("Close")
                 }
                 if light.isOffline {
                     Label(Self.offlineHint(light), systemImage: "wifi.slash")
@@ -350,9 +358,9 @@ struct LightSheet: View {
                         .buttonStyle(.glass)
                     VStack(alignment: .leading, spacing: 10) {
                         Text("Colour").font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
-                        swatches(Self.colors.map { c in (c.color, light.color == c, { home.setColor(light, c) }) })
+                        swatches(Self.colors.enumerated().map { i, c in (c.color, light.color == c, Self.colorNames[i], { home.setColor(light, c) }) })
                         Text("White").font(.subheadline.weight(.semibold)).foregroundStyle(.secondary).padding(.top, 4)
-                        swatches(Self.whites.map { k in (LightColor.kelvin(k), Self.isWhite(light, k), { home.setWhite(light, kelvin: k) }) })
+                        swatches(Self.whites.map { k in (LightColor.kelvin(k), Self.isWhite(light, k), Self.whiteName(k), { home.setWhite(light, kelvin: k) }) })
                     }
                 }
                 .disabled(light.isOffline)
@@ -410,15 +418,17 @@ struct LightSheet: View {
         .animation(.smooth(duration: 0.15), value: level)
     }
 
-    private func swatches(_ items: [(Color, Bool, () -> Void)]) -> some View {
+    private func swatches(_ items: [(Color, Bool, String, () -> Void)]) -> some View {
         HStack(spacing: 10) {
             ForEach(items.indices, id: \.self) { i in
-                Button(action: items[i].2) {
+                Button(action: items[i].3) {
                     Circle().fill(items[i].0)
                         .frame(width: 30, height: 30)
                         .overlay { if items[i].1 { Circle().strokeBorder(.white, lineWidth: 3) } }
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel(items[i].2)
+                .accessibilityAddTraits(items[i].1 ? .isSelected : [])
             }
         }
     }
@@ -599,6 +609,7 @@ struct NameAndRoom: View {
         .alert("New Room", isPresented: $addingRoom) {
             TextField("Room Name", text: $newRoom)
             Button("Add") { home.setRoom(id, newRoom); newRoom = "" }
+                .disabled(newRoom.trimmingCharacters(in: .whitespaces).isEmpty)
             Button("Cancel", role: .cancel) { newRoom = "" }
         }
     }
@@ -638,8 +649,8 @@ struct LightDetailView: View {
                                     }
                                 Image(systemName: "sun.max.fill").foregroundStyle(.secondary)
                             }
-                            swatches(LightSheet.colors.map { c in (c.color, l.color == c, { home.setColor(l, c) }) })
-                            swatches(LightSheet.whites.map { k in (LightColor.kelvin(k), LightSheet.isWhite(l, k), { home.setWhite(l, kelvin: k) }) })
+                            swatches(LightSheet.colors.enumerated().map { i, c in (c.color, l.color == c, LightSheet.colorNames[i], { home.setColor(l, c) }) })
+                            swatches(LightSheet.whites.map { k in (LightColor.kelvin(k), LightSheet.isWhite(l, k), LightSheet.whiteName(k), { home.setWhite(l, kelvin: k) }) })
                         }
                         .disabled(l.isOffline)
                         if let e = home.goveeError {
@@ -690,15 +701,17 @@ struct LightDetailView: View {
         return "Not Reachable"
     }
 
-    private func swatches(_ items: [(Color, Bool, () -> Void)]) -> some View {
+    private func swatches(_ items: [(Color, Bool, String, () -> Void)]) -> some View {
         HStack(spacing: 10) {
             ForEach(items.indices, id: \.self) { i in
-                Button(action: items[i].2) {
+                Button(action: items[i].3) {
                     Circle().fill(items[i].0).frame(width: 28, height: 28)
                         .overlay { if items[i].1 { Circle().strokeBorder(.white, lineWidth: 3) } }
                         .glass(Circle())
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel(items[i].2)
+                .accessibilityAddTraits(items[i].1 ? .isSelected : [])
             }
         }
     }

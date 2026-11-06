@@ -102,6 +102,7 @@ final class SmartThings {
         lastMachine = [:]
         commandError = [:]
         listedAt = nil
+        error = nil
         AccessoryStore.shared.fromSmartThings = []
     }
 

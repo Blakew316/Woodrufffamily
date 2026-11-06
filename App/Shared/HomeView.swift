@@ -155,7 +155,7 @@ struct HomeView: View {
             if let id = openTV {
                 TVDetailView(tvID: id)
                     .overlay(alignment: .topTrailing) {
-                        GlassCircle(symbol: "xmark", size: 34) { close() }.padding(14)
+                        GlassCircle(symbol: "xmark", size: 34) { close() }.accessibilityLabel("Close").padding(14)
                     }
                     .background(Palette.groupedBackground)
                     .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
@@ -468,7 +468,11 @@ struct HomeTVTile: View, Equatable {
 
     /// Photos and videos dropped on a tile go into Family Memories and show on that TV.
     private func dropped(_ urls: [URL]) {
-        guard let hub = fleet.hub(tv.id) ?? fleet.hub(tv.hubID) else { return }
+        guard let hub = fleet.hub(tv.id) ?? fleet.hub(tv.hubID) else {
+            // Dropped and nothing happened, with no word why.
+            fleet.say("Couldn’t Add to Family Memories", "Woodruff can’t reach \(tv.name) right now. Check it’s on, then try again.")
+            return
+        }
         let c = TVClient(hub: hub, routeID: "this")
         Task {
             var last: MemoryItem?

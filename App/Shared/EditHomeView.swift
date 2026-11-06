@@ -253,7 +253,8 @@ struct FavoriteButton: View {
     var id: String
     var body: some View {
         let fav = HomeLayout.shared.isFavorite(id)
-        Button(fav ? "Remove from Favorites" : "Add to Favorites", systemImage: fav ? "star.slash" : "star") {
+        // Words only, like the rest of the tiles' menus (no decorative icons in menus).
+        Button(fav ? "Remove from Favorites" : "Add to Favorites") {
             withAnimation(.smooth) { HomeLayout.shared.toggleFavorite(id) }
         }
     }
@@ -295,6 +296,7 @@ struct EditHomeView: View {
     @Environment(\.dismiss) private var dismiss
     private let layout = HomeLayout.shared
     private let home = SmartHome.shared
+    @State private var confirmReset = false
 
     var body: some View {
         @Bindable var layout = layout
@@ -388,7 +390,12 @@ struct EditHomeView: View {
                     }
                 }
                 Section {
-                    Button("Reset to Default", role: .destructive) { withAnimation { layout.reset() } }
+                    Button("Reset to Default", role: .destructive) { confirmReset = true }
+                        .confirmationDialog("Reset Home’s layout?", isPresented: $confirmReset, titleVisibility: .visible) {
+                            Button("Reset", role: .destructive) { withAnimation { layout.reset() } }
+                        } message: {
+                            Text("Sections, tile order and sizes, and hidden items go back to how they started. Favorites stay.")
+                        }
                 }
             }
             #if os(iOS)

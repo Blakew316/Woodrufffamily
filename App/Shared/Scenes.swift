@@ -138,7 +138,13 @@ enum SceneRunner {
         // Thermostat
         if let temp = s.thermostat {
             if let t = AccessoryStore.shared.thermostat {
-                AccessoryStore.shared.send(t, t.thermostatMode == "cool" ? .coolTo(temp) : .heatTo(temp))
+                // The scene keeps °F; the thermostat controls take °C (70 °F was being sent as 70 °C).
+                let c = (temp - 32) * 5 / 9
+                if !t.reachable {
+                    problems.append("\(t.name) isn’t responding.")
+                } else {
+                    AccessoryStore.shared.send(t, t.thermostatMode == "cool" ? .coolTo(c) : .heatTo(c))
+                }
             } else {
                 problems.append("The thermostat isn’t connected.")
             }
@@ -255,7 +261,11 @@ struct ScenesSettingsView: View {
                         IconRow(symbol: "", color: .clear, title: s.name, value: SceneSummary.text(s))
                     }
                 }
-                .onDelete { idx in for i in idx { store.delete(store.scenes[i].id) } }
+                // The ids first: deleting one moves the rest up, so indexes read after it point at the wrong scene.
+                .onDelete { idx in
+                    let ids = idx.compactMap { store.scenes.indices.contains($0) ? store.scenes[$0].id : nil }
+                    for id in ids { store.delete(id) }
+                }
                 .onMove { store.move(from: $0, to: $1) }
                 Button("Add a Scene") {
                     adding = HomeScene(id: UUID().uuidString, name: "")

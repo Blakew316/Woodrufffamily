@@ -1530,7 +1530,12 @@ public final class SmartHome {
     /// Adds a light by its address (from your router or the Govee app), for one that doesn't answer the search.
     public func addLight(ip: String) {
         let ip = ip.trimmingCharacters(in: .whitespaces)
-        guard ip.split(separator: ".").count == 4 else { goveeError = "That doesn’t look like an address (like 192.168.1.42)."; return }
+        // Four numbers 0–255 ("a.b.c.d" or "300.1.1.1" used to be kept, and asked on every search).
+        let parts = ip.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 4, parts.allSatisfy({ p in p.count <= 3 && Int(p).map { (0...255).contains($0) } == true }) else {
+            goveeError = "That doesn’t look like an address (like 192.168.1.42)."
+            return
+        }
         if !manualIPs.contains(ip) { manualIPs.append(ip); Saved.save("goveeManualIPs", manualIPs) }
         #if canImport(Network)
         lan.probe(ip)
@@ -1849,6 +1854,10 @@ public final class SmartHome {
             hold(l, for: 6)
             if turnOn { cyncControl(l, .power(true)) }
             cyncControl(l, c)
+            // Cync turns a change it can't send away straight away (`cyncControlFailed` lets go of the hold): the
+            // light goes back to how it was, rather than showing a change that never left (Cync then had nothing
+            // to report that would put it right).
+            if held[id] == nil { restore(before, seq: seq) }
             return
         }
         #if canImport(Network)

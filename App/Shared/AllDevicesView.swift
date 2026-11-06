@@ -172,6 +172,8 @@ struct AllDevicesView: View {
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isButton)
         .accessibilityHint("Tap to turn on or off. Touch and hold for its controls.")
+        // Touch and hold isn't there for VoiceOver: its controls as an action.
+        .accessibilityAction(named: "Controls") { open(item) }
     }
 
     private struct Facts {
@@ -919,20 +921,30 @@ struct MiniRemote: View {
     }
 
     private func press(_ key: String) async {
-        guard let tv = fleet.tv(tvID), let c = fleet.client(for: tv) else { return }
+        guard let c = client() else { return }
         do { try await c.key(key) } catch { fleet.show(error) }
     }
 
     private func media(_ action: String) async {
-        guard let tv = fleet.tv(tvID), let c = fleet.client(for: tv) else { return }
+        guard let c = client() else { return }
         do { _ = try await c.media(action) } catch { fleet.show(error) }
+    }
+
+    /// The TV's connection, or why there isn't one (a key that did nothing used to say nothing).
+    private func client() -> TVClient? {
+        guard let tv = fleet.tv(tvID) else { fleet.say("TV Not Found", "That TV isn’t in Woodruff any more."); return nil }
+        guard let c = fleet.client(for: tv) else {
+            fleet.say("Can’t Reach \(tv.name)", tv.online ? "Try again in a moment." : "It’s off or still turning on. Try again in a moment.")
+            return nil
+        }
+        return c
     }
 
     /// LG's own mute when it's linked (it knows whether it's muted); otherwise the mute key.
     private func mute() async {
         guard let tv = fleet.tv(tvID) else { return }
         if let lg = fleet.lg(for: tv), let v = try? await lg.volume() {
-            try? await lg.setMute(!v.muted)
+            do { try await lg.setMute(!v.muted) } catch { fleet.show(error) }
         } else {
             await press("mute")
         }

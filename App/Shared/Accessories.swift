@@ -252,6 +252,8 @@ struct DeviceTile: View, Equatable {
         }
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isButton)
+        // The menu's controls, for VoiceOver (its touch and hold arranges Home instead).
+        .accessibilityAction(named: "Controls", openControls)
         .confirmationDialog("Unlock \(device.name)?", isPresented: $confirmUnlock, titleVisibility: .visible) {
             Button("Unlock") { AccessoryStore.shared.send(device, .lock(false)) }
         }

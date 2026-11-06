@@ -120,6 +120,7 @@ final class Cync {
         for k in ["cync.access", "cync.refresh", "cync.authorize", "cync.user", "cync.expires"] { Keychain.set(nil, for: k) }
         lights = [:]; hubs = [:]
         needsCode = false
+        error = nil
         SmartHome.shared.cyncControl = nil
         SmartHome.shared.setCyncLights([])
     }
@@ -330,6 +331,14 @@ final class Cync {
         while buffer.count >= 5 {
             let b = [UInt8](buffer.prefix(5))
             let length = Int(b[1]) << 24 | Int(b[2]) << 16 | Int(b[3]) << 8 | Int(b[4])
+            // Cync's packets are small: a length this big means the stream is out of step (or garbage), and waiting
+            // for it would hold everything after it (and the memory) forever. Start the connection again instead.
+            guard length <= 1 << 20 else {
+                buffer = Data()
+                disconnect()
+                reconnectSoon()
+                return
+            }
             guard buffer.count >= 5 + length else { return }
             let packet = [UInt8](buffer.prefix(5 + length))
             buffer.removeFirst(5 + length)

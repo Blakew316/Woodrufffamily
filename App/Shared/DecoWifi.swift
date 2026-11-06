@@ -110,6 +110,7 @@ final class DecoWifi {
         restartWatch?.cancel(); restartWatch = nil
         Keychain.set(nil, for: "deco.password")
         stok = nil; nodes = []; clients = []; restarts = [:]; seenDown = []
+        error = nil; updated = nil; wasUp = nil
     }
 
     // MARK: Reading
@@ -429,7 +430,7 @@ struct WifiSection: View {
                             Circle().fill(deco.internetUp == false ? Palette.attention : deco.internetUp == true ? Color.green : Color.secondary).frame(width: 9, height: 9)
                             Text(deco.internetUp == false ? "Internet Down" : deco.internetUp == true ? "Internet Online" : "Internet").font(.subheadline.weight(.semibold))
                             Spacer()
-                            Text("\(deco.clients.count) devices").font(.subheadline).foregroundStyle(.secondary)
+                            Text(deco.clients.count == 1 ? "1 device" : "\(deco.clients.count) devices").font(.subheadline).foregroundStyle(.secondary)
                         }
                         LazyVGrid(columns: [GridItem(.adaptive(minimum: 140), spacing: 8)], spacing: 8) {
                             ForEach(deco.nodes) { n in
@@ -543,7 +544,10 @@ struct WifiView: View {
         .confirmationDialog("Restart \(restarting?.name ?? "Deco")?", isPresented: Binding(get: { restarting != nil }, set: { if !$0 { restarting = nil } }), titleVisibility: .visible) {
             Button("Restart", role: .destructive) { if let n = restarting { Task { await deco.restart(n) } } }
         } message: {
-            Text("Devices on it lose Wi‑Fi for a couple of minutes while it restarts.")
+            // The main Deco is the router: restarting it takes the whole house off the internet.
+            Text(restarting?.main == true
+                 ? "The whole house loses Wi‑Fi and the internet for a few minutes while it restarts."
+                 : "Devices on it lose Wi‑Fi for a couple of minutes while it restarts.")
         }
     }
 

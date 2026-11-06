@@ -91,6 +91,8 @@ final class Dreo {
         token = ""
         server = "us"
         socketFailures = 0
+        error = nil
+        published = false
         pending = []
         fans = [:]
         for t in confirms.values { t.cancel() }
@@ -120,10 +122,11 @@ final class Dreo {
         token = t
     }
 
-    private func request(_ method: String, _ path: String, query: [String: String] = [:], body: [String: Any]? = nil, auth: Bool = true) async throws -> [String: Any] {
-        var c = URLComponents(string: "https://app-api-\(server).dreo-tech.com\(path)")!
+    private func request(_ method: String, _ path: String, query: [String: String] = [:], body: [String: Any]? = nil, auth: Bool = true, retried: Bool = false) async throws -> [String: Any] {
+        guard var c = URLComponents(string: "https://app-api-\(server).dreo-tech.com\(path)") else { throw OAuthRelay.Failure.refused("Dreo answered oddly.") }
         c.queryItems = query.map { URLQueryItem(name: $0.key, value: $0.value) } + [URLQueryItem(name: "timestamp", value: String(Int(Date().timeIntervalSince1970 * 1000)))]
-        var r = URLRequest(url: c.url!, timeoutInterval: 15)
+        guard let url = c.url else { throw OAuthRelay.Failure.refused("Dreo answered oddly.") }
+        var r = URLRequest(url: url, timeoutInterval: 15)
         r.httpMethod = method
         r.setValue(Self.ua, forHTTPHeaderField: "ua")
         r.setValue("en", forHTTPHeaderField: "lang")
@@ -136,7 +139,17 @@ final class Dreo {
         let (d, resp) = try await URLSession.shared.data(for: r)
         let json = (try? JSONSerialization.jsonObject(with: d) as? [String: Any]) ?? [:]
         let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
-        if code == 401 { token = ""; throw OAuthRelay.Failure.refused("Dreo sign-in expired.") }
+        if code == 401 {
+            token = ""
+            // The sign-in ran out: sign in again with the saved email and password and ask once more, rather than
+            // showing "expired" until the next minute's look.
+            if auth, !retried {
+                try await login()
+                return try await request(method, path, query: query, body: body, auth: auth, retried: true)
+            }
+            throw OAuthRelay.Failure.refused(auth ? "Dreo signed Woodruff out. Sign in again in Settings → Smart Home → Devices."
+                                                  : "Dreo didn’t accept that email and password.")
+        }
         guard code == 200 else { throw OAuthRelay.Failure.refused((json["msg"] as? String).map { "Dreo: \($0)" } ?? "Dreo answered \(code).") }
         if let c = json["code"] as? Int, c != 0 {
             throw OAuthRelay.Failure.refused((json["msg"] as? String).map { "Dreo: \($0)" } ?? "Dreo refused (\(c)).")
@@ -319,7 +332,16 @@ final class Dreo {
 
     func send(_ d: HomeDevice, _ cmd: DeviceCommand) {
         let sn = String(d.id.dropFirst(5))
-        guard let f = fans[sn] else { return }
+        guard let f = fans[sn] else {
+            // Shown from last time, but Dreo hasn't answered since the app opened: ask now, then carry it out
+            // (a tap used to do nothing at all here).
+            guard connected else { error = "Sign in to Dreo in Settings → Smart Home → Devices."; return }
+            Task {
+                await refresh(full: true)
+                if fans[sn] != nil { send(d, cmd) } else if error == nil { error = "Dreo doesn’t list \(d.name) any more." }
+            }
+            return
+        }
         guard f.online else { error = "\(f.name) is offline. Check it’s plugged in and on the Wi‑Fi."; return }
         var params: [String: Any] = [:]
         switch cmd {

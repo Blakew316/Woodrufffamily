@@ -118,6 +118,7 @@ final class NestCameras {
     func signOut() {
         for k in ["nest.refresh", "nest.access", "nest.expires"] { Keychain.set(nil, for: k) }
         connected = false
+        error = nil
         poll?.cancel(); poll = nil
         cameras = []
         UserDefaults.standard.removeObject(forKey: nestCamerasKey)
@@ -164,8 +165,9 @@ final class NestCameras {
         return try await task.value
     }
 
-    private func call(_ method: String, _ path: String, _ body: [String: Any]? = nil) async throws -> [String: Any] {
-        var r = URLRequest(url: URL(string: Self.sdm + path)!, timeoutInterval: 20)
+    private func call(_ method: String, _ path: String, _ body: [String: Any]? = nil, retried: Bool = false) async throws -> [String: Any] {
+        guard let url = URL(string: Self.sdm + path) else { throw OAuthRelay.Failure.refused("Google answered oddly.") }
+        var r = URLRequest(url: url, timeoutInterval: 20)
         r.httpMethod = method
         r.setValue("Bearer \(try await token())", forHTTPHeaderField: "Authorization")
         if let body {
@@ -176,7 +178,12 @@ final class NestCameras {
         let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
         let json = (try? JSONSerialization.jsonObject(with: d) as? [String: Any]) ?? [:]
         guard (200..<300).contains(code) else {
-            if code == 401 { Keychain.set(nil, for: "nest.access") }
+            if code == 401 {
+                // The sign-in ran out early (Google ended it, or another device's renewal replaced it): renew it once
+                // and ask again, rather than showing an error until the next look.
+                Keychain.set(nil, for: "nest.access")
+                if !retried { return try await call(method, path, body, retried: true) }
+            }
             if code == 429 { throw RateLimited() }
             // Google's own hiccups ("Internal error encountered", unavailable): try again, quietly.
             if code >= 500 { throw Busy() }
@@ -596,7 +603,9 @@ struct CameraLiveView: View {
                     GlassCircle(symbol: muted ? "speaker.slash.fill" : "speaker.wave.2.fill", size: 36) {
                         muted.toggle(); player.setMuted(muted)
                     }
+                    .accessibilityLabel(muted ? "Turn Sound On" : "Turn Sound Off")
                     GlassCircle(symbol: "xmark", size: 36) { close() }
+                        .accessibilityLabel("Close")
                 }
                 .padding(14)
             }
@@ -630,7 +639,9 @@ struct CameraLiveView: View {
                 GlassCircle(symbol: muted ? "speaker.slash.fill" : "speaker.wave.2.fill", size: 40) {
                     muted.toggle(); player.setMuted(muted)
                 }
+                .accessibilityLabel(muted ? "Turn Sound On" : "Turn Sound Off")
                 GlassCircle(symbol: "xmark", size: 40) { dismiss() }
+                    .accessibilityLabel("Close")
             }
             LiveWebView(player: player)
                 .aspectRatio(16 / 9, contentMode: .fit)

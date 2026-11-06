@@ -196,9 +196,16 @@ final class HomeBridgeClient {
         }
     }
 
-    /// Looks again a moment after a change, so it shows straight away.
+    /// Looks again a moment after a change, so it shows straight away, and once more after the lights' hold on a
+    /// change has run out. Each look takes the whole state (not "nothing changed"): a change the accessory refused
+    /// leaves the helper's state as it was, and a look that only heard "nothing changed" left the light showing
+    /// the change it never made.
     private func quickLook() async {
         try? await Task.sleep(nanoseconds: 300_000_000)
+        hash = ""
+        await poll()
+        try? await Task.sleep(nanoseconds: 7_000_000_000)
+        hash = ""
         await poll()
     }
 
