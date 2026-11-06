@@ -71,6 +71,13 @@ final class PushRelay {
     @ObservationIgnored private var heard: [String: String] = [:]
     /// Renews this Mac's proof and checks the others' again, every two minutes.
     @ObservationIgnored private var renewal: Task<Void, Never>?
+    #if os(macOS)
+    /// Keeps the cameras watched at full speed with Woodruff's window hidden (macOS otherwise naps an app in the
+    /// background, and its checks for camera events slow to a crawl).
+    @ObservationIgnored private var watching: NSObjectProtocol?
+    /// While this Mac sends the family's alerts: it doesn't idle to sleep (the screen still does), or the alerts stop.
+    @ObservationIgnored private var awake: NSObjectProtocol?
+    #endif
 
     // MARK: iPhone: registering
 
@@ -78,8 +85,13 @@ final class PushRelay {
         #if os(iOS)
         UIApplication.shared.registerForRemoteNotifications()
         #else
+        if watching == nil {
+            watching = ProcessInfo.processInfo.beginActivity(options: [.userInitiatedAllowingIdleSystemSleep, .latencyCritical],
+                                                             reason: "Watching the cameras and TVs for alerts")
+        }
         advertise()
         browse()
+        keepAwake()
         #endif
         #if os(macOS)
         // After the Mac sleeps, look and say so on the Wi‑Fi again (once it's back).
@@ -299,11 +311,25 @@ final class PushRelay {
         }
         ok.sort()
         if ok != otherRelays { otherRelays = ok }
+        keepAwake()
+    }
+
+    /// The Mac that sends stays awake (its screen can still sleep); any other may sleep as usual.
+    private func keepAwake() {
+        #if os(macOS)
+        if isSender, awake == nil {
+            awake = ProcessInfo.processInfo.beginActivity(options: [.idleSystemSleepDisabled], reason: "Sending the family's alerts to the iPhones")
+        } else if !isSender, let a = awake {
+            ProcessInfo.processInfo.endActivity(a)
+            awake = nil
+        }
+        #endif
     }
 
     /// Macs ready to send say so on the Wi‑Fi, so only one of them does.
     private func advertise() {
         #if os(macOS)
+        defer { keepAwake() }
         let want = hasKey && sendsFromHere
         if !want { listener?.cancel(); listener = nil; return }
         // Already saying so: the proof is renewed.
