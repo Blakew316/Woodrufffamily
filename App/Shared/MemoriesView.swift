@@ -7,7 +7,10 @@ import WoodruffKit
 /// Family Memories: the TV's photos and videos, newest first; add from Photos, view full screen, show on the TV.
 struct MemoriesView: View {
     @Environment(Fleet.self) private var fleet
-    @State private var memories: Memories?
+    /// What the TV last sent, kept on this device: away from home the page opens with it (the pictures it has shown
+    /// are kept too) instead of waiting for TVs it can't reach.
+    @State private var memories: Memories? = Saved.load(MemoriesView.keptKey, as: Memories.self)
+    static let keptKey = "memories.kept"
     @State private var picks: [PhotosPickerItem] = []
     @State private var uploading: (done: Int, of: Int)?
     @State private var viewing: MemoryItem?
@@ -86,6 +89,12 @@ struct MemoriesView: View {
                     }
                     .onEnded { _ in pinchBase = nil })
                 #endif
+                // Shown from what was kept: say so, and why nothing new can come in.
+                if error != nil {
+                    Text("From your last visit home. The memories are on the TVs: connect to the home Wi‑Fi to see new ones or add more.")
+                        .font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                        .padding(.horizontal, 24).padding(.top, 14)
+                }
                 if m.items.isEmpty {
                     EmptyState(symbol: "photo.on.rectangle", title: "No Memories Yet", message: "Add photos and videos from this device. Every TV’s slideshow can show them.")
                         .padding(.top, 60)
@@ -129,7 +138,11 @@ struct MemoriesView: View {
         .fileImporter(isPresented: $importing, allowedContentTypes: [.image, .movie], allowsMultipleSelection: true) { r in
             if case .success(let urls) = r { Task { await addFiles(urls) } }
         }
-        .task { await load() }
+        .task {
+            // The kept list's counts and months, before the TV answers.
+            if let m = memories { index = MemoriesIndex(m.items) }
+            await load()
+        }
         .confirmationDialog(deleting?.video == true ? "Delete This Video?" : "Delete This Photo?",
                             isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }),
                             titleVisibility: .visible, presenting: deleting) { item in
@@ -173,6 +186,11 @@ struct MemoriesView: View {
 
     private func load() async {
         guard let c = client else { error = TVError.notPaired.localizedDescription; return }
+        // No TV answering (away from home): say so at once rather than wait out the TV's timeout.
+        if !fleet.tvs.contains(where: \.online) {
+            error = "The memories are on the TVs at home. Connect to the home Wi‑Fi to see them."
+            return
+        }
         do {
             take(try await c.memories())
             if error != nil { error = nil }
@@ -186,6 +204,7 @@ struct MemoriesView: View {
     /// The TV's answer, shown (and what's worked out from it with it) only when it's new: the page is asked again after
     /// every add and delete, and pulling to refresh, and redraws only for what changed.
     private func take(_ m: Memories) {
+        Saved.save(Self.keptKey, m)
         guard m != memories else { return }
         index = MemoriesIndex(m.items)
         memories = m
