@@ -18,6 +18,8 @@ struct WatchView: View {
     @State private var here: PhonePlay?
     /// Movies or TV Shows, as on the TV's streaming screen.
     @AppStorage("watch.section") private var section = "movies"
+    /// The posters' width (fitted to the window on the Mac).
+    @State private var posterWidth: CGFloat = 112
     /// Every title of each, for its banner and rows.
     @State private var sectionTitles: [String: [Title]] = [:]
 
@@ -51,6 +53,16 @@ struct WatchView: View {
             .padding(.bottom, 30)
         }
         .scrollIndicators(.hidden)
+        #if os(macOS)
+        // Posters sized so each row fills the window: about 150 points each, as many as fit.
+        .onGeometryChange(for: CGFloat.self, of: { $0.size.width }) { w in
+            let usable = max(300, w - 40), gap: CGFloat = 10
+            let n = max(4, Int((usable + gap) / (150 + gap)))
+            let fit = ((usable - gap * CGFloat(n - 1)) / CGFloat(n)).rounded(.down)
+            if abs(fit - posterWidth) > 0.5 { posterWidth = fit }
+        }
+        .environment(\.posterWidth, posterWidth)
+        #endif
         #if os(iOS)
         .toolbar {
             ToolbarItem(placement: .principal) { TVPicker() }.sharedBackgroundVisibility(.hidden)
@@ -256,10 +268,17 @@ private struct OpenTitleKey: EnvironmentKey { static let defaultValue = OpenTitl
 struct WatchChanged { var changed: (String?) -> Void; func callAsFunction(removed: String? = nil) { changed(removed) } }
 private struct WatchChangedKey: EnvironmentKey { static let defaultValue = WatchChanged { _ in } }
 
+/// How wide Watch's posters are: the Mac fits them to the window; elsewhere the usual 112.
+private struct PosterWidthKey: EnvironmentKey { static let defaultValue: CGFloat = 112 }
+
 extension EnvironmentValues {
     var openTitle: OpenTitleAction {
         get { self[OpenTitleKey.self] }
         set { self[OpenTitleKey.self] = newValue }
+    }
+    var posterWidth: CGFloat {
+        get { self[PosterWidthKey.self] }
+        set { self[PosterWidthKey.self] = newValue }
     }
     var watchChanged: WatchChanged {
         get { self[WatchChangedKey.self] }
@@ -306,17 +325,61 @@ struct Billboard: View {
     private var pages: some View {
         ZStack {
             if let t = titles[safe: page] ?? titles.first {
-                card(t).id(t.id).transition(.opacity)
+                macCard(t).id(t.id).transition(.opacity)
             }
         }
-        // 16:9, the whole picture, no wider than 720 points: the rows show under it.
-        .aspectRatio(16.0 / 9.0, contentMode: .fit)
-        .frame(maxWidth: 720)
+        // The window's whole width, a third as tall: it grows and shrinks with the window, and the rows show under it.
+        .aspectRatio(3.0, contentMode: .fit)
+        .padding(.horizontal, 20)
         .task(id: page) {
             try? await Task.sleep(nanoseconds: 12_000_000_000)
             guard !Task.isCancelled, titles.count > 1 else { return }
             withAnimation(.easeInOut(duration: 0.7)) { page = (page + 1) % titles.count }
         }
+    }
+    #endif
+
+    #if os(macOS)
+    /// As on the TV: the words on the left, the whole 16:9 picture on the right in a rounded frame, over a blurred
+    /// copy of it filling the banner.
+    private func macCard(_ t: Title) -> some View {
+        let art = client?.artURL(t.backdrop ?? t.poster)
+        return GeometryReader { g in
+            let inset: CGFloat = 18
+            let picH = g.size.height - inset * 2
+            let picW = min(g.size.width * 0.62, picH * 16 / 9)
+            ZStack {
+                Color.clear.overlay { Artwork(url: art, maxPixel: 900) }.clipped().blur(radius: 40).opacity(0.75)
+                Color.black.opacity(0.45)
+                HStack(spacing: 24) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Spacer(minLength: 0)
+                        Text(t.title).font(.system(size: max(22, min(40, g.size.height * 0.11)), weight: .bold))
+                            .foregroundStyle(.white).lineLimit(2).minimumScaleFactor(0.7)
+                        Text(meta(t)).font(.callout.weight(.medium)).foregroundStyle(.white.opacity(0.8)).lineLimit(1)
+                        HStack(spacing: 10) {
+                            if let p = t.play {
+                                CapsuleButton(title: p.label ?? "Play", symbol: "play.fill") { PlayRouter.start(p, fleet: fleet) }
+                            }
+                            CapsuleButton(title: "Details", symbol: nil, prominent: false) { open(t) }
+                        }
+                        .padding(.top, 6)
+                        Spacer(minLength: 0)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    Color.clear
+                        .overlay { Artwork(url: art, maxPixel: 1800) }
+                        .frame(width: picW, height: picW * 9 / 16)
+                        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        .shadow(color: .black.opacity(0.35), radius: 14, y: 6)
+                }
+                .padding(.leading, 28).padding(.trailing, inset).padding(.vertical, inset)
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .onTapGesture { open(t) }
+        .contextMenu { TitleMenu(title: t) }
     }
     #endif
 
@@ -335,7 +398,11 @@ struct Billboard: View {
                 #endif
             }
         }
+        #if os(macOS)
+        .padding(.trailing, 44).padding(.bottom, 26)
+        #else
         .padding(.trailing, 30).padding(.bottom, 14)
+        #endif
         .animation(.snappy, value: page)
     }
 
@@ -429,22 +496,25 @@ struct PosterTile: View {
     @Environment(Fleet.self) private var fleet
     @Environment(\.openTitle) private var openTitle
     @Environment(\.zoomNamespace) private var zoom
+    @Environment(\.posterWidth) private var fitted
     var title: Title
-    var width: CGFloat
+    /// A width of its own (a grid's), else Watch's (fitted to the window on the Mac).
+    var fixedWidth: CGFloat?
+    private var width: CGFloat { fixedWidth ?? fitted }
     /// The poster's address as the page worked it out (.none: the tile asks the fleet itself).
     private var given: URL??
 
     /// A tile whose page has its poster's address already (Watch, Movies and TV Shows, Search): it never looks at the
     /// fleet, so the TVs reporting doesn't redraw it.
-    init(title: Title, width: CGFloat = 112, poster: URL?) {
+    init(title: Title, width: CGFloat? = nil, poster: URL?) {
         self.title = title
-        self.width = width
+        self.fixedWidth = width
         self.given = .some(poster)
     }
 
-    init(title: Title, width: CGFloat = 112) {
+    init(title: Title, width: CGFloat? = nil) {
         self.title = title
-        self.width = width
+        self.fixedWidth = width
         self.given = .none
     }
 
@@ -489,6 +559,7 @@ struct ContinueTile: View {
     @Environment(Fleet.self) private var fleet
     @Environment(\.openTitle) private var openTitle
     @Environment(\.watchChanged) private var watchChanged
+    @Environment(\.posterWidth) private var width
     var item: ContinueItem
     /// Its poster's address, as Watch worked it out.
     var poster: URL?
@@ -496,7 +567,7 @@ struct ContinueTile: View {
     var body: some View {
         Button { PlayRouter.start(item.play, fleet: fleet) } label: {
             VStack(alignment: .leading, spacing: 6) {
-                Color.clear.frame(width: 112, height: 168)
+                Color.clear.frame(width: width, height: width * 1.5)
                     .overlay { Artwork(url: poster, maxPixel: 512) }
                     .overlay(alignment: .bottom) {
                         VStack(spacing: 8) {
@@ -504,8 +575,8 @@ struct ContinueTile: View {
                                 .frame(width: 32, height: 32).glass(Circle(), interactive: false).environment(\.colorScheme, .dark)
                             if item.progress > 0 {
                                 Capsule().fill(.white.opacity(0.3)).frame(height: 4)
-                                    .overlay(alignment: .leading) { Capsule().fill(.white).frame(width: 96 * item.progress) }
-                                    .frame(width: 96)
+                                    .overlay(alignment: .leading) { Capsule().fill(.white).frame(width: (width - 16) * item.progress) }
+                                    .frame(width: width - 16)
                             }
                         }
                         .padding(.bottom, 10)
@@ -516,7 +587,7 @@ struct ContinueTile: View {
                     Text(item.name).font(.footnote.weight(.semibold)).lineLimit(1)
                     Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
-                .frame(width: 112, alignment: .leading)
+                .frame(width: width, alignment: .leading)
             }
         }
         .buttonStyle(PressScale(scale: 0.96))
