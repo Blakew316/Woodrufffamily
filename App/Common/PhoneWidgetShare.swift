@@ -4,7 +4,7 @@ import Foundation
 /// its picture), the weather and the thermostat. Without the app group (signing that doesn't carry it yet) there
 /// is no container, nothing is written, and the widgets say to open the app.
 enum PhoneWidgetShare {
-    static let groupID = "group.com.woodruff.family"
+    static let groupID = "group.com.blakew316.woodruff"
     static let nowPlayingKind = "com.woodruff.family.widget.nowplaying"
     static let homeKind = "com.woodruff.family.widget.home"
 

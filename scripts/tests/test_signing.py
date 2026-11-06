@@ -159,10 +159,10 @@ class AppGroup(unittest.TestCase):
         self.assertNotIn("com.apple.security.application-groups", ents)
 
     def test_with_group(self):
-        p = self.profile({"com.apple.security.application-groups": ["group.com.woodruff.family"]})
+        p = self.profile({"com.apple.security.application-groups": ["group.com.blakew316.woodruff"]})
         ents, problems = signing.build_entitlements(p, "app")
         self.assertEqual(problems, [])
-        self.assertEqual(ents["com.apple.security.application-groups"], ["group.com.woodruff.family"])
+        self.assertEqual(ents["com.apple.security.application-groups"], ["group.com.blakew316.woodruff"])
 
     def test_other_group(self):
         p = self.profile({"com.apple.security.application-groups": ["group.other"]})

@@ -265,7 +265,12 @@ struct RootView: View {
     var body: some View {
         // A tapped "Person seen at the doorbell" opens that camera live. Waits for the camera list if the app was
         // just launched by the tap. (Read here, so the page redraws the moment the tap arrives.)
-        let requested = CameraStreams.shared.requested.flatMap { id in NestCameras.shared.cameras.first { $0.id == id } }
+        // A camera this device doesn't list (its own camera sign-in isn't there, or not loaded yet) still opens: the live
+        // view then says what's missing, instead of the tap doing nothing.
+        let requested = CameraStreams.shared.requested.map { id in
+            NestCameras.shared.cameras.first { $0.id == id }
+                ?? NestCameras.Camera(id: id, name: "Camera", room: nil, doorbell: false, webRTC: true)
+        }
         let banner = fleet.banner
         // Read here so the window notices the moment the thermostat pill is tapped.
         let thermostatOpen = ThermostatUI.shared.open

@@ -12,7 +12,7 @@ import UniformTypeIdentifiers
 /// The extension can't read the app's keychain, so the app keeps the cameras' Google sign-in in the app group as well
 /// (this iPhone's own container, shared only with Woodruff's extensions).
 enum CameraEventMedia {
-    static let group = "group.com.woodruff.family"
+    static let group = "group.com.blakew316.woodruff"
     private static let sdm = "https://smartdevicemanagement.googleapis.com/v1/"
 
     private static var store: UserDefaults? { UserDefaults(suiteName: group) }

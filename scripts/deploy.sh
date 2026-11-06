@@ -1196,7 +1196,7 @@ deploy_iphone() {
     xcodebuild -project WoodruffFamily.xcodeproj -scheme WoodruffFamily -destination 'generic/platform=iOS' \
       -configuration Release -derivedDataPath build DEVELOPMENT_TEAM="$TEAM" \
       WOODRUFF_BUNDLE_ID="$IPHONE_BUNDLE_ID" "${sign[@]}" \
-      WOODRUFF_ENTITLEMENTS="$ents" WOODRUFF_WIDGET_ENTITLEMENTS= \
+      WOODRUFF_ENTITLEMENTS="$ents" WOODRUFF_WIDGET_ENTITLEMENTS= WOODRUFF_NOTIFY_ENTITLEMENTS= \
       ${VERSION_SETTINGS[@]+"${VERSION_SETTINGS[@]}"} build </dev/null >"$log" 2>&1
     status=$?
     show_build "$log"
@@ -1392,6 +1392,20 @@ deploy_testflight() {
     ${VERSION_SETTINGS[@]+"${VERSION_SETTINGS[@]}"} archive </dev/null >"$log" 2>&1
   status=$?
   show_build "$log"
+  if { [ "$status" -ne 0 ] || [ ! -d "$archive" ]; } && grep -q 'application-groups' "$log" 2>/dev/null; then
+    # Apple wouldn't sign the app group: archive without it (the widgets then ask to open the app; camera alerts
+    # still show the picture the Mac puts in the push).
+    warn "the archive with the app group failed; archiving again without it"
+    log="$LOGDIR/testflight-archive-push.log"
+    rm -rf "$archive"
+    xcodebuild -project WoodruffFamily.xcodeproj -scheme WoodruffFamily -destination 'generic/platform=iOS' \
+      -configuration Release -derivedDataPath build -archivePath "$archive" DEVELOPMENT_TEAM="$TEAM" \
+      WOODRUFF_BUNDLE_ID="$IPHONE_BUNDLE_ID" "${sign[@]}" \
+      WOODRUFF_ENTITLEMENTS=App/iOS/WoodruffFamilyPush.entitlements WOODRUFF_WIDGET_ENTITLEMENTS= \
+      WOODRUFF_NOTIFY_ENTITLEMENTS= ${VERSION_SETTINGS[@]+"${VERSION_SETTINGS[@]}"} archive </dev/null >"$log" 2>&1
+    status=$?
+    show_build "$log"
+  fi
   if [ "$status" -ne 0 ] || ! grep -q '\*\* ARCHIVE SUCCEEDED \*\*' "$log" 2>/dev/null || [ ! -d "$archive" ]; then
     why=$(first_errors "$log")
     testflight_failed "the archive failed${why:+: $why} (log $log)" "$log"

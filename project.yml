@@ -132,7 +132,9 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: $(WOODRUFF_BUNDLE_ID).notifications
         PRODUCT_NAME: WoodruffNotifications
         TARGETED_DEVICE_FAMILY: "1,2"
-        CODE_SIGN_ENTITLEMENTS: App/NotificationService/WoodruffNotifications.entitlements
+        # The app group shared with the app (empty: none; the Mac's picture in the push still shows then).
+        WOODRUFF_NOTIFY_ENTITLEMENTS: App/NotificationService/WoodruffNotifications.entitlements
+        CODE_SIGN_ENTITLEMENTS: $(WOODRUFF_NOTIFY_ENTITLEMENTS)
         SKIP_INSTALL: YES
     info:
       path: App/NotificationService/Info.plist
