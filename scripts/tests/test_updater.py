@@ -10,6 +10,7 @@ import importlib.util
 import io
 import json
 import os
+import subprocess
 import plistlib
 import re
 import shutil
@@ -126,6 +127,10 @@ class FakeEnv(updater.Env):
         self.clock += timedelta(seconds=seconds)
 
     def run(self, argv, timeout, cwd=None, env=None, output=None):
+        if argv[-1] == "--help" and argv[1:2] == ["-I"] and os.path.basename(argv[2]) in ("updater.py", "signing.py"):
+            # The release's scripts started, as the updater checks them: really run with this Python.
+            r = subprocess.run([sys.executable] + argv[1:], capture_output=True, text=True, timeout=30)
+            return r.returncode, r.stdout, r.stderr
         assert isinstance(argv, list) and argv and all(isinstance(a, str) for a in argv), argv
         assert timeout and timeout > 0, ("no timeout", argv)
         self.calls.append({"argv": list(argv), "timeout": timeout, "cwd": cwd, "env": dict(env or {}),
@@ -386,6 +391,14 @@ class Basics(UpdaterTest):
         before = len(self.env.calls)
         self.run_once(5)
         self.assertNotIn("show", [c["argv"][1] for c in self.env.calls[before:] if c["argv"][0] == "git"])
+
+    def test_release_whose_updater_fails_when_it_runs_isnt_installed(self):
+        # Compiles, but fails as soon as it runs: a newer Python's feature, or a missing import.
+        self.configure("follower")
+        self.env.updater_source = "import no_such_module_anywhere\n"
+        doc = self.run_once()
+        self.assertEqual(self.env.deploys, [])
+        self.assertIn("doesn't run with this Mac's Python", doc["last_error"])
 
     def test_rollback_is_installed_too(self):
         self.configure("hub")

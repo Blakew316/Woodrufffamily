@@ -655,6 +655,26 @@ class Updater(object):
             if phone.get("commit") != commit:
                 phone.update(state="pending", detail="Waiting for the iPhone build.")
 
+    def scripts_run(self, commit):
+        """The release's updater.py and signing.py started with this Mac's Python (their imports and top level run,
+        which compiling alone doesn't: "str | None" compiles on 3.9 but fails when it runs). None when both start."""
+        tmp = tempfile.mkdtemp(prefix="woodruff-check.")
+        try:
+            for name in ("scripts/updater.py", "scripts/signing.py"):
+                status, source, _ = self.git(["show", "%s:%s" % (commit, name)])
+                if status != 0:
+                    continue
+                path = os.path.join(tmp, os.path.basename(name))
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(source)
+                status, _, err = self.env.run([self.env.python, "-I", path, "--help"], SMALL_TIMEOUT)
+                if status != 0:
+                    return "its %s doesn't run with this Mac's Python %d.%d (%s)" % (
+                        name, sys.version_info[0], sys.version_info[1], one_line(err or "exit %d" % status, 200))
+            return None
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
     def release_problem(self, commit):
         """Why installing this release would leave this Mac unable to update again, or None: it has no
         scripts/deploy.sh or scripts/updater.py, or its updater.py doesn't compile with the Python running this
@@ -678,6 +698,8 @@ class Updater(object):
                 except (SyntaxError, ValueError) as exc:
                     problem = "its scripts/updater.py doesn't compile with this Mac's Python %d.%d (%s)" % (
                         sys.version_info[0], sys.version_info[1], one_line(exc, 200))
+        if problem is None:
+            problem = self.scripts_run(commit)
         if rel.get("commit") == commit:
             rel.update(checked=True, problem=problem)
         return problem
@@ -734,6 +756,16 @@ class Updater(object):
             except OSError:
                 self._requested = False
         return self._requested
+
+    def shared_arrived(self, commit):
+        """A follower waiting for [commit]'s shared build, and its manifest is now in iCloud Drive (not when macOS is
+        keeping the updater out of iCloud Drive: looking again every minute changes nothing then)."""
+        if self.role != "follower" or self.state["mac"].get("state") != "waiting":
+            return False
+        if "Full Disk Access" in (self.state.get("shared") or {}).get("detail", ""):
+            return False
+        share = os.path.join(self.env.home, "Library", "Mobile Documents", "com~apple~CloudDocs", "Woodruff Family builds")
+        return os.path.exists(os.path.join(share, "Woodruff Family %s.json" % commit[:12]))
 
     def courtesy_deadline(self):
         """How long deploy.sh may wait, just before it quits the Mac app, for nobody to be using it."""
@@ -1289,8 +1321,9 @@ def cmd_run(env, args):
                 known = (updater.state.get("release") or {}).get("commit")
                 # Again for a new release, or (on a follower) for the shared build it's waiting for: it may have
                 # arrived in iCloud Drive since.
-                waiting = updater.role == "follower" and updater.state["mac"].get("state") == "waiting"
-                if error or not commit or (commit == known and not waiting):
+                # Or someone pressed Check for Updates Now meanwhile.
+                again = commit != known or updater.requested_now() or updater.shared_arrived(commit)
+                if error or not commit or not again:
                     continue
                 signal.signal(signal.SIGTERM, previous)
                 updater = Updater(env, config, args.verbose)

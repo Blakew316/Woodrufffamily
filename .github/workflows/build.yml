@@ -24,8 +24,12 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+      # The Python every Mac runs the updater with (Apple's /usr/bin/python3, 3.9), not Ubuntu's newer one.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
       - name: Script tests
-        run: bash -n scripts/deploy.sh && python3 -m unittest discover -s scripts/tests -p 'test_*.py' -v
+        run: bash -n scripts/deploy.sh && python -m unittest discover -s scripts/tests -p 'test_*.py' -v
 
   build:
     runs-on: macos-26
@@ -90,7 +94,7 @@ jobs:
     if: >-
       (github.event_name == 'push' && github.ref == 'refs/heads/claude/native-apps' &&
       contains(github.event.head_commit.message, '[release]')) ||
-      (github.event_name == 'workflow_dispatch' && inputs.release)
+      (github.event_name == 'workflow_dispatch' && inputs.release && github.ref == 'refs/heads/claude/native-apps')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

@@ -575,7 +575,8 @@ install_shared_helper() {
     if [ -z "$zip" ] || [ "$f" -nt "$zip" ]; then zip=$f; fi
   done
   [ -n "$zip" ] || return 0
-  # Only a newer one than the one installed from there last (so the running helper isn't restarted every check).
+  # Which one was installed (or turned down) here last, by name: iCloud's file times differ between Macs.
+  local name="${zip##*/}"
   local stamp="$HOME/Library/Application Support/Woodruff Family/helper-installed.stamp"
   local refused="$HOME/Library/Application Support/Woodruff Family/helper-refused.stamp"
   # One installed that this Mac won't open: taken out, so the Mac app doesn't keep trying to start it.
@@ -584,12 +585,20 @@ install_shared_helper() {
     rm -rf "$HELPER_INSTALLED"
     rm -f "$stamp"
   fi
-  if [ -d "$HELPER_INSTALLED" ] && [ -f "$stamp" ] && [ ! "$zip" -nt "$stamp" ]; then return 0; fi
-  if [ -f "$refused" ] && [ ! "$zip" -nt "$refused" ]; then return 0; fi
+  if [ -d "$HELPER_INSTALLED" ] && [ "$(cat "$stamp" 2>/dev/null)" = "$name" ]; then return 0; fi
+  if [ "$(cat "$refused" 2>/dev/null)" = "$name" ]; then return 0; fi
+  # Brought down by iCloud first: the updater, running by itself, can't read a file that's only a placeholder.
+  if command -v brctl >/dev/null 2>&1; then brctl download "$zip" </dev/null >/dev/null 2>&1; fi
+  local i=0
+  while [ "$i" -lt 60 ] && ! icloud_here "$zip"; do sleep 2; i=$((i + 1)); done
+  if ! icloud_here "$zip"; then
+    say "    $HELPER_NAME: still coming down from iCloud Drive; installed next time"
+    return 0
+  fi
   step "Mac: installing $HELPER_NAME (Apple Home on this Mac)"
   rm -rf "$unz"
   mkdir -p "$unz"
-  if ! ditto -x -k "$zip" "$unz" </dev/null >>"$hlog" 2>&1 || [ ! -d "$unz/$HELPER_NAME.app" ] ||
+  if ! cp "$zip" "$LOGDIR/helper-shared.zip" 2>>"$hlog" || ! ditto -x -k "$LOGDIR/helper-shared.zip" "$unz" </dev/null >>"$hlog" 2>&1 || [ ! -d "$unz/$HELPER_NAME.app" ] ||
     ! codesign --verify --deep --strict "$unz/$HELPER_NAME.app" </dev/null >>"$hlog" 2>&1; then
     warn "the shared $HELPER_NAME couldn't be used (log $hlog)"
     rm -rf "$unz"
@@ -597,13 +606,13 @@ install_shared_helper() {
   fi
   if ! helper_runs_here "$unz/$HELPER_NAME.app"; then
     warn "$HELPER_NAME isn't installed here: this Mac isn't in its signing profile (register it under Devices at developer.apple.com with the platform macOS, not iOS; the Mac Studio's next build includes it)"
-    mkdir -p "$(dirname "$refused")" && touch "$refused"
+    mkdir -p "$(dirname "$refused")" && printf '%s' "$name" >"$refused"
     rm -rf "$unz"
     return 0
   fi
   rm -f "$refused"
   if put_helper "$unz/$HELPER_NAME.app"; then
-    mkdir -p "$(dirname "$stamp")" && touch "$stamp"
+    mkdir -p "$(dirname "$stamp")" && printf '%s' "$name" >"$stamp"
   fi
   rm -rf "$unz"
 }
@@ -883,9 +892,9 @@ deploy_mac_shared() {
       fi
       # Newer macOS keeps a file's name but not its contents ("dataless"), and won't let the updater, running by
       # itself, bring them down by reading it ("Resource deadlock avoided"): wait for iCloud's own download.
-      if [ -f "$zip" ] && { ! icloud_here "$manifest" || ! icloud_here "$zip"; }; then
+      if [ -f "$zip" ] && { { [ -e "$manifest" ] && ! icloud_here "$manifest"; } || ! icloud_here "$zip"; }; then
         i=0
-        while [ "$i" -lt 60 ] && { ! icloud_here "$manifest" || ! icloud_here "$zip"; }; do sleep 2; i=$((i + 1)); done
+        while [ "$i" -lt 60 ] && { { [ -e "$manifest" ] && ! icloud_here "$manifest"; } || ! icloud_here "$zip"; }; do sleep 2; i=$((i + 1)); done
       fi
     fi
     if [ -f "$manifest" ] && [ -f "$zip" ]; then
@@ -1448,6 +1457,8 @@ main() {
   if [ -z "$TMPROOT" ] || [ ! -d "$TMPROOT" ]; then
     TMPROOT=/tmp
   fi
+  # Each run's folder from more than two days ago, cleared.
+  find "$TMPROOT" -maxdepth 1 -name 'woodruff-deploy.*' -mtime +2 -exec rm -rf {} + 2>/dev/null
   LOGDIR=$(mktemp -d "$TMPROOT/woodruff-deploy.XXXXXX") || LOGDIR=""
   if [ -z "$LOGDIR" ]; then
     say "Can't make a temporary folder in $TMPROOT"
@@ -1536,7 +1547,9 @@ main() {
   say "    signing identities before: $ids_before"
   say "    signing identities after:  $ids_after"
   say "    logs: $LOGDIR"
-  if [ "$ids_after" != "$ids_before" ]; then
+  if [ "$ids_after" != "$ids_before" ] && [ "$XCODE_SIGNING" -eq 1 ]; then
+    say "    (Xcode renewed this Mac's signing certificate: expected with Xcode's signing)"
+  elif [ "$ids_after" != "$ids_before" ]; then
     FAILED=1
     say ""
     say "!!!!! THE SIGNING IDENTITIES CHANGED DURING THIS DEPLOY: \"$ids_before\" before, \"$ids_after\" now. !!!!!"
