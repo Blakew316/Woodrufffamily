@@ -18,6 +18,18 @@ struct RemoteView: View {
 
     private var tv: FleetTV? { fleet.selected }
     private var all: Bool { fleet.remoteAll }
+    #if os(iOS)
+    @Environment(\.horizontalSizeClass) private var sizeClass
+    /// iPad (a wide window): what's playing beside the remote, its name next to the TV's at the top.
+    private var padLayout: Bool { sizeClass == .regular }
+    #else
+    private let padLayout = false
+    #endif
+    /// What's playing is shown in the top bar (iPad) instead of over the clickpad.
+    private var titleInBar: Bool {
+        guard padLayout, !all, let tv, tv.online, tv.link != "refused" else { return false }
+        return tv.playing != nil
+    }
 
     var body: some View {
         GeometryReader { geo in
@@ -60,30 +72,35 @@ struct RemoteView: View {
             .frame(width: geo.size.width, height: h, alignment: embedded ? .top : .center)
             .padding(.top, embedded ? 16 : 0)
             #else
-            // iPad (a wide window): what's playing on the left, the remote on the right. iPhone: the remote alone.
-            let wide = geo.size.width >= 820
-            let colW = wide ? min(460, max(360, geo.size.width * 0.4)) : min(geo.size.width, 460)
-            let padW = max(150, min(colW - 40, 360, h - fixed))
+            // iPad (a wide window): what's playing on the left, a larger remote on the right. iPhone: the remote alone.
+            let wide = padLayout
+            let showTop = hasTop && !titleInBar
+            let k = wide ? min(76, max(54, h * 0.09)) : key
+            let g2 = k * 0.26
+            let aH = k * 0.78
+            let fixedW = (showTop ? topH : 0) + k * 2 + g2 + aH + rows * 16 + 18
+            let colW = wide ? min(540, max(400, geo.size.width * 0.44)) : min(geo.size.width, 460)
+            let padW = max(150, min(colW - 40, wide ? 440 : 360, h - fixedW))
             // Home and power sit in the clickpad's top corners, inside the remote's own column.
             let corner = max(8, (colW - 40 - padW) / 2 - 2)
             let remote = VStack(spacing: 0) {
-                if hasTop { status.frame(height: topH, alignment: .top) }
+                if showTop { status.frame(height: topH, alignment: .top) }
                 Spacer(minLength: 16)
                 Clickpad(size: padW) { send($0) } onRepeat: { send($0, repeat: $1) }
                     .opacity(isOff ? 0.35 : 1)
                     .allowsHitTesting(!isOff)
                     .overlay(alignment: .topLeading) {
-                        CornerKey(symbol: "house.fill", label: "Home", size: key * 0.8) { send("home") }
+                        CornerKey(symbol: "house.fill", label: "Home", size: k * 0.8) { send("home") }
                             .offset(x: -corner, y: -6)
                     }
                     .overlay(alignment: .topTrailing) {
-                        CornerKey(symbol: "power", label: "Power", size: key * 0.8) { send("power") }
+                        CornerKey(symbol: "power", label: "Power", size: k * 0.8) { send("power") }
                             .offset(x: corner, y: -6)
                     }
                 Spacer(minLength: 16)
-                keys(key, gap)
+                keys(k, g2)
                 Spacer(minLength: 16).frame(maxHeight: 22)
-                apps(appsH)
+                apps(aH)
             }
             .padding(.horizontal, 20)
             .padding(.top, 8)
@@ -110,12 +127,24 @@ struct RemoteView: View {
         .toolbar {
             if !embedded {
             ToolbarItem(placement: .principal) {
-                TVPicker(allowAll: true)
-                    // Swipe sideways on the TV's name to move to the next or previous TV.
-                    .simultaneousGesture(DragGesture(minimumDistance: 24).onEnded { v in
-                        guard abs(v.translation.width) > abs(v.translation.height) else { return }
-                        stepTV(v.translation.width < 0 ? 1 : -1)
-                    })
+                HStack(spacing: 10) {
+                    TVPicker(allowAll: true)
+                        // Swipe sideways on the TV's name to move to the next or previous TV.
+                        .simultaneousGesture(DragGesture(minimumDistance: 24).onEnded { v in
+                            guard abs(v.translation.width) > abs(v.translation.height) else { return }
+                            stepTV(v.translation.width < 0 ? 1 : -1)
+                        })
+                    // iPad: what's playing, beside the TV's name (tap for its controls).
+                    if titleInBar, let p = tv?.playing {
+                        Button { nowPlaying = true } label: {
+                            Text(p.title).font(.headline).lineLimit(1)
+                                .padding(.horizontal, 16).padding(.vertical, 9)
+                                .glass(Capsule())
+                        }
+                        .buttonStyle(.plain)
+                        .frame(maxWidth: 380)
+                    }
+                }
             }
                 .sharedBackgroundVisibility(.hidden)
             if let tv, !all, fleet.lg(for: tv) != nil {
@@ -833,13 +862,17 @@ struct KeyboardSheet: View {
 }
 
 #if os(iOS)
-/// iPad, beside the remote: what's playing on the remote's TV, its picture large, the time and the play controls.
+/// iPad, beside the remote: what's playing on the remote's TV, its picture large, the time, and what it's about (as
+/// the Watch banner shows it).
 private struct RemotePlayingPanel: View {
     @Environment(Fleet.self) private var fleet
+    /// What each title is about, read once each.
+    @State private var stories: [String: String] = [:]
 
     var body: some View {
         let tv = fleet.selected
         let p = tv?.nowPlaying
+        let titleID = fleet.artwork(for: p)?.titleID
         GeometryReader { g in
             let w = max(240, min(g.size.width - 64, 680))
             VStack(alignment: .leading, spacing: 18) {
@@ -848,19 +881,35 @@ private struct RemotePlayingPanel: View {
                     .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
                     .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).strokeBorder(.white.opacity(0.08)))
                     .shadow(color: .black.opacity(0.45), radius: 26, y: 14)
-                    .scaleEffect(p?.isPlaying == false ? 0.96 : 1)
-                    .animation(.spring(response: 0.5, dampingFraction: 0.8), value: p?.isPlaying)
                 VStack(alignment: .leading, spacing: 4) {
                     Text(p?.title ?? "Nothing Playing").font(.title2.bold()).lineLimit(2)
                     Text(tv.map { t in t.name + (p?.app.map { " · \($0)" } ?? "") } ?? "")
                         .font(.callout).foregroundStyle(.secondary).lineLimit(1)
                 }
                 if let p { LiveProgress(playing: p).frame(width: w) }
-                if let tv, let p { Transport(tv: tv, playing: p).frame(width: w) }
+                if let id = titleID, let story = stories[id], !story.isEmpty {
+                    Text(story).font(.body).foregroundStyle(.secondary)
+                        .lineLimit(9)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(width: w, alignment: .leading)
+                        .transition(.opacity)
+                }
             }
             .frame(width: w)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        .task(id: titleID) { await loadStory(titleID) }
+    }
+
+    private func loadStory(_ id: String?) async {
+        guard let id, stories[id] == nil, let c = WatchSources.current(fleet) else { return }
+        if let kept = TitleCache.shared.details(hub: c.sourceID, id: id)?.overview {
+            stories[id] = kept
+            return
+        }
+        guard let d = try? await c.title(id) else { return }
+        TitleCache.shared.keep(d, hub: c.sourceID, id: id)
+        withAnimation(.easeOut(duration: 0.3)) { stories[id] = d.overview ?? "" }
     }
 }
 #endif

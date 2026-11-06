@@ -79,7 +79,14 @@ struct WatchView: View {
         .environment(\.posterWidth, posterWidth)
         #if os(iOS)
         .toolbar {
-            ToolbarItem(placement: .principal) { TVPicker() }.sharedBackgroundVisibility(.hidden)
+            ToolbarItem(placement: .principal) {
+                // iPad: Movies | TV Shows on the same row as the TV.
+                HStack(spacing: 12) {
+                    TVPicker()
+                    if sizeClass == .regular { sectionPicker.frame(width: 260) }
+                }
+            }
+            .sharedBackgroundVisibility(.hidden)
             ToolbarItem(placement: .primaryAction) {
                 NavigationLink { SearchPage() } label: { Image(systemName: "magnifyingglass") }
                     .accessibilityLabel("Search")
@@ -143,7 +150,7 @@ struct WatchView: View {
         let featured = worked.featured
         VStack(spacing: 12) {
             #if os(iOS)
-            sectionPicker
+            if sizeClass != .regular { sectionPicker }
             #endif
             if !featured.isEmpty {
                 Billboard(titles: featured, page: $page, client: client).id(place)

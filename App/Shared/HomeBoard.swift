@@ -95,7 +95,12 @@ struct BoardMetrics: Equatable {
         let smallest: CGFloat = 76, gap: CGFloat = 10, tall: CGFloat = 0.92
         #endif
         let w = max(width, 160)
-        columns = max(2, Int((w + gap) / (smallest + gap)))
+        var n = max(2, Int((w + gap) / (smallest + gap)))
+        #if os(iOS)
+        // iPad: a multiple of three, so three cameras fill a row.
+        if UIDevice.current.userInterfaceIdiom == .pad, n >= 6 { n = n / 3 * 3 }
+        #endif
+        columns = n
         self.gap = gap
         cell = (w - gap * CGFloat(columns - 1)) / CGFloat(columns)
         row = (cell * tall).rounded()
@@ -444,6 +449,19 @@ struct HomeBoard: View, Equatable {
         guard let tile else { return TileSpan(w: 2, h: 1) }
         if let r = resize, r.id == id { return r.span }
         let kind = tile.kind
+        #if os(iOS)
+        // iPad: three cameras to a row and two TVs, whatever size they were given on a phone or the Mac.
+        if UIDevice.current.userInterfaceIdiom == .pad, m.columns >= 6 {
+            switch kind {
+            case .camera:
+                let w = m.columns / 3
+                return clamp(TileSpan(w: w, h: max(2, Int((Double(w) * 0.78).rounded()))), kind, m)
+            case .tv:
+                return clamp(TileSpan(w: m.columns / 2, h: 3), kind, m)
+            case .small: break
+            }
+        }
+        #endif
         let saved = layout.span(page, id).flatMap { $0.count == 2 ? TileSpan(w: $0[0], h: $0[1]) : nil }
         return clamp(saved ?? kind.standard, kind, m)
     }
