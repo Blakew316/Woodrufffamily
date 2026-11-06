@@ -364,7 +364,7 @@ struct DeviceGlyph: View {
         case .tableLamp(let level):
             TableLampPicture(level: level, lit: on, color: tint).frame(width: 42, height: 56)
         case .stringLights(let level):
-            StringLightsPicture(level: level, lit: on, color: tint).frame(width: 72, height: 54)
+            StringLightsPicture(level: level, lit: on, color: tint).frame(width: 80, height: 54)
         case .homePod(let mini):
             Image(systemName: mini ? "homepodmini.fill" : "homepod.fill")
                 .font(.system(size: 21, weight: .semibold))
