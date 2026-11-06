@@ -106,7 +106,7 @@ struct RemoteView: View {
         }
         .inlineTitle()
         .sheet(isPresented: $typing) { if let tv { KeyboardSheet(tv: tv).macResizable(width: 480, height: 400) } }
-        .task(id: "\(fleet.selectedID ?? "")-\(all)") { await fieldLoop() }
+        .task(id: "\(fleet.selectedID ?? "")-\(all)-\(fleet.isActive)") { await fieldLoop() }
         .sheet(isPresented: $nowPlaying) { NowPlayingSheet().sheetBanner().macResizable(width: 560, height: 780) }
         // Handoff: the Mac offers to open the remote on the same TV.
         .userActivity("com.woodruff.family.remote") { a in
@@ -251,6 +251,8 @@ struct RemoteView: View {
 
     private func fieldLoop() async {
         field = nil
+        // Not while the app isn't in use (the Mac's windows hidden): asked again once it is.
+        guard fleet.isActive else { return }
         while !Task.isCancelled {
             if !all, let t = tv, t.online, let c = fleet.client(for: t), let s = try? await c.typeField() {
                 withAnimation(.snappy) { field = s }
@@ -656,7 +658,7 @@ struct KeyboardSheet: View {
                     Button("Enter") { submit() }.buttonStyle(.glassProminent).disabled(state?.field == nil)
                 }
             }
-            .task { await loop() }
+            .task(id: fleet.isActive) { await loop() }
             .onAppear { focused = true }
         }
         .presentationDetents([.medium, .large])
@@ -672,6 +674,8 @@ struct KeyboardSheet: View {
     }
 
     private func loop() async {
+        // Not while the app isn't in use (the Mac's windows hidden).
+        guard fleet.isActive else { return }
         while !Task.isCancelled {
             if let s = try? await fleet.client(for: tv)?.typeField() {
                 state = s

@@ -255,18 +255,7 @@ actor ImageStore {
     /// A TV on the home network answers within a few seconds or not at all (it's off): it isn't waited for as long
     /// as one away from home, or a picture from the internet.
     private static func timeout(for url: URL) -> TimeInterval {
-        isHomeAddress(url.host) ? 8 : 20
-    }
-
-    /// An address on the home network (private IPv4, link-local, or .local), as the TVs are told apart from an
-    /// away-from-home link.
-    static func isHomeAddress(_ host: String?) -> Bool {
-        guard let host, !host.isEmpty else { return false }
-        if host.hasSuffix(".local") { return true }
-        let parts = host.split(separator: ".", omittingEmptySubsequences: false)
-        let p = parts.compactMap { Int($0) }
-        guard parts.count == 4, p.count == 4, p.allSatisfy({ (0...255).contains($0) }) else { return false }
-        return p[0] == 10 || (p[0] == 192 && p[1] == 168) || (p[0] == 172 && (16...31).contains(p[1])) || (p[0] == 169 && p[1] == 254)
+        Fleet.isHomeAddress(url.host) ? 8 : 20
     }
 
     /// Bytes that are a picture (an error page answered as a success isn't kept).

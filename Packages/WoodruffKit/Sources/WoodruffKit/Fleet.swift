@@ -91,7 +91,7 @@ public final class Fleet {
     public private(set) var tvs: [FleetTV] = [] { didSet { noteTVs() } }
     /// Saved only when something in it changed (it's set again with what it already holds now and then: a TV's health
     /// report saying the same platform, say). Every save is noticed by the settings sync as a change to look at.
-    public var extras: [String: TVExtras] = [:] { didSet { if extras != oldValue { Saved.save("extras", extras) } } }
+    public var extras: [String: TVExtras] = [:] { didSet { if extras != oldValue { Saved.save("extras", extras); noteBadge() } } }
 
     /// Reads names, TV details and hidden alerts again (after another of the family's devices changed them).
     public func reloadSynced() {
@@ -116,7 +116,6 @@ public final class Fleet {
     /// When the latest answer arrived. Not observed: it changes with every answer, and what shows it reads it inside a
     /// `TimelineView` (each tick reads it afresh) or outside any view.
     @ObservationIgnored public private(set) var refreshedAt: Date?
-    public private(set) var refreshing = false
     public private(set) var latest: [TVPlatform: Release] = [:]
     public private(set) var releaseErrors: [TVPlatform: String] = [:]
     public private(set) var healthReports: [String: HealthReport] = [:]
@@ -244,16 +243,12 @@ public final class Fleet {
     @ObservationIgnored private var boostUntil: [String: Date] = [:]
     @ObservationIgnored private var pokes: [String: Task<Void, Never>] = [:]
     @ObservationIgnored private var heardBefore: Set<String> = []
-    @ObservationIgnored private var refreshCount = 0
 
     /// The Fleet the app runs: told about every command sent through a `TVClient` (see `TVClient.changed`).
     /// Nil in widgets and anywhere `start()` wasn't called.
     static var running: Fleet?
 
     init() {
-        // What each TV last played was once kept to picture TVs that had stopped; nothing is pictured unless it's
-        // playing now, so the old copy goes.
-        UserDefaults.standard.removeObject(forKey: "lastPlaying")
         if Demo.isOn {
             Demo.register()
             hubs = [Demo.hub]
@@ -271,6 +266,23 @@ public final class Fleet {
         selectedID = UserDefaults.standard.string(forKey: "selectedTV")
         tvs = hubs.map { FleetTV(id: $0.id, name: $0.name, online: false, onScreen: false, playing: nil, version: nil, seen: nil, link: "ok", health: nil, hubID: $0.id, routeID: "this", platform: extras[$0.id]?.platform) }
         noteTVs()
+        migrate()
+    }
+
+    /// Old copies cleared, once.
+    private func migrate() {
+        let d = UserDefaults.standard
+        guard !d.bool(forKey: "migrated.v2") else { return }
+        // What each TV last played was once kept to picture TVs that had stopped; nothing is pictured unless it's
+        // playing now, so the old copy goes.
+        d.removeObject(forKey: "lastPlaying")
+        // The old split copy of the pairings, merged into "pairings". Only once every TV in it was read (a key in a
+        // keychain that's still locked would otherwise be lost): until then, again at the next launch.
+        let old = Saved.load("hubs", as: [Hub].self) ?? []
+        guard old.allSatisfy({ h in hubs.contains { $0.id == h.id } }) else { return }
+        if !old.isEmpty { saveHubs() }
+        d.removeObject(forKey: "hubs")
+        d.set(true, forKey: "migrated.v2")
     }
 
     /// Pairings are kept in three places so no update, reinstall or re-signed build ever signs the family out:
@@ -281,7 +293,6 @@ public final class Fleet {
         if Demo.isOn { return }
         let good = hubs.filter { !$0.connection.key.isEmpty }
         Saved.save("pairings", good)
-        UserDefaults.standard.removeObject(forKey: "hubs") // the old split copy, now merged into "pairings"
         if let data = try? JSONEncoder().encode(good) { Keychain.set(String(decoding: data, as: UTF8.self), for: "pairings") }
         for h in good { Keychain.set(h.connection.key, for: "hub.\(h.id)") }
         pairingsChanged?(good)
@@ -328,8 +339,12 @@ public final class Fleet {
         loop = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
-                self.askDue()
-                try? await Task.sleep(nanoseconds: 500_000_000)
+                // Until the next hub is due: at least a quarter second, at most half a second while the app is in
+                // use (a poke or a TV heard on the Wi‑Fi shows quickly) and 4 seconds while it isn't.
+                let next = self.askDue()
+                let cap: TimeInterval = self.active ? 0.5 : 4
+                let wait = min(max(next.timeIntervalSinceNow, 0.25), cap)
+                try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
             }
         }
         // Announcements for this phone: every 5 seconds while the app is in use, every 30 otherwise.
@@ -456,12 +471,6 @@ public final class Fleet {
     /// given up. Safe to call any time, also while other questions are out (the newest answer always wins).
     public func refresh() async {
         guard !hubs.isEmpty else { return }
-        refreshCount += 1
-        refreshing = true
-        defer {
-            refreshCount -= 1
-            if refreshCount <= 0 { refreshCount = 0; refreshing = false }
-        }
         let list = hubs
         await withTaskGroup(of: Void.self) { g in
             for hub in list {
@@ -526,14 +535,15 @@ public final class Fleet {
 
     /// Asks each hub whose turn it is. One that answers: every 1.5 seconds while the app is in use. One that's
     /// off: every 12 seconds, with a short wait of its own, so it never slows the TVs that are on. Each answer
-    /// is shown by itself as it arrives (`take`).
-    private func askDue() {
+    /// is shown by itself as it arrives (`take`). Returns when the next hub is due.
+    @discardableResult
+    private func askDue() -> Date {
         let now = Date()
         // The loop didn't run for a while (the app was suspended, the Mac asleep or napping): the hubs get a moment to
         // answer before what they said before counts as old (`staleAfter`).
         if now.timeIntervalSince(lastTick) > 5 { wokeUntil = max(wokeUntil, now.addingTimeInterval(Fleet.wakeGrace)) }
         lastTick = now
-        guard !hubs.isEmpty else { return }
+        guard !hubs.isEmpty else { return .distantFuture }
         dropStalePlaying(now)
         let heard = heardTVs()
         #if os(macOS)
@@ -542,22 +552,33 @@ public final class Fleet {
         #else
         let idle: (on: TimeInterval, off: TimeInterval) = (25, 60)
         #endif
-        for listed in hubs where (inFlight[listed.id] ?? 0) == 0 {
+        var next = Date.distantFuture
+        for listed in hubs {
             var hub = listed
             let boosted = boostUntil[hub.id].map { $0 > now } ?? false
             let answering = (failures[hub.id] ?? 0) < 2 || boosted
             var every: TimeInterval = answering ? (active ? 1.5 : idle.on) : (active ? 12 : idle.off)
+            // One still being asked is due again once it has answered (looked at again by then).
+            if (inFlight[listed.id] ?? 0) > 0 {
+                next = min(next, (askedAt[hub.id] ?? now).addingTimeInterval(every))
+                continue
+            }
             if !answering, let found = heard[hub.id] {
                 // Off until now but just heard on the Wi‑Fi (switched on): ask now, at its new address if it moved.
                 if !heardBefore.contains(hub.id) { every = 0 }
                 if let moved = moveIfNeeded(hub, to: found) { hub = moved; every = 0 }
             }
-            if let at = askedAt[hub.id], now.timeIntervalSince(at) < every - 0.05 { continue }
+            if let at = askedAt[hub.id], now.timeIntervalSince(at) < every - 0.05 {
+                next = min(next, at.addingTimeInterval(every))
+                continue
+            }
             let wait: TimeInterval = answering ? askTimeout(hub) : 4
             let target = hub
             Task { await self.ask(target, timeout: wait) }
+            next = min(next, now.addingTimeInterval(every))
         }
         heardBefore = Set(heard.keys)
+        return next
     }
 
     /// A hub whose latest answer has grown too old to go by (`staleAfter`) while one of its TVs still shows what that
@@ -578,7 +599,7 @@ public final class Fleet {
     }
 
     /// An address on the home network (private IPv4, link-local, or .local), as opposed to an away-from-home link.
-    nonisolated static func isHomeAddress(_ host: String?) -> Bool {
+    public nonisolated static func isHomeAddress(_ host: String?) -> Bool {
         guard let host, !host.isEmpty else { return false }
         if host.hasSuffix(".local") { return true }
         let parts = host.split(separator: ".", omittingEmptySubsequences: false)
@@ -985,6 +1006,7 @@ public final class Fleet {
     private func noteTVs() {
         let names = tvs.filter { !$0.isUnpaired }.map(\.name)
         if names != pairedNames { pairedNames = names }
+        noteBadge()
         updateLibraryHub()
     }
 
@@ -997,8 +1019,6 @@ public final class Fleet {
         if id == nil { id = hubs.first?.id }
         if id != libraryHubID { libraryHubID = id }
     }
-
-    public var selectedClient: TVClient? { selected.flatMap(client(for:)) }
 
     // MARK: Health
 
@@ -1029,16 +1049,20 @@ public final class Fleet {
     // MARK: Updates
 
     public func checkReleases() async {
-        if Demo.isOn { latest = Demo.releases; return }
+        if Demo.isOn { latest = Demo.releases; noteBadge(); return }
         let token = githubToken
+        // Each value is set only when it's different (this runs every 10 minutes and redraws whatever reads it).
         for p in TVPlatform.allCases {
             do {
-                latest[p] = try await ReleaseFeed(token: p == .webOS ? token : nil).latest(p)
-                releaseErrors[p] = nil
+                let r = try await ReleaseFeed(token: p == .webOS ? token : nil).latest(p)
+                if latest[p] != r { latest[p] = r }
+                if releaseErrors[p] != nil { releaseErrors[p] = nil }
             } catch {
-                releaseErrors[p] = error.localizedDescription
+                let e = error.localizedDescription
+                if releaseErrors[p] != e { releaseErrors[p] = e }
             }
         }
+        noteBadge()
     }
 
     public func platform(of tv: FleetTV) -> TVPlatform? { extras[tv.id]?.platform ?? tv.platform }
@@ -1051,6 +1075,14 @@ public final class Fleet {
 
     public var updatesWaiting: Int { tvs.filter(isBehind).count }
     public var attentionCount: Int { tvs.filter(\.needsAttention).count }
+    /// Settings' badge: TVs that need attention or an update. Kept, and set only when it changes, so what shows it
+    /// isn't redrawn with every change to the TVs.
+    public private(set) var settingsBadge = 0
+
+    private func noteBadge() {
+        let n = attentionCount + updatesWaiting
+        if n != settingsBadge { settingsBadge = n }
+    }
 
     /// Asks one Android TV to update now (it downloads the newest release and installs it once nobody's using it).
     /// [now]: Update was pressed: the TV installs the newest build at once (unless a film is playing).
@@ -1133,6 +1165,9 @@ public final class Fleet {
     // MARK: Inbox (announcements to this phone)
 
     public private(set) var recentMessages: [InboxMessage] = Saved.load("recentMessages", as: [InboxMessage].self) ?? []
+    /// Where each hub's messages were read up to, and the ids already shown: read once, saved as they change.
+    @ObservationIgnored private var inboxCursors: [String: InboxCursor] = Saved.load("inboxCursors", as: [String: InboxCursor].self) ?? [:]
+    @ObservationIgnored private var inboxSeen: [String] = Saved.load("inboxSeen", as: [String].self) ?? []
 
     /// Asks each hub for messages kept for this phone, showing only new ones (by seq within an epoch, and by id).
     public func pollInbox() async {
@@ -1140,7 +1175,7 @@ public final class Fleet {
         // again once it's back, and keeps what it has for this phone until then).
         let asking = hubs.filter { (failures[$0.id] ?? 0) < 2 }
         guard !asking.isEmpty else { return }
-        let startCursors = Saved.load("inboxCursors", as: [String: InboxCursor].self) ?? [:]
+        let startCursors = inboxCursors
         let phoneID = phone.id
         var boxes: [String: Inbox] = [:]
         await withTaskGroup(of: (String, Inbox?).self) { g in
@@ -1155,9 +1190,9 @@ public final class Fleet {
                 if let box { boxes[id] = box }
             }
         }
-        let savedCursors = Saved.load("inboxCursors", as: [String: InboxCursor].self) ?? [:]
+        let savedCursors = inboxCursors
         var cursors = savedCursors
-        let savedSeen = Saved.load("inboxSeen", as: [String].self) ?? []
+        let savedSeen = inboxSeen
         var seenOrder = savedSeen
         var seen = Set(seenOrder)
         let shownBefore = recentMessages
@@ -1181,8 +1216,14 @@ public final class Fleet {
         if kept != recentMessages { recentMessages = kept }
         // Written only when something changed (this runs every few seconds).
         if recentMessages != shownBefore { Saved.save("recentMessages", recentMessages) }
-        if seenOrder != savedSeen { Saved.save("inboxSeen", Array(seenOrder.suffix(200))) }
-        if cursors != savedCursors { Saved.save("inboxCursors", cursors) }
+        if seenOrder != savedSeen {
+            inboxSeen = Array(seenOrder.suffix(200))
+            Saved.save("inboxSeen", inboxSeen)
+        }
+        if cursors != savedCursors {
+            inboxCursors = cursors
+            Saved.save("inboxCursors", cursors)
+        }
     }
 
     // MARK: Messages

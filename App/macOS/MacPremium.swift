@@ -223,11 +223,12 @@ final class NowPlayingBridge {
             shownAt = now
             shownPlaying = p.isPlaying
         }
-        if lastTitle != p.title, let path = fleet.artwork(for: p)?.poster, let url = fleet.hubClient()?.art(path) {
+        if lastTitle != p.title, let path = fleet.artwork(for: p)?.poster, let url = fleet.hubClient()?.art(path, small: true) {
             lastTitle = p.title
             let title = p.title
             Task {
-                guard let data = try? await URLSession.woodruff.data(from: url).0, let img = NSImage(data: data) else { return }
+                // The small poster, through the app's picture cache (decoded off the main thread, kept for next time).
+                guard let img = await ImageStore.shared.image(url, maxPixel: 600) else { return }
                 // Still that title (not cleared, nor moved on, while the poster loaded): kept for every update after.
                 guard self.lastTitle == title else { return }
                 let artwork = MPMediaItemArtwork(boundsSize: img.size) { _ in img }
@@ -240,15 +241,6 @@ final class NowPlayingBridge {
                 cur[MPNowPlayingInfoPropertyElapsedPlaybackTime] = self.shownElapsed + (self.shownPlaying ? Date().timeIntervalSince(self.shownAt) : 0)
                 MPNowPlayingInfoCenter.default().nowPlayingInfo = cur
             }
-        }
-    }
-
-    private func key(_ k: String) {
-        Task { @MainActor in
-            let f = Fleet.shared
-            if let tv = f.selected { try? await f.client(for: tv)?.key(k) }
-            try? await Task.sleep(nanoseconds: 600_000_000)
-            await f.refresh()
         }
     }
 

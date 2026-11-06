@@ -127,8 +127,11 @@ struct WoodruffApp: App {
                 }
         }
         .onChange(of: scenePhase) { _, phase in
-            // Only really leaving pauses things (not a glance at Notification Center or the app switcher).
+            // Only really leaving pauses things (not a glance at Notification Center or the app switcher). On the Mac,
+            // `WindowActivity` says whether the app is in use (its windows shown or hidden).
+            #if os(iOS)
             if phase == .active { fleet.setActive(true) } else if phase == .background { fleet.setActive(false) }
+            #endif
             if phase == .background {
                 AppWake.wentAway = true
                 CameraStreams.shared.background()
@@ -291,11 +294,53 @@ struct RootView: View {
 
     #if os(iOS)
     /// The Liquid Glass tab bar (it tucks away while scrolling), with what's playing riding above it.
+    /// (The Lock Screen's Live Activity follows the remote's TV by itself: `LiveActivitySync.watch`.)
     private var tabs: some View {
         tabView
-            .onChange(of: fleet.selected?.nowPlaying) { _, _ in LiveActivitySync.shared.sync(fleet) }
-            .onChange(of: fleet.selectedID) { _, _ in LiveActivitySync.shared.sync(fleet) }
-            .onChange(of: fleet.remoteAll) { _, _ in LiveActivitySync.shared.sync(fleet) }
+            .background { FleetSideEffects() }
+    }
+
+    private var tabView: some View {
+        TabView(selection: selection) {
+            ForEach(AppSection.phone) { s in
+                Tab(s.title, systemImage: s.symbol, value: s) {
+                    PhoneTabPage(section: s)
+                }
+                .badge(s == .settings ? fleet.settingsBadge : 0)
+            }
+        }
+    }
+    #endif
+}
+
+#if os(iOS)
+/// One tab's page, with what's playing above the tabs. Apart from the window's root, so what's playing redraws only this.
+private struct PhoneTabPage: View {
+    @Environment(Fleet.self) private var fleet
+    let section: AppSection
+
+    var body: some View {
+        let s = section
+        let playing = fleet.selected?.nowPlaying
+        NavigationStack { s.view }
+            // What's playing floats above the tabs everywhere but Remote, which shows it itself.
+            .safeAreaInset(edge: .bottom, spacing: 0) { if s != .remote { NowPlayingBar() } }
+            // Room under every page's last row for the bar, so nothing ends up stuck behind it.
+            .contentMargins(.bottom, s != .remote && playing != nil ? 96 : 0, for: .scrollContent)
+            .animation(.smooth, value: playing?.title)
+    }
+}
+#endif
+
+/// What follows the TVs outside the app's pages (the widgets, and on the Mac Control Center). Nothing to draw: it's
+/// a view of its own so a change to the TVs redraws only this, not the whole window.
+struct FleetSideEffects: View {
+    @Environment(Fleet.self) private var fleet
+
+    #if os(iOS)
+    var body: some View {
+        Color.clear
+            .frame(width: 0, height: 0)
             // The Home Screen widgets: what's playing, the weather and the thermostat.
             .onChange(of: fleet.selected?.nowPlaying) { _, _ in PhoneWidgetSync.update(fleet) }
             .onChange(of: fleet.selectedID) { _, _ in PhoneWidgetSync.update(fleet) }
@@ -305,21 +350,15 @@ struct RootView: View {
             .onChange(of: fleet.artwork(for: fleet.selected?.nowPlaying)) { _, _ in PhoneWidgetSync.update(fleet) }
             .task { PhoneWidgetSync.update(fleet) }
     }
-
-    private var tabView: some View {
-        TabView(selection: selection) {
-            ForEach(AppSection.phone) { s in
-                Tab(s.title, systemImage: s.symbol, value: s) {
-                    NavigationStack { s.view }
-                        // What's playing floats above the tabs everywhere but Remote, which shows it itself.
-                        .safeAreaInset(edge: .bottom, spacing: 0) { if s != .remote { NowPlayingBar() } }
-                        // Room under every page's last row for the bar, so nothing ends up stuck behind it.
-                        .contentMargins(.bottom, s != .remote && fleet.selected?.nowPlaying != nil ? 96 : 0, for: .scrollContent)
-                        .animation(.smooth, value: fleet.selected?.nowPlaying?.title)
-                }
-                .badge(s == .settings ? fleet.attentionCount + fleet.updatesWaiting : 0)
-            }
-        }
+    #else
+    var body: some View {
+        Color.clear
+            .frame(width: 0, height: 0)
+            .onChange(of: fleet.tvs) { _, _ in NowPlayingBridge.shared.update(fleet); WidgetSync.update(fleet) }
+            .onChange(of: fleet.selectedID) { _, _ in NowPlayingBridge.shared.update(fleet); WidgetSync.update(fleet) }
+            // Control Center's poster as soon as the library has it (the TV's first report usually comes before the
+            // library does, and the TVs only change now and then once something plays steadily).
+            .onChange(of: fleet.artwork(for: fleet.selected?.nowPlaying)) { _, _ in NowPlayingBridge.shared.update(fleet) }
     }
     #endif
 }
@@ -385,17 +424,7 @@ struct MacRoot: View {
                     }
                 }
                 Section("TVs", isExpanded: $showTVs) {
-                    ForEach(fleet.tvs) { tv in
-                        HStack {
-                            Text(tv.name)
-                            Spacer()
-                            if tv.needsAttention { Circle().fill(Palette.attention).frame(width: 7, height: 7) }
-                        }
-                        .foregroundStyle(tv.online ? .primary : .secondary)
-                        .contentShape(Rectangle())
-                        .tag("tv:\(tv.id)")
-                        .simultaneousGesture(TapGesture().onEnded { go(to: "tv:\(tv.id)") })
-                    }
+                    MacSidebarTVs(go: { go(to: $0) })
                 }
                 if !home.speakers.isEmpty {
                     Section("Speakers", isExpanded: $showSpeakers) {
@@ -467,11 +496,7 @@ struct MacRoot: View {
         // starts it at its first page.
         .onChange(of: query) { old, new in if old.isEmpty && !new.isEmpty { nav.reset() } }
         .onChange(of: selection) { _, _ in nav.reset() }
-        .onChange(of: fleet.tvs) { _, _ in NowPlayingBridge.shared.update(fleet); WidgetSync.update(fleet) }
-        .onChange(of: fleet.selectedID) { _, _ in NowPlayingBridge.shared.update(fleet); WidgetSync.update(fleet) }
-        // Control Center's poster as soon as the library has it (the TV's first report usually comes before the
-        // library does, and the TVs only change now and then once something plays steadily).
-        .onChange(of: fleet.artwork(for: fleet.selected?.nowPlaying)) { _, _ in NowPlayingBridge.shared.update(fleet) }
+        .background { FleetSideEffects() }
         .onAppear { SmartHome.shared.onChange = { WidgetSync.update(fleet) } }
         .sheet(isPresented: Binding(get: { !welcomeShown && !Demo.isOn }, set: { if !$0 { welcomeShown = true } })) { MacWelcome().macResizable(width: 520, height: 420) }
         .userActivity("com.woodruff.family.remote", isActive: fleet.remotePanel) { a in
@@ -601,6 +626,26 @@ struct MacRoot: View {
         }
         // Dragging the bar's empty space moves the window, like a title bar.
         .background { Color.clear.contentShape(Rectangle()).gesture(WindowDragGesture()) }
+    }
+}
+
+/// The sidebar's TVs, apart from the window's root so a change to the TVs redraws only these rows.
+private struct MacSidebarTVs: View {
+    @Environment(Fleet.self) private var fleet
+    let go: (String) -> Void
+
+    var body: some View {
+        ForEach(fleet.tvs) { tv in
+            HStack {
+                Text(tv.name)
+                Spacer()
+                if tv.needsAttention { Circle().fill(Palette.attention).frame(width: 7, height: 7) }
+            }
+            .foregroundStyle(tv.online ? .primary : .secondary)
+            .contentShape(Rectangle())
+            .tag("tv:\(tv.id)")
+            .simultaneousGesture(TapGesture().onEnded { go("tv:\(tv.id)") })
+        }
     }
 }
 

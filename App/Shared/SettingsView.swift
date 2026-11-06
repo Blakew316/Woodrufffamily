@@ -8,7 +8,8 @@ import WoodruffKit
     static let shared = HubSettings()
 
     var s: TVSettings?
-    var loading = false
+    /// A read is under way. Not observed: no page shows it, and it changes with every read (every 20 seconds).
+    @ObservationIgnored var loading = false
     /// Why the settings couldn't be read (the pages say so, with Try Again, instead of loading forever).
     var error: String?
     /// How many pages showing them are open, and the one loop that reads them again while any is (`follow`).

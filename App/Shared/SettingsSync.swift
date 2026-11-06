@@ -101,6 +101,8 @@ final class SettingsSync {
     // Kept on the TVs.
     @ObservationIgnored private var tvRun: Task<Void, Never>?
     @ObservationIgnored private var tvAgain = false
+    /// Each "ud:" key's saved bytes and their text, as last read (the same bytes aren't parsed again).
+    @ObservationIgnored private var parsed: [String: (Data, String)] = [:]
     @ObservationIgnored private var pushSoon: Task<Void, Never>?
     @ObservationIgnored private var folders: [String: String] = [:]
     /// Rounds in a row each TV couldn't be asked, and rounds its copy was listed but wouldn't come.
@@ -162,8 +164,9 @@ final class SettingsSync {
                 if self.dirty || Keychain.generation != self.seenGeneration || Date().timeIntervalSince(self.lastLook) > 30 { self.check() }
                 // Every 12 seconds while the app is in use, every minute while it isn't (the Mac's window hidden), apart,
                 // so a TV taking its time never holds up noticing changes here. (A change made here goes at once.)
+                // A round still running is left to finish: the next starts after it, once the time has passed.
                 let every: TimeInterval = (self.fleet?.isActive ?? true) ? 12 : 60
-                if Date().timeIntervalSince(self.lastTVRound) >= every - 0.1 {
+                if self.tvRun == nil, Date().timeIntervalSince(self.lastTVRound) >= every - 0.1 {
                     self.lastTVRound = Date()
                     Task { await self.syncTVs() }
                 }
@@ -185,7 +188,8 @@ final class SettingsSync {
         browse()
         check()
         broadcast()
-        Task { await syncTVs() }
+        // A round already running reads the TVs (another straight after it is only for a change made here).
+        if tvRun == nil { Task { await syncTVs() } }
     }
 
     func syncNow() async { check(); await syncTVs(); broadcast() }
@@ -264,8 +268,12 @@ final class SettingsSync {
         }
         guard let obj = UserDefaults.standard.object(forKey: name) else { return "" }
         if key.hasPrefix("ud:") {
-            guard let d = obj as? Data, let o = try? JSONSerialization.jsonObject(with: d, options: [.fragmentsAllowed]) else { return "" }
-            return SyncMerge.canonical(o) ?? ""
+            guard let d = obj as? Data else { parsed[key] = nil; return "" }
+            if let p = parsed[key], p.0 == d { return p.1 }
+            guard let o = try? JSONSerialization.jsonObject(with: d, options: [.fragmentsAllowed]) else { parsed[key] = nil; return "" }
+            let text = SyncMerge.canonical(o) ?? ""
+            parsed[key] = (d, text)
+            return text
         }
         return SyncMerge.canonical(obj) ?? ""
     }
@@ -466,9 +474,10 @@ final class SettingsSync {
     // MARK: Taking newer settings in
 
     /// Takes whatever is newer in [items]; returns whether ours has anything newer than theirs.
+    /// [checked]: `check` has just run (a TV round looks once, not once per TV).
     @discardableResult
-    private func apply(_ items: [String: [String: Any]]) -> Bool {
-        check()   // a change made here a moment ago is stamped before anything is compared
+    private func apply(_ items: [String: [String: Any]], checked: Bool = false) -> Bool {
+        if !checked { check() }   // a change made here a moment ago is stamped before anything is compared
         let before = last
         var written: Set<String> = []
         var oursNewer = false
@@ -605,7 +614,7 @@ final class SettingsSync {
     }
 
     /// Reads every TV's copy, takes what's newer, and writes back to each TV whose copy is behind. One round at a
-    /// time; asked during one, another follows straight after it.
+    /// time; asked during one (a change made here), another follows straight after it.
     func syncTVs() async {
         if let running = tvRun {
             tvAgain = true
@@ -625,8 +634,9 @@ final class SettingsSync {
     private func syncTVsOnce() async {
         guard let fleet, !fleet.hubs.isEmpty else { return }
         #if os(iOS)
-        let bg = holdBackground()
-        defer { endBackground(bg) }
+        // Time to finish is asked for only away from the front (going there, `leaving` asks for its own).
+        let bg = UIApplication.shared.applicationState == .active ? nil : holdBackground()
+        defer { if let bg { endBackground(bg) } }
         #endif
         runs += 1
         let hubs = fleet.hubs
@@ -643,12 +653,18 @@ final class SettingsSync {
                 if let copy { copies[id] = copy }
             }
         }
-        // 2. Whatever is newer in any of them comes in.
+        // 2. Whatever is newer in any of them comes in. A change made here a moment ago is stamped first (once),
+        //    and copies that are the same bytes are read and taken in once.
+        check()
         var remote: [String: [String: [String: Any]]] = [:]
+        var opened: [Data: [String: [String: Any]]] = [:]
         for hub in hubs {
-            guard let plain = copies[hub.id]?.plain, let its = Self.copyItems(plain) else { continue }
+            guard let plain = copies[hub.id]?.plain else { continue }
+            if let its = opened[plain] { remote[hub.id] = its; continue }
+            guard let its = Self.copyItems(plain) else { continue }
+            opened[plain] = its
             remote[hub.id] = its
-            apply(its)
+            apply(its, checked: true)
         }
         // 3. Each TV whose copy is behind gets everything from here (keeping anything this version doesn't know,
         //    and anything the copy has newer).

@@ -54,7 +54,7 @@ struct TVDetailView: View {
             .formStyle(.grouped)
             .navigationTitle(tv.name)
             .inlineTitle()
-            .task(id: tvID) { await healthLoop() }
+            .task(id: "\(tvID)|\(fleet.isActive)") { await healthLoop() }
             .task(id: waking) { await watchWake() }
             // The TV's own answer replaces a play/pause guess the moment it arrives.
             .onChange(of: tv.playing?.isPlaying) { _, _ in flipped = nil }
@@ -314,6 +314,8 @@ struct TVDetailView: View {
     private func run(_ op: @escaping () async throws -> Void) { Task { do { try await op() } catch { fleet.show(error) } } }
 
     private func healthLoop() async {
+        // Not while the app isn't in use (the Mac's windows hidden): asked again once it is.
+        guard fleet.isActive else { return }
         while !Task.isCancelled {
             if let t = fleet.tv(tvID) { await fleet.loadHealth(t) }
             try? await Task.sleep(nanoseconds: 15_000_000_000)
@@ -363,8 +365,9 @@ struct TVScreenThumb: View {
         ZStack {
             if let screen { Image(platformImage: screen).resizable().aspectRatio(contentMode: .fill) }
         }
-        .task(id: paused) {
-            guard !paused else { return }
+        .task(id: [paused, fleet.isActive]) {
+            // Not while the big screen is open, nor while the app isn't in use (the Mac's windows hidden).
+            guard !paused, fleet.isActive else { return }
             while !Task.isCancelled {
                 if let t = fleet.tv(tvID), t.online, t.nowPlaying == nil, fleet.platform(of: t) != .webOS, let c = fleet.client(for: t),
                    let d = try? await c.screen(width: 480), !Task.isCancelled,
@@ -407,7 +410,7 @@ struct TVScreenSheet: View {
             .padding(20)
             .navigationTitle(fleet.tv(tvID)?.name ?? "TV").inlineTitle()
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button(role: .close) { dismiss() } } }
-            .task { await loop() }
+            .task(id: fleet.isActive) { await loop() }
         }
         .presentationDetents([.medium, .large])
         #if os(macOS)
@@ -416,6 +419,8 @@ struct TVScreenSheet: View {
     }
 
     private func loop() async {
+        // Not while the app isn't in use (the Mac's windows hidden): live again once it is.
+        guard fleet.isActive else { return }
         while !Task.isCancelled {
             var wait: UInt64 = 800_000_000
             if let tv = fleet.tv(tvID), let c = fleet.client(for: tv) {

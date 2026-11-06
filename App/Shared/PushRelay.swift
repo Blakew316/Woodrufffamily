@@ -267,6 +267,8 @@ final class PushRelay {
     }
 
     private func browse() {
+        // One search at a time: start() runs each time the main window opens.
+        browser?.cancel(); browser = nil
         let b = NWBrowser(for: .bonjour(type: Self.service, domain: nil), using: .tcp)
         b.browseResultsChangedHandler = { [weak self] results, _ in
             var names: [String] = []
@@ -292,7 +294,6 @@ final class PushRelay {
     /// After the Mac wakes or the network changes, look again.
     func wake() {
         #if os(macOS)
-        browser?.cancel(); browser = nil
         browse()
         advertise()
         #endif
