@@ -289,3 +289,103 @@ private struct StringLightsDrawing: View, Animatable {
         }
     }
 }
+
+extension GoveeLight {
+    /// A light bar mounted under a shelf or cabinet.
+    var isUnderShelf: Bool {
+        let n = name.lowercased()
+        return n.contains("shelf") || n.contains("undercabinet") || n.contains("under cabinet") || n.contains("under-cabinet")
+    }
+}
+
+/// A light bar under an oak shelf, its light spraying down in a cone onto the counter. Turned on, the cone grows down
+/// from the bar; the brighter it's set, the brighter the beam, the further it reaches and the wider it spreads.
+struct UnderShelfPicture: View {
+    var level: Double
+    var lit: Bool
+    var color: Color
+
+    var body: some View {
+        UnderShelfDrawing(power: lit ? 1 : 0, level: level, color: color)
+            .animation(.easeInOut(duration: 1.2), value: lit)
+            .animation(.easeOut(duration: 0.35), value: level)
+    }
+}
+
+private struct UnderShelfDrawing: View, Animatable {
+    var power: Double
+    var level: Double
+    var color: Color
+
+    var animatableData: AnimatablePair<Double, Double> {
+        get { AnimatablePair(power, level) }
+        set { power = newValue.first; level = newValue.second }
+    }
+
+    var body: some View {
+        Overhang(fraction: 0.45) { size, m in
+            Canvas { context, _ in
+                var ctx = context
+                ctx.translateBy(x: m, y: m)
+                draw(ctx, w: size.width, h: size.height)
+            }
+        }
+    }
+
+    private func draw(_ ctx: GraphicsContext, w: CGFloat, h: CGFloat) {
+        let power = CGFloat(max(0, min(1, self.power)))
+        let lv = CGFloat(0.08 + 0.92 * max(0, min(1, level)))
+        let shW = w * 0.94, shH = h * 0.13, shX = (w - shW) / 2, shY = h * 0.1
+        let brW = shW * 0.7, brH = max(1.5, h * 0.045), brX = (w - brW) / 2, brY = shY + shH
+        let floorY = h * 0.94
+        let cx = w / 2
+
+        if power > 0 {
+            let reach = brY + brH + (floorY - brY - brH) * (0.55 + 0.45 * lv) * (0.3 + 0.7 * power)
+            let top = brY + brH * 0.6
+            // Four cones, each a little wider and fainter, so the beam's edges are soft.
+            for k in 0..<4 {
+                let spread = w * (0.36 + 0.2 * lv) * (0.75 + 0.17 * CGFloat(k))
+                let inset = brW * (0.1 - 0.04 * CGFloat(k))
+                var cone = Path()
+                cone.move(to: CGPoint(x: brX + inset, y: top))
+                cone.addLine(to: CGPoint(x: brX + brW - inset, y: top))
+                cone.addLine(to: CGPoint(x: cx + spread, y: reach))
+                cone.addLine(to: CGPoint(x: cx - spread, y: reach))
+                cone.closeSubpath()
+                var c = ctx
+                c.opacity = power * 0.32
+                c.fill(cone, with: down(top, reach, [(0, color.mix(with: .white, by: 0.5).opacity(0.8 * lv + 0.1)), (0.4, color.opacity(0.4 * lv + 0.05)),
+                                                     (0.85, color.opacity(0.06 * lv)), (1, color.opacity(0))]))
+            }
+            // The pool of light on the counter.
+            var pool = ctx
+            pool.opacity = power
+            glow(pool, at: CGPoint(x: cx, y: min(floorY, reach)), radius: w * (0.35 + 0.25 * lv), scaleY: 0.16,
+                 [(0, color.mix(with: .white, by: 0.4).opacity(0.75 * lv)), (0.6, color.opacity(0.25 * lv)), (1, color.opacity(0))])
+            // A soft glow round the bar.
+            glow(pool, at: CGPoint(x: cx, y: brY + brH), radius: brW * 0.75, scaleY: 0.35,
+                 [(0, color.mix(with: .white, by: 0.5).opacity(0.7 * lv)), (1, color.opacity(0))])
+        }
+
+        // The shelf: oak, lighter along its top edge, darker underneath.
+        let shelf = roundedRect(CGRect(x: shX, y: shY, width: shW, height: shH), top: shH * 0.12, bottom: shH * 0.12)
+        ctx.fill(shelf, with: down(shY, shY + shH, [(0, hex(0xD7B48A)), (0.18, hex(0xC49A6C)), (0.8, hex(0xA77B4F)), (1, hex(0x7D5835))]))
+        ctx.fill(shelf, with: across(shX, shX + shW, [(0, .black.opacity(0.18)), (0.15, .black.opacity(0)), (0.85, .black.opacity(0)), (1, .black.opacity(0.18))]))
+        // Its grain.
+        let grain = hex(0x5A3719, 0.18)
+        ctx.fill(Path(CGRect(x: shX + shW * 0.05, y: shY + shH * 0.4, width: shW * 0.5, height: max(0.4, shH * 0.06))), with: .color(grain))
+        ctx.fill(Path(CGRect(x: shX + shW * 0.45, y: shY + shH * 0.65, width: shW * 0.45, height: max(0.4, shH * 0.06))), with: .color(grain))
+
+        // The light bar: brushed aluminium, its diffuser underneath lit in the colour.
+        let bar = roundedRect(CGRect(x: brX, y: brY, width: brW, height: brH), top: brH * 0.2, bottom: brH * 0.45)
+        ctx.fill(bar, with: down(brY, brY + brH, [(0, hex(0x5A5A5E)), (0.45, hex(0xC9C9CD)), (1, hex(0x8A8A8F))]))
+        let diffuser = roundedRect(CGRect(x: brX + brW * 0.03, y: brY + brH * 0.55, width: brW * 0.94, height: brH * 0.45), top: 0, bottom: brH * 0.2)
+        ctx.fill(diffuser, with: .color(hex(0xE8E8EA)))
+        if power > 0 {
+            var d = ctx
+            d.opacity = power
+            d.fill(diffuser, with: .color(color.mix(with: .white, by: 0.55)))
+        }
+    }
+}
