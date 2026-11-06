@@ -510,26 +510,44 @@ private struct HexPanelsDrawing: View, Animatable {
         for (i, p) in points.enumerated() {
             let b = each(i)
             guard b > 0 else { continue }
-            glow(ctx, at: p, radius: r * (1.3 + 1.1 * lv), [(0, color.opacity(0.45 * b * lv)), (0.5, color.opacity(0.15 * b * lv)), (1, color.opacity(0))])
+            glow(ctx, at: p, radius: r * (1.4 + 1.2 * lv), [(0, color.opacity(0.55 * b * lv)), (0.5, color.opacity(0.18 * b * lv)), (1, color.opacity(0))])
+        }
+        let th = r * 0.16   // the panels' thickness
+        // Their shadows on the wall, below and to the right.
+        for p in points {
+            ctx.fill(hexagon(CGPoint(x: p.x + r * 0.08, y: p.y + th + r * 0.08), r * 1.02), with: .color(.black.opacity(0.32)))
         }
         for (i, p) in points.enumerated() {
             let b = each(i)
-            let panel = hexagon(p, r)
-            // Off: frosted, lighter at the top.
-            ctx.fill(panel, with: down(p.y - r, p.y + r, [(0, hex(0xB4B4B9)), (1, hex(0x86868C))]))
+            let face = hexagon(p, r)
+            // The edge showing below the face: the panel's thickness.
+            let edge = hexagon(CGPoint(x: p.x, y: p.y + th), r)
+            ctx.fill(edge, with: down(p.y, p.y + r + th, [(0, hex(0x3A3A3E)), (1, hex(0x1C1C1F))]))
+            if b > 0 {
+                var e = ctx
+                e.opacity = b * 0.55
+                e.fill(edge, with: .color(color.mix(with: .black, by: 0.35)))
+            }
+            // The face: frosted, lighter at the top.
+            ctx.fill(face, with: down(p.y - r, p.y + r, [(0, hex(0xCFCFD4)), (1, hex(0x9A9AA0))]))
             if b > 0 {
                 // A little lighter or deeper by its place, as the real panels blend.
-                let c = i % 3 == 0 ? color.mix(with: .white, by: 0.18) : i % 3 == 2 ? color.mix(with: .black, by: 0.12) : color
+                let c = i % 3 == 0 ? color.mix(with: .white, by: 0.22) : i % 3 == 2 ? color.mix(with: .black, by: 0.08) : color
                 var l = ctx
                 l.opacity = b
-                l.fill(panel, with: .radialGradient(stops([(0, c.mix(with: .white, by: 0.55 + 0.3 * lv)), (0.55, c.mix(with: .white, by: 0.15 * lv)),
-                                                           (1, c.mix(with: .black, by: 0.25 * (1 - lv)))]),
-                                                    center: CGPoint(x: p.x, y: p.y - r * 0.15), startRadius: 0, endRadius: r * 1.05))
+                l.fill(face, with: .radialGradient(stops([(0, c.mix(with: .white, by: 0.62 + 0.3 * lv)), (0.55, c.mix(with: .white, by: 0.2 * lv)),
+                                                          (1, c.mix(with: .black, by: 0.18 * (1 - lv)))]),
+                                                   center: CGPoint(x: p.x, y: p.y - r * 0.15), startRadius: 0, endRadius: r * 1.05))
             }
-            // The frame, and the diffuser's thin lighter rim inside it.
-            let frame = b > 0 ? color.mix(with: .black, by: 0.45).opacity(0.55 + 0.4 * (1 - b)) : hex(0x141416, 0.7)
-            ctx.stroke(panel, with: .color(frame), lineWidth: max(0.5, r * 0.06))
-            ctx.stroke(hexagon(p, r * 0.86), with: .color(.white.opacity(b > 0 ? 0.35 * b : 0.12)), lineWidth: max(0.4, r * 0.04))
+            // A bevel, lit along the top edges and in shade along the bottom ones, and a sheen across the top.
+            var bevel = ctx
+            bevel.clip(to: face)
+            bevel.stroke(face, with: down(p.y - r, p.y + r, [(0, .white.opacity(0.55)), (0.5, .white.opacity(0.05)), (0.55, .black.opacity(0.05)), (1, .black.opacity(0.3))]),
+                         lineWidth: max(0.6, r * 0.12))
+            bevel.fill(Path(CGRect(x: p.x - r, y: p.y - r, width: r * 2, height: r)), with: down(p.y - r, p.y, [(0, .white.opacity(0.18)), (1, .white.opacity(0))]))
+            // The frame.
+            let frame = b > 0 ? color.mix(with: .black, by: 0.5).opacity(0.5 + 0.4 * (1 - b)) : hex(0x141416, 0.6)
+            ctx.stroke(face, with: .color(frame), lineWidth: max(0.5, r * 0.05))
         }
     }
 }
