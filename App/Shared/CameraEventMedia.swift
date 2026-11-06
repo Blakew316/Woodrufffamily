@@ -123,7 +123,9 @@ enum CameraEventMedia {
     static func attachment(_ file: URL) -> UNNotificationAttachment? {
         let copy = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + "." + file.pathExtension)
         guard (try? FileManager.default.copyItem(at: file, to: copy)) != nil else { return nil }
-        return try? UNNotificationAttachment(identifier: "media", url: copy, options: nil)
+        // A clip's thumbnail (the picture on the alert's right) from a second in, where who was seen is usually in view.
+        let options: [AnyHashable: Any]? = file.pathExtension == "mp4" ? [UNNotificationAttachmentOptionsThumbnailTimeKey: 1] : nil
+        return try? UNNotificationAttachment(identifier: "media", url: copy, options: options)
     }
 
     /// Clips and snapshots older than ten minutes are let go, and anything left from the alerts' attachments.
