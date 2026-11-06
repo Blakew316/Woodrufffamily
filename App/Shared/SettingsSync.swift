@@ -46,7 +46,7 @@ final class SettingsSync {
     ]
     /// Saved settings that travel (JSON in UserDefaults).
     static let dataKeys = ["smartNames", "smartRooms", "smartExtraRooms", "goveeManualIPs", "homeLayout", "extras", "hiddenAlerts", "pushTokens",
-                           "familyPairings"]
+                           "familyPairings", "atvRemote.paired"]
     /// Plain preferences that travel (property-list values in UserDefaults): alert choices, the remote's click, and
     /// Now Playing on the Lock Screen. (Home's tile sizes travel with the Home layout.)
     static let valueKeys = ["watch.source", "nest.alert.person", "nest.alert.motion", "nest.alert.doorbell", "notifyFleet", "liveActivity", "remoteClick"]
@@ -54,7 +54,7 @@ final class SettingsSync {
     /// Saved settings kept entry by entry (one TV's name, one light's room, one paired TV, one tile's size; the Home
     /// layout part by part), so two devices changing different entries at the same time both keep their change.
     static let entryKeys: Set<String> = ["ud:smartNames", "ud:smartRooms", "ud:extras", "ud:hiddenAlerts", "ud:pushTokens", "ud:homeLayout",
-                                         "ud:familyPairings"]
+                                         "ud:familyPairings", "ud:atvRemote.paired"]
     /// Kept whole before they were kept part by part: a copy from then counts each part as old as the whole was.
     static let wholeBefore: Set<String> = ["ud:homeLayout"]
 

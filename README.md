@@ -15,7 +15,7 @@ the same five sections, as tabs on iPhone and a sidebar on the Mac.
 
 | | |
 |---|---|
-| **Remote** | One remote for every TV. The TV name at the top switches TVs, or **All TVs** sends each key to every TV that's on. Round clickpad (tap, swipe, hold to repeat, hold OK for Menu), Back, Home, Play/Pause, Mute, a volume rocker that repeats while held, Netflix and YouTube, and typing into the TV's text box. On LG TVs connected directly it reaches every app, not just Woodruff. On the Mac, the keyboard is the remote. |
+| **Remote** | One remote for every TV. The TV name at the top switches TVs, or **All TVs** sends each key to every TV that's on. Round clickpad (tap, swipe, hold to repeat, hold OK for Menu), Back, Home, Play/Pause, Mute, a volume rocker that repeats while held, Netflix and YouTube, and typing into the TV's text box. On LG TVs connected directly, and on Google TV and Android TV sets paired with the Android TV remote (the TV's page, Remote for Every App: the TV shows a code), it reaches every app, not just Woodruff, and Power turns the TV on and off. On the Mac, the keyboard is the remote. |
 | **Watch** | Movies and TV Shows from the TV's Google Drive, like the Apple TV app: a featured billboard, Continue Watching, Recently Added, grids with sort/genre/unwatched, search, title sheets with seasons and episodes. Play on the remote's TV, **Play On** any TV, or **Watch Together on All TVs**. What's playing rides above the tab bar with ↺10, Play/Pause and 30↻. |
 | **Send** | A message to TV screens and phones, or kept on every TV's Home; Photos & Files on the TV; Open a Link; Start Photo Slideshow. |
 | **Memories** | Family Memories edge to edge. Add from Photos (shrunk to the TV's size, keeping when each was taken). Full-screen viewer; **Show on TV** follows as you swipe. |
@@ -166,7 +166,9 @@ summary of what was installed where, and names the temporary folder its logs are
   - `Fleet.swift`: the observable state: paired hubs, every TV merged from all hubs, polling, health, inbox, releases, LG remotes.
   - `Discovery.swift`: Bonjour browsing and Wake-on-LAN. `LGRemote.swift`: LG's SSAP WebSocket remote.
   - `Releases.swift`: GitHub releases and version numbers. `WebOSInstaller.swift`: SSH install on LG TVs (Mac).
-- `App/Shared`: the SwiftUI screens, the same on iPhone (tabs), iPad and Mac (sidebar). `App/iOS`: the QR scanner. `App/macOS`: the menu bar and commands.
+- `App/Shared`: the SwiftUI screens, the same on iPhone (tabs), iPad and Mac (sidebar). `AndroidTVRemote.swift` is Android's
+  own TV remote protocol (v2, as Google's TV remote app): pairing on port 6467, keys on 6466, over TLS with one client
+  certificate built into the app (so a TV paired once takes every family device), the TV's certificate pinned per address. `App/iOS`: the QR scanner. `App/macOS`: the menu bar and commands.
 - `project.yml`: the Xcode project (XcodeGen), so there's no `.xcodeproj` to merge.
 - `scripts`: `updater.py`, the updater on each Mac; `deploy.sh`, which builds, signs and installs; `signing.py`, its
   signing checks; and their tests in `scripts/tests`.

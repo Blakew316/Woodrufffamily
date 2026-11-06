@@ -46,6 +46,7 @@ struct TVDetailView: View {
                 updates(tv)
                 if let r = report { more(r) }
                 LGSection(tv: tv)
+                AndroidRemoteSection(tv: tv)
                 #if os(macOS)
                 SSHSection(tv: tv)
                 #endif
@@ -611,6 +612,88 @@ struct LGSection: View {
             } catch { fleet.show(error) }
             busy = false
         }
+    }
+}
+
+/// Google TV and Android TV: the Android TV remote, paired once with the code the TV shows (see `AndroidTVRemote`).
+struct AndroidRemoteSection: View {
+    @Environment(Fleet.self) private var fleet
+    var tv: FleetTV
+    @State private var typedHost = ""
+    @State private var code = ""
+    @State private var askingCode = false
+    @State private var busy = false
+
+    private var remote: AndroidTVRemote { AndroidTVRemote.shared }
+
+    var body: some View {
+        if fleet.platform(of: tv) == .android {
+            let known = fleet.androidAddress(for: tv)
+            let host = known ?? typedHost.trimmingCharacters(in: .whitespacesAndNewlines)
+            Section {
+                if remote.isPaired(host: host) {
+                    LabeledContent("Remote for Every App", value: "On")
+                    Button("Forget", role: .destructive) { remote.forget(host: host) }
+                } else if askingCode {
+                    TextField("Enter the code on the TV", text: $code)
+                        .autocorrectionDisabled()
+                        #if os(iOS)
+                        .textInputAutocapitalization(.characters)
+                        #endif
+                        .onSubmit { finish(host) }
+                    Button(busy ? "Checking…" : "Done") { finish(host) }
+                        .disabled(busy || code.filter(\.isHexDigit).count != 6)
+                    Button("Cancel") { cancel(host) }
+                } else {
+                    if known == nil {
+                        TextField("TV’s address, e.g. 192.168.1.40", text: $typedHost).autocorrectionDisabled()
+                    }
+                    LabeledContent("Remote for Every App") {
+                        Button(busy ? "Pairing…" : "Pair") { start(host) }.disabled(busy || host.isEmpty)
+                    }
+                }
+            } footer: {
+                Text("Lets the remote work in every app and turn \(tv.name) on and off.")
+            }
+        }
+    }
+
+    private func start(_ host: String) {
+        guard !host.isEmpty, !busy else { return }
+        busy = true
+        Task {
+            do {
+                try await remote.startPairing(host: host)
+                code = ""
+                askingCode = true
+            } catch { fleet.show(error) }
+            busy = false
+        }
+    }
+
+    private func finish(_ host: String) {
+        let typed = code.filter(\.isHexDigit)
+        guard typed.count == 6, !busy else { return }
+        busy = true
+        Task {
+            do {
+                try await remote.finishPairing(host: host, code: typed)
+                askingCode = false
+                code = ""
+                fleet.say("Paired", "The remote now works in every app on \(tv.name).")
+            } catch {
+                // A mistyped code can be typed again while the TV still shows it; otherwise start over.
+                if !remote.isPairing(host: host) { askingCode = false }
+                fleet.show(error)
+            }
+            busy = false
+        }
+    }
+
+    private func cancel(_ host: String) {
+        remote.cancelPairing(host: host)
+        askingCode = false
+        code = ""
     }
 }
 
