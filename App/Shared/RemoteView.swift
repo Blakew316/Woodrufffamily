@@ -60,20 +60,25 @@ struct RemoteView: View {
             .frame(width: geo.size.width, height: h, alignment: embedded ? .top : .center)
             .padding(.top, embedded ? 16 : 0)
             #else
-            VStack(spacing: 0) {
+            // iPad (a wide window): what's playing on the left, the remote on the right. iPhone: the remote alone.
+            let wide = geo.size.width >= 820
+            let colW = wide ? min(460, max(360, geo.size.width * 0.4)) : min(geo.size.width, 460)
+            let padW = max(150, min(colW - 40, 360, h - fixed))
+            // Home and power sit in the clickpad's top corners, inside the remote's own column.
+            let corner = max(8, (colW - 40 - padW) / 2 - 2)
+            let remote = VStack(spacing: 0) {
                 if hasTop { status.frame(height: topH, alignment: .top) }
                 Spacer(minLength: 16)
-                Clickpad(size: pad) { send($0) } onRepeat: { send($0, repeat: $1) }
+                Clickpad(size: padW) { send($0) } onRepeat: { send($0, repeat: $1) }
                     .opacity(isOff ? 0.35 : 1)
                     .allowsHitTesting(!isOff)
-                    // Home and power sit in the clickpad's top corners, matched.
                     .overlay(alignment: .topLeading) {
                         CornerKey(symbol: "house.fill", label: "Home", size: key * 0.8) { send("home") }
-                            .offset(x: -(geo.size.width - pad) / 2 + 22 > -8 ? -8 : -(geo.size.width - pad) / 2 + 22, y: -6)
+                            .offset(x: -corner, y: -6)
                     }
                     .overlay(alignment: .topTrailing) {
                         CornerKey(symbol: "power", label: "Power", size: key * 0.8) { send("power") }
-                            .offset(x: (geo.size.width - pad) / 2 - 22 < 8 ? 8 : (geo.size.width - pad) / 2 - 22, y: -6)
+                            .offset(x: corner, y: -6)
                     }
                 Spacer(minLength: 16)
                 keys(key, gap)
@@ -83,8 +88,17 @@ struct RemoteView: View {
             .padding(.horizontal, 20)
             .padding(.top, 8)
             .padding(.bottom, 10)
-            .frame(maxWidth: 460)
-            .frame(width: geo.size.width, height: h)
+            .frame(width: colW, height: h)
+            if wide {
+                HStack(spacing: 0) {
+                    RemotePlayingPanel().frame(maxWidth: .infinity, maxHeight: .infinity)
+                    remote
+                }
+                .padding(.trailing, 24)
+                .frame(width: geo.size.width, height: h)
+            } else {
+                remote.frame(width: geo.size.width, height: h)
+            }
             #endif
         }
         #if os(iOS)
@@ -817,3 +831,36 @@ struct KeyboardSheet: View {
         }
     }
 }
+
+#if os(iOS)
+/// iPad, beside the remote: what's playing on the remote's TV, its picture large, the time and the play controls.
+private struct RemotePlayingPanel: View {
+    @Environment(Fleet.self) private var fleet
+
+    var body: some View {
+        let tv = fleet.selected
+        let p = tv?.nowPlaying
+        GeometryReader { g in
+            let w = max(240, min(g.size.width - 64, 680))
+            VStack(alignment: .leading, spacing: 18) {
+                NowPlayingArt(playing: p, maxPixel: 1800)
+                    .frame(width: w, height: w * 9 / 16)
+                    .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).strokeBorder(.white.opacity(0.08)))
+                    .shadow(color: .black.opacity(0.45), radius: 26, y: 14)
+                    .scaleEffect(p?.isPlaying == false ? 0.96 : 1)
+                    .animation(.spring(response: 0.5, dampingFraction: 0.8), value: p?.isPlaying)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(p?.title ?? "Nothing Playing").font(.title2.bold()).lineLimit(2)
+                    Text(tv.map { t in t.name + (p?.app.map { " · \($0)" } ?? "") } ?? "")
+                        .font(.callout).foregroundStyle(.secondary).lineLimit(1)
+                }
+                if let p { LiveProgress(playing: p).frame(width: w) }
+                if let tv, let p { Transport(tv: tv, playing: p).frame(width: w) }
+            }
+            .frame(width: w)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+}
+#endif

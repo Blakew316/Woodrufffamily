@@ -26,6 +26,24 @@ struct WatchView: View {
     /// The banner's five and the rows, worked out once per list (not at every redraw: the banner turning every 12
     /// seconds redraws the page).
     @State private var shelves = ShelfCache()
+    #if os(iOS)
+    @Environment(\.horizontalSizeClass) private var sizeClass
+    #endif
+
+    /// Posters sized so each row fills the page: on the Mac and iPad about 150 points each, as many as fit; 112 on
+    /// iPhone.
+    private func fitPosters(_ w: CGFloat) {
+        #if os(iOS)
+        guard sizeClass == .regular else { if posterWidth != 112 { posterWidth = 112 }; return }
+        let target: CGFloat = 160
+        #else
+        let target: CGFloat = 150
+        #endif
+        let usable = max(300, w - 40), gap: CGFloat = 10
+        let n = max(4, Int((usable + gap) / (target + gap)))
+        let fit = ((usable - gap * CGFloat(n - 1)) / CGFloat(n)).rounded(.down)
+        if abs(fit - posterWidth) > 0.5 { posterWidth = fit }
+    }
 
     private var client: (any WatchSource)? { WatchSources.current(fleet) }
 
@@ -57,16 +75,8 @@ struct WatchView: View {
             .padding(.bottom, 30)
         }
         .scrollIndicators(.hidden)
-        #if os(macOS)
-        // Posters sized so each row fills the window: about 150 points each, as many as fit.
-        .onGeometryChange(for: CGFloat.self, of: { $0.size.width }) { w in
-            let usable = max(300, w - 40), gap: CGFloat = 10
-            let n = max(4, Int((usable + gap) / (150 + gap)))
-            let fit = ((usable - gap * CGFloat(n - 1)) / CGFloat(n)).rounded(.down)
-            if abs(fit - posterWidth) > 0.5 { posterWidth = fit }
-        }
+        .onGeometryChange(for: CGFloat.self, of: { $0.size.width }) { w in fitPosters(w) }
         .environment(\.posterWidth, posterWidth)
-        #endif
         #if os(iOS)
         .toolbar {
             ToolbarItem(placement: .principal) { TVPicker() }.sharedBackgroundVisibility(.hidden)
@@ -158,6 +168,7 @@ struct WatchView: View {
             Text("TV Shows").tag("shows")
         }
         .pickerStyle(.segmented)
+        .frame(maxWidth: 420)
         .labelsHidden()
         .frame(maxWidth: 300)
         .frame(maxWidth: .infinity)
@@ -313,8 +324,12 @@ struct Billboard: View {
     @Binding var page: Int
     /// The TV the library is from (Watch works it out once for every picture on the page).
     var client: (any WatchSource)?
-    /// What each featured title is about (the Mac's banner shows it), read once each.
+    /// What each featured title is about (the wide banner shows it), read once each.
     @State private var overviews: [String: String] = [:]
+    #if os(iOS)
+    @Environment(\.horizontalSizeClass) private var sizeClass
+    @State private var width: CGFloat = 0
+    #endif
 
     var body: some View {
         pages
@@ -326,13 +341,18 @@ struct Billboard: View {
 
     #if os(iOS)
     private var pages: some View {
-        TabView(selection: $page) {
-            ForEach(Array(titles.enumerated()), id: \.offset) { i, t in card(t).tag(i) }
+        // iPad: the wide banner, as on the Mac (the words and buttons on the left, the picture on the right), short
+        // enough that Continue Watching shows under it. iPhone: the picture's own shape, across the screen.
+        let wide = sizeClass == .regular
+        return TabView(selection: $page) {
+            ForEach(Array(titles.enumerated()), id: \.offset) { i, t in
+                Group { if wide { wideCard(t) } else { card(t) } }.tag(i)
+            }
         }
         .tabViewStyle(.page(indexDisplayMode: .never))
-        // The picture's own shape (16:9), the whole of it, across the screen with a margin.
-        .aspectRatio(16.0 / 9.0, contentMode: .fit)
-        .padding(.horizontal, 16)
+        .aspectRatio(wide ? (width > 1000 ? 2.7 : 2.1) : 16.0 / 9.0, contentMode: .fit)
+        .padding(.horizontal, wide ? 24 : 16)
+        .onGeometryChange(for: CGFloat.self, of: { $0.size.width }) { width = $0 }
         // On to the next after 12 seconds, as on the TV (a swipe starts the 12 seconds again).
         .task(id: page) {
             try? await Task.sleep(nanoseconds: 12_000_000_000)
@@ -346,7 +366,7 @@ struct Billboard: View {
     private var pages: some View {
         ZStack {
             if let t = titles[safe: page] ?? titles.first {
-                macCard(t).id(t.id).transition(.opacity)
+                wideCard(t).id(t.id).transition(.opacity)
             }
         }
         // The window's whole width, a third as tall: it grows and shrinks with the window, and the rows show under it.
@@ -360,10 +380,9 @@ struct Billboard: View {
     }
     #endif
 
-    #if os(macOS)
-    /// As on the TV: the words on the left, the whole 16:9 picture on the right in a rounded frame, over a blurred
-    /// copy of it filling the banner.
-    private func macCard(_ t: Title) -> some View {
+    /// The Mac's and iPad's banner, as on the TV: the words on the left, the whole 16:9 picture on the right in a
+    /// rounded frame, over a blurred copy of it filling the banner.
+    private func wideCard(_ t: Title) -> some View {
         let art = client?.artURL(t.backdrop ?? t.poster)
         return GeometryReader { g in
             let inset: CGFloat = 18
@@ -423,7 +442,6 @@ struct Billboard: View {
         TitleCache.shared.keep(d, hub: c.sourceID, id: t.id)
         withAnimation(.easeOut(duration: 0.3)) { overviews[t.id] = d.overview ?? "" }
     }
-    #endif
 
     private var dots: some View {
         HStack(spacing: 5) {

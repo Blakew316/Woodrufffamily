@@ -315,6 +315,8 @@ struct RootView: View {
                 .badge(s == .settings ? fleet.settingsBadge : 0)
             }
         }
+        // On iPad the tabs float at the top and turn into a sidebar, like the Mac's; on iPhone, the usual tab bar.
+        .tabViewStyle(.sidebarAdaptable)
     }
     #endif
 }

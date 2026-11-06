@@ -151,6 +151,12 @@ struct LiveProgress: View {
 struct NowPlayingBar: View {
     @Environment(Fleet.self) private var fleet
     @State private var open = false
+    #if os(iOS)
+    @Environment(\.horizontalSizeClass) private var sizeClass
+    private var widest: CGFloat { sizeClass == .regular ? 620 : .infinity }
+    #else
+    private let widest: CGFloat = .infinity
+    #endif
 
     var body: some View {
         if let tv = fleet.selected, let p = tv.nowPlaying {
@@ -173,6 +179,7 @@ struct NowPlayingBar: View {
             }
             .padding(.leading, 8).padding(.trailing, 12).padding(.vertical, 8)
             .glass(Capsule())
+            .frame(maxWidth: widest)
             .padding(.horizontal, 16)
             .padding(.bottom, 6)
             .sheet(isPresented: $open) { NowPlayingSheet().sheetBanner().macResizable(width: 560, height: 780) }
