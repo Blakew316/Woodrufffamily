@@ -179,7 +179,7 @@ private struct Drawing {
             let blue = Color(red: 0.35, green: 0.67, blue: 1)
             c.fill(circle(.zero, bw * 0.55), with: radial(0, 0, 0, bw * 0.55, [(0, blue.opacity(0.55)), (1, blue.opacity(0))]))
         }
-        // One continuous panel of dark brushed steel (the top band as plain as the door), a fine seam between them.
+        // Dark brushed steel, the top band and the door one finish.
         let strip = bh * 0.11, dy = y + strip, dh = bh * 0.8, ky = dy + dh
         let panel = box(x, y, bw, ky - y, top: bw * 0.012, bottom: bw * 0.01)
         ctx.fill(panel, with: linear(x, y, x + bw, ky, [(0, rgb(0x62656B)), (0.35, rgb(0x4A4C51)), (1, rgb(0x2D2F33))]))
@@ -188,9 +188,14 @@ private struct Drawing {
         lit.clip(to: panel)
         lit.fill(rect(x, y, bw, ky - y), with: radial(x + bw * 0.25, y + bh * 0.12, 0, bw * 0.95, [(0, .white.opacity(0.16)), (1, .white.opacity(0))]))
         lit.fill(rect(x, y, bw, ky - y), with: linear(x, 0, x + bw, 0, [(0, .black.opacity(0.18)), (0.06, .black.opacity(0)), (0.94, .black.opacity(0)), (1, .black.opacity(0.22))]))
-        let seam = max(0.35, bh * 0.006)
-        ctx.fill(rect(x + bw * 0.01, dy, bw * 0.98, seam), with: .color(.black.opacity(0.4)))
-        ctx.fill(rect(x + bw * 0.01, dy + seam, bw * 0.98, max(0.3, bh * 0.004)), with: .color(.white.opacity(0.1)))
+        // The lip along the top: a dark recess under the top band, the lip's edge catching the light, and its
+        // shadow on the door below. Nothing else on it.
+        let rY = y + strip * 0.38, rH = strip * 0.3
+        ctx.fill(rect(x + bw * 0.025, rY, bw * 0.95, rH), with: linear(0, rY, 0, rY + rH, [(0, rgb(0x0C0D0F)), (1, rgb(0x1C1D20))]))
+        let lY = rY + rH, lH = dy - lY
+        ctx.fill(rect(x + bw * 0.02, lY, bw * 0.96, lH), with: linear(0, lY, 0, lY + lH, [(0, rgb(0x8A8E94)), (0.25, rgb(0x6A6D73)), (1, rgb(0x3D3F44))]))
+        ctx.fill(rect(x + bw * 0.02, lY, bw * 0.96, max(0.35, lH * 0.12)), with: .color(.white.opacity(0.6)))
+        ctx.fill(rect(x + bw * 0.01, dy, bw * 0.98, strip * 0.35), with: linear(0, dy, 0, dy + strip * 0.35, [(0, .black.opacity(0.45)), (1, .black.opacity(0))]))
         ctx.stroke(panel, with: .color(.white.opacity(0.14)), lineWidth: max(0.3, bw * 0.006))
         // The toe kick with its vent slots, and the feet.
         ctx.fill(rect(x + bw * 0.01, ky, bw * 0.98, y + bh - ky), with: linear(0, ky, 0, y + bh, [(0, rgb(0x0E0E10)), (1, rgb(0x050506))]))
