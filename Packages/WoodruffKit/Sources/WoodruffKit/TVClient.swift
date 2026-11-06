@@ -224,7 +224,7 @@ public struct TVClient: Sendable {
     }
 
     /// A library film or episode to play on this device: the TV streams it, from where the player asks (seeking).
-    public func streamURL(_ key: String) -> URL { t.url("/api/stream", ["media": key]) }
+    public func streamURL(_ key: String) -> URL { hub.connection.url("/api/stream", ["media": key]) }
 
     /// Starts [action] on TV [target] ("this", a linked id, or "all" for Watch Together), as the phone page routes it.
     public func start(_ action: PlayAction, on target: String, fromStart: Bool = false, showId: String? = nil) async throws -> PlayResult {
