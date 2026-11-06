@@ -632,9 +632,9 @@ struct MacRoot: View {
                 }
                 Button { withAnimation(.smooth) { fleet.remotePanel.toggle() } } label: {
                     Image(systemName: "appletvremote.gen4")
-                        .font(.system(size: 14, weight: .semibold))
+                        .font(.system(size: 16, weight: .semibold))
                         .foregroundStyle(fleet.remotePanel ? Color.white : .primary)
-                        .frame(width: 34, height: 34)
+                        .frame(width: 44, height: 44)
                         .contentShape(Circle())
                         .glass(Circle(), tint: fleet.remotePanel ? .accentColor : nil)
                 }
@@ -643,17 +643,19 @@ struct MacRoot: View {
                 .accessibilityLabel("Remote")
                 .keyboardShortcut("r", modifiers: [.command, .option])
                 if onHome {
-                    if layout.arranging {
-                        Button("Done") { layout.stopArranging() }
-                            .buttonStyle(.glassProminent)
-                            .controlSize(.large)
-                    } else {
-                        Button("Edit Home") { layout.startArranging() }
-                            .buttonStyle(.glass)
-                            .controlSize(.large)
+                    // As tall as the greeting beside it.
+                    Button { layout.arranging ? layout.stopArranging() : layout.startArranging() } label: {
+                        Text(layout.arranging ? "Done" : "Edit Home")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(layout.arranging ? Color.white : .primary)
+                            .padding(.horizontal, 18)
+                            .frame(height: 44)
+                            .contentShape(Capsule())
+                            .glass(Capsule(), tint: layout.arranging ? .accentColor : nil)
                     }
+                    .buttonStyle(PressScale())
                 }
-                ThermostatChip(compact: narrow || (greeting && width < 1150))
+                ThermostatChip(compact: narrow || (greeting && width < 1150), height: 44)
             }
             // Always the same height, so the pages below never jump as the bar's contents change.
             .frame(height: 46)
@@ -798,8 +800,10 @@ struct MacSearchField: View {
                     .accessibilityLabel("Clear Search")
             }
         }
-        .padding(.horizontal, 12)
-        .frame(height: 34)
+        .font(.system(size: 14))
+        .padding(.horizontal, 16)
+        // As tall as the greeting beside it.
+        .frame(height: 44)
         .glass(Capsule(), interactive: false)
         .contentShape(Capsule())
         .onTapGesture { focused = true }

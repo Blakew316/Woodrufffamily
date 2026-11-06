@@ -727,6 +727,8 @@ final class ThermostatUI {
 struct ThermostatChip: View {
     /// iPhone: just the icon, the temperature and what it's doing.
     var compact = false
+    /// Mac: the pill's height, to match the bar it sits in (nil: as tall as its contents).
+    var height: CGFloat? = nil
     private let store = AccessoryStore.shared
     private let ui = ThermostatUI.shared
     @State private var hovering = false
@@ -775,6 +777,8 @@ struct ThermostatChip: View {
             }
         }
         .fixedSize()
+        .padding(.horizontal, height == nil ? 0 : 3)
+        .frame(height: height)
         // Plain glass behind it (the button inside takes the taps).
         .glass(Capsule(), interactive: false)
         .opacity(t?.reachable == false ? 0.6 : 1)
