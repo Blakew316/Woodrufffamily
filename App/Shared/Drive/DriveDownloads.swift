@@ -21,15 +21,25 @@ final class DriveDownloads: NSObject {
         var error: String?
         var id: String { file }
         var key: String { "drive:\(file)" }
+
+        enum CodingKeys: String, CodingKey { case file, title, name, detail, poster, bytes, done, state, error }
     }
 
     private(set) var items: [Item] = []
     @ObservationIgnored private var tasks: [String: URLSessionDownloadTask] = [:]
+    /// Getting a token to start (counted with the ones running).
+    @ObservationIgnored private var starting: Set<String> = []
+    /// Started again once after Google refused the token.
+    @ObservationIgnored private var retried: Set<String> = []
+    /// One session for good: the system carries on its downloads with the app closed.
     @ObservationIgnored private lazy var session: URLSession = makeSession()
+    /// Downloading at once; the rest wait their turn.
+    private static let atOnce = 2
 
+    /// Cellular is allowed or not per download (the session allows it, each request says).
     static var cellular: Bool {
         get { UserDefaults.standard.bool(forKey: "watch.cellularDownloads") }
-        set { UserDefaults.standard.set(newValue, forKey: "watch.cellularDownloads"); shared.session = shared.makeSession() }
+        set { UserDefaults.standard.set(newValue, forKey: "watch.cellularDownloads") }
     }
 
     nonisolated private static let folder: URL = {
@@ -50,8 +60,8 @@ final class DriveDownloads: NSObject {
 
     private func makeSession() -> URLSession {
         let c = URLSessionConfiguration.background(withIdentifier: "woodruff.watch.downloads")
-        c.allowsCellularAccess = UserDefaults.standard.bool(forKey: "watch.cellularDownloads")
-        c.allowsExpensiveNetworkAccess = c.allowsCellularAccess
+        c.allowsCellularAccess = true
+        c.allowsExpensiveNetworkAccess = true
         c.sessionSendsLaunchEvents = true
         c.isDiscretionary = false
         return URLSession(configuration: c, delegate: self, delegateQueue: .main)
@@ -103,10 +113,12 @@ final class DriveDownloads: NSObject {
         try? FileManager.default.removeItem(at: Self.localFile(file))
         items.removeAll { $0.file == file }
         save()
+        startWaiting()
     }
 
     func retry(_ file: String) {
         update(file) { $0.state = "waiting"; $0.error = nil; $0.done = 0 }
+        retried.remove(file)
         Task { await begin(file) }
     }
 
@@ -115,11 +127,25 @@ final class DriveDownloads: NSObject {
         f(&items[i])
     }
 
+    /// Starts [file] when there's room (two at a time), else it waits its turn.
     private func begin(_ file: String) async {
-        guard tasks[file] == nil else { return }
+        guard tasks[file] == nil, !starting.contains(file) else { return }
+        guard tasks.count + starting.count < Self.atOnce else {
+            if item(file)?.state != "waiting" {
+                update(file) { $0.state = "waiting" }
+                save()
+            }
+            return
+        }
+        starting.insert(file)
+        defer { starting.remove(file) }
         do {
             var r = URLRequest(url: GoogleDrive.mediaURL(file))
             r.setValue("Bearer \(try await GoogleDrive.token())", forHTTPHeaderField: "Authorization")
+            r.allowsCellularAccess = Self.cellular
+            r.allowsExpensiveNetworkAccess = Self.cellular
+            // Removed while the token came.
+            guard item(file) != nil else { startWaiting(); return }
             let t = session.downloadTask(with: r)
             t.taskDescription = file
             tasks[file] = t
@@ -129,6 +155,29 @@ final class DriveDownloads: NSObject {
             update(file) { $0.state = "failed"; $0.error = error.localizedDescription }
         }
         save()
+    }
+
+    /// The ones waiting, started while there's room.
+    private func startWaiting() {
+        for i in items where i.state == "waiting" && tasks[i.file] == nil && !starting.contains(i.file) {
+            Task { await begin(i.file) }
+        }
+    }
+}
+
+// Read field by field, so a field added later never loses the list of downloads.
+extension DriveDownloads.Item {
+    init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: CodingKeys.self)
+        file = try c.decode(String.self, forKey: .file)
+        title = try c.decodeIfPresent(String.self, forKey: .title) ?? ""
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? title
+        detail = try c.decodeIfPresent(String.self, forKey: .detail)
+        poster = try c.decodeIfPresent(String.self, forKey: .poster)
+        bytes = try c.decodeIfPresent(Int64.self, forKey: .bytes) ?? 0
+        done = try c.decodeIfPresent(Int64.self, forKey: .done) ?? 0
+        state = try c.decodeIfPresent(String.self, forKey: .state) ?? "waiting"
+        error = try c.decodeIfPresent(String.self, forKey: .error)
     }
 }
 
@@ -161,13 +210,26 @@ extension DriveDownloads: URLSessionDownloadDelegate {
         }
         let size = (try? FileManager.default.attributesOfItem(atPath: target.path)[.size] as? NSNumber)?.int64Value ?? 0
         MainActor.assumeIsolated {
-            tasks[f] = nil
+            if tasks[f] === downloadTask { tasks[f] = nil }
+            // The token ran out on the way: once more with a fresh one.
+            if code == 401, !retried.contains(f), item(f) != nil {
+                retried.insert(f)
+                update(f) { $0.state = "waiting"; $0.done = 0 }
+                save()
+                Task { @MainActor in
+                    GoogleDrive.dropToken()
+                    await self.begin(f)
+                }
+                return
+            }
+            retried.remove(f)
             update(f) { i in
                 if moved { i.state = "ready"; i.bytes = size; i.done = size; i.error = nil } else {
                     i.state = "failed"; i.error = code == 0 ? "The download stopped." : "Google Drive answered \(code)."
                 }
             }
             save()
+            startWaiting()
         }
     }
 
@@ -175,10 +237,11 @@ extension DriveDownloads: URLSessionDownloadDelegate {
         guard let error, let f = task.taskDescription else { return }
         let cancelled = (error as NSError).code == NSURLErrorCancelled
         MainActor.assumeIsolated {
-            tasks[f] = nil
+            if tasks[f] === task { tasks[f] = nil }
             guard !cancelled else { return }
             update(f) { $0.state = "failed"; $0.error = error.localizedDescription }
             save()
+            startWaiting()
         }
     }
 }
@@ -239,7 +302,6 @@ struct DownloadsView: View {
 private struct DownloadPicker: View {
     private let library = DriveLibrary.shared
     private let downloads = DriveDownloads.shared
-    @State private var home: WatchHome?
     @State private var movies: [Title] = []
     @State private var shows: [Title] = []
 

@@ -66,7 +66,8 @@ final class DriveLibrary: WatchSource {
         var tmdb: Int?
         var added: Double       // ms
         var file: String?       // a film's video
-        var minutes: Double?
+
+        enum CodingKeys: String, CodingKey { case id, kind, name, title, year, poster, backdrop, genres, rating, overview, tmdb, added, file }
     }
 
     /// Where a title was left off ("drive:<file>" → it).
@@ -82,9 +83,11 @@ final class DriveLibrary: WatchSource {
         var code: String?       // "S2 E4"
         var episode: String?
         var poster: String?
+
+        enum CodingKeys: String, CodingKey { case title, pos, dur, at, next, titleId, kind, name, code, episode, poster }
     }
 
-    private struct Saved: Codable {
+    fileprivate struct Saved: Codable {
         var movies: [Entry] = []
         var shows: [Entry] = []
         var updated: Double?
@@ -97,12 +100,23 @@ final class DriveLibrary: WatchSource {
         /// This device's progress file in Drive's hidden app folder.
         var syncFile: String?
         var synced: Double?
+
+        enum CodingKeys: String, CodingKey { case movies, shows, updated, folders, spots, watched, gone, unwatched, syncFile, synced }
     }
 
     private var saved: Saved
     private(set) var busy = false
     private(set) var error: String?
     @ObservationIgnored private var refreshing: Task<Void, Never>?
+    @ObservationIgnored private var storing: Task<Void, Never>?
+    @ObservationIgnored private var filling = false
+    /// This device's progress changed since it was last uploaded for the TVs.
+    @ObservationIgnored private var unsynced = true
+    /// Progress keys from a TV that no film or show here owns (not asked about again until the library is read).
+    @ObservationIgnored private var unresolved: Set<String> = []
+    /// Each title's names for searching and sorting, worked out once per title.
+    @ObservationIgnored private var named: [String: Names] = [:]
+    private struct Names { var title: String; var norm: String; var sort: String }
     private let file: URL = {
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Watch", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -116,7 +130,19 @@ final class DriveLibrary: WatchSource {
         saved = (try? JSONDecoder().decode(Saved.self, from: Data(contentsOf: file))) ?? Saved()
     }
 
+    /// Written a couple of seconds after the last change (the player reports every 10 seconds).
     private func store() {
+        guard storing == nil else { return }
+        storing = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            self?.flush()
+        }
+    }
+
+    /// Written now (the player closing, the app going to the background).
+    func flush() {
+        storing?.cancel()
+        storing = nil
         if let d = try? JSONEncoder().encode(saved) { try? d.write(to: file, options: .atomic) }
     }
 
@@ -163,8 +189,10 @@ final class DriveLibrary: WatchSource {
             saved.shows = shows
             saved.updated = Date().timeIntervalSince1970 * 1000
             error = nil
+            unresolved = []
             store()
-            await fill()
+            // The posters and stories come in behind: the library shows now.
+            Task { await self.fill() }
         } catch {
             self.error = error.localizedDescription
         }
@@ -175,7 +203,7 @@ final class DriveLibrary: WatchSource {
         guard let old = (saved.movies + saved.shows).first(where: { $0.id == e.id && $0.name == e.name }) else { return e }
         var n = e
         n.poster = old.poster; n.backdrop = old.backdrop; n.genres = old.genres; n.rating = old.rating
-        n.overview = old.overview; n.tmdb = old.tmdb; n.year = e.year ?? old.year; n.minutes = old.minutes
+        n.overview = old.overview; n.tmdb = old.tmdb; n.year = e.year ?? old.year
         return n
     }
 
@@ -202,22 +230,32 @@ final class DriveLibrary: WatchSource {
     }
 
     /// TMDB's poster, story, year, genres and rating for each title not looked up yet.
+    /// Asked all at once (TMDB takes six at a time).
     private func fill() async {
-        for list in [\Saved.movies, \Saved.shows] {
-            for i in saved[keyPath: list].indices where saved[keyPath: list][i].tmdb == nil {
-                let e = saved[keyPath: list][i]
-                guard let hit = await TMDB.shared.find(TitleNames.searchTitle(e.title), year: e.year, tv: e.kind == "show") else { continue }
-                guard i < saved[keyPath: list].count, saved[keyPath: list][i].id == e.id else { continue }
-                saved[keyPath: list][i].tmdb = hit.id
-                saved[keyPath: list][i].poster = hit.poster
-                saved[keyPath: list][i].backdrop = hit.backdrop
-                saved[keyPath: list][i].genres = hit.genres
-                saved[keyPath: list][i].rating = hit.rating
-                saved[keyPath: list][i].overview = hit.overview
-                if saved[keyPath: list][i].year == nil { saved[keyPath: list][i].year = hit.year }
-            }
+        guard !filling else { return }
+        filling = true
+        defer { filling = false }
+        let todo = (saved.movies + saved.shows).filter { $0.tmdb == nil }
+        guard !todo.isEmpty else { return }
+        await withTaskGroup(of: Void.self) { group in
+            for e in todo { group.addTask { await self.lookUp(e) } }
         }
         store()
+    }
+
+    /// One title's answer from TMDB, kept by its id (the list may have been read again meanwhile).
+    private func lookUp(_ e: Entry) async {
+        guard let hit = await TMDB.shared.find(TitleNames.searchTitle(e.title), year: e.year, tv: e.kind == "show") else { return }
+        func apply(_ x: inout Entry) {
+            x.tmdb = hit.id; x.poster = hit.poster; x.backdrop = hit.backdrop
+            x.genres = hit.genres; x.rating = hit.rating; x.overview = hit.overview
+            if x.year == nil { x.year = hit.year }
+        }
+        if let i = saved.movies.firstIndex(where: { $0.id == e.id }) {
+            apply(&saved.movies[i])
+        } else if let i = saved.shows.firstIndex(where: { $0.id == e.id }) {
+            apply(&saved.shows[i])
+        }
     }
 
     /// A folder's contents: as kept when Drive can't be reached (offline), else read again and kept.
@@ -250,6 +288,7 @@ final class DriveLibrary: WatchSource {
         } else if pos > 0 {
             saved.spots[key] = s
         }
+        unsynced = true
         store()
     }
 
@@ -283,6 +322,7 @@ final class DriveLibrary: WatchSource {
                 saved.watched[k] = nil; saved.unwatched[k] = nowMS
             }
         }
+        unsynced = true
         store()
         Task { await sync() }
     }
@@ -290,6 +330,7 @@ final class DriveLibrary: WatchSource {
     func removeContinue(key: String, title: String) async throws {
         let show = saved.spots[key]?.titleId
         for (k, s) in saved.spots where k == key || (show != nil && s.titleId == show) { saved.spots[k] = nil; saved.gone[k] = nowMS }
+        unsynced = true
         store()
         Task { await sync() }
     }
@@ -388,23 +429,8 @@ final class DriveLibrary: WatchSource {
             if let e = error { throw GoogleDrive.Failure(e) }
             return try decode(["state": busy ? "loading" : "empty"])
         }
-        let all = saved.movies + saved.shows
-        // Featured: titles with a backdrop (the well rated ones when there are five), the day's five.
-        var pool = all.filter { $0.backdrop != nil }
-        let good = pool.filter { ($0.rating ?? 0) >= 6.5 }
-        if good.count >= 5 { pool = good }
-        let day = Calendar.current.ordinality(of: .day, in: .year, for: Date()) ?? 1
-        var rng = SeededRandom(seed: UInt64(Calendar.current.component(.year, from: Date()) * 1000 + day))
-        let featured = Array(pool.shuffled(using: &rng).prefix(5))
-        let az = { (l: [Entry]) in l.sorted { TitleNames.sortKey($0.title) < TitleNames.sortKey($1.title) } }
-        let home: [String: Any] = [
-            "state": "ready", "tv": "Google Drive", "updated": saved.updated ?? 0,
-            "featured": featured.map(titleJSON),
-            "continue": continueItems(),
-            "recent": all.sorted { $0.added > $1.added }.prefix(20).map(titleJSON),
-            "movies": ["count": saved.movies.count, "items": az(saved.movies).prefix(20).map(titleJSON)] as [String: Any],
-            "shows": ["count": saved.shows.count, "items": az(saved.shows).prefix(20).map(titleJSON)] as [String: Any],
-        ]
+        // Only Continue Watching: Watch reads the banner and rows from the library a section at a time.
+        let home: [String: Any] = ["state": "ready", "tv": "Google Drive", "updated": saved.updated ?? 0, "continue": continueItems()]
         return try decode(home)
     }
 
@@ -420,11 +446,13 @@ final class DriveLibrary: WatchSource {
         }
         if let g = genre, !g.isEmpty { list = list.filter { $0.genres.contains(g) } }
         if let q, !q.trimmingCharacters(in: .whitespaces).isEmpty { list = list.filter { matches($0, q) } }
+        let key = sortKeys(list)
+        func az(_ a: Entry, _ b: Entry) -> Bool { key[a.id, default: ""] < key[b.id, default: ""] }
         switch sort {
-        case "recent", "newest": list.sort { $0.added != $1.added ? $0.added > $1.added : TitleNames.sortKey($0.title) < TitleNames.sortKey($1.title) }
-        case "year": list.sort { ($0.year ?? 0) != ($1.year ?? 0) ? ($0.year ?? 0) > ($1.year ?? 0) : TitleNames.sortKey($0.title) < TitleNames.sortKey($1.title) }
-        case "rated": list.sort { ($0.rating ?? -1) != ($1.rating ?? -1) ? ($0.rating ?? -1) > ($1.rating ?? -1) : TitleNames.sortKey($0.title) < TitleNames.sortKey($1.title) }
-        default: list.sort { TitleNames.sortKey($0.title) < TitleNames.sortKey($1.title) }
+        case "recent", "newest": list.sort { $0.added != $1.added ? $0.added > $1.added : az($0, $1) }
+        case "year": list.sort { ($0.year ?? 0) != ($1.year ?? 0) ? ($0.year ?? 0) > ($1.year ?? 0) : az($0, $1) }
+        case "rated": list.sort { ($0.rating ?? -1) != ($1.rating ?? -1) ? ($0.rating ?? -1) > ($1.rating ?? -1) : az($0, $1) }
+        default: list.sort(by: az)
         }
         var counts: [String: Int] = [:]
         for e in (place == "shows" ? saved.shows : saved.movies) { for g in e.genres { counts[g, default: 0] += 1 } }
@@ -434,27 +462,50 @@ final class DriveLibrary: WatchSource {
                            "genres": genres, "rated": (saved.movies + saved.shows).contains { $0.rating != nil }] as [String: Any])
     }
 
+    /// A title's names for searching and sorting, worked out again only when its title changes.
+    private func names(_ e: Entry) -> Names {
+        if let n = named[e.id], n.title == e.title { return n }
+        let n = Names(title: e.title, norm: TitleNames.normalize(e.title), sort: TitleNames.sortKey(e.title))
+        named[e.id] = n
+        return n
+    }
+
+    /// Each title's sort key, by id, for sorting [list].
+    private func sortKeys(_ list: [Entry]) -> [String: String] {
+        var out: [String: String] = [:]
+        out.reserveCapacity(list.count)
+        for e in list { out[e.id] = names(e).sort }
+        return out
+    }
+
     private func matches(_ e: Entry, _ q: String) -> Bool {
-        let t = TitleNames.normalize(e.title)
-        return TitleNames.normalize(q).split(separator: " ").allSatisfy { w in
-            t.contains(w) || (w.count == 4 && Int(w) == e.year)
-        }
+        matches(e, words: TitleNames.normalize(q).split(separator: " "))
+    }
+
+    private func matches(_ e: Entry, words: [Substring]) -> Bool {
+        let t = names(e).norm
+        return words.allSatisfy { w in t.contains(w) || (w.count == 4 && Int(w) == e.year) }
     }
 
     func search(_ q: String) async throws -> SearchResults {
         let words = TitleNames.normalize(String(q.prefix(60)))
+        let each = TitleNames.normalize(q).split(separator: " ")
         func rank(_ e: Entry) -> Int {
-            let t = TitleNames.normalize(e.title)
-            if t.hasPrefix(words) || TitleNames.sortKey(e.title).hasPrefix(words) { return 1 }
-            if t.split(separator: " ").contains(where: { $0.hasPrefix(words) }) { return 2 }
+            let n = names(e)
+            if n.norm.hasPrefix(words) || n.sort.hasPrefix(words) { return 1 }
+            if n.norm.split(separator: " ").contains(where: { $0.hasPrefix(words) }) { return 2 }
             return 3
         }
         func found(_ l: [Entry]) -> [Entry] {
-            l.filter { matches($0, q) }.sorted {
-                let a = rank($0), b = rank($1)
+            let hits = l.filter { matches($0, words: each) }
+            var ranks: [String: Int] = [:]
+            for e in hits { ranks[e.id] = rank(e) }
+            let key = sortKeys(hits)
+            return hits.sorted {
+                let a = ranks[$0.id, default: 3], b = ranks[$1.id, default: 3]
                 if a != b { return a < b }
                 if ($0.rating ?? 0) != ($1.rating ?? 0) { return ($0.rating ?? 0) > ($1.rating ?? 0) }
-                return TitleNames.sortKey($0.title) < TitleNames.sortKey($1.title)
+                return key[$0.id, default: ""] < key[$1.id, default: ""]
             }.prefix(100).map { $0 }
         }
         let m = found(saved.movies), s = found(saved.shows)
@@ -609,7 +660,11 @@ final class DriveLibrary: WatchSource {
                 if let j = try? await download(f.id) { others.append(j) }
             }
             merge(others)
-            saved.syncFile = try await upload(mine)
+            // Uploaded only when something here changed (or there's no file yet).
+            if unsynced || saved.syncFile == nil {
+                unsynced = false
+                do { saved.syncFile = try await upload(mine) } catch { unsynced = true; throw error }
+            }
             saved.synced = nowMS
             store()
             await resolveContexts()
@@ -645,6 +700,7 @@ final class DriveLibrary: WatchSource {
             for (k, t) in v as? [String: Any] ?? [:] where k.hasPrefix("drive:") { out[k] = num(t) }
             return out
         }
+        let before = (saved.spots, saved.gone, saved.watched, saved.unwatched)
         var latest = saved.spots
         var removed = saved.gone
         for o in others {
@@ -672,6 +728,7 @@ final class DriveLibrary: WatchSource {
         }
         saved.watched = marks.filter { $0.value > (unmarks[$0.key] ?? -1) }
         saved.unwatched = unmarks.filter { saved.watched[$0.key] == nil }
+        if before != (saved.spots, saved.gone, saved.watched, saved.unwatched) { unsynced = true }
     }
 
     /// This device's file, in the TVs' format.
@@ -721,8 +778,10 @@ final class DriveLibrary: WatchSource {
     /// Progress from a TV names only the file: which film or show it belongs to, from the library (a film's video)
     /// or its folders in Drive (an episode's season and show).
     private func resolveContexts() async {
+        // Not before the library has been read: nothing would be found.
+        guard !saved.movies.isEmpty || !saved.shows.isEmpty else { return }
         var changed = false
-        for (key, s) in saved.spots where s.titleId == nil {
+        for (key, s) in saved.spots where s.titleId == nil && !unresolved.contains(key) {
             let file = String(key.dropFirst(6))
             if let e = saved.movies.first(where: { $0.file == file }) {
                 saved.spots[key]?.titleId = e.id; saved.spots[key]?.kind = "movie"; saved.spots[key]?.name = e.title
@@ -731,19 +790,27 @@ final class DriveLibrary: WatchSource {
                 continue
             }
             var at = file
+            var found = false, reached = true
             for _ in 0..<3 {
-                guard let j = try? await GoogleDrive.get(URL(string: "\(GoogleDrive.filesBase)/\(at)?fields=parents,name&supportsAllDrives=true")!),
-                      let parent = (j["parents"] as? [String])?.first else { break }
+                let j: [String: Any]
+                do { j = try await GoogleDrive.get(URL(string: "\(GoogleDrive.filesBase)/\(at)?fields=parents,name&supportsAllDrives=true")!) } catch {
+                    // Drive out of reach (or the file gone): asked again next time.
+                    reached = false
+                    break
+                }
+                guard let parent = (j["parents"] as? [String])?.first else { break }
                 if let show = saved.shows.first(where: { $0.id == parent }) {
                     let n = TitleNames.episodeNumber(s.title, season: nil)
                     saved.spots[key]?.titleId = show.id; saved.spots[key]?.kind = "show"; saved.spots[key]?.name = show.title
                     saved.spots[key]?.poster = show.poster
                     if let n { saved.spots[key]?.code = n.season.map { "S\($0) E\(n.number)" } ?? "E\(n.number)" }
                     changed = true
+                    found = true
                     break
                 }
                 at = parent
             }
+            if !found && reached { unresolved.insert(key) }
         }
         if changed { store() }
     }
@@ -753,6 +820,61 @@ final class DriveLibrary: WatchSource {
     func signedOut() {
         saved = Saved(spots: saved.spots, watched: saved.watched)
         store()
+    }
+}
+
+// Read field by field, so a field added later (or one missing) never loses the library, the progress or the rest.
+
+extension DriveLibrary.Entry {
+    init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        kind = try c.decodeIfPresent(String.self, forKey: .kind) ?? "movie"
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? ""
+        title = try c.decodeIfPresent(String.self, forKey: .title) ?? name
+        year = try c.decodeIfPresent(Int.self, forKey: .year)
+        poster = try c.decodeIfPresent(String.self, forKey: .poster)
+        backdrop = try c.decodeIfPresent(String.self, forKey: .backdrop)
+        genres = try c.decodeIfPresent([String].self, forKey: .genres) ?? []
+        rating = try c.decodeIfPresent(Double.self, forKey: .rating)
+        overview = try c.decodeIfPresent(String.self, forKey: .overview)
+        tmdb = try c.decodeIfPresent(Int.self, forKey: .tmdb)
+        added = try c.decodeIfPresent(Double.self, forKey: .added) ?? 0
+        file = try c.decodeIfPresent(String.self, forKey: .file)
+    }
+}
+
+extension DriveLibrary.Spot {
+    init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: CodingKeys.self)
+        title = try c.decodeIfPresent(String.self, forKey: .title) ?? ""
+        pos = try c.decodeIfPresent(Double.self, forKey: .pos) ?? 0
+        dur = try c.decodeIfPresent(Double.self, forKey: .dur) ?? 0
+        at = try c.decodeIfPresent(Double.self, forKey: .at) ?? 0
+        next = try c.decodeIfPresent(Bool.self, forKey: .next) ?? false
+        titleId = try c.decodeIfPresent(String.self, forKey: .titleId)
+        kind = try c.decodeIfPresent(String.self, forKey: .kind)
+        name = try c.decodeIfPresent(String.self, forKey: .name)
+        code = try c.decodeIfPresent(String.self, forKey: .code)
+        episode = try c.decodeIfPresent(String.self, forKey: .episode)
+        poster = try c.decodeIfPresent(String.self, forKey: .poster)
+    }
+}
+
+extension DriveLibrary.Saved {
+    /// Each part on its own: one that can't be read is left empty, the others kept.
+    init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: CodingKeys.self)
+        movies = (try? c.decodeIfPresent([DriveLibrary.Entry].self, forKey: .movies)) ?? []
+        shows = (try? c.decodeIfPresent([DriveLibrary.Entry].self, forKey: .shows)) ?? []
+        updated = try? c.decodeIfPresent(Double.self, forKey: .updated)
+        folders = (try? c.decodeIfPresent([String: [GoogleDrive.File]].self, forKey: .folders)) ?? [:]
+        spots = (try? c.decodeIfPresent([String: DriveLibrary.Spot].self, forKey: .spots)) ?? [:]
+        watched = (try? c.decodeIfPresent([String: Double].self, forKey: .watched)) ?? [:]
+        gone = (try? c.decodeIfPresent([String: Double].self, forKey: .gone)) ?? [:]
+        unwatched = (try? c.decodeIfPresent([String: Double].self, forKey: .unwatched)) ?? [:]
+        syncFile = try? c.decodeIfPresent(String.self, forKey: .syncFile)
+        synced = try? c.decodeIfPresent(Double.self, forKey: .synced)
     }
 }
 

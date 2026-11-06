@@ -18,7 +18,7 @@ struct PhonePlay: Identifiable {
 @Observable @MainActor
 final class PhonePlayback {
     static let shared = PhonePlayback()
-    /// A play waiting for Watch to show the player.
+    /// A play for the Mac's window to show in the player.
     var request: PhonePlay?
 
     /// Settings → Watch: the Play button plays on this device instead of the TV.
@@ -97,6 +97,7 @@ struct PhonePlayerView: View {
         .task { await begin() }
         .onDisappear {
             report()
+            DriveLibrary.shared.flush()
             Task { await DriveLibrary.shared.sync() }
             if let t = ticker { player.removeTimeObserver(t) }
             player.pause()
@@ -145,22 +146,6 @@ extension PhonePlayerView {
         let pos = player.currentTime().seconds, dur = player.currentItem?.duration.seconds ?? 0
         guard pos.isFinite, pos > 0 else { return }
         DriveLibrary.shared.played(play.key, title: play.title, pos: pos * 1000, dur: dur.isFinite ? dur * 1000 : 0)
-    }
-}
-
-extension View {
-    /// Shows [play] in the player while it's set: on iPhone and iPad Apple's own full-screen player (its Liquid Glass
-    /// controls, picture in picture, AirPlay); on the Mac a window-sized sheet.
-    func phonePlayer(_ play: Binding<PhonePlay?>) -> some View {
-        #if os(iOS)
-        onChange(of: play.wrappedValue?.id) { _, id in
-            guard id != nil, let p = play.wrappedValue else { return }
-            NativePlayer.shared.present(p)
-            play.wrappedValue = nil
-        }
-        #else
-        sheet(item: play) { PhonePlayerView(play: $0) }
-        #endif
     }
 }
 
@@ -249,6 +234,7 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
     private func finish() {
         guard player != nil else { return }
         report()
+        DriveLibrary.shared.flush()
         Task { await DriveLibrary.shared.sync() }
         if let t = ticker { player?.removeTimeObserver(t) }
         ticker = nil

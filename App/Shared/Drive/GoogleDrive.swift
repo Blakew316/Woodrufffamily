@@ -159,11 +159,10 @@ enum GoogleDrive {
         var size: String?
         var modifiedTime: String?
         var createdTime: String?
-        var thumbnailLink: String?
         var parents: [String]?
 
         // Read whatever fields were asked for: a search that asks only for ids still gives files.
-        enum CodingKeys: String, CodingKey { case id, name, mimeType, size, modifiedTime, createdTime, thumbnailLink, parents }
+        enum CodingKeys: String, CodingKey { case id, name, mimeType, size, modifiedTime, createdTime, parents }
         init(from d: Decoder) throws {
             let c = try d.container(keyedBy: CodingKeys.self)
             id = try c.decode(String.self, forKey: .id)
@@ -172,7 +171,6 @@ enum GoogleDrive {
             size = try c.decodeIfPresent(String.self, forKey: .size)
             modifiedTime = try c.decodeIfPresent(String.self, forKey: .modifiedTime)
             createdTime = try c.decodeIfPresent(String.self, forKey: .createdTime)
-            thumbnailLink = try c.decodeIfPresent(String.self, forKey: .thumbnailLink)
             parents = try c.decodeIfPresent([String].self, forKey: .parents)
         }
         var isFolder: Bool { mimeType == "application/vnd.google-apps.folder" }
@@ -181,7 +179,6 @@ enum GoogleDrive {
             let ext = (name as NSString).pathExtension.lowercased()
             return ["mp4", "m4v", "mov", "mkv", "webm", "avi", "ts", "m2ts", "3gp", "wmv", "flv", "mpg", "mpeg"].contains(ext)
         }
-        var isImage: Bool { mimeType.hasPrefix("image/") }
         var bytes: Int64 { Int64(size ?? "") ?? 0 }
         /// When it was added (created, else modified), in ms like the TV's.
         var added: Double { (GoogleDrive.time(createdTime) ?? GoogleDrive.time(modifiedTime) ?? 0) * 1000 }
@@ -225,7 +222,7 @@ enum GoogleDrive {
         return c.url!
     }
 
-    nonisolated static let fileFields = "nextPageToken,files(id,name,mimeType,size,modifiedTime,createdTime,thumbnailLink)"
+    nonisolated static let fileFields = "nextPageToken,files(id,name,mimeType,size,modifiedTime,createdTime)"
 
     /// Every file matching [q] (all pages, up to [limit]).
     static func files(_ q: String, orderBy: String? = "folder,name_natural", fields: String = fileFields, limit: Int = 20_000, allDrives: Bool = false) async throws -> [File] {

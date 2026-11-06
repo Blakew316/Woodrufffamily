@@ -14,10 +14,10 @@ struct WatchView: View {
     @State private var loadedHub: String?
     /// Taken off Continue Watching here, hidden until the TV's next answer (which no longer has them).
     @State private var removed: Set<String> = []
-    /// A film playing on this device (Settings → Watch: the Play button plays here).
-    @State private var here: PhonePlay?
     /// Movies or TV Shows, as on the TV's streaming screen.
     @AppStorage("watch.section") private var section = "movies"
+    /// The TV's library or the Drive one (Settings → Watch).
+    @AppStorage("watch.source") private var source = "tv"
     /// The posters' width (fitted to the window on the Mac).
     @State private var posterWidth: CGFloat = 112
     /// Every title of each, for its banner and rows, and when it was read.
@@ -87,25 +87,24 @@ struct WatchView: View {
             TitleSheet(id: ref.id).zoomDestination(ref.id, zoom).macResizable(width: 760, height: 820, minWidth: 520, minHeight: 500)
         }
         .environment(\.openTitle, OpenTitleAction { openTitle = $0 })
-        .phonePlayer($here)
-        // A Play set to play on this device: shown once any title page has closed.
-        .onChange(of: PhonePlayback.shared.request?.id) { _, id in
-            guard id != nil else { return }
-            Task {
-                try? await Task.sleep(nanoseconds: 450_000_000)
-                here = PhonePlayback.shared.request
-                PhonePlayback.shared.request = nil
-            }
-        }
         .environment(\.zoomNamespace, zoom)
         // Marked watched or taken off Continue Watching anywhere in Watch: gone at once, then asked again.
         .environment(\.watchChanged, WatchChanged { key in
             if let key { withAnimation(.smooth) { _ = removed.insert(key) } }
-            Task { await load() }
+            Task {
+                await load()
+                await loadSection(force: true)
+            }
         })
         .refreshable { await load() }
         // Again from the start when the remote moves to a TV with another library.
         .task(id: client?.sourceID) { await loop() }
+        // The other library picked in Settings → Watch: its titles, read afresh.
+        .onChange(of: source) { _, _ in
+            sectionTitles = [:]
+            sectionRead = [:]
+            Task { await load() }
+        }
         // Something started, paused or stopped on a TV: Continue Watching follows (the TV saves where it got to).
         .background {
             PlayingWatcher {
@@ -694,7 +693,19 @@ enum PlayRouter {
         // Settings → Watch: Play plays on this device (Play On… still picks a TV).
         if tv == nil, PhonePlayback.playsHere, PhonePlayback.canPlay(a) {
             guard let p = PhonePlayback.play(a, fleet: fleet, fromStart: fromStart) else { return false }
-            PhonePlayback.shared.request = p
+            #if os(iOS)
+            // Once the title page that asked has closed (Apple's player shows over the topmost screen).
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 450_000_000)
+                NativePlayer.shared.present(p)
+            }
+            #else
+            // Shown by the window's root once the title page that asked has closed, whichever page asked.
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 450_000_000)
+                PhonePlayback.shared.request = p
+            }
+            #endif
             return true
         }
         guard let c = fleet.hubClient(), let target = tv ?? fleet.selected, !target.isUnpaired else {
@@ -1349,14 +1360,17 @@ struct WatchPlaceholder: View {
 /// The banner's five and the rows for a list, kept until the list (or what's in Continue Watching) changes.
 final class ShelfCache {
     struct Worked { var featured: [Title]; var rows: [(name: String, genre: String?, titles: [Title])] }
-    private var key: String = ""
+    private var lastTitles: [Title] = []
+    private var lastShown: Set<String> = []
+    private var lastDay = -1
+    private var lastPlace = ""
     private var value = Worked(featured: [], rows: [])
 
+    /// Worked out again when anything about a title changes (a poster, a rating), not only the list's length.
     func get(place: String, titles: [Title], shown: Set<String>) -> Worked {
         let day = Calendar.current.ordinality(of: .day, in: .era, for: Date()) ?? 0
-        let k = "\(place)|\(day)|\(titles.count)|\(titles.first?.id ?? "")|\(titles.last?.id ?? "")|\(shown.sorted().joined(separator: ","))"
-        if k != key {
-            key = k
+        if titles != lastTitles || shown != lastShown || day != lastDay || place != lastPlace {
+            lastTitles = titles; lastShown = shown; lastDay = day; lastPlace = place
             value = Worked(featured: WatchRows.featured(titles, section: place), rows: WatchRows.rows(titles, shown: shown))
         }
         return value

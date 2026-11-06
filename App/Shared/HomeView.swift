@@ -653,12 +653,14 @@ struct LibrarySearchResults: View {
 
     var body: some View {
         let opened = openTitle
+        // Watch's library (the TV's or the Drive one, as Settings → Watch picks), worked out once for the page.
+        let client = WatchSources.current(fleet)
         ScrollView {
             VStack(alignment: .leading, spacing: 26) {
                 if let r {
                     let sections = r.first == "shows" ? [("TV Shows", r.shows), ("Movies", r.movies)] : [("Movies", r.movies), ("TV Shows", r.shows)]
                     ForEach(sections, id: \.0) { name, list in
-                        if !list.isEmpty { ShelfRow(name) { ForEach(list) { PosterTile(title: $0) } } }
+                        if !list.isEmpty { ShelfRow(name) { ForEach(list) { PosterTile(title: $0, poster: client?.artURL($0.poster)) } } }
                     }
                     if r.movies.isEmpty && r.shows.isEmpty {
                         EmptyState(symbol: "magnifyingglass", title: "No Results", message: "Nothing in Movies or TV Shows matches “\(query)”.")
@@ -679,13 +681,13 @@ struct LibrarySearchResults: View {
         .task(id: query) {
             try? await Task.sleep(nanoseconds: 220_000_000)
             guard !Task.isCancelled else { return }
-            guard let client = fleet.hubClient() else {
+            guard let source = WatchSources.current(fleet) else {
                 r = nil
                 failed = "Pair a TV first: the library lives on the TVs."
                 return
             }
             do {
-                let found = try await client.search(query)
+                let found = try await source.search(query)
                 guard !Task.isCancelled else { return }
                 r = found
                 failed = nil
