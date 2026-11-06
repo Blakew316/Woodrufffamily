@@ -198,6 +198,12 @@ struct WoodruffFamilySection: View {
             LabeledContent("Version", value: AppBuild.label)
             updatesRow
             ForEach(updater.iPhones) { IPhoneUpdateRow(phone: $0) }
+            if let tf = updater.testFlight {
+                VStack(alignment: .leading, spacing: 3) {
+                    IconRow(symbol: "", color: .clear, title: "TestFlight", value: tf.value, valueColor: tf.problem ? Palette.attention : .secondary)
+                    if let d = tf.detail { Text(d).font(.footnote).foregroundStyle(.secondary).lineLimit(4) }
+                }
+            }
             Button("Check for Updates Now") { updater.checkNow() }
                 .disabled(!updater.isSetUp || updater.running || updater.checking)
         } header: {
@@ -209,7 +215,7 @@ struct WoodruffFamilySection: View {
         } header: {
             Text("Woodruff Family")
         } footer: {
-            Text("New versions install automatically from the family’s Mac while this iPhone is on home Wi‑Fi.")
+            Text("New versions come from TestFlight, on Wi‑Fi or cellular, or from the family’s Mac on home Wi‑Fi.")
         }
         #endif
     }

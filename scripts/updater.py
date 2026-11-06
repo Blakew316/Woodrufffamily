@@ -71,6 +71,7 @@ BACKOFF = (15 * 60, 30 * 60, 60 * 60, 2 * 3600, 4 * 3600, 8 * 3600)   # after th
 UNREACHABLE_RETRY = 10 * 60
 COURTESY_IDLE = 120          # seconds without input before the app counts as not in use
 COURTESY_RUNS = 6             # checks in a row the Mac app is left alone while in use (~30 minutes awake)
+SKIPPED_TESTFLIGHT_WAIT = 6 * 3600   # how long the hub waits to look again when App Store Connect has no app yet
 COURTESY_WAIT = 10 * 60       # how long deploy.sh may wait, just before quitting the app, for it to be put down
 REQUEST_FRESH = 15 * 60       # a Check for Updates Now press counts for this long
 FALLBACK_AFTER = 30 * 60     # a follower with --build-fallback builds when no shared build came by then
@@ -482,6 +483,9 @@ def blank_state():
         "shared": {"attempts": 0, "next_try": None, "detail": ""},   # follower: mac-shared failures
         "build": {"attempts": 0, "next_try": None},                   # follower: builds here
         "iphone_build": {"commit": None, "state": None, "detail": "", "attempts": 0, "next_try": None},
+        # hub: the release uploaded to TestFlight (state ok, uploading, skipped, failed), so the iPhones and iPads
+        # update on Wi-Fi or cellular, away from home too.
+        "testflight": {"commit": None, "state": None, "detail": "", "attempts": 0, "next_try": None},
         # [{"udid", "name", "commit", "updated_at", "state", "detail", "next_try", "attempts", "retry"}]
         "iphones": [],
         "busy_runs": 0,   # checks in a row the Mac app was in use
@@ -521,6 +525,8 @@ class Updater(object):
         self.repo = config["repo"]
         self.branch = config.get("branch") or RELEASE_BRANCH
         self.fallback = bool(config.get("build_fallback")) and self.role == "follower"
+        # The hub uploads each release to TestFlight unless config.json says "testflight": false.
+        self.testflight = self.role == "hub" and config.get("testflight", True) is not False
         self.files = paths(env)
         self.deploy_sh = os.path.join(self.repo, "scripts", "deploy.sh")
         self.signing = os.path.join(self.repo, "scripts", "signing.py")
@@ -556,6 +562,7 @@ class Updater(object):
         rel = st.get("release")
         mac = st["mac"]
         share = st["share"] if self.role == "hub" else {}
+        tf = st["testflight"] if self.role == "hub" else {}
         phones = []
         for d in st["iphones"]:
             phones.append({
@@ -578,6 +585,7 @@ class Updater(object):
                     "state": mac.get("state") or "current", "detail": mac.get("detail") or ""},
             "iphones": phones,
             "share": {"commit": share.get("commit"), "state": share.get("state"), "detail": share.get("detail") or ""},
+            "testflight": {"commit": tf.get("commit"), "state": tf.get("state"), "detail": tf.get("detail") or ""},
             "last_check": st.get("last_check"),
             "last_error": st.get("last_error"),
         }
@@ -650,6 +658,8 @@ class Updater(object):
         st["shared"] = {"attempts": 0, "next_try": None, "detail": ""}
         st["build"] = {"attempts": 0, "next_try": None}
         st["iphone_build"] = {"commit": None, "state": None, "detail": "", "attempts": 0, "next_try": None}
+        if st["testflight"].get("state") != "skipped":   # no app in App Store Connect yet: keeps its later look
+            st["testflight"].update(attempts=0, next_try=None)
         for phone in st["iphones"]:
             phone.update(attempts=0, next_try=None, retry=True)
             if phone.get("commit") != commit:
@@ -1104,7 +1114,10 @@ class Updater(object):
             else:
                 built = self.hub_deploy(release)
         self.iphone_pass(release, built)
-        if mac_ok and share_ok and not any(p.get("commit") != release and p.get("retry", True)
+        self.testflight_pass(release)
+        tf = st["testflight"]
+        tf_ok = not self.testflight or (tf.get("commit") == release and tf.get("state") in ("ok", "skipped"))
+        if mac_ok and share_ok and tf_ok and not any(p.get("commit") != release and p.get("retry", True)
                                            for p in st["iphones"]):
             self.log("up to date: %s, build %s" % (release[:12], self.release_build() or "?"))
 
@@ -1135,6 +1148,40 @@ class Updater(object):
             self.apply_iphones(release, rows, status, log)
         self.save(True)
         return with_iphone
+
+    def testflight_pass(self, release):
+        """Uploads the release to TestFlight once the Mac app built from it here (so it compiles)."""
+        tf = self.state["testflight"]
+        if not self.testflight or (tf.get("commit") == release and tf.get("state") == "ok"):
+            return
+        if not self.mac_current(release):
+            return
+        # Without an app in App Store Connect it says skipped: looked at again every few hours (or at Check Now), not
+        # at every release, so a family that never sets TestFlight up doesn't archive every build for nothing.
+        new_release = tf.get("commit") != release and tf.get("state") != "skipped"
+        if not (new_release or due(tf, self.now) or self.requested_now()):
+            return
+        if self.battery_low():
+            return
+        tf.update(commit=release, state="uploading", detail="Uploading %s to TestFlight." % self.build_words())
+        self.save(True)
+        status, rows, log = self.deploy(["--branch", self.branch, "--expect", release, "--xcode-signing", "testflight"])
+        row = self.row(rows, "testflight")
+        if row and row["status"] == "ok":
+            tf.update(state="ok", detail=sentence(row["detail"]), attempts=0, next_try=None)
+            self.log("testflight: %s" % one_line(row["detail"], 300))
+        elif row and row["status"] == "skipped":
+            when = self.now + timedelta(seconds=SKIPPED_TESTFLIGHT_WAIT)
+            tf.update(state="skipped", detail=sentence(row["detail"]), attempts=0, next_try=iso(when))
+            self.log("testflight: skipped (next look at %s): %s" % (iso(when), one_line(row["detail"], 300)))
+        else:
+            tf["attempts"] = int(tf.get("attempts") or 0) + 1
+            when = self.now + timedelta(seconds=backoff(tf["attempts"]))
+            detail = row["detail"] if row else self.stopped(status, log)
+            tf.update(state="failed", next_try=iso(when),
+                      detail="%s. Next try at %s." % (sentence(detail).rstrip("."), clock(when)))
+            self.log("testflight: failed (next at %s): %s" % (iso(when), one_line(detail, 300)))
+        self.save(True)
 
     def record_share(self, release, rows, status, log):
         """deploy.sh's share result."""

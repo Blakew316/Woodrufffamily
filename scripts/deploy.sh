@@ -2,7 +2,7 @@
 #
 # Deploy Woodruff Family to this Mac and/or the iPhones paired with it, signed with what's already here.
 #
-#   scripts/deploy.sh [options] [mac] [share] [mac-shared] [iphone]      (no part named: mac)
+#   scripts/deploy.sh [options] [mac] [share] [mac-shared] [iphone] [testflight]      (no part named: mac)
 #
 #   mac      Build the Mac app signed with this Mac's own "Apple Development" identity (it needs no profile),
 #            quit the running Woodruff Family, copy the new one over /Applications/Woodruff Family.app,
@@ -16,6 +16,11 @@
 #   iphone   Build the iPhone app unsigned, sign a copy with codesign and the provisioning profiles Xcode
 #            already made on this Mac, and install it on every iPhone paired with this Mac.
 #
+#   testflight   (Needs --xcode-signing.) Archive the iPhone app and upload it to TestFlight, signed for the App
+#            Store by Xcode's account (and the App Store Connect key, when there is one). Every iPhone and iPad with
+#            TestFlight then updates itself, on Wi-Fi or cellular, at home or away. App Store Connect needs an app for
+#            com.blakew316.woodruff first: until then this reports skipped.
+#
 #   --expect <commit>   Stop before building unless the checkout is that commit (a prefix is enough).
 #   --branch <name>     Deploy origin/<name>, checked out detached, instead of the newest claude/native-apps.
 #   --wait <seconds>    mac-shared: how long to wait for the shared zip (default 1200; 0 looks once).
@@ -24,7 +29,8 @@
 #   --no-launch         iphone: don't open the app on the iPhones after installing it.
 #   --results <file>    Append one line per outcome, tab-separated: part (mac, share, mac-shared, iphone-build,
 #                       iphone), status (installed, ok, waiting, failed, skipped), target (the commit, or the
-#                       iPhone's UDID for iphone) and detail. mac-shared says waiting, not failed, while the zip
+#                       iPhone's UDID for iphone) and detail. testflight reports ok, skipped (no app in App Store
+#                       Connect yet) or failed. mac-shared says waiting, not failed, while the zip
 #                       isn't there or doesn't match its manifest yet. scripts/updater.py reads these.
 #
 # First it updates the checkout (git fetch, checkout claude/native-apps, pull --ff-only; with --branch, fetch that
@@ -85,6 +91,7 @@ DO_MAC=0
 DO_SHARE=0
 DO_MAC_SHARED=0
 DO_IPHONE=0
+DO_TESTFLIGHT=0
 MAC_PART="mac"    # the --results part a Mac install reports as: mac or mac-shared
 COMMIT=""         # the checkout's full commit, once it's updated
 BUILD_NUMBER=""   # its commit count, CURRENT_PROJECT_VERSION
@@ -113,7 +120,7 @@ signing() { python3 -I "$SIGNING" "$@"; }
 
 usage() {
   cat <<'EOF'
-Usage: scripts/deploy.sh [options] [mac] [share] [mac-shared] [iphone]      (no part named: mac)
+Usage: scripts/deploy.sh [options] [mac] [share] [mac-shared] [iphone] [testflight]      (no part named: mac)
   mac                 build, sign and install the Mac app in /Applications on this Mac
   share               share this Mac's build in iCloud Drive (with mac the new one, alone the installed one)
   mac-shared          install the build another Mac shared for this commit instead of building one here
@@ -124,6 +131,7 @@ Usage: scripts/deploy.sh [options] [mac] [share] [mac-shared] [iphone]      (no 
   --keep-iphone <dir> iphone: keep the signed app as <dir>/Woodruff Family.app, with <dir>/build.json
   --no-launch         iphone: don't open the app on the iPhones after installing it
   --xcode-signing     let Xcode sign with its signed-in account (renews revoked certificates and profiles)
+  testflight          (with --xcode-signing) archive the iPhone app and upload it to TestFlight
   --results <file>    append one tab-separated line per outcome: part, status, target, detail
 It uses only the certificates and profiles already on this Mac; it never asks for an Apple ID.
 EOF
@@ -1353,6 +1361,90 @@ deploy_iphone() {
 
 # ------------------------------------------------------------------------------------------------------ main
 
+testflight_failed() {  # $1 = what happened, $2 = a log to show the end of (optional), $3 = status (failed)
+  problem "TestFlight: $1"
+  if [ -n "${2:-}" ] && [ -f "$2" ]; then
+    hints "$2"
+    tail -n 25 "$2" | indent
+  fi
+  note "TestFlight: NOT uploaded: $1"
+  result testflight "${3:-failed}" "" "$1"
+}
+
+# The first error lines of an xcodebuild log, on one line.
+first_errors() {  # $1 = log
+  grep -E '(error|Error|ERROR)[: ]' "$1" 2>/dev/null | grep -v '^ *warning' | head -n 3 | tr '\n' ' ' | cut -c1-400
+}
+
+# Archive the iPhone app (with its widgets and notification extension) and upload it to TestFlight. The build number
+# is the commit count, as on every build, so each upload is newer than the last.
+deploy_testflight() {
+  local archive="$LOGDIR/Woodruff Family.xcarchive" options="$LOGDIR/ExportOptions.plist" export="$LOGDIR/export"
+  local log="$LOGDIR/testflight-archive.log" ulog="$LOGDIR/testflight-upload.log" status why
+  local -a sign
+
+  step "TestFlight: archiving the iPhone app (Release, signed by Xcode's account, team $TEAM)"
+  sign=(CODE_SIGN_STYLE=Automatic -allowProvisioningUpdates)
+  asc_key_args
+  xcodebuild -project WoodruffFamily.xcodeproj -scheme WoodruffFamily -destination 'generic/platform=iOS' \
+    -configuration Release -derivedDataPath build -archivePath "$archive" DEVELOPMENT_TEAM="$TEAM" \
+    WOODRUFF_BUNDLE_ID="$IPHONE_BUNDLE_ID" "${sign[@]}" \
+    ${VERSION_SETTINGS[@]+"${VERSION_SETTINGS[@]}"} archive </dev/null >"$log" 2>&1
+  status=$?
+  show_build "$log"
+  if [ "$status" -ne 0 ] || ! grep -q '\*\* ARCHIVE SUCCEEDED \*\*' "$log" 2>/dev/null || [ ! -d "$archive" ]; then
+    why=$(first_errors "$log")
+    testflight_failed "the archive failed${why:+: $why} (log $log)" "$log"
+    return 1
+  fi
+
+  cat >"$options" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>method</key><string>app-store-connect</string>
+  <key>destination</key><string>upload</string>
+  <key>teamID</key><string>$TEAM</string>
+  <key>signingStyle</key><string>automatic</string>
+  <key>manageAppVersionAndBuildNumber</key><false/>
+  <key>testFlightInternalTestingOnly</key><true/>
+  <key>uploadSymbols</key><true/>
+</dict>
+</plist>
+PLIST
+
+  step "TestFlight: uploading build ${BUILD_NUMBER:-?} to App Store Connect"
+  sign=(-allowProvisioningUpdates)
+  asc_key_args
+  xcodebuild -exportArchive -archivePath "$archive" -exportOptionsPlist "$options" -exportPath "$export" \
+    "${sign[@]}" </dev/null >"$ulog" 2>&1
+  status=$?
+  tail -n 15 "$ulog" | indent
+  if [ "$status" -eq 0 ] && grep -qE '\*\* EXPORT SUCCEEDED \*\*|Upload succeeded|Uploaded ' "$ulog" 2>/dev/null; then
+    note "TestFlight: uploaded build ${BUILD_NUMBER:-?}; the iPhones and iPads get it from TestFlight once Apple has processed it"
+    result testflight ok "" "Uploaded build ${BUILD_NUMBER:-?}. Apple takes a few minutes to process it."
+    return 0
+  fi
+  # Already uploaded (an earlier try got through): nothing left to do.
+  if grep -qiE 'bundle version must be higher|has already been (used|uploaded)|redundant binary upload' "$ulog" 2>/dev/null; then
+    note "TestFlight: build ${BUILD_NUMBER:-?} was already uploaded"
+    result testflight ok "" "Build ${BUILD_NUMBER:-?} was already uploaded."
+    return 0
+  fi
+  # No app in App Store Connect for this bundle id yet: that's set up once, by hand, on the website.
+  if grep -qiE 'no suitable application records|app record|Cannot determine the Apple ID|no apps? (were )?found' "$ulog" 2>/dev/null; then
+    why="App Store Connect has no app for $IPHONE_BUNDLE_ID yet: create it at appstoreconnect.apple.com (Apps, +, New App)"
+    say "    $why"
+    note "TestFlight: not uploaded: $why"
+    result testflight skipped "" "$why"
+    return 0
+  fi
+  why=$(first_errors "$ulog")
+  testflight_failed "the upload failed${why:+: $why} (log $ulog)" "$ulog"
+  return 1
+}
+
 main() {
   local parts="" missing="" tool dir ids_before ids_after line self_sum="" opt value
   local -a pass_args
@@ -1398,6 +1490,7 @@ main() {
       share) DO_SHARE=1 ;;
       mac-shared) DO_MAC_SHARED=1 ;;
       iphone | iphones) DO_IPHONE=1 ;;
+      testflight) DO_TESTFLIGHT=1 ;;
       -h | --help) usage; return 0 ;;
       *) say "Unknown argument: $opt"; usage; return 2 ;;
     esac
@@ -1411,8 +1504,13 @@ main() {
     usage
     return 2
   fi
-  if [ "$DO_MAC" -eq 0 ] && [ "$DO_IPHONE" -eq 0 ] && [ "$DO_MAC_SHARED" -eq 0 ] && [ "$DO_SHARE" -eq 0 ]; then
+  if [ "$DO_MAC" -eq 0 ] && [ "$DO_IPHONE" -eq 0 ] && [ "$DO_MAC_SHARED" -eq 0 ] && [ "$DO_SHARE" -eq 0 ] &&
+    [ "$DO_TESTFLIGHT" -eq 0 ]; then
     DO_MAC=1
+  fi
+  if [ "$DO_TESTFLIGHT" -eq 1 ] && [ "$XCODE_SIGNING" -ne 1 ]; then
+    say "testflight signs for the App Store with Xcode's account: it needs --xcode-signing (the Mac Studio)"
+    return 2
   fi
   if [ -n "$EXPECT" ]; then
     case "$EXPECT" in
@@ -1444,6 +1542,7 @@ main() {
   [ "$DO_SHARE" -eq 1 ] && parts="Mac (shared in iCloud Drive)"
   [ "$DO_MAC_SHARED" -eq 1 ] && parts="Mac (another Mac's shared build)"
   [ "$DO_IPHONE" -eq 1 ] && parts="${parts:+$parts and }iPhones"
+  [ "$DO_TESTFLIGHT" -eq 1 ] && parts="${parts:+$parts and }TestFlight"
 
   ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
   if [ -z "$ROOT" ] || [ ! -f "$ROOT/project.yml" ] || [ ! -f "$ROOT/scripts/signing.py" ]; then
@@ -1498,7 +1597,7 @@ main() {
       command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"
     done
   fi
-  if [ "$DO_IPHONE" -eq 1 ]; then
+  if [ "$DO_IPHONE" -eq 1 ] || [ "$DO_TESTFLIGHT" -eq 1 ]; then
     command -v xcrun >/dev/null 2>&1 || missing="$missing xcrun"
   fi
   if [ -n "$missing" ]; then
@@ -1523,7 +1622,7 @@ main() {
       shopt -u execfail
       problem "couldn't run the updated scripts/deploy.sh; run it again"
       nothing_built
-    elif [ "$DO_MAC" -eq 0 ] && [ "$DO_IPHONE" -eq 0 ]; then
+    elif [ "$DO_MAC" -eq 0 ] && [ "$DO_IPHONE" -eq 0 ] && [ "$DO_TESTFLIGHT" -eq 0 ]; then
       # Nothing to build here, so no xcodegen.
       if [ "$DO_MAC_SHARED" -eq 1 ]; then
         deploy_mac_shared
@@ -1546,6 +1645,9 @@ main() {
       if [ "$DO_IPHONE" -eq 1 ]; then
         deploy_iphone
         cleanup
+      fi
+      if [ "$DO_TESTFLIGHT" -eq 1 ]; then
+        deploy_testflight
       fi
     else
       nothing_built

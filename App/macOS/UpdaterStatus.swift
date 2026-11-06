@@ -201,6 +201,18 @@ final class UpdaterStatus {
     /// When the updater last looked for a new version.
     var lastChecked: Date? { isSetUp ? snapshot?.lastCheck : nil }
 
+    /// The TestFlight row (the Mac Studio only): how the upload of the release went, and why when it didn't.
+    var testFlight: (value: String, detail: String?, problem: Bool)? {
+        guard isSetUp, let s = snapshot, s.role == "hub", let tf = s.testflight, let state = tf.state else { return nil }
+        switch state {
+        case "ok": return ("Uploaded", nil, false)
+        case "uploading": return ("Uploading…", nil, false)
+        case "skipped": return ("Not Set Up", nonEmpty(tf.detail), false)
+        case "failed": return ("Couldn’t Upload", nonEmpty(tf.detail), true)
+        default: return (spoken(state), nonEmpty(tf.detail), false)
+        }
+    }
+
     /// The iPhones the Mac Studio installs on (only it has them).
     var iPhones: [Phone] { isSetUp && snapshot?.role == "hub" ? snapshot?.iphones ?? [] : [] }
 
@@ -262,11 +274,13 @@ extension UpdaterStatus {
         var mac: Mac?
         var iphones: [Phone] = []
         var share: Share?
+        /// The release uploaded to TestFlight (the Mac Studio only).
+        var testflight: Share?
         var lastCheck: Date?
         var lastError: String?
 
         private enum CodingKeys: String, CodingKey {
-            case role, running, release, mac, iphones, share
+            case role, running, release, mac, iphones, share, testflight
             case updatedAt = "updated_at", lastCheck = "last_check", lastError = "last_error"
         }
 
@@ -278,6 +292,7 @@ extension UpdaterStatus {
             release = c.lenient(.release)
             mac = c.lenient(.mac)
             share = c.lenient(.share)
+            testflight = c.lenient(.testflight)
             lastCheck = c.time(.lastCheck)
             lastError = c.text(.lastError)
             // Each keeps a distinct id for its row: its UDID, or its place in the list.

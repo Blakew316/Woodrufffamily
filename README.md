@@ -149,6 +149,24 @@ The app runs on iPhone and iPad (iOS and iPadOS 26). To add one:
    Updates Now alone doesn't: the build it reuses was signed before the device was registered.
 5. In the app: Settings → General → Sync Across Devices → Enter Family Code.
 
+### Updates away from home (TestFlight)
+
+The Mac Studio installs the iPhone app directly only while a phone is on the home Wi‑Fi. So that every iPhone and
+iPad updates anywhere, on Wi‑Fi or cellular, it also archives each release and uploads it to TestFlight
+(`scripts/deploy.sh --xcode-signing testflight`, run by its updater). Set up once:
+
+1. At [App Store Connect](https://appstoreconnect.apple.com) choose Apps, +, New App: iOS, name Woodruff Family,
+   bundle ID `com.blakew316.woodruff`, any SKU.
+2. In the app's TestFlight tab, add an internal testing group and add each family member's Apple Account (they must
+   be users of the team in Users and Access).
+3. On each iPhone and iPad, install TestFlight from the App Store, accept the invite, open Woodruff Family there,
+   and turn on Automatic Updates.
+
+Until the app exists in App Store Connect the upload says "Not Set Up" in the Mac app's Settings > General and is
+tried again every 6 hours (or at Check for Updates Now). To turn uploads off, add `"testflight": false` to the
+updater's `config.json`. TestFlight builds use Apple's production push service, so Instant iPhone Alerts need a push
+key enabled for Sandbox & Production.
+
 ### By hand
 
 `scripts/deploy.sh` is what the updater runs. It also works by hand, in Terminal from the repository folder:

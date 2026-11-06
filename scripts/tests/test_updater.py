@@ -244,9 +244,9 @@ class UpdaterTest(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def configure(self, role="hub", fallback=False):
+    def configure(self, role="hub", fallback=False, testflight=False):
         updater.write_json(os.path.join(self.support, "config.json"), {
-            "role": role, "build_fallback": fallback, "repo": self.env.repo,
+            "role": role, "build_fallback": fallback, "repo": self.env.repo, "testflight": testflight,
             "remote": "https://github.com/Blakew316/Woodrufffamily.git", "branch": "release", "interval": 300})
 
     def main(self, *argv):
@@ -430,6 +430,56 @@ class Basics(UpdaterTest):
 
 
 class Hub(UpdaterTest):
+    def test_testflight_uploads_each_release_once(self):
+        self.configure("hub", testflight=True)
+
+        def with_upload(env, opts):
+            if opts["parts"] == ["--xcode-signing", "testflight"]:
+                return [("testflight", "ok", opts["expect"], "Uploaded build 1234. Apple takes a few minutes to process it.")]
+            return all_ok(env, opts)
+        self.env.deploy = with_upload
+        doc = self.run_once()
+        self.assertEqual(self.env.deploys[-1], self.deploy_args("--branch", "release", "--expect", NEW,
+                                                                "--xcode-signing", "testflight"))
+        self.assertEqual(doc["testflight"]["state"], "ok")
+        self.assertEqual(doc["testflight"]["commit"], NEW)
+        before = len(self.env.deploys)
+        self.run_once(5)
+        self.assertEqual(len(self.env.deploys), before)
+
+    def test_testflight_without_an_app_looks_again_hours_later(self):
+        self.configure("hub", testflight=True)
+
+        def no_app(env, opts):
+            if "testflight" in opts["parts"]:
+                return [("testflight", "skipped", opts["expect"], "App Store Connect has no app for it yet")]
+            return all_ok(env, opts)
+        self.env.deploy = no_app
+        doc = self.run_once()
+        self.assertEqual(doc["testflight"]["state"], "skipped")
+        before = len(self.env.deploys)
+        self.run_once(60)
+        self.assertEqual(len(self.env.deploys), before)
+        self.run_once(6 * 60 + 1)
+        self.assertEqual(len(self.env.deploys), before + 1)
+
+    def test_testflight_failure_backs_off(self):
+        self.configure("hub", testflight=True)
+
+        def fails(env, opts):
+            if "testflight" in opts["parts"]:
+                return [("testflight", "failed", opts["expect"], "the upload failed: network")]
+            return all_ok(env, opts)
+        self.env.deploy = fails
+        doc = self.run_once()
+        self.assertEqual(doc["testflight"]["state"], "failed")
+        self.assertIn("Next try at", doc["testflight"]["detail"])
+        before = len(self.env.deploys)
+        self.run_once(5)
+        self.assertEqual(len(self.env.deploys), before)
+        self.run_once(16)
+        self.assertEqual(len(self.env.deploys), before + 1)
+
     def test_new_release_runs_deploy_with_the_exact_arguments(self):
         self.configure("hub")
         doc = self.run_once()
@@ -931,7 +981,7 @@ class StatusFile(UpdaterTest):
 
     def check(self, doc):
         self.assertEqual(sorted(doc), sorted(["format", "updated_at", "role", "running", "release", "mac", "iphones",
-                                              "share", "last_check", "last_error"]))
+                                              "share", "testflight", "last_check", "last_error"]))
         self.assertEqual(doc["format"], 1)
         self.check_time(doc["updated_at"], nullable=False)
         self.assertIn(doc["role"], ("hub", "follower"))
@@ -963,6 +1013,10 @@ class StatusFile(UpdaterTest):
         self.check_sha(doc["share"]["commit"])
         self.assertIn(doc["share"]["state"], ("ok", "failed", None))
         self.assertIsInstance(doc["share"]["detail"], str)
+        self.assertEqual(sorted(doc["testflight"]), ["commit", "detail", "state"])
+        self.check_sha(doc["testflight"]["commit"])
+        self.assertIn(doc["testflight"]["state"], ("ok", "uploading", "skipped", "failed", None))
+        self.assertIsInstance(doc["testflight"]["detail"], str)
         self.check_time(doc["last_check"], nullable=False)
         self.assertTrue(doc["last_error"] is None or isinstance(doc["last_error"], str))
         for text in [mac["detail"], doc["share"]["detail"]] + [p["detail"] for p in doc["iphones"]]:
