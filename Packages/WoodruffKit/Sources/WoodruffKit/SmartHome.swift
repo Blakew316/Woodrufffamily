@@ -346,9 +346,6 @@ public enum Sonos {
     /// What a room is playing, its state and volume.
     public static func refresh(_ r: SonosRoom) async -> SonosRoom { await poll(r, leader: true).room }
 
-    /// Just a room's own volume and mute (what's playing comes from its group's leader).
-    public static func levels(_ r: SonosRoom) async -> SonosRoom { await poll(r, leader: false).room }
-
     /// Asks a room for its volume and mute, and (as its group's leader) what the group is playing, saying
     /// which parts got an answer so a speaker that's gone quiet isn't mistaken for one still playing.
     public static func poll(_ r: SonosRoom, leader: Bool) async -> SonosPoll {
@@ -850,6 +847,14 @@ public final class SmartHome {
         var unique = lights.filter { seen.insert($0.id).inserted }
         // A Govee light also in Apple Home (over Matter) is one lamp, not two: "Blake's Floor Lamp 2" from Apple Home
         // and "Blake's Govee Floor Lamp" from Govee. The Govee one stays (it has the family's room and name).
+        // A Cync bulb in the Cync account and in Apple Home is one bulb too: the Cync one stays.
+        let cync = Set(unique.filter(\.isCync).map { Self.sameLampKey($0.name) }.filter { !$0.isEmpty })
+        unique = unique.filter { l in
+            guard l.isHome, !cync.isEmpty else { return true }
+            let sku = l.sku.lowercased()
+            let maker = sku.contains("ge") || sku.contains("savant") || sku.contains("cync")
+            return !(maker && cync.contains(Self.sameLampKey(l.name)))
+        }
         let govee = Set(unique.filter { !$0.isHome && !$0.isCync }.map { Self.sameLampKey($0.name) }.filter { !$0.isEmpty })
         let twin = { (l: GoveeLight) -> Bool in
             let n = l.name.lowercased()
@@ -864,9 +869,21 @@ public final class SmartHome {
             return l
         }
         if unique != lights { lights = unique }
-        Saved.save("smartSpeakers2", speakers)
-        Saved.save("smartLights", lights)
+        saveSoon()
         onChange?()
+    }
+
+    @ObservationIgnored private var saving: Task<Void, Never>?
+
+    /// Keeps what was found for next time, two seconds after the last change (lamps and speakers change often).
+    private func saveSoon() {
+        saving?.cancel()
+        saving = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            guard !Task.isCancelled, let self else { return }
+            Saved.save("smartSpeakers2", self.speakers)
+            Saved.save("smartLights", self.lights)
+        }
     }
 
     /// A lamp's name with the words that differ between Govee and Apple Home taken out ("Blake's Govee Floor Lamp" and
@@ -947,10 +964,22 @@ public final class SmartHome {
         return speakers.first { $0.id == id }?.zone ?? lights.first { $0.id == id }?.zone ?? externalZones[id]
     }
 
+    /// Every device's room at once (device id → room), the same as `room(of:)` for each: for screens that place
+    /// many devices, worked out once rather than for each one.
+    public var roomIndex: [String: String] {
+        var out = externalZones
+        for l in lights.reversed() { if let z = l.zone { out[l.id] = z } }
+        for s in speakers.reversed() { out[s.id] = s.zone }
+        for (id, r) in rooms where !r.isEmpty { out[id] = r }
+        return out
+    }
+
     public func setRoom(_ id: String, _ room: String?) {
         let r = room?.trimmingCharacters(in: .whitespaces)
+        // Whether it's a new room is asked before it's given, or it would always be known by then.
+        let isNew = r.map { !$0.isEmpty && !knownRooms.contains($0) } ?? false
         rooms[id] = (r?.isEmpty ?? true) ? nil : r
-        if let r, !r.isEmpty, !knownRooms.contains(r) { extraRooms.append(r) }
+        if isNew, let r { extraRooms.append(r) }
     }
 
     /// Every room in the house: given by the app (the TVs' names), chosen for devices, or added by hand.
@@ -966,6 +995,10 @@ public final class SmartHome {
         names[id] = n.isEmpty ? nil : n
         if n.isEmpty {
             if let i = speakers.firstIndex(where: { $0.id == id }) { speakers[i].name = speakers[i].zone }
+            // A Govee light goes back to its model's name (Apple Home and Cync give theirs again when they next report).
+            if let i = lights.firstIndex(where: { $0.id == id }), !lights[i].isHome, !lights[i].isCync {
+                lights[i].name = Govee.product(lights[i].sku)
+            }
         }
         persist()
     }
@@ -1607,34 +1640,36 @@ public final class SmartHome {
         answers.removeAll { $0.ip == ip }
         answers.append(LightAnswer(ip: ip, device: id, sku: sku, at: Date()))
         answers.sort { $0.ip.localizedStandardCompare($1.ip) == .orderedAscending }
+        // Worked out on a copy: lamps answer every scan, and only a real change redraws anything.
+        var next = lights
         defer {
-            lights.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-            persist()
+            next.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+            if next != lights { lights = next; persist() }
             #if canImport(Network)
             lan.status(ip)
             #endif
         }
         // Already known at this address (this lamp, or its twin split off below).
-        if lights.contains(where: { $0.ip == ip && ($0.id == id || $0.id.hasPrefix(id + "@")) }) { return }
+        if next.contains(where: { $0.ip == ip && ($0.id == id || $0.id.hasPrefix(id + "@")) }) { return }
         // Addresses move; a light that used to have this one no longer does.
-        for i in lights.indices where lights[i].ip == ip { lights[i].ip = nil }
-        if let i = lights.firstIndex(where: { $0.id == id }) {
+        for i in next.indices where next[i].ip == ip { next[i].ip = nil }
+        if let i = next.firstIndex(where: { $0.id == id }) {
             // Two lamps answering with the same device ID from different addresses (some Govee lamps sold in
             // pairs do): they're still two lamps, each controlled at its own address.
-            if let other = lights[i].ip, other != ip,
+            if let other = next[i].ip, other != ip,
                // Both answering in the same search round (not one lamp that just moved to a new address).
                answers.contains(where: { $0.ip == other && $0.device == id && $0.at.timeIntervalSinceNow > -20 }) {
                 let twin = id + "@" + ip
-                if let j = lights.firstIndex(where: { $0.id == twin }) { lights[j].ip = ip }
-                else if let j = lights.firstIndex(where: { $0.id.hasPrefix(id + "@") && $0.ip == nil }) { lights[j].ip = ip }
-                else { lights.append(GoveeLight(id: twin, sku: sku, name: names[twin] ?? "\(Govee.product(sku)) 2", ip: ip, cloud: false)) }
+                if let j = next.firstIndex(where: { $0.id == twin }) { next[j].ip = ip }
+                else if let j = next.firstIndex(where: { $0.id.hasPrefix(id + "@") && $0.ip == nil }) { next[j].ip = ip }
+                else { next.append(GoveeLight(id: twin, sku: sku, name: names[twin] ?? "\(Govee.product(sku)) 2", ip: ip, cloud: false)) }
             } else {
-                lights[i].ip = ip
+                next[i].ip = ip
             }
-        } else if let j = lights.firstIndex(where: { $0.id.hasPrefix(id + "@") && $0.ip == nil }) {
-            lights[j].ip = ip
+        } else if let j = next.firstIndex(where: { $0.id.hasPrefix(id + "@") && $0.ip == nil }) {
+            next[j].ip = ip
         } else {
-            lights.append(GoveeLight(id: id, sku: sku, name: names[id] ?? Govee.product(sku), ip: ip, cloud: false))
+            next.append(GoveeLight(id: id, sku: sku, name: names[id] ?? Govee.product(sku), ip: ip, cloud: false))
         }
     }
 
@@ -1675,24 +1710,28 @@ public final class SmartHome {
             var open = !devs.isEmpty
             if devs.isEmpty { devs = try await Govee.cloudDevices(key: key); open = false }
             goveeError = nil
+            // Worked out on a copy and put back only when something changed, so a quiet round redraws nothing.
+            let before = lights
+            var next = lights
             for d in devs {
-                if let i = lights.firstIndex(where: { $0.id == d.id }) {
-                    lights[i].cloud = true
-                    lights[i].sku = d.sku
-                    if names[d.id] == nil { lights[i].name = d.name }
+                if let i = next.firstIndex(where: { $0.id == d.id }) {
+                    next[i].cloud = true
+                    next[i].sku = d.sku
+                    if names[d.id] == nil { next[i].name = d.name }
                     // Its white range, for it and its twin (same model).
                     if d.kelvinMin != nil {
-                        for j in lights.indices where lights[j].id == d.id || lights[j].id.hasPrefix(d.id + "@") {
-                            lights[j].kelvinMin = d.kelvinMin
-                            lights[j].kelvinMax = d.kelvinMax
+                        for j in next.indices where next[j].id == d.id || next[j].id.hasPrefix(d.id + "@") {
+                            next[j].kelvinMin = d.kelvinMin
+                            next[j].kelvinMax = d.kelvinMax
                         }
                     }
                 } else {
                     var l = d
                     if let n = names[d.id] { l.name = n }
-                    lights.append(l)
+                    next.append(l)
                 }
             }
+            if next != lights { lights = next }
             // Lights not answering on the Wi‑Fi: their state comes from Govee (never for twins, which the cloud
             // can't tell apart). The list can change while waiting (a search, a rename), so each answer is put
             // back by ID, state only.
@@ -1709,11 +1748,14 @@ public final class SmartHome {
                 l.brightness = fresh.brightness
                 l.color = fresh.color
                 l.kelvin = fresh.kelvin
-                lights[i] = holding(l)
+                l = holding(l)
+                if l != lights[i] { lights[i] = l }
             }
             checkReachable()
-            lights.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-            persist()
+            var sorted = lights
+            sorted.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+            if sorted != lights { lights = sorted }
+            if lights != before { persist() }
         } catch { goveeError = error.localizedDescription }
     }
 

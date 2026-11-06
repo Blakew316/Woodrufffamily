@@ -3,7 +3,7 @@ import SwiftUI
 import WoodruffKit
 
 /// Woodruff on the Mac reaching Apple Home through Woodruff Home Helper (see HomeBridge). It starts the helper
-/// (hidden), takes what's in Apple Home every second while Woodruff is in use (a 204 when nothing changed; every 5
+/// (hidden), takes what's in Apple Home every 2 seconds while Woodruff is in use (a 204 when nothing changed; every 5
 /// seconds while its window is hidden), puts it where the iPhone app's Apple Home code puts it (so tiles, the
 /// thermostat pill and lights work unchanged), and sends changes back.
 @Observable @MainActor
@@ -28,7 +28,7 @@ final class HomeBridgeClient {
     /// after an hour, so that message isn't shown over and over.
     @ObservationIgnored private var refusedAt = Date.distantPast
     /// The helper's port and secret as last read from its file: kept until it stops answering (it may have started
-    /// again with new ones), instead of read and decoded again every second.
+    /// again with new ones), instead of read and decoded again at every look.
     @ObservationIgnored private var bridgeInfo: HomeBridge.Info?
     /// Where the helper was found, and when it was looked for (asking the Mac takes a moment; it's asked after every
     /// unanswered look while the helper isn't running).
@@ -69,11 +69,11 @@ final class HomeBridgeClient {
         }
     }
 
-    /// Seconds between looks: every second while Woodruff is in use, every 5 while it isn't (its window hidden), and
+    /// Seconds between looks: every 2 while Woodruff is in use, every 5 while it isn't (its window hidden), and
     /// every 30 while the helper isn't installed.
     private var pollEvery: TimeInterval {
         if status == .notInstalled { return 30 }
-        return Fleet.shared.isActive ? 1 : 5
+        return Fleet.shared.isActive ? 2 : 5
     }
 
     /// Opens the helper's window (to allow Apple Home access when the Mac asks, or to see what it's doing).

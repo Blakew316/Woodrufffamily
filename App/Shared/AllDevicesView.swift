@@ -14,7 +14,6 @@ struct AllDevicesView: View {
     @State private var openTV: TitleRef?
     /// The small remote for a TV, from a tap on its tile.
     @State private var miniTV: TitleRef?
-    @State private var openCamera: NestCameras.Camera?
     @State private var confirmUnlock: HomeDevice?
     /// Settings → General: devices that have no room, under Other at the end (off unless asked for).
     @AppStorage("allDevices.showOther") private var showOther = false
@@ -61,7 +60,6 @@ struct AllDevicesView: View {
 
     /// One device on the tab, whatever kind it is.
     enum Item: Identifiable {
-        case camera(NestCameras.Camera)
         case tv(FleetTV)
         case speaker(SonosRoom)
         case light(GoveeLight)
@@ -69,7 +67,6 @@ struct AllDevicesView: View {
 
         var id: String {
             switch self {
-            case .camera(let c): return "cam-" + c.id
             case .tv(let t): return "tv-" + t.id
             case .speaker(let s): return "sp-" + s.id
             case .light(let l): return "li-" + l.id
@@ -82,10 +79,12 @@ struct AllDevicesView: View {
         let devices = store.all
         // The washer and dryer always have a Laundry Room here.
         let laundry = devices.contains { Self.inLaundry($0) } ? ["Laundry Room"] : []
-        let rooms = Array(Set(homeRooms(fleet, devices: devices) + laundry)).filter { $0 != noRoom && !$0.isEmpty }
+        let roomOf = home.roomIndex
+        let rooms = Array(Set(homeRooms(fleet, devices: devices, roomOf: roomOf) + laundry)).filter { $0 != noRoom && !$0.isEmpty }
+        let byRoom = grouped(devices: devices, roomOf: roomOf)
         VStack(alignment: .leading, spacing: 26) {
             ForEach(sections(rooms), id: \.title) { section in
-                let list = section.rooms.flatMap { self.items(in: $0, devices: devices) }
+                let list = section.rooms.flatMap { byRoom[$0] ?? [] }
                 if !list.isEmpty {
                     VStack(alignment: .leading, spacing: 10) {
                         Text(section.title).font(.title3.bold())
@@ -100,7 +99,6 @@ struct AllDevicesView: View {
         .onChange(of: home.speakers.count) { _, _ in store.zones(); ArcRoom.place() }
         .onChange(of: home.lights.count) { _, _ in store.zones(); ArcRoom.place() }
         .onChange(of: store.all.count) { _, _ in ArcRoom.place() }
-        .cameraPresenter($openCamera)
         .sheet(item: $openSpeaker) { r in
             NavigationStack { SpeakerDetailView(speakerID: r.id, inSheet: true) }.presentationBackground(.clear).macResizable()
         }
@@ -122,14 +120,18 @@ struct AllDevicesView: View {
         }
     }
 
-    /// Everything in [room]: TVs first, then speakers, lights and devices, each by name.
-    private func items(in room: String, devices: [HomeDevice]) -> [Item] {
-        var out: [Item] = []
-        out += fleet.tvs.filter { !$0.isUnpaired && roomMatches(home.rooms[$0.id] ?? $0.name, room) }
-            .sorted { $0.name < $1.name }.map { .tv($0) }
-        out += home.speakers.filter { roomMatches(home.room(of: $0.id), room) }.sorted { $0.name < $1.name }.map { .speaker($0) }
-        out += home.lights.filter { roomMatches(home.room(of: $0.id), room) }.sorted { $0.name < $1.name }.map { .light($0) }
-        out += devices.filter { roomMatches(Self.inLaundry($0) ? "Laundry Room" : home.room(of: $0.id), room) }.sorted { $0.name < $1.name }.map { .device($0) }
+    /// Everything in each room (``noRoom`` for things in none): TVs first, then speakers, lights and devices, each by
+    /// name. Sorted into rooms in one go for each drawing.
+    private func grouped(devices: [HomeDevice], roomOf: [String: String]) -> [String: [Item]] {
+        let tvs = itemsByRoom(fleet.tvs.filter { !$0.isUnpaired }.sorted { $0.name < $1.name }) { home.rooms[$0.id] ?? $0.name }
+        let speakers = itemsByRoom(home.speakers.sorted { $0.name < $1.name }) { roomOf[$0.id] }
+        let lights = itemsByRoom(home.lights.sorted { $0.name < $1.name }) { roomOf[$0.id] }
+        let things = itemsByRoom(devices.sorted { $0.name < $1.name }) { Self.inLaundry($0) ? "Laundry Room" : roomOf[$0.id] }
+        var out: [String: [Item]] = [:]
+        for r in Set(tvs.keys).union(speakers.keys).union(lights.keys).union(things.keys) {
+            out[r] = (tvs[r] ?? []).map { Item.tv($0) } + (speakers[r] ?? []).map { Item.speaker($0) }
+                + (lights[r] ?? []).map { Item.light($0) } + (things[r] ?? []).map { Item.device($0) }
+        }
         return out
     }
 
@@ -183,9 +185,6 @@ struct AllDevicesView: View {
 
     private func facts(_ item: Item) -> Facts {
         switch item {
-        case .camera(let c):
-            return Facts(name: c.name, state: c.online ? (c.doorbell ? "Doorbell" : "Live") : "Offline", on: c.online, reachable: c.online,
-                         look: .camera(doorbell: c.doorbell), tint: .green)
         case .tv(let tv):
             let p = tv.nowPlaying
             // What's on it: the title while it plays.
@@ -243,8 +242,6 @@ struct AllDevicesView: View {
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
         #endif
         switch item {
-        case .camera(let c):
-            openCamera = c
         case .tv(let tv):
             // A small remote for it (waking it if it's off).
             if !tv.online { fleet.wake(tv) }
@@ -281,7 +278,6 @@ struct AllDevicesView: View {
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         #endif
         switch item {
-        case .camera(let c): openCamera = c
         case .tv(let tv): openTV = TitleRef(id: tv.id)
         case .speaker(let s): openSpeaker = s
         case .light(let l): openLight = l
@@ -301,7 +297,6 @@ private struct TileGlass: ViewModifier {
 struct DeviceGlyph: View {
     enum Look: Equatable {
         case tv(playing: Bool)
-        case camera(doorbell: Bool)
         case speaker(bar: Bool)
         case homePod(mini: Bool)
         case light
@@ -318,7 +313,7 @@ struct DeviceGlyph: View {
     /// Drawn as the product itself (no circle behind it).
     private var drawn: Bool {
         switch look {
-        case .tv, .camera, .floorLamp, .dreoFan, .thermostat: return true
+        case .tv, .floorLamp, .dreoFan, .thermostat: return true
         case .speaker(let bar): return bar
         default: return false
         }
@@ -343,8 +338,6 @@ struct DeviceGlyph: View {
         switch look {
         case .tv(let playing):
             TVPicture(on: on, playing: playing).frame(width: 56, height: 44)
-        case .camera(let doorbell):
-            CameraPicture(doorbell: doorbell, on: on).frame(width: 44, height: 52)
         case .speaker(let bar):
             if bar {
                 SoundbarPicture(on: on, tint: tint).frame(width: 58, height: 40)
@@ -496,64 +489,6 @@ struct TVPicture: View {
 
 }
 
-/// A Nest camera: the round lens head on its stand (an indoor or outdoor cam), or the tall Nest Doorbell with its
-/// lens at the top and its ring button below. Its status light glows green while it's streaming.
-struct CameraPicture: View {
-    var doorbell: Bool
-    var on: Bool
-
-    var body: some View {
-        GeometryReader { g in
-            let w = g.size.width, h = g.size.height
-            if doorbell {
-                let bw = w * 0.5
-                ZStack {
-                    RoundedRectangle(cornerRadius: bw / 2, style: .continuous)
-                        .fill(LinearGradient(colors: [Color(white: 0.96), Color(white: 0.78)], startPoint: .leading, endPoint: .trailing))
-                        .overlay(RoundedRectangle(cornerRadius: bw / 2, style: .continuous).strokeBorder(.black.opacity(0.15), lineWidth: 0.5))
-                    VStack(spacing: h * 0.07) {
-                        lens(size: bw * 0.62)
-                        Spacer()
-                        // The button, ringed in light.
-                        Circle().fill(Color(white: 0.2)).frame(width: bw * 0.5)
-                            .overlay(Circle().strokeBorder(on ? Color(red: 0.4, green: 0.85, blue: 1) : Color(white: 0.6), lineWidth: 1.5))
-                            .shadow(color: on ? .cyan.opacity(0.7) : .clear, radius: 3)
-                    }
-                    .padding(.vertical, bw * 0.18)
-                }
-                .frame(width: bw, height: h * 0.96)
-                .frame(width: w, height: h)
-            } else {
-                let r = w * 0.36
-                ZStack(alignment: .top) {
-                    // The stand.
-                    Capsule().fill(Color(white: 0.85)).frame(width: w * 0.12, height: h * 0.32).offset(y: r * 1.7)
-                    Ellipse().fill(LinearGradient(colors: [Color(white: 0.92), Color(white: 0.7)], startPoint: .top, endPoint: .bottom))
-                        .frame(width: w * 0.6, height: h * 0.1).offset(y: h * 0.86)
-                    // The head: white, round, the black face with its lens.
-                    Circle().fill(LinearGradient(colors: [Color(white: 0.98), Color(white: 0.78)], startPoint: .topLeading, endPoint: .bottomTrailing))
-                        .frame(width: r * 2)
-                        .overlay(Circle().fill(Color(white: 0.08)).padding(r * 0.18))
-                        .overlay(lens(size: r * 0.85))
-                        .offset(y: h * 0.04)
-                }
-                .frame(width: w, height: h, alignment: .top)
-            }
-        }
-    }
-
-    private func lens(size: CGFloat) -> some View {
-        ZStack {
-            Circle().fill(RadialGradient(colors: [Color(red: 0.2, green: 0.25, blue: 0.4), .black], center: .center, startRadius: 0, endRadius: size / 2))
-            Circle().fill(.white.opacity(0.55)).frame(width: size * 0.22).offset(x: -size * 0.15, y: -size * 0.15)
-            // Its status light.
-            Circle().fill(on ? Color.green : Color(white: 0.3)).frame(width: size * 0.16).offset(y: size * 0.62)
-                .shadow(color: on ? .green : .clear, radius: 2)
-        }
-        .frame(width: size, height: size)
-    }
-}
-
 /// An ecobee Smart Thermostat Enhanced, drawn like the real one: a glossy black rounded square; across the top the
 /// weather, what it's doing (a snowflake cooling, a flame heating) and the menu; the humidity; the room's temperature
 /// large and thin; the set temperature in its blue (or orange) pill; and the ecobee wordmark. Cooling, the snowflake
@@ -589,7 +524,8 @@ struct EcobeePicture: View {
             let tiny = s < 40
             let heatLook = heating || (mode == "heat" && !cooling)
             let accent: Color = heatLook ? .orange : mode == "off" ? .gray : Color(red: 0.16, green: 0.5, blue: 1)
-            TimelineView(.animation(minimumInterval: 1.0 / 20, paused: !(cooling || heating) || reduceMotion)) { ctx in
+            // Moving only while it heats or cools, and never in the tiny chip (always on screen, it would run all day).
+            TimelineView(.animation(minimumInterval: 1.0 / 10, paused: tiny || !(cooling || heating) || reduceMotion)) { ctx in
                 let t = ctx.date.timeIntervalSinceReferenceDate
                 let pulse = reduceMotion ? 0.5 : (sin(t * 2) + 1) / 2
                 ZStack {
@@ -866,26 +802,31 @@ struct SoundbarPicture: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: !on || reduceMotion)) { ctx in
-            let t = ctx.date.timeIntervalSinceReferenceDate
-            Canvas { g, size in
-                let w = size.width, h = size.height
-                let bar = CGRect(x: 0.5, y: h * 0.68, width: w - 1, height: h * 0.2)
-                let shape = Path(roundedRect: bar, cornerRadius: bar.height / 2, style: .continuous)
-
-                // Sound rippling out above it while it plays: three soft arcs, each fading as it rises.
-                if on {
-                    for i in 0..<3 {
-                        let phase = reduceMotion ? Double(i) / 3 : (t * 0.6 + Double(i) / 3).truncatingRemainder(dividingBy: 1)
-                        let rise = bar.minY - 2.5 - CGFloat(phase) * h * 0.45
-                        let spread = w * (0.28 + 0.24 * CGFloat(phase))
-                        var arc = Path()
-                        arc.move(to: CGPoint(x: w / 2 - spread / 2, y: rise + 3))
-                        arc.addQuadCurve(to: CGPoint(x: w / 2 + spread / 2, y: rise + 3), control: CGPoint(x: w / 2, y: rise - 2))
-                        g.stroke(arc, with: .color(tint.opacity(0.85 * (1 - phase))), style: StrokeStyle(lineWidth: 1.3, lineCap: .round))
+        // Only the sound moves: the bar and its grille are drawn once, the ripples behind them 15 times a second.
+        ZStack {
+            if on {
+                TimelineView(.animation(minimumInterval: 1.0 / 15, paused: reduceMotion)) { ctx in
+                    let t = ctx.date.timeIntervalSinceReferenceDate
+                    Canvas { g, size in
+                        let w = size.width, h = size.height
+                        let bar = Self.bar(size)
+                        // Sound rippling out above it while it plays: three soft arcs, each fading as it rises.
+                        for i in 0..<3 {
+                            let phase = reduceMotion ? Double(i) / 3 : (t * 0.6 + Double(i) / 3).truncatingRemainder(dividingBy: 1)
+                            let rise = bar.minY - 2.5 - CGFloat(phase) * h * 0.45
+                            let spread = w * (0.28 + 0.24 * CGFloat(phase))
+                            var arc = Path()
+                            arc.move(to: CGPoint(x: w / 2 - spread / 2, y: rise + 3))
+                            arc.addQuadCurve(to: CGPoint(x: w / 2 + spread / 2, y: rise + 3), control: CGPoint(x: w / 2, y: rise - 2))
+                            g.stroke(arc, with: .color(tint.opacity(0.85 * (1 - phase))), style: StrokeStyle(lineWidth: 1.3, lineCap: .round))
+                        }
                     }
                 }
-
+            }
+            Canvas { g, size in
+                let w = size.width
+                let bar = Self.bar(size)
+                let shape = Path(roundedRect: bar, cornerRadius: bar.height / 2, style: .continuous)
                 // The body: matte black, lighter along the top as the real one catches the light.
                 let top = on ? Color(white: 0.30) : Color(white: 0.55)
                 let bottom = on ? Color(white: 0.06) : Color(white: 0.32)
@@ -917,6 +858,11 @@ struct SoundbarPicture: View {
                 }
             }
         }
+    }
+
+    /// Where the bar sits in a picture of [size].
+    private static func bar(_ size: CGSize) -> CGRect {
+        CGRect(x: 0.5, y: size.height * 0.68, width: size.width - 1, height: size.height * 0.2)
     }
 }
 

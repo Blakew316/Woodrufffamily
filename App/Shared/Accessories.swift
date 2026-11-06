@@ -4,8 +4,6 @@ import WoodruffKit
 // Everything else in the house: Apple Home accessories (plugs, locks, thermostats, sensors, blinds, HomePod
 // temperature…) and Samsung SmartThings appliances (washer, dryer, fridge…), as tiles on Home.
 
-
-
 /// Where each source's devices are kept between launches (on this device only: they're never synced).
 private enum SavedDevices {
     static let home = "devicesHome"
@@ -147,8 +145,6 @@ final class AccessoryStore {
     }
 }
 
-/// "70°" in the family's units.
-
 // MARK: - Home section
 
 struct DevicesSection: View {
@@ -161,11 +157,15 @@ struct DevicesSection: View {
     @State private var open: HomeDevice?
 
     private var shown: [HomeDevice] {
-        let list = room.map { r in store.all.filter { roomMatches(SmartHome.shared.room(of: $0.id), r) } } ?? store.all
-        return favorites ? HomeLayout.shared.favoritesOnly(store.all) : HomeLayout.shared.arrange(list, in: "devices")
+        guard !favorites else { return HomeLayout.shared.favoritesOnly(store.all) }
+        let roomOf = SmartHome.shared.roomIndex
+        let list = room.map { r in store.all.filter { roomMatches(roomOf[$0.id], r) } } ?? store.all
+        return HomeLayout.shared.arrange(list, in: "devices")
     }
 
     var body: some View {
+        // Worked out once for each drawing.
+        let shown = self.shown
         if !shown.isEmpty {
             VStack(alignment: .leading, spacing: 14) {
                 if titled { Text("Devices").font(.title2.bold()) }
@@ -546,7 +546,6 @@ struct FanControls: View {
 }
 
 // MARK: - Thermostat
-
 
 /// An ecobee (or any thermostat): what it is now, its mode, and the temperature(s) it's holding. Taps on
 /// + and − show straight away and are sent together a moment after the last one.

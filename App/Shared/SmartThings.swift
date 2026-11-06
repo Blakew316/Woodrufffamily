@@ -308,7 +308,9 @@ final class SmartThings {
                 out.append(current)   // a command's re-read owns it right now
                 continue
             }
-            raw[key] = status
+            // Kept only when it says something new: open pages read it, and most rounds change nothing.
+            let same = raw[key].map { NSDictionary(dictionary: $0).isEqual(to: status) } ?? false
+            if !same { raw[key] = status }
             if let d = make(dev, status, online: online) {
                 notifyIfFinished(d)
                 out.append(d)

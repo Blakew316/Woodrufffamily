@@ -27,6 +27,10 @@ struct HomeView: View {
         var devices: [HomeDevice]
         /// The favourites' ids.
         var favorites: Set<String>
+        /// Each room's speakers, lights and devices (``noRoom`` for those in none), sorted out once for this drawing.
+        var speakers: [String: [SonosRoom]]
+        var lights: [String: [GoveeLight]]
+        var roomDevices: [String: [HomeDevice]]
     }
 
     /// A room on Home with its tiles.
@@ -56,8 +60,12 @@ struct HomeView: View {
         let player = playerTV
         // Every device, the rooms and the room showing: worked out once for this drawing.
         let devices = AccessoryStore.shared.all
-        let rooms = homeRooms(fleet, devices: devices)
-        let c = Contents(room: shownRoom(rooms), rooms: rooms, devices: devices, favorites: Set(layout.favorites))
+        let h = SmartHome.shared
+        let roomOf = h.roomIndex
+        let rooms = homeRooms(fleet, devices: devices, roomOf: roomOf)
+        let c = Contents(room: shownRoom(rooms), rooms: rooms, devices: devices, favorites: Set(layout.favorites),
+                         speakers: itemsByRoom(h.speakers) { roomOf[$0.id] }, lights: itemsByRoom(h.lights) { roomOf[$0.id] },
+                         roomDevices: itemsByRoom(devices) { roomOf[$0.id] })
         let room = c.room
         @Bindable var scroller = scroller
         ScrollView {
@@ -311,13 +319,13 @@ struct HomeView: View {
         }
         if shown("tvs") { out += tvs(in: r).map { HomeTile.tv($0) } }
         if shown("speakers") {
-            out += layout.arrange(h.speakers.filter { roomMatches(h.room(of: $0.id), r) }, in: "speakers").map { HomeTile.speaker($0) }
+            out += layout.arrange(c.speakers[r] ?? [], in: "speakers").map { HomeTile.speaker($0) }
         }
         if shown("lights") {
-            out += layout.arrange(h.lights.filter { roomMatches(h.room(of: $0.id), r) }, in: "lights").map { HomeTile.light($0) }
+            out += layout.arrange(c.lights[r] ?? [], in: "lights").map { HomeTile.light($0) }
         }
         if shown("devices") {
-            out += layout.arrange(c.devices.filter { roomMatches(h.room(of: $0.id), r) }, in: "devices").map { HomeTile.device($0) }
+            out += layout.arrange(c.roomDevices[r] ?? [], in: "devices").map { HomeTile.device($0) }
         }
         // Each thing once (a light found twice would otherwise upset the grid).
         var seen = Set<String>()
@@ -434,18 +442,6 @@ struct HomeView: View {
         #else
         MacFeedback.snap()
         #endif
-    }
-}
-
-struct StatusPill: View {
-    var title: String
-    var tint: Color?
-    var body: some View {
-        Text(title)
-            .font(.subheadline.weight(.semibold))
-            .foregroundStyle(tint ?? .primary)
-            .padding(.horizontal, 14).padding(.vertical, 8)
-            .glass(Capsule(), interactive: false)
     }
 }
 
@@ -643,33 +639,6 @@ struct HomeTVTile: View, Equatable {
 
     private var idleText: some View {
         Text(idleLine).font(Self.macBig ? .title3.weight(.semibold) : .headline).foregroundStyle(tv.online ? .primary : .secondary)
-    }
-}
-
-/// A Home app scene: one tap does it on every TV.
-struct SceneTile: View {
-    @Environment(Fleet.self) private var fleet
-    var title: String
-    var detail: String
-    var action: () async -> Void
-    @State private var busy = false
-
-    var body: some View {
-        Button {
-            busy = true
-            Task { await action(); busy = false }
-        } label: {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(title).font(.headline)
-                Text(busy ? "Working…" : detail).font(.subheadline).foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(16)
-            .background { Color.clear.glass(RoundedRectangle(cornerRadius: 18, style: .continuous), interactive: false) }
-            .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-        }
-        .buttonStyle(PressScale(scale: 0.97))
-        .disabled(busy)
     }
 }
 

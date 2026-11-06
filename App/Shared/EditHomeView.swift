@@ -157,9 +157,11 @@ final class HomeLayout {
     /// [items] in the chosen order (new ones at the end, as they came), without hidden ones.
     func arrange<T: Identifiable>(_ items: [T], in section: String, includeHidden: Bool = false) -> [T] where T.ID == String {
         let o = order[section] ?? []
+        // Each id's place, looked up once (not searched for again at every comparison).
+        let rank = Dictionary(o.enumerated().map { ($0.element, $0.offset) }, uniquingKeysWith: { first, _ in first })
         let ranked = items.enumerated().sorted { a, b in
-            let ia = o.firstIndex(of: a.element.id) ?? (o.count + a.offset)
-            let ib = o.firstIndex(of: b.element.id) ?? (o.count + b.offset)
+            let ia = rank[a.element.id] ?? (o.count + a.offset)
+            let ib = rank[b.element.id] ?? (o.count + b.offset)
             return ia < ib
         }.map(\.element)
         return includeHidden ? ranked : ranked.filter { !hiddenItems.contains($0.id) }
@@ -258,11 +260,13 @@ struct FavoriteButton: View {
 }
 
 /// Every room something is in: the TVs' rooms, and the rooms of cameras, speakers, lights and devices. [devices]: the
-/// devices, when they're already at hand (Home works them out once for each drawing).
-@MainActor func homeRooms(_ fleet: Fleet, devices: [HomeDevice]? = nil) -> [String] {
+/// devices, when they're already at hand (Home works them out once for each drawing); [roomOf]: every device's room
+/// (`SmartHome.roomIndex`), likewise.
+@MainActor func homeRooms(_ fleet: Fleet, devices: [HomeDevice]? = nil, roomOf: [String: String]? = nil) -> [String] {
     let h = SmartHome.shared
+    let roomOf = roomOf ?? h.roomIndex
     let tvRooms = fleet.tvs.filter { !$0.isUnpaired }.map { h.rooms[$0.id] ?? $0.name }
-    let deviceRooms = (h.speakers.map(\.id) + h.lights.map(\.id) + (devices ?? AccessoryStore.shared.all).map(\.id)).compactMap { h.room(of: $0) }
+    let deviceRooms = (h.speakers.map(\.id) + h.lights.map(\.id) + (devices ?? AccessoryStore.shared.all).map(\.id)).compactMap { roomOf[$0] }
     let cameraRooms = NestCameras.shared.cameras.compactMap { h.rooms[$0.id] ?? $0.room }
     return Array(Set(tvRooms + deviceRooms + cameraRooms).filter { !$0.isEmpty }).sorted { $0.localizedStandardCompare($1) == .orderedAscending }
 }
@@ -271,6 +275,17 @@ struct FavoriteButton: View {
 let noRoom = "\u{1}none"
 func roomMatches(_ actual: String?, _ wanted: String) -> Bool {
     wanted == noRoom ? (actual ?? "").isEmpty : actual == wanted
+}
+
+/// [items] sorted into their rooms in one go (``noRoom`` for those in none), keeping their order: what
+/// `roomMatches` would pick for each room.
+func itemsByRoom<T>(_ items: [T], _ room: (T) -> String?) -> [String: [T]] {
+    var out: [String: [T]] = [:]
+    for i in items {
+        let r = room(i) ?? ""
+        out[r.isEmpty ? noRoom : r, default: []].append(i)
+    }
+    return out
 }
 
 /// Rooms & Sections: which sections and rooms Home shows and in what order, the room bar, and what's hidden. (Moving

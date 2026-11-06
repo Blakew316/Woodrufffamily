@@ -15,11 +15,14 @@ struct SpeakersSection: View {
     @State private var open: SonosRoom?
 
     private var shown: [SonosRoom] {
-        favorites ? HomeLayout.shared.favoritesOnly(home.speakers)
-            : HomeLayout.shared.arrange(room.map { r in home.speakers.filter { roomMatches(home.room(of: $0.id), r) } } ?? home.speakers, in: "speakers")
+        guard !favorites else { return HomeLayout.shared.favoritesOnly(home.speakers) }
+        let roomOf = home.roomIndex
+        return HomeLayout.shared.arrange(room.map { r in home.speakers.filter { roomMatches(roomOf[$0.id], r) } } ?? home.speakers, in: "speakers")
     }
 
     var body: some View {
+        // Worked out once for each drawing.
+        let shown = self.shown
         if !shown.isEmpty {
             VStack(alignment: .leading, spacing: 14) {
                 if titled { Text("Speakers").font(.title2.bold()) }
@@ -160,11 +163,14 @@ struct LightsSection: View {
     @State private var open: GoveeLight?
 
     private var shown: [GoveeLight] {
-        favorites ? HomeLayout.shared.favoritesOnly(home.lights)
-            : HomeLayout.shared.arrange(room.map { r in home.lights.filter { roomMatches(home.room(of: $0.id), r) } } ?? home.lights, in: "lights")
+        guard !favorites else { return HomeLayout.shared.favoritesOnly(home.lights) }
+        let roomOf = home.roomIndex
+        return HomeLayout.shared.arrange(room.map { r in home.lights.filter { roomMatches(roomOf[$0.id], r) } } ?? home.lights, in: "lights")
     }
 
     var body: some View {
+        // Worked out once for each drawing.
+        let shown = self.shown
         if !shown.isEmpty {
             VStack(alignment: .leading, spacing: 14) {
                 HStack(alignment: .firstTextBaseline) {

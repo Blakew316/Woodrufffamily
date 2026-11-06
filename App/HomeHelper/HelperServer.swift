@@ -11,7 +11,8 @@ final class HelperServer {
 
     /// The port it listens on (nil while starting).
     private(set) var port: UInt16?
-    /// When Woodruff last asked (shown in the helper's window).
+    /// When Woodruff first asked (the helper's window says it's connected). Set once, not at every ask, so the
+    /// window isn't redrawn every second.
     private(set) var lastAsked: Date?
 
     @ObservationIgnored private var listener: NWListener?
@@ -95,11 +96,11 @@ final class HelperServer {
         guard r.headers[HomeBridge.tokenHeader.lowercased()] == token else {
             return reply(c, 403, message: "Not allowed.")
         }
-        lastAsked = Date()
+        if lastAsked == nil { lastAsked = Date() }
         switch (r.method, r.path) {
         case ("GET", "/state"):
-            let (state, body) = currentState()
-            if r.query["have"] == state.hash { reply(c, 204, body: nil) } else { reply(c, 200, body: body) }
+            let (hash, body) = currentState()
+            if r.query["have"] == hash { reply(c, 204, body: nil) } else { reply(c, 200, body: body) }
         case ("POST", "/device"):
             guard let q = try? JSONDecoder().decode(HomeBridge.DeviceRequest.self, from: r.body) else {
                 return reply(c, 400, message: "That request couldn't be read.")
@@ -128,17 +129,32 @@ final class HelperServer {
         }
     }
 
-    /// Everything in Apple Home now, and the same as JSON (its hash tells Woodruff whether anything changed).
-    private func currentState() -> (HomeBridge.State, Data?) {
-        var s = HomeBridge.State(hash: "", devices: AccessoryStore.shared.fromHome,
-                                 lights: SmartHome.shared.lights.filter { $0.isHome },
-                                 problem: AccessoryStore.shared.homeProblem)
+    /// What was last handed out: what it was made from, its hash and its JSON.
+    private struct Answer {
+        var devices: [HomeDevice]
+        var lights: [GoveeLight]
+        var problem: String?
+        var hash: String
+        var body: Data?
+    }
+    @ObservationIgnored private var answer: Answer?
+
+    /// Everything in Apple Home now as JSON, and its hash (which tells Woodruff whether anything changed). Made
+    /// again only when something in it changed: Woodruff asks every couple of seconds.
+    private func currentState() -> (String, Data?) {
+        let devices = AccessoryStore.shared.fromHome
+        let lights = SmartHome.shared.lights.filter { $0.isHome }
+        let problem = AccessoryStore.shared.homeProblem
+        if let a = answer, a.devices == devices, a.lights == lights, a.problem == problem { return (a.hash, a.body) }
+        var s = HomeBridge.State(hash: "", devices: devices, lights: lights, problem: problem)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         if let content = try? encoder.encode(s) {
             s.hash = SHA256.hash(data: content).map { String(format: "%02x", $0) }.joined()
         }
-        return (s, try? encoder.encode(s))
+        let a = Answer(devices: devices, lights: lights, problem: problem, hash: s.hash, body: try? encoder.encode(s))
+        answer = a
+        return (a.hash, a.body)
     }
 
     private func reply(_ c: NWConnection, _ code: Int, message: String) {

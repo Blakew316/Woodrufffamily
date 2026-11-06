@@ -284,11 +284,7 @@ final class Cync {
             fallthrough
         case .cancelled:
             disconnect()
-            guard connected, loop != nil else { return }
-            Task { [weak self] in
-                try? await Task.sleep(nanoseconds: 10_000_000_000)
-                self?.connect()
-            }
+            reconnectSoon()
         case .waiting(let e):
             if case .tls = e { error = "Cync’s command server didn’t pass the security check, so the lights can’t be changed from here." }
         default: break
@@ -301,6 +297,18 @@ final class Cync {
         connection?.cancel()
         connection = nil
         loggedIn = false
+        // The hubs are found again by the next sign-in's probes.
+        hubs = [:]
+    }
+
+    /// Tries the connection again in ten seconds, while signed in and the list is kept up to date.
+    private func reconnectSoon() {
+        guard connected, loop != nil else { return }
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 10_000_000_000)
+            guard let self, self.connected, self.loop != nil else { return }
+            self.connect()
+        }
     }
 
     private func write(_ d: Data) {
@@ -399,6 +407,7 @@ final class Cync {
             if changed { publish() }
         case 14:  // Cync closed the session
             disconnect()
+            reconnectSoon()
         default: break
         }
     }
@@ -416,7 +425,11 @@ final class Cync {
             l.color = LightColor(r: Int(rgb.0), g: Int(rgb.1), b: Int(rgb.2))
             l.kelvin = nil
         }
-        if let online { l.online = online }
+        if let online {
+            l.online = online
+            // A hub gone offline can't carry the home's commands; another is used until one answers again.
+            if !online, hubs[home] == l.deviceID { hubs[home] = nil }
+        }
         lights[id] = l
         return before != (l.on, l.brightness, l.kelvin, l.color, l.online)
     }
