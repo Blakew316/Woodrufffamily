@@ -1108,47 +1108,85 @@ struct EveryTVSection: View {
 }
 
 /// Settings → General → Sync Across Devices: where everything was last saved, and Sync Now.
+/// General's one row for Sync Across Devices; everything about it is on its own page.
 struct SyncSection: View {
+    private let sync = SettingsSync.shared
+
+    var body: some View {
+        Section {
+            PageLink("Sync Across Devices") { SyncSettingsView() } label: {
+                IconRow(symbol: "", color: .clear, title: "Sync Across Devices", value: sync.familyCode == nil ? "Not Set Up" : "On")
+            }
+        }
+    }
+}
+
+/// Settings → General → Sync Across Devices: how syncing is going, the family code (hidden until Show), and Sync Now.
+struct SyncSettingsView: View {
     private let sync = SettingsSync.shared
     @State private var busy = false
     @State private var codeText = ""
     @State private var codeError: String?
+    @State private var showCode = false
+    @State private var copied = false
 
     var body: some View {
-        Section {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(sync.status)
-                if let t = sync.lastSynced {
-                    Text(t, style: .relative).font(.footnote).foregroundStyle(.secondary) + Text(" ago").font(.footnote).foregroundStyle(.secondary)
+        Form {
+            Section {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(sync.status)
+                    if let t = sync.lastSynced {
+                        Text(t, style: .relative).font(.footnote).foregroundStyle(.secondary) + Text(" ago").font(.footnote).foregroundStyle(.secondary)
+                    }
                 }
+                Button {
+                    busy = true
+                    Task { await sync.syncNow(); busy = false }
+                } label: {
+                    HStack { Text("Sync Now"); if busy { Spacer(); ProgressView() } }
+                }
+                .disabled(busy)
             }
             if let code = sync.familyCode {
-                LabeledContent("Family Code") {
-                    Text(code).font(.body.monospaced()).textSelection(.enabled)
+                Section {
+                    HStack {
+                        Text("Family Code")
+                        Spacer()
+                        // Hidden unless asked for: anyone holding it can read the family's keys and sign-ins.
+                        Text(showCode ? code : String(repeating: "•", count: 10))
+                            .font(.body.monospaced()).foregroundStyle(.secondary)
+                            .lineLimit(1).minimumScaleFactor(0.6)
+                            .textSelection(.enabled)
+                    }
+                    Button(showCode ? "Hide Code" : "Show Code") { showCode.toggle() }
+                    Button(copied ? "Copied" : "Copy Code") {
+                        copyToClipboard(code)
+                        copied = true
+                        Task { try? await Task.sleep(nanoseconds: 1_500_000_000); copied = false }
+                    }
+                } footer: {
+                    Text("Enter it once on a new iPhone or Mac to give it the family's settings.")
                 }
             }
             if sync.familyCode == nil || sync.otherCode {
-                TextField("Enter Family Code", text: $codeText)
-                    .font(.body.monospaced())
-                    .autocorrectionDisabled()
-                    #if os(iOS)
-                    .textInputAutocapitalization(.characters)
-                    #endif
-                    .onSubmit(useCode)
-                Button("Use Code", action: useCode)
-                    .disabled(codeText.trimmingCharacters(in: .whitespaces).isEmpty)
-                if let codeError { Text(codeError).font(.caption).foregroundStyle(Palette.attention) }
+                Section {
+                    TextField("Enter Family Code", text: $codeText)
+                        .font(.body.monospaced())
+                        .autocorrectionDisabled()
+                        #if os(iOS)
+                        .textInputAutocapitalization(.characters)
+                        #endif
+                        .onSubmit(useCode)
+                    Button("Use Code", action: useCode)
+                        .disabled(codeText.trimmingCharacters(in: .whitespaces).isEmpty)
+                    if let codeError { Text(codeError).font(.caption).foregroundStyle(Palette.attention) }
+                }
             }
-            Button {
-                busy = true
-                Task { await sync.syncNow(); busy = false }
-            } label: {
-                HStack { Text("Sync Now"); if busy { Spacer(); ProgressView() } }
-            }
-            .disabled(busy)
-        } header: { Text("Sync Across Devices") } footer: {
-            Text("Keys, sign-ins, names, rooms, favourites, the Home layout and alert choices are kept on your TVs, so every iPhone and Mac paired with them has the same settings, even ones that were closed or away. Each device needs the family code once: it’s shown here on a device that has it.")
         }
+        .formStyle(.grouped)
+        .navigationTitle("Sync Across Devices")
+        .inlineTitle()
+        .onDisappear { showCode = false }
     }
 
     private func useCode() {
