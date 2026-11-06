@@ -18,8 +18,9 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
         let key = (info["key"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? request.identifier
         let thumb = (info["thumb"] as? String).flatMap { $0.isEmpty ? nil : $0 }
         Task {
-            // The full clip or snapshot when Google gives it; else the small picture the Mac sent in the push.
-            if let file = await CameraEventMedia.fetch(camera: camera, eventID: event, clipURL: clip, key: key, timeout: thumb == nil ? 20 : 10),
+            // The full clip or snapshot when Google gives it quickly; else the small picture the Mac sent in the push.
+            // Kept short: the alert waits for this, and the Mac's quiet update brings the picture if it's late.
+            if let file = await CameraEventMedia.fetch(camera: camera, eventID: event, clipURL: clip, key: key, timeout: thumb == nil ? 5 : 4),
                let a = CameraEventMedia.attachment(file) {
                 c.attachments = [a]
             } else if let thumb, let file = CameraEventMedia.thumbnailFile(thumb), let a = CameraEventMedia.attachment(file) {

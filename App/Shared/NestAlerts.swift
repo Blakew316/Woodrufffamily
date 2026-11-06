@@ -188,29 +188,35 @@ final class NestAlerts {
         c.threadIdentifier = "nest-\(camera)"
         // What the iPhones need to fetch the moment (the Mac's push carries these to them).
         c.userInfo = ["camera": camera, "key": short, "event": event ?? "", "clip": clip ?? ""]
+        // The alert goes at once; its picture follows as a quiet update of the same alert (same id), so fetching it
+        // never holds the alert up.
+        Notifier.deliver(c, id: "nest-" + short)
         #if os(iOS)
-        // Here: the clip or snapshot in the alert, if Google has it within a few seconds (else the alert as it is).
+        // Here: the clip or snapshot added to the alert when Google has it.
         Task {
-            if let file = await CameraEventMedia.fetch(camera: camera, eventID: event, clipURL: clip, key: short, timeout: quiet ? 10 : 4),
-               let a = CameraEventMedia.attachment(file) {
-                c.attachments = [a]
-            }
-            Notifier.deliver(c, id: "nest-" + short)
+            guard let file = await CameraEventMedia.fetch(camera: camera, eventID: event, clipURL: clip, key: short, timeout: 10),
+                  let a = CameraEventMedia.attachment(file),
+                  let update = c.mutableCopy() as? UNMutableNotificationContent else { return }
+            update.attachments = [a]
+            update.sound = nil
+            Notifier.deliver(update, id: "nest-" + short)
         }
         #else
-        // The Mac fetches the moment itself (within a few seconds) and sends a small picture of it in the push, so
-        // every iPhone shows one, signed in to the cameras or not. Later than that, the alert goes without it.
+        // The Mac fetches the moment itself and sends a small picture of it as a quiet update, so every iPhone shows
+        // one, signed in to the cameras or not.
         Task {
             var thumb: String?
             if let token = try? await NestCameras.shared.accessToken(),
-               let file = await CameraEventMedia.fetch(camera: camera, eventID: event, clipURL: clip, key: short, timeout: quiet ? 10 : 5, using: token) {
+               let file = await CameraEventMedia.fetch(camera: camera, eventID: event, clipURL: clip, key: short, timeout: 10, using: token) {
                 thumb = await CameraEventMedia.thumbnail(file)
             }
-            if let thumb { c.userInfo["thumb"] = thumb }
             // The latest event, for Send Test Camera Alert.
             Saved.save(LastCameraEvent.savedKey, LastCameraEvent(title: title, body: body, camera: camera, key: short,
                                                                  event: event ?? "", clip: clip ?? "", at: Date(), thumb: thumb))
-            Notifier.deliver(c, id: "nest-" + short)
+            guard let thumb, let update = c.mutableCopy() as? UNMutableNotificationContent else { return }
+            update.userInfo["thumb"] = thumb
+            update.sound = nil
+            Notifier.deliver(update, id: "nest-" + short)
         }
         #endif
     }
