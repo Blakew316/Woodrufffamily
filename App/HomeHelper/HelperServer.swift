@@ -19,7 +19,7 @@ final class HelperServer {
     @ObservationIgnored private let token = UUID().uuidString + "-" + UUID().uuidString
 
     /// The secret compared in constant time (how long a wrong guess takes says nothing about how close it was).
-    private static func same(_ given: String?, _ token: String) -> Bool {
+    nonisolated private static func same(_ given: String?, _ token: String) -> Bool {
         guard let given else { return false }
         let a = Array(given.utf8), b = Array(token.utf8)
         guard a.count == b.count else { return false }
