@@ -19,6 +19,18 @@ final class NestAlerts {
     private var loop: Task<Void, Never>?
     private var own: String?
     private var seen: [String: Date] = [:]
+    /// The alert that went out for each event session: the newer cameras send the event's clip a few seconds later,
+    /// in a second message for the same session, and it's added to that alert then.
+    private var posted: [String: Posted] = [:]
+    private struct Posted {
+        var title: String
+        var body: String
+        var camera: String
+        var key: String
+        var event: String?
+        var hasClip: Bool
+        var at: Date
+    }
     private weak var fleet: Fleet?
 
     private func flag(_ k: String, _ d: Bool) -> Bool { UserDefaults.standard.object(forKey: k) as? Bool ?? d }
@@ -143,32 +155,43 @@ final class NestAlerts {
             let key = "\(type)|\(session)"
             guard seen[key] == nil else { continue }
             seen[key] = Date()
+            var title: String?
             switch type {
-            case "sdm.devices.events.DoorbellChime.Chime" where doorbell:
-                post(title: "Someone’s at the door", body: name, camera: device, key: key, event: eventID, clip: clip)
-            case "sdm.devices.events.CameraPerson.Person" where person:
-                post(title: "Person seen", body: name, camera: device, key: key, event: eventID, clip: clip)
-            case "sdm.devices.events.CameraMotion.Motion" where motion:
-                post(title: "Motion seen", body: name, camera: device, key: key, event: eventID, clip: clip)
+            case "sdm.devices.events.DoorbellChime.Chime" where doorbell: title = "Someone’s at the door"
+            case "sdm.devices.events.CameraPerson.Person" where person: title = "Person seen"
+            case "sdm.devices.events.CameraMotion.Motion" where motion: title = "Motion seen"
+            case "sdm.devices.events.CameraClipPreview.ClipPreview":
+                // The clip of an alert already shown: the same alert again, quietly, now with it.
+                if let url = (value as? [String: Any])?["previewUrl"] as? String, !url.isEmpty,
+                   let p = posted[session], !p.hasClip {
+                    posted[session]?.hasClip = true
+                    post(title: p.title, body: p.body, camera: p.camera, key: p.key, event: p.event, clip: url, quiet: true)
+                }
             default: break
+            }
+            if let title {
+                posted[session] = Posted(title: title, body: name, camera: device, key: key, event: eventID, hasClip: clip != nil, at: Date())
+                post(title: title, body: name, camera: device, key: key, event: eventID, clip: clip)
             }
         }
         seen = seen.filter { $0.value.timeIntervalSinceNow > -3600 }
+        posted = posted.filter { $0.value.at.timeIntervalSinceNow > -3600 }
     }
 
-    private func post(title: String, body: String, camera: String, key: String, event: String?, clip: String?) {
+    /// [quiet]: an update of an alert already shown (its clip came later), so no second sound.
+    private func post(title: String, body: String, camera: String, key: String, event: String?, clip: String?, quiet: Bool = false) {
         let short = Self.shortID(key)
         let c = UNMutableNotificationContent()
         c.title = title
         c.body = body
-        c.sound = .default
+        c.sound = quiet ? nil : .default
         c.threadIdentifier = "nest-\(camera)"
         // What the iPhones need to fetch the moment (the Mac's push carries these to them).
         c.userInfo = ["camera": camera, "key": short, "event": event ?? "", "clip": clip ?? ""]
         #if os(iOS)
         // Here: the clip or snapshot in the alert, if Google has it within a few seconds (else the alert as it is).
         Task {
-            if let file = await CameraEventMedia.fetch(camera: camera, eventID: event, clipURL: clip, key: short, timeout: 4),
+            if let file = await CameraEventMedia.fetch(camera: camera, eventID: event, clipURL: clip, key: short, timeout: quiet ? 10 : 4),
                let a = CameraEventMedia.attachment(file) {
                 c.attachments = [a]
             }
@@ -180,7 +203,7 @@ final class NestAlerts {
         Task {
             var thumb: String?
             if let token = try? await NestCameras.shared.accessToken(),
-               let file = await CameraEventMedia.fetch(camera: camera, eventID: event, clipURL: clip, key: short, timeout: 5, using: token) {
+               let file = await CameraEventMedia.fetch(camera: camera, eventID: event, clipURL: clip, key: short, timeout: quiet ? 10 : 5, using: token) {
                 thumb = await CameraEventMedia.thumbnail(file)
             }
             if let thumb { c.userInfo["thumb"] = thumb }

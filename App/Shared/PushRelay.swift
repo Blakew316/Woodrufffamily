@@ -172,9 +172,10 @@ final class PushRelay {
     // MARK: Mac: sending
 
     /// Sends one alert to every iPhone (only on the Mac that's the sender; elsewhere nothing happens).
-    func relay(id: String, title: String, body: String, category: String? = nil, userInfo: [String: String] = [:]) {
+    /// [sound] false: a quiet update of an alert already shown (a camera's clip that came after it).
+    func relay(id: String, title: String, body: String, category: String? = nil, userInfo: [String: String] = [:], sound: Bool = true) {
         guard isSender, !tokens.isEmpty else { return }
-        Task { await send(id: id, title: title, body: body, category: category, userInfo: userInfo) }
+        Task { await send(id: id, title: title, body: body, category: category, userInfo: userInfo, sound: sound) }
     }
 
     func sendTest() async {
@@ -197,9 +198,10 @@ final class PushRelay {
                    userInfo: ["camera": e.camera, "key": e.key, "event": e.event, "clip": e.clip, "thumb": e.thumb ?? ""])
     }
 
-    private func send(id: String, title: String, body: String, category: String?, userInfo: [String: String]) async {
+    private func send(id: String, title: String, body: String, category: String?, userInfo: [String: String], sound: Bool = true) async {
         guard let auth = token() else { lastError = "The push key couldn’t be read. Add it again."; return }
-        var aps: [String: Any] = ["alert": ["title": title, "body": body], "sound": "default", "thread-id": userInfo["tv"] ?? id.components(separatedBy: "-").first ?? "woodruff"]
+        var aps: [String: Any] = ["alert": ["title": title, "body": body], "thread-id": userInfo["tv"] ?? id.components(separatedBy: "-").first ?? "woodruff"]
+        if sound { aps["sound"] = "default" }
         if let category { aps["category"] = category }
         // A camera's alert: the iPhone's notification extension fetches its clip or snapshot before it shows.
         if userInfo["camera"] != nil { aps["mutable-content"] = 1 }

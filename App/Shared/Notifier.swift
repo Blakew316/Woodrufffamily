@@ -68,7 +68,7 @@ enum Notifier {
         #if os(macOS)
         if relay {
             let info = c.userInfo.reduce(into: [String: String]()) { out, kv in if let k = kv.key as? String, let v = kv.value as? String { out[k] = v } }
-            PushRelay.shared.relay(id: id, title: c.title, body: c.body, category: c.categoryIdentifier.isEmpty ? nil : c.categoryIdentifier, userInfo: info)
+            PushRelay.shared.relay(id: id, title: c.title, body: c.body, category: c.categoryIdentifier.isEmpty ? nil : c.categoryIdentifier, userInfo: info, sound: c.sound != nil)
         }
         #endif
     }
