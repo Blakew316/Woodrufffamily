@@ -14,6 +14,8 @@ struct WatchView: View {
     @State private var loadedHub: String?
     /// Taken off Continue Watching here, hidden until the TV's next answer (which no longer has them).
     @State private var removed: Set<String> = []
+    /// A film playing on this device (from a tile's menu).
+    @State private var here: PhonePlay?
 
     private var client: TVClient? { fleet.hubClient() }
 
@@ -69,6 +71,8 @@ struct WatchView: View {
             TitleSheet(id: ref.id).zoomDestination(ref.id, zoom).macResizable(width: 760, height: 820, minWidth: 520, minHeight: 500)
         }
         .environment(\.openTitle, OpenTitleAction { openTitle = $0 })
+        .environment(\.playHere, PlayHereAction { here = $0 })
+        .phonePlayer($here)
         .environment(\.zoomNamespace, zoom)
         // Marked watched or taken off Continue Watching anywhere in Watch: gone at once, then asked again.
         .environment(\.watchChanged, WatchChanged { key in
@@ -201,6 +205,10 @@ private struct OpenTitleKey: EnvironmentKey { static let defaultValue = OpenTitl
 struct WatchChanged { var changed: (String?) -> Void; func callAsFunction(removed: String? = nil) { changed(removed) } }
 private struct WatchChangedKey: EnvironmentKey { static let defaultValue = WatchChanged { _ in } }
 
+/// Plays a title on this device (Watch shows the player).
+struct PlayHereAction { var play: (PhonePlay) -> Void; func callAsFunction(_ p: PhonePlay) { play(p) } }
+private struct PlayHereKey: EnvironmentKey { static let defaultValue = PlayHereAction { _ in } }
+
 extension EnvironmentValues {
     var openTitle: OpenTitleAction {
         get { self[OpenTitleKey.self] }
@@ -209,6 +217,10 @@ extension EnvironmentValues {
     var watchChanged: WatchChanged {
         get { self[WatchChangedKey.self] }
         set { self[WatchChangedKey.self] = newValue }
+    }
+    var playHere: PlayHereAction {
+        get { self[PlayHereKey.self] }
+        set { self[PlayHereKey.self] = newValue }
     }
 }
 
@@ -423,6 +435,7 @@ struct PosterTile: View {
 struct ContinueTile: View {
     @Environment(Fleet.self) private var fleet
     @Environment(\.openTitle) private var openTitle
+    @Environment(\.playHere) private var playHere
     @Environment(\.watchChanged) private var watchChanged
     var item: ContinueItem
     /// Its poster's address, as Watch worked it out.
@@ -459,6 +472,9 @@ struct ContinueTile: View {
             Button { PlayRouter.start(item.play, fleet: fleet) } label: { Label(item.play.label ?? "Play", systemImage: "play.fill") }
             if let r = item.restart { Button { PlayRouter.start(r, fleet: fleet, fromStart: true) } label: { Label(r.label ?? "Start Over", systemImage: "arrow.counterclockwise") } }
             PlayOnMenu(action: item.play)
+            if PhonePlayback.canPlay(item.play) {
+                Button("Play on \(PhonePlayback.deviceName)") { if let p = PhonePlayback.play(item.play, fleet: fleet) { playHere(p) } }
+            }
             if let id = item.titleId { Button { openTitle(id) } label: { Label(item.kind == "show" ? "Episodes" : "Details", systemImage: "info.circle") } }
             Button {
                 act {
@@ -490,12 +506,16 @@ struct ContinueTile: View {
 struct TitleMenu: View {
     @Environment(Fleet.self) private var fleet
     @Environment(\.watchChanged) private var watchChanged
+    @Environment(\.playHere) private var playHere
     var title: Title
     var body: some View {
         if let p = title.play {
             Button { PlayRouter.start(p, fleet: fleet) } label: { Label(p.label ?? "Play", systemImage: "play.fill") }
             if (p.position ?? 0) > 0 { Button { PlayRouter.start(p, fleet: fleet, fromStart: true) } label: { Label("Start Over", systemImage: "arrow.counterclockwise") } }
             PlayOnMenu(action: p)
+            if PhonePlayback.canPlay(p) {
+                Button("Play on \(PhonePlayback.deviceName)") { if let here = PhonePlayback.play(p, fleet: fleet) { playHere(here) } }
+            }
         }
         if !title.isShow {
             let on = !(title.watched ?? false)
@@ -606,6 +626,8 @@ struct TitleSheet: View {
     /// Why the title couldn't be read (with Try Again, instead of a spinner that never ends).
     @State private var failed: String?
     @State private var marking = false
+    /// Playing on this device.
+    @State private var here: PhonePlay?
 
     private var client: TVClient? { fleet.hubClient() }
 
@@ -706,6 +728,9 @@ struct TitleSheet: View {
             // The episodes of the season picked (and of the first one shown, as soon as the title shows).
             .task(id: "\(shown?.id ?? "")|\(season)") { await loadEpisodes() }
         }
+        // Inside the sheet, playing here shows over it (an episode's menu included).
+        .environment(\.playHere, PlayHereAction { here = $0 })
+        .phonePlayer($here)
         // Errors from here (a play that failed, Mark as Watched) show over the sheet, not hidden behind it.
         .sheetBanner()
         #if os(macOS)
@@ -745,6 +770,12 @@ struct TitleSheet: View {
                     if let p = top.play { PlayOnButton(action: p, then: { dismiss() }) }
                 }
                 .padding(.top, 4)
+                // Here instead of on a TV: from where it was left off.
+                if let p = top.play, PhonePlayback.canPlay(p) {
+                    CapsuleButton(title: "Play on \(PhonePlayback.deviceName)", symbol: nil, prominent: false) {
+                        here = PhonePlayback.play(p, fleet: fleet)
+                    }
+                }
             }
             .padding(20)
         }
@@ -883,6 +914,7 @@ private struct Recent<Value> {
 
 struct EpisodeRow: View {
     @Environment(Fleet.self) private var fleet
+    @Environment(\.playHere) private var playHere
     var episode: Episode
     /// Its picture's address, as the sheet worked it out.
     var still: URL? = nil
@@ -932,6 +964,9 @@ struct EpisodeRow: View {
         .contextMenu {
             Button { if PlayRouter.start(action, fleet: fleet, fromStart: true) { played() } } label: { Label("Play from the Start", systemImage: "arrow.counterclockwise") }
             PlayOnMenu(action: action, then: played)
+            if PhonePlayback.canPlay(action) {
+                Button("Play on \(PhonePlayback.deviceName)") { if let p = PhonePlayback.play(action, fleet: fleet) { playHere(p) } }
+            }
             Button {
                 Task {
                     do {
