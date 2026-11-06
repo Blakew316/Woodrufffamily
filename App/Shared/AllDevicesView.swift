@@ -208,6 +208,9 @@ struct AllDevicesView: View {
         case .device(let d) where d.product?.hasPrefix("HomePod") == true:
             return Facts(name: d.name, state: d.reachable ? d.status : "Not Responding", on: false, reachable: d.reachable,
                          look: .homePod(mini: d.product == "HomePod mini"), tint: .gray)
+        case .device(let d) where d.isMotionSensor:
+            return Facts(name: d.name, state: d.reachable ? d.status : "Not Responding", on: false, reachable: d.reachable,
+                         look: .smartSensor(motion: d.sensesMotion), tint: .green)
         case .device(let d) where d.kind == .thermostat:
             return Facts(name: d.name, state: d.reachable ? d.status : "Not Responding", on: lit(d), reachable: d.reachable,
                          look: .thermostat(d), tint: d.action == "heating" ? .orange : .blue)
@@ -312,6 +315,7 @@ struct DeviceGlyph: View {
         case stringLights(level: Double)
         case underShelf(level: Double)
         case hexPanels(level: Double)
+        case smartSensor(motion: Bool)
         case dreoFan(pedestal: Bool, speed: Double)
         case thermostat(HomeDevice)
         case device(HomeDevice.Kind, running: Bool, symbol: String)
@@ -324,7 +328,7 @@ struct DeviceGlyph: View {
     /// Drawn as the product itself (no circle behind it).
     private var drawn: Bool {
         switch look {
-        case .tv, .floorLamp, .tableLamp, .stringLights, .underShelf, .hexPanels, .dreoFan, .thermostat: return true
+        case .tv, .floorLamp, .tableLamp, .stringLights, .underShelf, .hexPanels, .smartSensor, .dreoFan, .thermostat: return true
         case .speaker(let bar): return bar
         default: return false
         }
@@ -371,6 +375,8 @@ struct DeviceGlyph: View {
             StringLightsPicture(level: level, lit: on, color: tint).frame(width: 80, height: 54)
         case .underShelf(let level):
             UnderShelfPicture(level: level, lit: on, color: tint).frame(width: 64, height: 56)
+        case .smartSensor(let motion):
+            SmartSensorPicture(motion: motion).frame(width: 54, height: 54)
         case .hexPanels(let level):
             HexPanelsPicture(level: level, lit: on, color: tint).frame(width: 72, height: 56)
         case .homePod(let mini):

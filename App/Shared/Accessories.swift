@@ -212,6 +212,8 @@ struct DeviceTile: View, Equatable {
                         .frame(width: 36, height: 42)
                 } else if device.kind == .thermostat {
                     EcobeePicture(device: device).frame(width: 34, height: 34)
+                } else if device.isMotionSensor {
+                    SmartSensorPicture(motion: device.sensesMotion).frame(width: 40, height: 40)
                 // A fridge is always "running": on a tile it's its still symbol (its page shows the snow falling).
                 } else if device.source == "smartthings" && device.isRunning && device.kind != .fridge && ApplianceArt.animates(device.kind) {
                     ApplianceArt(kind: device.kind, running: true, alert: device.alert, minimumInterval: 1.0 / 20)

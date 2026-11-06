@@ -530,3 +530,60 @@ private struct HexPanelsDrawing: View, Animatable {
         }
     }
 }
+
+extension HomeDevice {
+    /// A motion sensor (an ecobee SmartSensor and the like): its state says whether it sees motion.
+    var isMotionSensor: Bool { kind == .sensor && status.contains("Motion") }
+    /// Seeing motion right now.
+    var sensesMotion: Bool { isMotionSensor && !status.contains("No Motion") }
+}
+
+/// An ecobee SmartSensor as ecobee shows it: a soft white square with a thin grey line just inside its edge, on a
+/// short brushed-steel cone, against a deep green backdrop. While it senses motion the backdrop glows softly round it.
+struct SmartSensorPicture: View {
+    var motion: Bool
+
+    var body: some View {
+        Canvas { ctx, size in draw(ctx, w: size.width, h: size.height) }
+            .animation(.easeInOut(duration: 0.6), value: motion)
+            .accessibilityHidden(true)
+    }
+
+    private func square(_ cx: CGFloat, _ cy: CGFloat, _ s: CGFloat, _ k: CGFloat) -> Path {
+        roundedRect(CGRect(x: cx - s / 2, y: cy - s / 2, width: s, height: s), top: s * k, bottom: s * k)
+    }
+
+    private func draw(_ ctx: GraphicsContext, w: CGFloat, h: CGFloat) {
+        // The backdrop: deep green, lit softly from above (more so while it senses motion).
+        let backdrop = Path(roundedRect: CGRect(x: 0, y: 0, width: w, height: h), cornerRadius: w * 0.22, style: .continuous)
+        ctx.fill(backdrop, with: down(0, h, [(0, hex(0x24463E)), (1, hex(0x163029))]))
+        var c = ctx
+        c.clip(to: backdrop)
+        c.fill(Path(CGRect(x: 0, y: 0, width: w, height: h)),
+               with: .radialGradient(stops([(0, motion ? Color(red: 0.75, green: 1, blue: 0.88).opacity(0.32) : .white.opacity(0.08)), (1, .white.opacity(0))]),
+                                     center: CGPoint(x: w * 0.5, y: h * 0.32), startRadius: 0, endRadius: w * 0.7))
+
+        let s = w * 0.48, cx = w / 2, cy = h * 0.42
+        let standTop = cy + s * 0.4, floor = cy + s * 0.5 + s * 0.36
+        // Its shadow on the floor.
+        glow(c, at: CGPoint(x: cx, y: floor), radius: s * 0.62, scaleY: 0.16, [(0, .black.opacity(0.5)), (1, .black.opacity(0))])
+        // The stand: a short brushed-steel cone flaring out to its base.
+        let nw = s * 0.07, bw = s * 0.3
+        var stand = Path()
+        stand.move(to: CGPoint(x: cx - nw, y: standTop))
+        stand.addLine(to: CGPoint(x: cx + nw, y: standTop))
+        stand.addQuadCurve(to: CGPoint(x: cx + bw, y: floor - s * 0.03), control: CGPoint(x: cx + nw * 1.2, y: floor - s * 0.12))
+        stand.addQuadCurve(to: CGPoint(x: cx - bw, y: floor - s * 0.03), control: CGPoint(x: cx, y: floor + s * 0.05))
+        stand.addQuadCurve(to: CGPoint(x: cx - nw, y: standTop), control: CGPoint(x: cx - nw * 1.2, y: floor - s * 0.12))
+        stand.closeSubpath()
+        c.fill(stand, with: across(cx - bw, cx + bw, [(0, hex(0x34383C)), (0.28, hex(0x8D9297)), (0.46, hex(0xEEF0F2)), (0.62, hex(0x9DA2A7)), (1, hex(0x3E4246))]))
+        c.fill(stand, with: down(standTop, floor, [(0, .black.opacity(0.35)), (0.4, .black.opacity(0))]))
+        // The sensor: soft white, a little shadow under it, and the thin line just inside its edge.
+        let body = square(cx, cy, s, 0.24)
+        var shadowed = c
+        shadowed.addFilter(.shadow(color: .black.opacity(0.35), radius: s * 0.06, x: 0, y: s * 0.04))
+        shadowed.fill(body, with: .linearGradient(stops([(0, .white), (1, hex(0xE4E6E8))]),
+                                                  startPoint: CGPoint(x: cx - s / 2, y: cy - s / 2), endPoint: CGPoint(x: cx + s / 2, y: cy + s / 2)))
+        c.stroke(square(cx, cy, s * 0.93, 0.22), with: .color(Color(red: 0.47, green: 0.49, blue: 0.51).opacity(0.55)), lineWidth: max(0.4, s * 0.012))
+    }
+}
