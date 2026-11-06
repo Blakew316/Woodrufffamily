@@ -1182,21 +1182,26 @@ deploy_iphone() {
   # Xcode couldn't sign with everything: drop only what Apple refused, so the iPhones still update. First without
   # the widgets' app group (not registered on the account yet; the Home Screen widgets then say to open the app)
   # but with push, then with neither.
-  for variant in push basic; do
+  # Xcode couldn't sign with everything: drop only what Apple refused, so the iPhones still update. First the camera
+  # add-on's app group alone (its App ID may lack the group; it then shows the picture the Mac puts in the push),
+  # then the app group everywhere (the Home Screen widgets then say to open the app) but with push, then neither.
+  for variant in notify push basic; do
     if [ "$XCODE_SIGNING" -ne 1 ] || build_succeeded "$status" "$log" "$product"; then break; fi
     case "$variant" in
+      notify) warn "the iPhone build failed; building it again without the camera add-on's app group" ;;
       push) warn "the iPhone build with the widgets' app group failed; building it again without the app group" ;;
       basic) warn "the iPhone build with push failed too; building it again without push" ;;
     esac
     case "$variant" in
-      push) ents=App/iOS/WoodruffFamilyPush.entitlements ;;
-      basic) ents=App/iOS/WoodruffFamilyBasic.entitlements ;;
+      notify) ents=App/iOS/WoodruffFamily.entitlements; wents=App/Widgets/WoodruffWidgets.entitlements ;;
+      push) ents=App/iOS/WoodruffFamilyPush.entitlements; wents= ;;
+      basic) ents=App/iOS/WoodruffFamilyBasic.entitlements; wents= ;;
     esac
     log="$LOGDIR/iphone-build-$variant.log"
     xcodebuild -project WoodruffFamily.xcodeproj -scheme WoodruffFamily -destination 'generic/platform=iOS' \
       -configuration Release -derivedDataPath build DEVELOPMENT_TEAM="$TEAM" \
       WOODRUFF_BUNDLE_ID="$IPHONE_BUNDLE_ID" "${sign[@]}" \
-      WOODRUFF_ENTITLEMENTS="$ents" WOODRUFF_WIDGET_ENTITLEMENTS= WOODRUFF_NOTIFY_ENTITLEMENTS= \
+      WOODRUFF_ENTITLEMENTS="$ents" WOODRUFF_WIDGET_ENTITLEMENTS="$wents" WOODRUFF_NOTIFY_ENTITLEMENTS= \
       ${VERSION_SETTINGS[@]+"${VERSION_SETTINGS[@]}"} build </dev/null >"$log" 2>&1
     status=$?
     show_build "$log"
@@ -1395,7 +1400,18 @@ deploy_testflight() {
   if { [ "$status" -ne 0 ] || [ ! -d "$archive" ]; } && grep -q 'application-groups' "$log" 2>/dev/null; then
     # Apple wouldn't sign the app group: archive without it (the widgets then ask to open the app; camera alerts
     # still show the picture the Mac puts in the push).
-    warn "the archive with the app group failed; archiving again without it"
+    warn "the archive with the app group failed; archiving again without the camera add-on's app group"
+    log="$LOGDIR/testflight-archive-notify.log"
+    rm -rf "$archive"
+    xcodebuild -project WoodruffFamily.xcodeproj -scheme WoodruffFamily -destination 'generic/platform=iOS' \
+      -configuration Release -derivedDataPath build -archivePath "$archive" DEVELOPMENT_TEAM="$TEAM" \
+      WOODRUFF_BUNDLE_ID="$IPHONE_BUNDLE_ID" "${sign[@]}" \
+      WOODRUFF_NOTIFY_ENTITLEMENTS= ${VERSION_SETTINGS[@]+"${VERSION_SETTINGS[@]}"} archive </dev/null >"$log" 2>&1
+    status=$?
+    show_build "$log"
+  fi
+  if { [ "$status" -ne 0 ] || [ ! -d "$archive" ]; } && grep -q 'application-groups' "$log" 2>/dev/null; then
+    warn "archiving again without any app group"
     log="$LOGDIR/testflight-archive-push.log"
     rm -rf "$archive"
     xcodebuild -project WoodruffFamily.xcodeproj -scheme WoodruffFamily -destination 'generic/platform=iOS' \

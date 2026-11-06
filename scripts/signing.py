@@ -59,7 +59,7 @@ EXTRA_ENTITLEMENTS = {
 
 # Added only when the profile allows them (signing goes on without them otherwise): the widgets' app group, and
 # push (aps-environment, with the profile's own value) so alerts arrive while the app is closed.
-APP_GROUP = "group.com.blakew316.woodruff"
+APP_GROUP = "group.com.woodruff.family"
 OPTIONAL_ENTITLEMENTS = {
     "app": {"com.apple.security.application-groups": [APP_GROUP]},
     "widget": {"com.apple.security.application-groups": [APP_GROUP]},
