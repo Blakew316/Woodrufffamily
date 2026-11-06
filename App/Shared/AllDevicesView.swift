@@ -368,7 +368,7 @@ struct DeviceGlyph: View {
             TVPicture(on: on, playing: playing).frame(width: 56, height: 44)
         case .speaker(let bar):
             if bar {
-                SoundbarPicture(on: on, tint: tint).frame(width: 58, height: 40)
+                SoundbarPicture(on: on, tint: tint).frame(width: 104, height: 50)
             } else {
                 Image(systemName: on ? "hifispeaker.fill" : "hifispeaker")
                     .font(.system(size: 20, weight: .semibold))
@@ -844,6 +844,14 @@ struct SoundbarPicture: View {
     var body: some View {
         // Only the sound moves: the bar and its grille are drawn once, the ripples behind them 15 times a second.
         ZStack {
+            // A soft light behind it, as the appliances have, so the black bar reads on a dark tile (brighter while
+            // it plays).
+            Canvas { g, size in
+                let bar = Self.bar(size)
+                let glow = CGRect(x: bar.minX + bar.width * 0.08, y: bar.minY - bar.height * 0.9, width: bar.width * 0.84, height: bar.height * 2.8)
+                g.addFilter(.blur(radius: 9))
+                g.fill(Path(ellipseIn: glow), with: .color(.white.opacity(on ? 0.3 : 0.18)))
+            }
             if on {
                 TimelineView(.animation(minimumInterval: 1.0 / 15, paused: reduceMotion)) { ctx in
                     let t = ctx.date.timeIntervalSinceReferenceDate
@@ -867,9 +875,9 @@ struct SoundbarPicture: View {
                 let w = size.width
                 let bar = Self.bar(size)
                 let shape = Path(roundedRect: bar, cornerRadius: bar.height / 2, style: .continuous)
-                // The body: matte black, lighter along the top as the real one catches the light.
-                let top = on ? Color(white: 0.30) : Color(white: 0.55)
-                let bottom = on ? Color(white: 0.06) : Color(white: 0.32)
+                // The body: matte black whether it plays or not, lighter along the top as the real one catches the light.
+                let top = Color(white: 0.28)
+                let bottom = Color(white: 0.05)
                 g.fill(shape, with: .linearGradient(Gradient(colors: [top, bottom]),
                                                     startPoint: CGPoint(x: 0, y: bar.minY), endPoint: CGPoint(x: 0, y: bar.maxY)))
                 // The grille: fine holes in staggered rows across almost all of the front.
@@ -881,7 +889,7 @@ struct SoundbarPicture: View {
                 while y < bar.maxY - 0.6 {
                     var x = bar.minX + bar.height * 0.45 + (row % 2 == 0 ? 0 : stepX / 2)
                     while x < bar.maxX - bar.height * 0.45 {
-                        g.fill(Path(ellipseIn: CGRect(x: x, y: y, width: hole, height: hole)), with: .color(.black.opacity(on ? 0.55 : 0.35)))
+                        g.fill(Path(ellipseIn: CGRect(x: x, y: y, width: hole, height: hole)), with: .color(.black.opacity(0.55)))
                         x += stepX
                     }
                     y += stepY
@@ -902,7 +910,7 @@ struct SoundbarPicture: View {
 
     /// Where the bar sits in a picture of [size].
     private static func bar(_ size: CGSize) -> CGRect {
-        CGRect(x: 0.5, y: size.height * 0.68, width: size.width - 1, height: size.height * 0.2)
+        CGRect(x: 0.5, y: size.height * 0.62, width: size.width - 1, height: size.height * 0.24)
     }
 }
 
