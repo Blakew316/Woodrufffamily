@@ -149,12 +149,150 @@ extension PhonePlayerView {
 }
 
 extension View {
-    /// Shows [play] in the player while it's set.
+    /// Shows [play] in the player while it's set: on iPhone and iPad Apple's own full-screen player (its Liquid Glass
+    /// controls, picture in picture, AirPlay); on the Mac a window-sized sheet.
     func phonePlayer(_ play: Binding<PhonePlay?>) -> some View {
         #if os(iOS)
-        fullScreenCover(item: play) { PhonePlayerView(play: $0) }
+        onChange(of: play.wrappedValue?.id) { _, id in
+            guard id != nil, let p = play.wrappedValue else { return }
+            NativePlayer.shared.present(p)
+            play.wrappedValue = nil
+        }
         #else
         sheet(item: play) { PhonePlayerView(play: $0) }
         #endif
     }
 }
+
+#if os(iOS)
+/// Apple's player (AVPlayerViewController), presented full screen as the TV app's is: its controls come and go, its
+/// close button with them; picture in picture (also by itself when leaving the app while it plays), AirPlay, speed,
+/// and the Lock Screen's controls. Where it got to is kept for Continue Watching.
+@MainActor
+final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
+    static let shared = NativePlayer()
+
+    private var controller: PlayerController?
+    private var player: AVPlayer?
+    private var stream: DriveStream?
+    private var ticker: Any?
+    private var current: PhonePlay?
+    private var inPictureInPicture = false
+
+    func present(_ play: PhonePlay) {
+        finish()
+        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
+        try? AVAudioSession.sharedInstance().setActive(true)
+        let item: AVPlayerItem
+        switch play.source {
+        case .url(let u):
+            item = AVPlayerItem(url: u)
+        case .drive(let id):
+            let s = DriveStream(fileID: id)
+            stream = s
+            item = AVPlayerItem(asset: s.asset())
+        }
+        // The title on the player and the Lock Screen.
+        let title = AVMutableMetadataItem()
+        title.identifier = .commonIdentifierTitle
+        title.value = play.title as NSString
+        title.extendedLanguageTag = "und"
+        item.externalMetadata = [title]
+
+        let p = AVPlayer(playerItem: item)
+        player = p
+        current = play
+        let c = PlayerController()
+        c.player = p
+        c.delegate = self
+        c.allowsPictureInPicturePlayback = true
+        c.canStartPictureInPictureAutomaticallyFromInline = true
+        c.updatesNowPlayingInfoCenter = true
+        c.modalPresentationStyle = .fullScreen
+        c.onGone = { [weak self] in self?.closed() }
+        controller = c
+        ticker = p.addPeriodicTimeObserver(forInterval: CMTime(seconds: 10, preferredTimescale: 1), queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.report() }
+        }
+        Self.top()?.present(c, animated: true) {
+            Task { @MainActor in
+                if play.start > 5 {
+                    await p.seek(to: CMTime(seconds: play.start, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
+                }
+                p.play()
+            }
+        }
+    }
+
+    /// The screen to show it over: the topmost one.
+    private static func top() -> UIViewController? {
+        let scene = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            .first { $0.activationState == .foregroundActive } ?? UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
+        var vc = scene?.windows.first { $0.isKeyWindow }?.rootViewController ?? scene?.windows.first?.rootViewController
+        while let next = vc?.presentedViewController, !next.isBeingDismissed { vc = next }
+        return vc
+    }
+
+    private func report() {
+        guard let p = player, let play = current else { return }
+        let pos = p.currentTime().seconds, dur = p.currentItem?.duration.seconds ?? 0
+        guard pos.isFinite, pos > 0 else { return }
+        DriveLibrary.shared.played(play.key, title: play.title, pos: pos * 1000, dur: dur.isFinite ? dur * 1000 : 0)
+    }
+
+    /// The player went away: closed, or (in picture in picture) its window closed.
+    private func closed() {
+        guard !inPictureInPicture else { return }
+        finish()
+    }
+
+    private func finish() {
+        guard player != nil else { return }
+        report()
+        Task { await DriveLibrary.shared.sync() }
+        if let t = ticker { player?.removeTimeObserver(t) }
+        ticker = nil
+        player?.pause()
+        player?.replaceCurrentItem(with: nil)
+        player = nil
+        stream = nil
+        current = nil
+        controller = nil
+    }
+
+    // MARK: Picture in picture
+
+    nonisolated func playerViewControllerWillStartPictureInPicture(_ c: AVPlayerViewController) {
+        MainActor.assumeIsolated { inPictureInPicture = true }
+    }
+
+    nonisolated func playerViewControllerDidStopPictureInPicture(_ c: AVPlayerViewController) {
+        MainActor.assumeIsolated {
+            inPictureInPicture = false
+            // Closed from its small window (not brought back full screen): done.
+            if controller?.presentingViewController == nil { finish() }
+        }
+    }
+
+    /// Picture in picture leaves the full-screen player (so other apps can be used).
+    nonisolated func playerViewControllerShouldAutomaticallyDismissAtPictureInPictureStart(_ c: AVPlayerViewController) -> Bool { true }
+
+    /// Brought back from picture in picture: full screen again.
+    nonisolated func playerViewController(_ c: AVPlayerViewController,
+                                          restoreUserInterfaceForPictureInPictureStopWithCompletionHandler done: @escaping (Bool) -> Void) {
+        MainActor.assumeIsolated {
+            guard let controller, controller.presentingViewController == nil, let top = Self.top() else { done(true); return }
+            top.present(controller, animated: true) { done(true) }
+        }
+    }
+}
+
+/// Apple's player, telling when it has gone (its close button, or a swipe down).
+final class PlayerController: AVPlayerViewController {
+    var onGone: (() -> Void)?
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        if isBeingDismissed || presentingViewController == nil { onGone?() }
+    }
+}
+#endif
