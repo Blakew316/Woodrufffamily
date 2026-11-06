@@ -23,15 +23,24 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
             if let file = await CameraEventMedia.fetch(camera: camera, eventID: event, clipURL: clip, key: key, timeout: thumb == nil ? 5 : 4),
                let a = CameraEventMedia.attachment(file) {
                 c.attachments = [a]
+                CameraEventMedia.noteLastPush(file.pathExtension == "mp4" ? "Clip attached" : "Snapshot attached")
             } else if let thumb, let file = CameraEventMedia.thumbnailFile(thumb), let a = CameraEventMedia.attachment(file) {
                 c.attachments = [a]
+                CameraEventMedia.noteLastPush("The Mac’s picture attached")
+            } else {
+                CameraEventMedia.noteLastPush(thumb == nil
+                    ? (clip == nil ? "No picture yet: Google sends the clip a few seconds later" : "No picture: the clip didn’t come in time")
+                    : "No picture: the Mac’s picture couldn’t be read")
             }
             self.finish()
         }
     }
 
     /// Out of time: shown as it is.
-    override func serviceExtensionTimeWillExpire() { finish() }
+    override func serviceExtensionTimeWillExpire() {
+        CameraEventMedia.noteLastPush("No picture: ran out of time")
+        finish()
+    }
 
     private func finish() {
         lock.lock()

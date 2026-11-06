@@ -26,6 +26,20 @@ enum CameraEventMedia {
         return f
     }
 
+    // MARK: The last camera push (what the notification extension did with it)
+
+    /// Written by the notification extension for each camera push, shown on Camera Alerts: when, and whether the
+    /// alert got a picture (and if not, why).
+    static func noteLastPush(_ what: String) {
+        (store ?? .standard).set("\(Date().timeIntervalSince1970)|\(what)", forKey: "push.last")
+    }
+
+    static var lastPush: (at: Date, what: String)? {
+        guard let s = store?.string(forKey: "push.last"), let bar = s.firstIndex(of: "|"),
+              let t = Double(s[..<bar]) else { return nil }
+        return (Date(timeIntervalSince1970: t), String(s[s.index(after: bar)...]))
+    }
+
     // MARK: The sign-in, kept current by the app
 
     static func keepCredentials(clientID: String?, secret: String?, refresh: String?, access: String?, expires: Double?) {

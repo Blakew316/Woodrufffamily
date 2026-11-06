@@ -147,6 +147,8 @@ final class NestAlerts {
         let name = camera?.name ?? "Camera"
         // The event's short clip, when the camera sends one (newer Nest cameras and doorbells).
         let clip = (events["sdm.devices.events.CameraClipPreview.ClipPreview"] as? [String: Any])?["previewUrl"] as? String
+        let kinds = events.keys.map { $0.components(separatedBy: ".").last ?? $0 }.sorted().joined(separator: ", ")
+        PushRelay.log.notice("camera event from \(name, privacy: .public): \(kinds, privacy: .public)\(clip != nil ? " (with clip)" : "", privacy: .public)")
         for (type, value) in events {
             // The same event, however often Google sends it, is one key (and one notification, by its id).
             let session = (value as? [String: Any])?["eventSessionId"] as? String ?? ev["eventId"] as? String ?? messageID ?? UUID().uuidString
@@ -213,6 +215,7 @@ final class NestAlerts {
             // The latest event, for Send Test Camera Alert.
             Saved.save(LastCameraEvent.savedKey, LastCameraEvent(title: title, body: body, camera: camera, key: short,
                                                                  event: event ?? "", clip: clip ?? "", at: Date(), thumb: thumb))
+            PushRelay.log.notice("picture for \(body, privacy: .public)\(quiet ? " (clip came later)" : "", privacy: .public): \(thumb.map { "\($0.count) characters" } ?? "none (Google gave no clip or snapshot in time)", privacy: .public)")
             guard let thumb, let update = c.mutableCopy() as? UNMutableNotificationContent else { return }
             update.userInfo["thumb"] = thumb
             update.sound = nil
@@ -275,6 +278,11 @@ struct AlertsSection: View {
         } header: { Text(title) } footer: {
             #if os(iOS)
             Text("Status: \(status). Alerts come straight away while Woodruff is open or was used in the last little while; when it’s been closed a long time, iOS only lets it check now and then.")
+            if let last = CameraEventMedia.lastPush {
+                Text("Last alert from the Mac: \(last.at.formatted(date: .abbreviated, time: .shortened)). \(last.what).")
+            } else {
+                Text("No alert from the Mac has reached this iPhone yet.")
+            }
             #else
             Text("Status: \(status). The Mac listens all the time Woodruff is open (it keeps running in the menu bar).")
             #endif

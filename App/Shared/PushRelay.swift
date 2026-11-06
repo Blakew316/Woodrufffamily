@@ -3,6 +3,7 @@ import SwiftUI
 import Network
 import CryptoKit
 import UserNotifications
+import os
 import WoodruffKit
 import UniformTypeIdentifiers
 #if os(iOS)
@@ -47,7 +48,9 @@ final class PushRelay {
     var hasKey: Bool { _ = keyChanges; return Keychain.get("apns.key") != nil && !(Keychain.get("apns.keyid") ?? "").isEmpty }
     /// This copy was built able to have push (its profile carries the push entitlement): its iPhone can sign up for
     /// instant alerts. Read from the app's profile once.
-    static let builtWithPush: Bool = provisionedEnvironment() != nil
+    static let builtWithPush: Bool = appEnvironment() != nil
+    /// What the Mac's pushes did (Console: subsystem com.woodruff.family, category alerts).
+    nonisolated static let log = Logger(subsystem: "com.woodruff.family", category: "alerts")
     /// Whether this Mac sends (each Mac's own choice; not synced).
     var sendsFromHere: Bool {
         get { UserDefaults.standard.object(forKey: "push.sendFromHere") as? Bool ?? true }
@@ -135,7 +138,7 @@ final class PushRelay {
         #if DEBUG
         let env = "development"
         #else
-        let env = Self.provisionedEnvironment() ?? "development"
+        let env = Self.appEnvironment() ?? "development"
         #endif
         #if os(iOS)
         let name = UIDevice.current.name
@@ -167,6 +170,18 @@ final class PushRelay {
         let after = text[r.upperBound...]
         guard let s = after.range(of: "<string>"), let e = after.range(of: "</string>", range: s.upperBound..<after.endIndex) else { return nil }
         return String(after[s.upperBound..<e.lowerBound])
+    }
+
+    /// The push service this copy uses: its profile's, else "production". TestFlight and the App Store take the
+    /// profile out of the app, and only they have none (a TestFlight iPhone signed up as "development", so the Mac
+    /// sent its alerts to the wrong service and then dropped its address).
+    nonisolated static func appEnvironment() -> String? {
+        if let e = provisionedEnvironment() { return e }
+        #if os(iOS) && !targetEnvironment(simulator)
+        return Bundle.main.url(forResource: "embedded", withExtension: "mobileprovision") == nil ? "production" : nil
+        #else
+        return nil
+        #endif
     }
 
     // MARK: Mac: sending
@@ -217,32 +232,31 @@ final class PushRelay {
         var gone: [String] = []
         var anySent = false
         var failure: String?
+        let kind = userInfo["camera"] != nil ? "camera" : "alert"
+        Self.log.notice("push \(id, privacy: .public) (\(kind, privacy: .public)): \(data.count) bytes, picture \(payload["thumb"] != nil ? "in it" : "none", privacy: .public), sound \(sound ? "yes" : "no", privacy: .public)")
+        var fixed: [String: String] = [:]
         for (device, t) in tokens {
-            let host = t.env == "production" ? "api.push.apple.com" : "api.sandbox.push.apple.com"
             // A push address is hex (it arrives through the synced settings: nothing else goes into the path).
-            guard !t.token.isEmpty, t.token.allSatisfy(\.isHexDigit),
-                  let url = URL(string: "https://\(host)/3/device/\(t.token)") else { continue }
-            var r = URLRequest(url: url, timeoutInterval: 20)
-            r.httpMethod = "POST"
-            r.httpBody = data
-            r.setValue("bearer \(auth)", forHTTPHeaderField: "authorization")
-            r.setValue(t.topic, forHTTPHeaderField: "apns-topic")
-            r.setValue("alert", forHTTPHeaderField: "apns-push-type")
-            r.setValue("10", forHTTPHeaderField: "apns-priority")
-            // Same ID as the alert itself: a repeat (from a second Mac, or the iPhone's own) replaces it.
-            r.setValue(String(id.prefix(64)), forHTTPHeaderField: "apns-collapse-id")
-            r.setValue(String(Int(Date().timeIntervalSince1970) + 3600), forHTTPHeaderField: "apns-expiration")
-            do {
-                let (d, resp) = try await URLSession.shared.data(for: r)
-                let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
-                if code == 200 { anySent = true; continue }
-                let reason = ((try? JSONSerialization.jsonObject(with: d)) as? [String: Any])?["reason"] as? String ?? "\(code)"
-                if code == 410 || reason == "BadDeviceToken" || reason == "Unregistered" { gone.append(device) }
-                if code == 403 { jwt = nil }
-                failure = "\(t.name): \(Self.explain(reason))"
-            } catch {
-                failure = "\(t.name): \(error.localizedDescription)"
+            guard !t.token.isEmpty, t.token.allSatisfy(\.isHexDigit) else { continue }
+            var env = t.env == "production" ? "production" : "development"
+            var (code, reason) = await post(data, token: t, env: env, id: id, auth: auth)
+            // An address for the other service (an iPhone that signed up with the wrong one): try that one, and keep it.
+            if reason == "BadDeviceToken" {
+                let other = env == "production" ? "development" : "production"
+                let (c2, r2) = await post(data, token: t, env: other, id: id, auth: auth)
+                if c2 == 200 || r2 != "BadDeviceToken" { code = c2; reason = r2; env = other; fixed[device] = other }
             }
+            Self.log.notice("push \(id, privacy: .public) to \(t.name, privacy: .public) (\(env, privacy: .public)): \(code) \(reason, privacy: .public)")
+            if code == 200 { anySent = true; continue }
+            if code == 410 || reason == "BadDeviceToken" || reason == "Unregistered" { gone.append(device) }
+            if code == 403 { jwt = nil }
+            failure = "\(t.name): \(code == 0 ? reason : Self.explain(reason))"
+        }
+        if !fixed.isEmpty {
+            var all = Saved.load(Self.tokensKey, as: [String: Token].self) ?? [:]
+            for (d, e) in fixed { all[d]?.env = e }
+            tokens = all
+            Saved.save(Self.tokensKey, all)
         }
         if !gone.isEmpty {
             var all = Saved.load(Self.tokensKey, as: [String: Token].self) ?? [:]
@@ -252,6 +266,31 @@ final class PushRelay {
         }
         if anySent { lastSent = Date() }
         lastError = failure
+    }
+
+    /// One push to one iPhone on one of Apple's two services: the status code and Apple's reason ("OK" when sent;
+    /// the error itself when it didn't get there, with code 0).
+    private func post(_ data: Data, token t: Token, env: String, id: String, auth: String) async -> (Int, String) {
+        let host = env == "production" ? "api.push.apple.com" : "api.sandbox.push.apple.com"
+        guard let url = URL(string: "https://\(host)/3/device/\(t.token)") else { return (0, "bad address") }
+        var r = URLRequest(url: url, timeoutInterval: 20)
+        r.httpMethod = "POST"
+        r.httpBody = data
+        r.setValue("bearer \(auth)", forHTTPHeaderField: "authorization")
+        r.setValue(t.topic, forHTTPHeaderField: "apns-topic")
+        r.setValue("alert", forHTTPHeaderField: "apns-push-type")
+        r.setValue("10", forHTTPHeaderField: "apns-priority")
+        // Same ID as the alert itself: a repeat (from a second Mac, or the iPhone's own) replaces it.
+        r.setValue(String(id.prefix(64)), forHTTPHeaderField: "apns-collapse-id")
+        r.setValue(String(Int(Date().timeIntervalSince1970) + 3600), forHTTPHeaderField: "apns-expiration")
+        do {
+            let (d, resp) = try await URLSession.shared.data(for: r)
+            let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+            if code == 200 { return (200, "OK") }
+            return (code, ((try? JSONSerialization.jsonObject(with: d)) as? [String: Any])?["reason"] as? String ?? "\(code)")
+        } catch {
+            return (0, error.localizedDescription)
+        }
     }
 
     static func explain(_ reason: String) -> String {
