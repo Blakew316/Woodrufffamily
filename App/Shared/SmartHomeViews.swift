@@ -53,6 +53,8 @@ struct SpeakerTile: View {
                     SpeakerArt(url: room.art, size: 38)
                 }
             }
+            // Every tile's picture in the same square, centred in it, so the pictures and names line up.
+            .frame(width: 44, height: 44, alignment: .center)
             .opacity(room.isOffline ? 0.45 : 1)
             VStack(alignment: .leading, spacing: 1) {
                 Text(room.name).font(.footnote.weight(.semibold)).lineLimit(1)
@@ -212,6 +214,7 @@ struct LightTile: View {
         let lit = light.isLit
         // Compact, like the Home app: the light's colour on the left, its name and state beside it.
         HStack(spacing: 10) {
+            Group {
             if light.isFloorLamp {
                 // The lamp as on All Devices: its pole lit from the base up to the brightness.
                 FloorLampPicture(level: Double(light.brightness) / 100, lit: lit, color: light.shade)
@@ -225,6 +228,8 @@ struct LightTile: View {
                     if light.isOffline { Image(systemName: "wifi.slash").font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary) }
                 }
             }
+            }
+            .frame(width: 44, height: 44, alignment: .center)
             VStack(alignment: .leading, spacing: 1) {
                 Text(light.name).font(.footnote.weight(.semibold)).lineLimit(2)
                 Text(light.isOffline ? "Offline" : lit ? "\(light.brightness)%" : "Off").font(.caption)

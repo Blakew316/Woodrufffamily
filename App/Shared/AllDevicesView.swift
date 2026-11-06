@@ -137,18 +137,24 @@ struct AllDevicesView: View {
 
     private func tile(_ item: Item) -> some View {
         let f = facts(item)
-        return VStack(alignment: .leading, spacing: 0) {
+        // Centred, the same in every tile: the picture in a square of its own at the top, the name and state under it
+        // at the same height whatever the picture is.
+        return VStack(alignment: .center, spacing: 10) {
             DeviceGlyph(look: f.look, on: f.on, tint: f.tint)
-                .frame(width: 58, height: 56, alignment: .leading)
-            Spacer(minLength: 8)
-            Text(f.name).font(.footnote.weight(.semibold)).lineLimit(2).multilineTextAlignment(.leading)
-            // Two lines, so a TV's title reads in full more often.
-            Text(f.state).font(.caption)
-                .foregroundStyle(f.on ? Color.black.opacity(0.55) : .secondary).lineLimit(2)
+                .frame(width: 58, height: 56, alignment: .center)
+                .frame(maxWidth: .infinity)
+            VStack(spacing: 2) {
+                Text(f.name).font(.footnote.weight(.semibold)).lineLimit(2)
+                // Two lines, so a TV's title reads in full more often.
+                Text(f.state).font(.caption)
+                    .foregroundStyle(f.on ? Color.black.opacity(0.55) : .secondary).lineLimit(2)
+            }
+            .multilineTextAlignment(.center)
+            .frame(maxWidth: .infinity)
         }
         .foregroundStyle(f.on ? Color.black : .primary)
         .padding(12)
-        .frame(maxWidth: .infinity, minHeight: 120, alignment: .topLeading)
+        .frame(maxWidth: .infinity, minHeight: 150, alignment: .top)
         .background {
             if f.on { RoundedRectangle(cornerRadius: 22, style: .continuous).fill(.white.opacity(0.94)) }
         }

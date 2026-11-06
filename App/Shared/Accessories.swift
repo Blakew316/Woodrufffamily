@@ -224,7 +224,7 @@ struct DeviceTile: View, Equatable {
                         .contentTransition(.symbolEffect(.replace))
                 }
             }
-            .frame(minWidth: 30, minHeight: 30)
+            .frame(width: 44, height: 44, alignment: .center)
             VStack(alignment: .leading, spacing: 1) {
                 Text(device.name).font(.footnote.weight(.semibold)).lineLimit(2)
                 Text(device.reachable ? device.status : "Not Responding").font(.caption)
