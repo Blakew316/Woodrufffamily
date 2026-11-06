@@ -102,7 +102,7 @@ final class DriveLibrary: WatchSource {
     private var saved: Saved
     private(set) var busy = false
     private(set) var error: String?
-    private var refreshing: Task<Void, Never>?
+    @ObservationIgnored private var refreshing: Task<Void, Never>?
     private let file: URL = {
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Watch", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -254,7 +254,7 @@ final class DriveLibrary: WatchSource {
     }
 
     /// What a play started here is part of (its show, its episode), for Continue Watching.
-    private var context: [String: Spot] = [:]
+    @ObservationIgnored private var context: [String: Spot] = [:]
 
     /// The episode after [key] in its season, as the next one to watch.
     private func upNext(after key: String) {
@@ -267,7 +267,7 @@ final class DriveLibrary: WatchSource {
         saved.spots[next] = c
     }
     /// Each season's episodes in order, as last listed.
-    private var seasonLists: [String: [String]] = [:]
+    @ObservationIgnored private var seasonLists: [String: [String]] = [:]
 
     private func progress(_ key: String) -> (pos: Double, dur: Double) {
         let s = saved.spots[key]
@@ -588,7 +588,7 @@ final class DriveLibrary: WatchSource {
 
     // MARK: Sharing progress with the TVs (their FamilySync files in Drive's hidden app folder)
 
-    private var syncing = false
+    @ObservationIgnored private var syncing = false
 
     /// Reads every TV's progress file, merges them in (per title the newest wins; a removal at least as new as the
     /// progress takes it away), then writes this device's file for the TVs to read.

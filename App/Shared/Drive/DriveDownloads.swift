@@ -137,6 +137,10 @@ extension DriveDownloads: URLSessionDownloadDelegate {
                                 totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
         guard let f = downloadTask.taskDescription else { return }
         MainActor.assumeIsolated {
+            // Shown in whole percents, not at every chunk.
+            let total = totalBytesExpectedToWrite > 0 ? totalBytesExpectedToWrite : (item(f)?.bytes ?? 0)
+            if let had = item(f), had.state == "downloading", total > 0, had.bytes == total,
+               (totalBytesWritten - had.done) * 100 < total { return }
             update(f) { i in
                 i.done = totalBytesWritten
                 if totalBytesExpectedToWrite > 0 { i.bytes = totalBytesExpectedToWrite }

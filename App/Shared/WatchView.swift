@@ -20,8 +20,12 @@ struct WatchView: View {
     @AppStorage("watch.section") private var section = "movies"
     /// The posters' width (fitted to the window on the Mac).
     @State private var posterWidth: CGFloat = 112
-    /// Every title of each, for its banner and rows.
+    /// Every title of each, for its banner and rows, and when it was read.
     @State private var sectionTitles: [String: [Title]] = [:]
+    @State private var sectionRead: [String: Date] = [:]
+    /// The banner's five and the rows, worked out once per list (not at every redraw: the banner turning every 12
+    /// seconds redraws the page).
+    @State private var shelves = ShelfCache()
 
     private var client: (any WatchSource)? { WatchSources.current(fleet) }
 
@@ -119,7 +123,9 @@ struct WatchView: View {
         // Movies or TV Shows, as on the TV: the day's five across the top, then the rows.
         let place = section == "shows" ? "shows" : "movies"
         let titles = sectionTitles[place] ?? []
-        let featured = WatchRows.featured(titles, section: place)
+        let watchingIDs = Set((h.continue ?? []).filter { ($0.kind == "show") == (place == "shows") }.compactMap(\.titleId))
+        let worked = shelves.get(place: place, titles: titles, shown: watchingIDs)
+        let featured = worked.featured
         VStack(spacing: 12) {
             sectionPicker
             if !featured.isEmpty {
@@ -131,15 +137,14 @@ struct WatchView: View {
         if !watching.isEmpty {
             ShelfRow("Continue Watching") { ForEach(watching) { ContinueTile(item: $0, poster: client?.artURL($0.poster)) } }
         }
-        let shownIDs = Set(watching.compactMap(\.titleId))
-        ForEach(WatchRows.rows(titles, shown: shownIDs), id: \.name) { row in
+        ForEach(worked.rows, id: \.name) { row in
             ShelfRow(row.name, all: LibraryRef(place: place, genre: row.genre, sort: row.name == "Top Rated" ? "rated" : row.name == "Recently Added" ? "recent" : nil)) {
                 ForEach(row.titles) { PosterTile(title: $0, poster: client?.artURL($0.poster)) }
             }
         }
     }
 
-    /// Movies | TV Shows, over the top of the banner.
+    /// Movies | TV Shows above the banner.
     private var sectionPicker: some View {
         Picker("Library", selection: $section) {
             Text("Movies").tag("movies")
@@ -151,14 +156,16 @@ struct WatchView: View {
         .frame(maxWidth: .infinity)
         .onChange(of: section) { _, _ in
             page = 0
-            Task { await loadSection() }
+            Task { await loadSection(force: false) }
         }
     }
 
     /// Every title of the section shown (a page at a time from the library), for its banner and rows.
-    private func loadSection() async {
+    private func loadSection(force: Bool = false) async {
         guard let c = client else { return }
         let place = section == "shows" ? "shows" : "movies"
+        // Read again at most every 10 minutes (Watch asks for its page every minute).
+        if !force, sectionTitles[place] != nil, let at = sectionRead[place], Date().timeIntervalSince(at) < 600 { return }
         var all: [Title] = []
         var offset = 0
         while let p = try? await c.library(place: place, sort: "recent", unwatched: false, genre: nil, q: nil, offset: offset, limit: 120) {
@@ -167,6 +174,7 @@ struct WatchView: View {
             if p.items.isEmpty || offset >= p.count || offset >= 3000 { break }
         }
         if !all.isEmpty || sectionTitles[place] == nil { sectionTitles[place] = all }
+        sectionRead[place] = Date()
     }
 
     private func load() async {
@@ -185,7 +193,7 @@ struct WatchView: View {
                     if !removed.isEmpty { removed = [] }
                 }
             }
-            if loadedHub != hubID { loadedHub = hubID; sectionTitles = [:] }
+            if loadedHub != hubID { loadedHub = hubID; sectionTitles = [:]; sectionRead = [:] }
             await loadSection()
             if error != nil { error = nil }
         } catch {
@@ -1334,5 +1342,23 @@ struct WatchPlaceholder: View {
         }
         .shimmer()
         .accessibilityLabel("Loading")
+    }
+}
+
+
+/// The banner's five and the rows for a list, kept until the list (or what's in Continue Watching) changes.
+final class ShelfCache {
+    struct Worked { var featured: [Title]; var rows: [(name: String, genre: String?, titles: [Title])] }
+    private var key: String = ""
+    private var value = Worked(featured: [], rows: [])
+
+    func get(place: String, titles: [Title], shown: Set<String>) -> Worked {
+        let day = Calendar.current.ordinality(of: .day, in: .era, for: Date()) ?? 0
+        let k = "\(place)|\(day)|\(titles.count)|\(titles.first?.id ?? "")|\(titles.last?.id ?? "")|\(shown.sorted().joined(separator: ","))"
+        if k != key {
+            key = k
+            value = Worked(featured: WatchRows.featured(titles, section: place), rows: WatchRows.rows(titles, shown: shown))
+        }
+        return value
     }
 }
