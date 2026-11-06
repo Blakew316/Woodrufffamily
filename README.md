@@ -105,6 +105,11 @@ python3 scripts/updater.py install --role follower --build-fallback  # the MacBo
 python3 scripts/updater.py install --role follower                   # Mac Studio 2
 ```
 
+On Mac Studio 2 and the MacBook Pro, which install the Mac Studio's build from iCloud Drive, also give Python Full
+Disk Access (System Settings > Privacy & Security > Full Disk Access, add `Python.app` from
+`python3 -c 'import sys; print(sys.executable)'`'s framework). macOS lets Terminal read iCloud Drive but not the
+updater when it runs by itself; without this, `status` says so and the Mac waits until someone runs it by hand.
+
 It saves its settings, adds a LaunchAgent for that Mac's user
 (`~/Library/LaunchAgents/com.woodruff.family.updater.plist`), starts it and says what it did. If the checkout
 doesn't have `scripts/updater.py` yet, get it first with

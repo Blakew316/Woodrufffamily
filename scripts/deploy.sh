@@ -903,7 +903,10 @@ deploy_mac_shared() {
   if [ "$got" -ne 1 ]; then
     if [ -s "$clog" ]; then tail -n 3 "$clog" | indent; fi
     rm -f "$copy"
-    if [ "$final" -eq 1 ]; then
+    if grep -q "Operation not permitted" "$clog" 2>/dev/null; then
+      # macOS lets Terminal into iCloud Drive but not the updater running on its own (no one to answer its prompt).
+      mac_failed "macOS won't let the updater read iCloud Drive when it runs by itself. In System Settings > Privacy & Security > Full Disk Access, add Python (README: the updater on each Mac). $MAC_INSTALLED wasn't touched" "" waiting
+    elif [ "$final" -eq 1 ]; then
       why=$(tail -n 1 "$clog" 2>/dev/null)
       if [ -z "$why" ]; then why="The shared build of $sha12 can't be used."; fi
       mac_failed "${why%.}; $MAC_INSTALLED wasn't touched"
