@@ -118,8 +118,7 @@ private final class Loader: NSObject, AVAssetResourceLoaderDelegate, URLSessionD
             if code == 401 && !load.retried {
                 fetch(load.request, retried: true)
             } else if !load.request.isCancelled && !load.request.isFinished {
-                load.request.finishLoading(with: GoogleDrive.Failure(code == 401 ? "Google Drive refused the sign-in. Sign in again in Settings."
-                                                                                  : "Google Drive answered \(code)."))
+                load.request.finishLoading(with: GoogleDrive.failure(code, nil))
             }
             return
         }

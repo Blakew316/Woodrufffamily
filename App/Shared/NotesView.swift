@@ -17,6 +17,8 @@ struct NotesView: View {
         Form {
             if let error {
                 Section { Text(error).foregroundStyle(Palette.attention) }
+            } else if !loaded {
+                Section { HStack { Spacer(); ProgressView(); Spacer() } }
             }
             if !pinned.isEmpty {
                 Section {
@@ -47,7 +49,7 @@ struct NotesView: View {
     private func editor(_ n: TVNote) -> some View {
         NavigationStack {
             NoteEditor(note: n) { title, body in
-                await save(n, title: title, body: body, pinned: n.id.isEmpty ? false : nil)
+                await save(n, title: title, body: body, pinned: n.id.isEmpty ? false : nil, quiet: true)
             }
         }
         #if os(macOS)
@@ -69,12 +71,12 @@ struct NotesView: View {
         }
         .buttonStyle(.plain)
         .contextMenu {
-            Button(n.isPinned ? "Unpin" : "Pin") { Task { await save(n, title: n.title, body: n.body, pinned: !n.isPinned) } }
+            Button(n.isPinned ? "Unpin" : "Pin") { Task { _ = await save(n, title: n.title, body: n.body, pinned: !n.isPinned) } }
             Button("Delete", role: .destructive) { Task { await delete(n) } }
         }
         .swipeActions {
             Button("Delete", role: .destructive) { Task { await delete(n) } }
-            Button(n.isPinned ? "Unpin" : "Pin") { Task { await save(n, title: n.title, body: n.body, pinned: !n.isPinned) } }
+            Button(n.isPinned ? "Unpin" : "Pin") { Task { _ = await save(n, title: n.title, body: n.body, pinned: !n.isPinned) } }
         }
     }
 
@@ -88,16 +90,26 @@ struct NotesView: View {
         loaded = true
     }
 
-    private func save(_ n: TVNote, title: String, body: String, pinned: Bool?) async {
-        guard let c = fleet.hubClient() else { error = "No TV is reachable right now."; return }
+    /// Saved on the TV, or why not ([quiet]: said by the editor that asked, not on this page).
+    private func save(_ n: TVNote, title: String, body: String, pinned: Bool?, quiet: Bool = false) async -> String? {
+        guard let c = fleet.hubClient() else {
+            let why = "No TV is reachable right now."
+            if !quiet { error = why }
+            return why
+        }
         do {
             try await c.saveNote(id: n.id.isEmpty ? nil : n.id, title: title, body: body, pinned: pinned)
             await load()
-        } catch { self.error = "Couldn’t save the note: \(error.localizedDescription)" }
+            return nil
+        } catch {
+            let why = "Couldn’t save the note: \(error.localizedDescription)"
+            if !quiet { self.error = why }
+            return why
+        }
     }
 
     private func delete(_ n: TVNote) async {
-        guard let c = fleet.hubClient() else { return }
+        guard let c = fleet.hubClient() else { error = "No TV is reachable right now."; return }
         withAnimation(.smooth(duration: 0.25)) { notes.removeAll { $0.id == n.id } }
         do { try await c.deleteNote(n.id) } catch { self.error = "Couldn’t delete the note: \(error.localizedDescription)"; await load() }
     }
@@ -109,17 +121,22 @@ struct NotesView: View {
 /// One note's title and text. Saved with Done.
 struct NoteEditor: View {
     let note: TVNote
-    let onSave: (String, String) async -> Void
+    /// Saves it: nil when the TV took it, else why not.
+    let onSave: (String, String) async -> String?
     @Environment(\.dismiss) private var dismiss
     @State private var title = ""
     @State private var text = ""
     @State private var saving = false
+    @State private var failed: String?
 
     var body: some View {
         Form {
             Section { TextField("Title", text: $title) }
             Section {
                 TextEditor(text: $text).frame(minHeight: 180)
+            }
+            if let failed {
+                Section { Text(failed).foregroundStyle(Palette.attention) }
             }
         }
         .formStyle(.grouped)
@@ -131,9 +148,11 @@ struct NoteEditor: View {
             ToolbarItem(placement: .confirmationAction) {
                 Button("Done") {
                     saving = true
+                    failed = nil
                     Task {
-                        await onSave(title.trimmingCharacters(in: .whitespacesAndNewlines), text)
-                        dismiss()
+                        let why = await onSave(title.trimmingCharacters(in: .whitespacesAndNewlines), text)
+                        saving = false
+                        if let why { failed = why } else { dismiss() }
                     }
                 }
                 .disabled(saving || (title.trimmingCharacters(in: .whitespaces).isEmpty && text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))

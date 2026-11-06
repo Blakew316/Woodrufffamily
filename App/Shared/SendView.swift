@@ -228,6 +228,12 @@ struct OpenLinkView: View {
         return s.contains("://") ? s : "https://" + s
     }
 
+    /// The address typed reads as one (a host after the scheme, no spaces).
+    private var valid: Bool {
+        guard !address.isEmpty, !address.contains(where: \.isWhitespace), let u = URL(string: address) else { return false }
+        return u.scheme?.lowercased().hasPrefix("http") == false || u.host?.isEmpty == false
+    }
+
     var body: some View {
         Form {
             Section {
@@ -259,12 +265,13 @@ struct OpenLinkView: View {
     private var openButton: some View {
         Button { open() } label: { if opening { ProgressView() } else { Text("Open") } }
             .buttonStyle(.glassProminent)
-            .disabled(address.isEmpty || opening)
+            .disabled(!valid || opening)
     }
 
     private func open() {
         let url = address
         guard !url.isEmpty, !opening else { return }
+        guard valid else { fleet.say("Not a Link", "Type or paste the whole address, like youtube.com/watch?v=…"); return }
         guard let c = target else { fleet.show(TVError.notPaired); return }
         opening = true
         Task {
@@ -341,10 +348,11 @@ struct FilesView: View {
     /// Upload, or a new folder.
     private var addMenu: some View {
         Menu {
-            Button { importing = true } label: { Label("Upload", systemImage: "square.and.arrow.up") }
-            Button { askFolder = true } label: { Label("New Folder", systemImage: "folder.badge.plus") }
+            Button("Upload…") { importing = true }
+            Button("New Folder…") { askFolder = true }
         } label: { Image(systemName: "plus") }
-        .disabled(listing == nil)
+        .disabled(listing == nil || progress != nil)
+        .accessibilityLabel("Add")
     }
 
     #if os(macOS)
@@ -404,6 +412,10 @@ struct FilesView: View {
                 let name = newFolder.trimmingCharacters(in: .whitespacesAndNewlines)
                 newFolder = ""
                 guard !name.isEmpty, let dir = listing?.path else { return }
+                guard !name.contains("/"), name != ".", name != ".." else {
+                    fleet.say("Can’t Use That Name", "A folder’s name can’t have “/” in it.")
+                    return
+                }
                 act {
                     guard let c = client else { throw TVError.notPaired }
                     try await c.mkdir(in: dir, name: name)
@@ -439,16 +451,13 @@ struct FilesView: View {
 
     /// Quick Look: downloads the file and previews it (Space on the Mac over a file, or Quick Look in its menu).
     private func quickLook(_ f: FileEntry) {
-        guard let c = client else { return }
+        guard let c = client else { fleet.show(TVError.notPaired); return }
+        guard progress == nil else { return }
         progress = "Opening \(f.name)…"
         Task {
             defer { progress = nil }
             do {
-                let (tmp, _) = try await URLSession.woodruff.download(from: c.downloadURL(f.path))
-                let dest = FileManager.default.temporaryDirectory.appendingPathComponent(f.name)
-                try? FileManager.default.removeItem(at: dest)
-                try FileManager.default.moveItem(at: tmp, to: dest)
-                previewing = dest
+                previewing = try await LocalCopy.fetch(c.downloadURL(f.path), name: f.name, from: c.hub.name)
             } catch { fleet.show(error) }
         }
     }
@@ -457,8 +466,8 @@ struct FilesView: View {
     private var optionsMenu: some View {
         Menu {
             Picker("View", selection: $layout) {
-                Label("Icons", systemImage: "square.grid.2x2").tag(Layout.grid)
-                Label("List", systemImage: "list.bullet").tag(Layout.list)
+                Text("Icons").tag(Layout.grid)
+                Text("List").tag(Layout.list)
             }
             .pickerStyle(.inline)
             Picker("Sort By", selection: $sort) {
@@ -478,6 +487,7 @@ struct FilesView: View {
                 .pickerStyle(.menu)
             }
         } label: { Image(systemName: "ellipsis") }
+        .accessibilityLabel("View Options")
     }
 
     /// The footer, as Files writes it: "15 items, 15.37 GB available".
@@ -592,12 +602,12 @@ struct FilesView: View {
             else { Menu { menu(f) } label: { label }.menuStyle(.button).buttonStyle(.plain) }
         }
         .contextMenu { menu(f) }
-        .swipeActions { Button(role: .destructive) { deleting = f } label: { Label("Delete", systemImage: "trash") } }
+        .swipeActions { Button("Delete", role: .destructive) { deleting = f } }
     }
 
     @ViewBuilder private func menu(_ f: FileEntry) -> some View {
         if f.dir {
-            Button { withTV { c in try await c.slideshow(folder: f.path, start: false); fleet.say("Slideshow", "The slideshow on \(c.hub.name) shows \(f.name) now.") } } label: { Label("Use for Slideshow", systemImage: "play.rectangle") }
+            Button("Use for Slideshow") { withTV { c in try await c.slideshow(folder: f.path, start: false); fleet.say("Slideshow", "The slideshow on \(c.hub.name) shows \(f.name) now.") } }
         }
         if f.isMedia {
             Button {
@@ -606,17 +616,17 @@ struct FilesView: View {
                     if r.started?.bool == false { fleet.say("Ready on \(c.hub.name)", r.message ?? "Open Woodruff on \(c.hub.name) to start it.") }
                     else if let m = r.message { fleet.say("Playing on \(c.hub.name)", m) }
                 }
-            } label: { Label("Play on TV", systemImage: "play.tv") }
+            } label: { Text("Play on TV") }
         }
         if f.isImage {
-            Button { withTV { c in try await c.background(f.path); fleet.say("Background Set", "\(f.name) is \(c.hub.name)’s background.") } } label: { Label("Set as TV Background", systemImage: "photo.on.rectangle") }
+            Button("Set as TV Background") { withTV { c in try await c.background(f.path); fleet.say("Background Set", "\(f.name) is \(c.hub.name)’s background.") } }
         }
         if !f.dir {
-            Button { quickLook(f) } label: { Label("Quick Look", systemImage: "eye") }
-            Button { save(f) } label: { Label("Save to This Device", systemImage: "square.and.arrow.down") }
+            Button("Quick Look") { quickLook(f) }.disabled(progress != nil)
+            Button("Save to This Device") { save(f) }.disabled(progress != nil)
         }
         Divider()
-        Button(role: .destructive) { deleting = f } label: { Label("Delete", systemImage: "trash") }
+        Button("Delete", role: .destructive) { deleting = f }
     }
 
     private func icon(_ f: FileEntry) -> String {
@@ -687,6 +697,7 @@ struct FilesView: View {
 
     private func upload(_ urls: [URL]) {
         guard let dir = listing?.path, let c = client else { return }
+        guard progress == nil else { fleet.say("One Moment", "Wait for the file being sent to finish, then try again."); return }
         Task {
             for (i, url) in urls.enumerated() {
                 let access = url.startAccessingSecurityScopedResource()
@@ -704,26 +715,61 @@ struct FilesView: View {
     }
 
     private func save(_ f: FileEntry) {
-        guard let c = client else { return }
+        guard let c = client else { fleet.show(TVError.notPaired); return }
+        guard progress == nil else { return }
         progress = "Downloading \(f.name)…"
         Task {
             defer { progress = nil }
             do {
-                let (tmp, _) = try await URLSession.woodruff.download(from: c.downloadURL(f.path))
-                let dest = FileManager.default.temporaryDirectory.appendingPathComponent(f.name)
-                try? FileManager.default.removeItem(at: dest)
-                try FileManager.default.moveItem(at: tmp, to: dest)
+                let dest = try await LocalCopy.fetch(c.downloadURL(f.path), name: f.name, from: c.hub.name)
                 #if os(macOS)
-                let downloads = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0].appendingPathComponent(f.name)
-                try? FileManager.default.removeItem(at: downloads)
-                try FileManager.default.moveItem(at: dest, to: downloads)
-                NSWorkspace.shared.activateFileViewerSelecting([downloads])
+                let kept = try LocalCopy.toDownloads(dest)
+                NSWorkspace.shared.activateFileViewerSelecting([kept])
                 #else
                 saving = dest
                 #endif
             } catch { fleet.show(error) }
         }
     }
+}
+
+/// A file from a TV kept on this device: downloaded under a name that's safe here, never over a file already there.
+enum LocalCopy {
+    /// [name] as the TV gave it, made safe as one file's name here (no folders, never empty).
+    static func safeName(_ name: String) -> String {
+        let s = name.replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ":", with: "-")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return s.isEmpty || s == "." || s == ".." ? "File" : s
+    }
+
+    /// Downloads [url] to a temporary file called [name]; a refused answer is said, not kept as the file.
+    static func fetch(_ url: URL, name: String, from tv: String) async throws -> URL {
+        let (tmp, resp) = try await URLSession.woodruff.download(from: url)
+        if let code = (resp as? HTTPURLResponse)?.statusCode, !(200..<300).contains(code) {
+            try? FileManager.default.removeItem(at: tmp)
+            throw TVError.badAnswer(code == 404 ? "\(tv) doesn’t have that file any more." : "\(tv) couldn’t send it (\(code)).")
+        }
+        let dest = FileManager.default.temporaryDirectory.appendingPathComponent(safeName(name))
+        try? FileManager.default.removeItem(at: dest)
+        try FileManager.default.moveItem(at: tmp, to: dest)
+        return dest
+    }
+
+    #if os(macOS)
+    /// Moved into Downloads, as "name 2.jpg" when "name.jpg" is there already.
+    static func toDownloads(_ file: URL) throws -> URL {
+        let dir = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]
+        let stem = file.deletingPathExtension().lastPathComponent, ext = file.pathExtension
+        var dest = dir.appendingPathComponent(file.lastPathComponent)
+        var n = 2
+        while FileManager.default.fileExists(atPath: dest.path) {
+            dest = dir.appendingPathComponent(ext.isEmpty ? "\(stem) \(n)" : "\(stem) \(n).\(ext)")
+            n += 1
+        }
+        try FileManager.default.moveItem(at: file, to: dest)
+        return dest
+    }
+    #endif
 }
 
 /// The file under the pointer in the TV's files. A plain box: the pointer moving over the icons changes it all the time,

@@ -158,11 +158,11 @@ struct MemoriesView: View {
     }
 
     @ViewBuilder private func itemMenu(_ item: MemoryItem) -> some View {
-        Button { act { c in try await c.showMemory(item) } } label: { Label(item.video ? "Play on TV" : "Show on TV", systemImage: "tv") }
+        Button(item.video ? "Play on TV" : "Show on TV") { act { c in try await c.showMemory(item) } }
         if !item.video {
-            Button { act { c in try await c.background(item.path); fleet.say("Background Set", "It’s \(c.hub.name)’s background now.") } } label: { Label("Set as TV Background", systemImage: "photo.on.rectangle") }
+            Button("Set as TV Background") { act { c in try await c.background(item.path); fleet.say("Background Set", "It’s \(c.hub.name)’s background now.") } }
         }
-        Button(role: .destructive) { deleting = item } label: { Label("Delete", systemImage: "trash") }
+        Button("Delete", role: .destructive) { deleting = item }
     }
 
     /// [op] on the TV that holds Family Memories; says so when there's none, or when the TV says no.
@@ -245,6 +245,7 @@ struct MemoriesView: View {
                     p = try await Task.detached(priority: .userInitiated) { try MemoryPrep.photo(try Data(contentsOf: url), name: url.lastPathComponent, fit: box) }.value
                 }
                 _ = try await c.addMemory(file: p.file, name: p.name, taken: p.taken)
+                if p.file != url { try? FileManager.default.removeItem(at: p.file) }
             } catch { fleet.show(error); break }
         }
         uploading = nil
@@ -391,6 +392,8 @@ struct MemoryViewer: View {
     @State private var shareURL: URL?
     @State private var chrome = true
     @State private var confirmDelete = false
+    /// Downloading the one shown to share it (once at a time).
+    @State private var sharing = false
     #if os(macOS)
     @FocusState private var keys: Bool
     #endif
@@ -495,7 +498,7 @@ struct MemoryViewer: View {
     private var controls: some View {
         VStack {
             HStack {
-                GlassCircle(symbol: "xmark") { dismiss() }
+                GlassCircle(symbol: "xmark") { dismiss() }.accessibilityLabel("Close")
                 Spacer()
                 if let d = item?.takenDate {
                     VStack(spacing: 0) {
@@ -508,30 +511,44 @@ struct MemoryViewer: View {
                 Spacer()
                 Menu {
                     if let it = item, !it.video {
-                        Button { act { c in try await c.background(it.path); fleet.say("Background Set", "It’s \(c.hub.name)’s background now.") } } label: { Label("Set as TV Background", systemImage: "photo.on.rectangle") }
+                        Button("Set as TV Background") { act { c in try await c.background(it.path); fleet.say("Background Set", "It’s \(c.hub.name)’s background now.") } }
                     }
-                    Button {
+                    Button("Slideshow on TV") {
                         act { c in
                             try await c.slideshow(folder: folder, start: true)
                             fleet.say("Slideshow", "Family Memories is playing on \(c.hub.name).")
                         }
-                    } label: { Label("Slideshow on TV", systemImage: "play.rectangle") }
+                    }
                 } label: {
                     Image(systemName: "ellipsis").font(.system(size: 17, weight: .semibold)).frame(width: 44, height: 44).glass(Circle())
                 }
                 .menuStyle(.button).buttonStyle(.plain)
+                .accessibilityLabel("More")
             }
             Spacer()
             #if os(macOS)
             HStack {
                 GlassCircle(symbol: "chevron.left") { step(-1) }.opacity(items.first?.path == current ? 0.35 : 1)
+                    .accessibilityLabel("Previous")
                 Spacer()
                 GlassCircle(symbol: "chevron.right") { step(1) }.opacity(items.last?.path == current ? 0.35 : 1)
+                    .accessibilityLabel("Next")
             }
             Spacer()
             #endif
             HStack {
-                GlassCircle(symbol: "square.and.arrow.up") { share() }
+                Group {
+                    if sharing {
+                        ProgressView().frame(width: 44, height: 44).glass(Circle(), interactive: false)
+                    } else {
+                        GlassCircle(symbol: "square.and.arrow.up") { share() }
+                    }
+                }
+                #if os(macOS)
+                .accessibilityLabel("Save to Downloads")
+                #else
+                .accessibilityLabel("Share")
+                #endif
                 Spacer()
                 Button { withAnimation(.snappy) { follow.toggle() } } label: {
                     Label(follow ? "Showing on TV" : "Show on TV", systemImage: follow ? "tv.fill" : "tv")
@@ -543,7 +560,7 @@ struct MemoryViewer: View {
                 }
                 .buttonStyle(PressScale(scale: 0.96))
                 Spacer()
-                GlassCircle(symbol: "trash") { if item != nil { confirmDelete = true } }
+                GlassCircle(symbol: "trash") { if item != nil { confirmDelete = true } }.accessibilityLabel("Delete")
             }
         }
         .padding(.horizontal, 18)
@@ -567,17 +584,18 @@ struct MemoryViewer: View {
     }
 
     private func share() {
-        guard let it = item else { return }
+        guard let it = item, !sharing else { return }
         guard let c = client else { fleet.show(TVError.notPaired); return }
+        sharing = true
         Task {
+            defer { sharing = false }
             do {
-                let (tmp, _) = try await URLSession.woodruff.download(from: it.video ? c.downloadURL(it.path) : c.photoURL(it))
                 let name = it.video ? it.name : (it.name as NSString).deletingPathExtension + ".jpg"
-                let dest = FileManager.default.temporaryDirectory.appendingPathComponent(name)
-                try? FileManager.default.removeItem(at: dest)
-                try FileManager.default.moveItem(at: tmp, to: dest)
+                let dest = try await LocalCopy.fetch(it.video ? c.downloadURL(it.path) : c.photoURL(it), name: name, from: c.hub.name)
                 #if os(macOS)
-                NSWorkspace.shared.activateFileViewerSelecting([dest])
+                // Kept in Downloads (a temporary folder would be emptied).
+                let kept = try LocalCopy.toDownloads(dest)
+                NSWorkspace.shared.activateFileViewerSelecting([kept])
                 #else
                 shareURL = dest
                 #endif

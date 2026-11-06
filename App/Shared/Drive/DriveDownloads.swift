@@ -204,9 +204,16 @@ extension DriveDownloads: URLSessionDownloadDelegate {
         // Moved now: the system deletes it when this returns.
         let target = DriveDownloads.localFile(f)
         var moved = false
+        var refused: String?
         if code == 200 {
             try? FileManager.default.removeItem(at: target)
             moved = (try? FileManager.default.moveItem(at: location, to: target)) != nil
+        } else if code != 0 {
+            // Google's answer says why (its daily limit, a file that's gone): read before the system deletes it.
+            let small = ((try? FileManager.default.attributesOfItem(atPath: location.path)[.size] as? NSNumber)?.intValue ?? 0) < 65_536
+            var body: Data?
+            if small { body = try? Data(contentsOf: location) }
+            refused = GoogleDrive.failure(code, body).message
         }
         let size = (try? FileManager.default.attributesOfItem(atPath: target.path)[.size] as? NSNumber)?.int64Value ?? 0
         MainActor.assumeIsolated {
@@ -225,7 +232,7 @@ extension DriveDownloads: URLSessionDownloadDelegate {
             retried.remove(f)
             update(f) { i in
                 if moved { i.state = "ready"; i.bytes = size; i.done = size; i.error = nil } else {
-                    i.state = "failed"; i.error = code == 0 ? "The download stopped." : "Google Drive answered \(code)."
+                    i.state = "failed"; i.error = refused ?? (code == 200 ? "The download couldn’t be kept on this device." : "The download stopped.")
                 }
             }
             save()
@@ -304,19 +311,30 @@ private struct DownloadPicker: View {
     private let downloads = DriveDownloads.shared
     @State private var movies: [Title] = []
     @State private var shows: [Title] = []
+    @State private var loaded = false
 
     var body: some View {
         Form {
-            Section("Movies") {
-                ForEach(movies) { t in
-                    if let p = t.play {
-                        DownloadRow(file: String(p.key.dropFirst(6)), title: p.title, name: t.title, detail: t.year.map(String.init), poster: t.poster)
+            if movies.isEmpty && shows.isEmpty && !loaded {
+                HStack { Spacer(); ProgressView(); Spacer() }
+            } else if movies.isEmpty && shows.isEmpty {
+                Text(library.error ?? "Nothing in the Drive library yet. Open Watch once to read Google Drive.")
+                    .foregroundStyle(.secondary)
+            }
+            if !movies.isEmpty {
+                Section("Movies") {
+                    ForEach(movies) { t in
+                        if let p = t.play {
+                            DownloadRow(file: String(p.key.dropFirst(6)), title: p.title, name: t.title, detail: t.year.map(String.init), poster: t.poster)
+                        }
                     }
                 }
             }
-            Section("TV Shows") {
-                ForEach(shows) { t in
-                    NavigationLink(t.title) { ShowDownloads(show: t) }
+            if !shows.isEmpty {
+                Section("TV Shows") {
+                    ForEach(shows) { t in
+                        NavigationLink(t.title) { ShowDownloads(show: t) }
+                    }
                 }
             }
         }
@@ -337,6 +355,7 @@ private struct DownloadPicker: View {
                 movies += page.items; offset += page.items.count
                 if offset >= page.count { break }
             }
+            loaded = true
         }
     }
 }
@@ -347,9 +366,16 @@ private struct ShowDownloads: View {
     @State private var details: TitleDetails?
     @State private var picked = 0
     @State private var episodes: [Episode] = []
+    @State private var loading = true
+    @State private var failed: String?
 
     var body: some View {
         Form {
+            if loading && episodes.isEmpty {
+                HStack { Spacer(); ProgressView(); Spacer() }
+            } else if let failed, episodes.isEmpty {
+                Text(failed).foregroundStyle(Palette.attention)
+            }
             if let seasons = details?.seasons, seasons.count > 1 {
                 Picker("Season", selection: $picked) {
                     ForEach(Array(seasons.enumerated()), id: \.offset) { i, s in Text(s.name).tag(i) }
@@ -360,6 +386,7 @@ private struct ShowDownloads: View {
                     Button("Download All \(episodes.count)") {
                         for e in episodes { add(e) }
                     }
+                    .disabled(episodes.allSatisfy { downloads.item(String($0.key.dropFirst(6))) != nil })
                 }
                 Section {
                     ForEach(episodes) { e in
@@ -373,7 +400,13 @@ private struct ShowDownloads: View {
         .navigationTitle(show.title)
         .inlineTitle()
         .task {
-            details = try? await DriveLibrary.shared.title(show.id)
+            do {
+                details = try await DriveLibrary.shared.title(show.id)
+            } catch {
+                failed = error.localizedDescription
+                loading = false
+                return
+            }
             picked = details?.season ?? 0
             await load()
         }
@@ -381,8 +414,20 @@ private struct ShowDownloads: View {
     }
 
     private func load() async {
-        guard let s = details?.seasons?[safe: picked] else { return }
-        episodes = (try? await DriveLibrary.shared.episodes(show: show.id, season: s.id).episodes) ?? []
+        guard let s = details?.seasons?[safe: picked] else {
+            loading = false
+            if details != nil { failed = "No episodes in \(show.title)." }
+            return
+        }
+        loading = true
+        defer { loading = false }
+        do {
+            episodes = try await DriveLibrary.shared.episodes(show: show.id, season: s.id).episodes
+            failed = episodes.isEmpty ? "No episodes in \(s.name)." : nil
+        } catch {
+            episodes = []
+            failed = error.localizedDescription
+        }
     }
 
     private func add(_ e: Episode) {

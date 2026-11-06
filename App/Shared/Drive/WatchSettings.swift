@@ -21,6 +21,8 @@ struct WatchSettingsView: View {
     @State private var secret = ""
     @State private var tmdbKey = ""
     @State private var showKeys = false
+    /// What Save Keys just kept.
+    @State private var saved: String?
 
     var body: some View {
         Form {
@@ -93,13 +95,9 @@ struct WatchSettingsView: View {
                     TextField("Google Client ID", text: $clientID).autocorrectionDisabled()
                     SecureField("Google Client Secret", text: $secret)
                     SecureField("TMDB Key", text: $tmdbKey)
-                    Button("Save Keys") {
-                        if !clientID.isEmpty && !secret.isEmpty { GoogleDrive.setKeys(id: clientID, secret: secret) }
-                        if !tmdbKey.isEmpty { Keychain.set(tmdbKey.trimmingCharacters(in: .whitespacesAndNewlines), for: "tmdb.key") }
-                        secret = ""; tmdbKey = ""
-                        refreshState()
-                    }
-                    .disabled(clientID.isEmpty && tmdbKey.isEmpty)
+                    Button("Save Keys") { saveKeys() }
+                        .disabled(!canSaveGoogle && blank(tmdbKey))
+                    if let saved { Text(saved).font(.footnote).foregroundStyle(.secondary) }
                 }
             } header: { Text("Keys") } footer: {
                 Text("The same keys the TVs use: copied from the TV on the home Wi‑Fi, or typed in. TMDB gives the posters, stories and episode names.")
@@ -109,6 +107,32 @@ struct WatchSettingsView: View {
         .navigationTitle("Watch")
         .inlineTitle()
         .onAppear { refreshState() }
+    }
+
+    private func blank(_ s: String) -> Bool { s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+
+    /// The Google keys go in as a pair (an ID without its secret can't sign in).
+    private var canSaveGoogle: Bool { !blank(clientID) && !blank(secret) }
+
+    private func saveKeys() {
+        var kept: [String] = []
+        if canSaveGoogle {
+            let wasSignedIn = GoogleDrive.signedIn
+            GoogleDrive.setKeys(id: clientID, secret: secret)
+            kept.append("Google")
+            // Other keys end the sign-in made with the old ones: the TV's library until Drive is signed in again.
+            if wasSignedIn && !GoogleDrive.signedIn {
+                library.signedOut()
+                source = "tv"
+            }
+        }
+        if !blank(tmdbKey) {
+            Keychain.set(tmdbKey.trimmingCharacters(in: .whitespacesAndNewlines), for: "tmdb.key")
+            kept.append("TMDB")
+        }
+        secret = ""; tmdbKey = ""
+        refreshState()
+        saved = kept.isEmpty ? nil : "Saved the \(kept.joined(separator: " and ")) keys."
     }
 
     private func refreshState() {
@@ -128,7 +152,7 @@ struct WatchSettingsView: View {
                 let parts = g.split(separator: "\n", maxSplits: 1).map(String.init)
                 if parts.count == 2 { GoogleDrive.setKeys(id: parts[0], secret: parts[1]) }
             }
-            if let t = try? await c.sharedKey("tmdb"), !t.isEmpty { Keychain.set(t, for: "tmdb.key") }
+            if let t = (try? await c.sharedKey("tmdb"))?.trimmingCharacters(in: .whitespacesAndNewlines), !t.isEmpty { Keychain.set(t, for: "tmdb.key") }
             refreshState()
             if !hasKeys { message = "The TV didn’t share its Google keys. Enter them by hand below." }
         } catch {

@@ -72,6 +72,7 @@ struct WatchView: View {
             ToolbarItem(placement: .principal) { TVPicker() }.sharedBackgroundVisibility(.hidden)
             ToolbarItem(placement: .primaryAction) {
                 NavigationLink { SearchPage() } label: { Image(systemName: "magnifyingglass") }
+                    .accessibilityLabel("Search")
             }
         }
         #else
@@ -122,7 +123,7 @@ struct WatchView: View {
 
     @ViewBuilder private func content(_ h: WatchHome, _ client: (any WatchSource)?) -> some View {
         if h.state != "ready" && (h.featured ?? []).isEmpty && (h.continue ?? []).isEmpty {
-            EmptyState(symbol: "film.stack", title: stateTitle(h.state), message: stateMessage(h.state, tv: h.tv)).padding(.top, 60)
+            EmptyState(symbol: "film.stack", title: stateTitle(h.state), message: stateMessage(h.state, tv: h.tv, drive: client?.sourceID == "drive")).padding(.top, 60)
         }
         // Movies or TV Shows, as on the TV: the day's five across the top, then the rows.
         let place = section == "shows" ? "shows" : "movies"
@@ -226,8 +227,15 @@ struct WatchView: View {
         default: return "Set Up Google Drive"
         }
     }
-    private func stateMessage(_ s: String, tv: String?) -> String {
+    private func stateMessage(_ s: String, tv: String?, drive: Bool) -> String {
         let t = tv ?? "the TV"
+        if drive {
+            switch s {
+            case "loading": return "Reading Movies and TV Shows from Google Drive."
+            case "notSignedIn": return "Sign in to Google Drive in Settings → Watch."
+            default: break
+            }
+        }
         switch s {
         case "empty": return "Make folders named Movies and TV Shows in Google Drive."
         case "expired", "expiredEmpty", "notSignedIn": return "Sign \(t) in again from Settings → TVs → \(t)."
@@ -626,24 +634,24 @@ struct ContinueTile: View {
         }
         .buttonStyle(PressScale(scale: 0.96))
         .contextMenu {
-            Button { PlayRouter.start(item.play, fleet: fleet) } label: { Label(item.play.label ?? "Play", systemImage: "play.fill") }
-            if let r = item.restart { Button { PlayRouter.start(r, fleet: fleet, fromStart: true) } label: { Label(r.label ?? "Start Over", systemImage: "arrow.counterclockwise") } }
+            Button(item.play.label ?? "Play") { PlayRouter.start(item.play, fleet: fleet) }
+            if let r = item.restart { Button(r.label ?? "Start Over") { PlayRouter.start(r, fleet: fleet, fromStart: true) } }
             PlayOnMenu(action: item.play)
-            if let id = item.titleId { Button { openTitle(id) } label: { Label(item.kind == "show" ? "Episodes" : "Details", systemImage: "info.circle") } }
+            if let id = item.titleId { Button(item.kind == "show" ? "Episodes" : "Details") { openTitle(id) } }
             Button {
                 act {
                     guard let c = WatchSources.current(fleet) else { throw TVError.notPaired }
                     try await c.markWatched([item.key], true)
                     watchChanged(removed: item.key)
                 }
-            } label: { Label("Mark as Watched", systemImage: "checkmark.circle") }
+            } label: { Text("Mark as Watched") }
             Button(role: .destructive) {
                 act {
                     guard let c = WatchSources.current(fleet) else { throw TVError.notPaired }
                     try await c.removeContinue(key: item.key, title: item.playTitle)
                     watchChanged(removed: item.key)
                 }
-            } label: { Label("Remove from Continue Watching", systemImage: "xmark.circle") }
+            } label: { Text("Remove from Continue Watching") }
         }
     }
 
@@ -663,8 +671,8 @@ struct TitleMenu: View {
     var title: Title
     var body: some View {
         if let p = title.play {
-            Button { PlayRouter.start(p, fleet: fleet) } label: { Label(p.label ?? "Play", systemImage: "play.fill") }
-            if (p.position ?? 0) > 0 { Button { PlayRouter.start(p, fleet: fleet, fromStart: true) } label: { Label("Start Over", systemImage: "arrow.counterclockwise") } }
+            Button(p.label ?? "Play") { PlayRouter.start(p, fleet: fleet) }
+            if (p.position ?? 0) > 0 { Button("Start Over") { PlayRouter.start(p, fleet: fleet, fromStart: true) } }
             PlayOnMenu(action: p)
         }
         if !title.isShow {
@@ -680,7 +688,7 @@ struct TitleMenu: View {
                         watchChanged()
                     } catch { fleet.show(error) }
                 }
-            } label: { Label(on ? "Mark as Watched" : "Mark as Unwatched", systemImage: on ? "checkmark.circle" : "circle") }
+            } label: { Text(on ? "Mark as Watched" : "Mark as Unwatched") }
         }
     }
 }
@@ -704,9 +712,9 @@ struct PlayOnMenu: View {
                 }
                 if action.isDrive {
                     Divider()
-                    Button { if PlayRouter.together(action, fleet: fleet) { then() } } label: { Label("Watch Together on All TVs", systemImage: "tv.and.mediabox") }
+                    Button("Watch Together on All TVs") { if PlayRouter.together(action, fleet: fleet) { then() } }
                 }
-            } label: { Label("Play On…", systemImage: "tv") }
+            } label: { Text("Play On…") }
         }
     }
 }
@@ -1118,7 +1126,7 @@ struct EpisodeRow: View {
         }
         .buttonStyle(.plain)
         .contextMenu {
-            Button { if PlayRouter.start(action, fleet: fleet, fromStart: true) { played() } } label: { Label("Play from the Start", systemImage: "arrow.counterclockwise") }
+            Button("Play from the Start") { if PlayRouter.start(action, fleet: fleet, fromStart: true) { played() } }
             PlayOnMenu(action: action, then: played)
             Button {
                 Task {
@@ -1128,7 +1136,7 @@ struct EpisodeRow: View {
                         changed()
                     } catch { fleet.show(error) }
                 }
-            } label: { Label(episode.watched == true ? "Mark as Unwatched" : "Mark as Watched", systemImage: "checkmark.circle") }
+            } label: { Text(episode.watched == true ? "Mark as Unwatched" : "Mark as Watched") }
         }
     }
 
@@ -1284,6 +1292,7 @@ struct LibraryGrid: View {
                 ForEach(genres, id: \.self) { Text($0).tag(String?.some($0)) }
             }
         } label: { Image(systemName: "line.3.horizontal.decrease") }
+        .accessibilityLabel("Filter and Sort")
     }
 
     /// Asks again for everything shown (a title was just marked watched), keeping the place in the list.

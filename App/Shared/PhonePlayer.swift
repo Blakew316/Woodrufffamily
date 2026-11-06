@@ -58,6 +58,30 @@ final class PhonePlayback {
         }
         return PhonePlay(source: .url(c.streamURL(a.key)), key: a.key, title: a.title, start: start)
     }
+
+    /// Why [play] stopped, in words someone can act on: Google Drive's own reason when it gave one (a sign-in that
+    /// ended, its daily limit), else what's most likely for where it came from.
+    nonisolated static func failure(_ error: Error?, _ play: PhonePlay) -> String {
+        var e: Error? = error
+        // AVFoundation wraps the reason the stream gave: the innermost one says it best.
+        for _ in 0..<4 {
+            if let d = e as? GoogleDrive.Failure { return d.message }
+            guard let inner = (e as NSError?)?.userInfo[NSUnderlyingErrorKey] as? Error else { break }
+            e = inner
+        }
+        let offline = [NSURLErrorNotConnectedToInternet, NSURLErrorNetworkConnectionLost, NSURLErrorTimedOut]
+        if let ns = e as NSError?, ns.domain == NSURLErrorDomain, offline.contains(ns.code) {
+            return "No connection. Check the Wi‑Fi, or download it in Settings → Watch → Downloads to watch offline."
+        }
+        switch play.source {
+        case .drive:
+            return "Apple’s player can’t open this file (it may be MKV or AVI). Play it on a TV instead."
+        case .url(let u) where u.isFileURL:
+            return "The downloaded copy can’t be played. Remove it in Settings → Watch → Downloads and download it again."
+        case .url:
+            return error?.localizedDescription ?? "The TV couldn’t send it. Check the TV is on, or play it on a TV instead."
+        }
+    }
 }
 
 /// Apple's player, full screen on iPhone and iPad, in a window-sized sheet on the Mac.
@@ -133,7 +157,7 @@ struct PhonePlayerView: View {
         for _ in 0..<40 {
             try? await Task.sleep(nanoseconds: 500_000_000)
             if item.status == .failed {
-                failed = item.error?.localizedDescription ?? "The TV couldn’t send it. Check the TV is on, or play it on a TV instead."
+                failed = PhonePlayback.failure(item.error, play)
                 return
             }
             if item.status == .readyToPlay { return }
@@ -163,6 +187,7 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
     private var ticker: Any?
     private var current: PhonePlay?
     private var inPictureInPicture = false
+    private var statusWatch: NSKeyValueObservation?
 
     func present(_ play: PhonePlay) {
         finish()
@@ -187,6 +212,11 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
         let p = AVPlayer(playerItem: item)
         player = p
         current = play
+        statusWatch = item.observe(\.status, options: [.initial, .new]) { [weak self] item, _ in
+            guard item.status == .failed else { return }
+            let words = PhonePlayback.failure(item.error, play)
+            Task { @MainActor in self?.failed(words) }
+        }
         let c = PlayerController()
         c.player = p
         c.delegate = self
@@ -207,6 +237,14 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
                 p.play()
             }
         }
+    }
+
+    /// Says why it can't play, over the player; OK closes the player.
+    private func failed(_ words: String) {
+        guard let c = controller, c.presentedViewController == nil else { return }
+        let alert = UIAlertController(title: "Can’t Play This Here", message: words, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "OK", style: .default) { [weak c] _ in c?.dismiss(animated: true) })
+        c.present(alert, animated: true)
     }
 
     /// The screen to show it over: the topmost one.
@@ -238,6 +276,8 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
         Task { await DriveLibrary.shared.sync() }
         if let t = ticker { player?.removeTimeObserver(t) }
         ticker = nil
+        statusWatch?.invalidate()
+        statusWatch = nil
         player?.pause()
         player?.replaceCurrentItem(with: nil)
         player = nil
