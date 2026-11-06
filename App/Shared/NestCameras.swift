@@ -620,6 +620,8 @@ struct LiveCameraTile: View, Equatable {
 /// The big view: the same stream as the tile (no new one), with sound.
 struct CameraLiveView: View {
     var camera: NestCameras.Camera
+    /// iPhone: closes it (the presenter takes it away without the cover's slide); nil: dismissed as a cover.
+    var onClose: (() -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
     @State private var muted = true
     /// iPhone and iPad: the live view filling the whole screen.
@@ -628,6 +630,10 @@ struct CameraLiveView: View {
     @State private var reattach = 0
     /// Opened from an alert: the live picture instead of the event's replay.
     @State private var showLive = false
+    /// iPhone: the card has floated in (it fades and settles as it opens).
+    @State private var appeared = false
+    /// iPhone: how far the card has been pulled down (past a point, it closes).
+    @State private var drag: CGFloat = 0
     private let streams = CameraStreams.shared
 
     var body: some View {
@@ -685,7 +691,16 @@ struct CameraLiveView: View {
     }
 
     private func close() {
+        #if os(iOS)
+        // The card settles away before the cover closes.
+        withAnimation(.easeOut(duration: 0.18)) { appeared = false }
+        Task {
+            try? await Task.sleep(nanoseconds: 170_000_000)
+            if let onClose { onClose() } else { dismiss() }
+        }
+        #else
         if streams.full == camera.id { withAnimation(.smooth(duration: 0.25)) { streams.full = nil } } else { dismiss() }
+        #endif
     }
 
     #if os(iOS)
@@ -697,58 +712,94 @@ struct CameraLiveView: View {
         return camera.online ? (streams.status[camera.id] ?? "Starting…") : "Offline"
     }
 
+    /// iPhone and iPad: the camera floats in the middle of the screen as one rounded picture over the dimmed, blurred
+    /// app, with its name over the top of the picture and small controls in its corners. Tap outside it or swipe it
+    /// down to close.
     private func phoneBody(_ player: LivePlayer) -> some View {
-        VStack(spacing: 14) {
-            HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(camera.name).font(.title3.bold())
-                    Text(subtitle).font(.subheadline).foregroundStyle(.secondary)
-                }
-                Spacer()
-                GlassCircle(symbol: muted ? "speaker.slash.fill" : "speaker.wave.2.fill", size: 40) {
-                    muted.toggle(); player.setMuted(muted)
-                }
-                .accessibilityLabel(muted ? "Turn Sound On" : "Turn Sound Off")
-                GlassCircle(symbol: "xmark", size: 40) { dismiss() }
-                    .accessibilityLabel("Close")
-            }
-            // One picture: opened from an alert, the event first (its clip or picture), with Live to switch; with
-            // nothing to replay, straight to live.
-            ZStack(alignment: .topTrailing) {
-                if let r = replay, !showLive {
-                    EventReplayView(replay: r) { withAnimation(.smooth(duration: 0.25)) { showLive = true } }
-                    // Small, in the corner: the picture stays clear.
-                    GlassCircle(symbol: "dot.radiowaves.left.and.right", size: 28) { withAnimation(.smooth(duration: 0.25)) { showLive = true } }
-                        .accessibilityLabel("Live")
-                        .environment(\.colorScheme, .dark)
-                        .padding(6)
-                } else {
-                    // The picture is in one place at a time: here, or full screen.
-                    if fullScreen { Color.black } else { LiveWebView(player: player).id(reattach) }
-                    HStack(spacing: 6) {
-                        if replay != nil {
-                            GlassCircle(symbol: "gobackward", size: 28) { withAnimation(.smooth(duration: 0.25)) { showLive = false } }
-                                .accessibilityLabel("Replay")
-                        }
-                        GlassCircle(symbol: "arrow.up.left.and.arrow.down.right", size: 28) { fullScreen = true }
-                            .accessibilityLabel("Full Screen")
-                    }
-                    .environment(\.colorScheme, .dark)
-                    .padding(6)
-                }
-            }
-            .aspectRatio(16 / 9, contentMode: .fit)
-            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-            .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(.black))
-            Spacer(minLength: 0)
+        ZStack {
+            Rectangle().fill(.ultraThinMaterial)
+                .overlay(Color.black.opacity(0.45))
+                .ignoresSafeArea()
+                .opacity(appeared ? 1 : 0)
+                .onTapGesture { close() }
+            card(player)
+                .padding(.horizontal, 14)
+                .offset(y: max(0, drag))
+                .scaleEffect(appeared ? 1 : 0.92)
+                .opacity(appeared ? 1 : 0)
+                .gesture(DragGesture()
+                    .onChanged { drag = $0.translation.height }
+                    .onEnded { v in
+                        if v.translation.height > 110 || v.predictedEndTranslation.height > 260 { close() }
+                        else { withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) { drag = 0 } }
+                    })
         }
-        .padding(20)
-        // As wide as the phone (a fixed minimum wider than an iPhone pushed the close button off the edge).
-        .frame(maxWidth: .infinity, minHeight: 340, alignment: .top)
-        .presentationDetents([.medium, .large])
+        .presentationBackground(.clear)
+        .onAppear { withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) { appeared = true } }
         .fullScreenCover(isPresented: $fullScreen, onDismiss: { reattach += 1 }) {
             CameraFullScreen(camera: camera, player: player, muted: $muted)
         }
+    }
+
+    private func card(_ player: LivePlayer) -> some View {
+        ZStack {
+            // One picture: opened from an alert, the event first (its clip or picture); with nothing to replay, live.
+            if let r = replay, !showLive {
+                EventReplayView(replay: r) { withAnimation(.smooth(duration: 0.25)) { showLive = true } }
+            } else if fullScreen {
+                Color.black
+            } else {
+                LiveWebView(player: player).id(reattach)
+            }
+        }
+        .aspectRatio(16 / 9, contentMode: .fit)
+        // The name over the top of the picture, on a soft shade so it reads on any scene.
+        .overlay(alignment: .top) {
+            HStack(alignment: .top, spacing: 10) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(camera.name).font(.headline).lineLimit(1)
+                    HStack(spacing: 5) {
+                        if showLive || replay == nil {
+                            Circle().fill(camera.online ? Color.red : Color.gray).frame(width: 6, height: 6)
+                        }
+                        Text(subtitle).font(.caption.weight(.medium)).lineLimit(1)
+                    }
+                    .foregroundStyle(.white.opacity(0.85))
+                }
+                Spacer(minLength: 0)
+                GlassCircle(symbol: "xmark", size: 30) { close() }
+                    .accessibilityLabel("Close")
+            }
+            .foregroundStyle(.white)
+            .padding(.horizontal, 14).padding(.top, 12).padding(.bottom, 22)
+            .background(LinearGradient(colors: [.black.opacity(0.55), .clear], startPoint: .top, endPoint: .bottom))
+            .shadow(color: .black.opacity(0.3), radius: 2)
+        }
+        // The controls, small in the bottom corner.
+        .overlay(alignment: .bottomTrailing) {
+            HStack(spacing: 8) {
+                if replay != nil {
+                    GlassCircle(symbol: showLive ? "gobackward" : "dot.radiowaves.left.and.right", size: 30) {
+                        withAnimation(.smooth(duration: 0.25)) { showLive.toggle() }
+                    }
+                    .accessibilityLabel(showLive ? "Replay" : "Live")
+                }
+                GlassCircle(symbol: muted ? "speaker.slash.fill" : "speaker.wave.2.fill", size: 30) {
+                    muted.toggle(); player.setMuted(muted)
+                }
+                .accessibilityLabel(muted ? "Turn Sound On" : "Turn Sound Off")
+                if showLive || replay == nil {
+                    GlassCircle(symbol: "arrow.up.left.and.arrow.down.right", size: 30) { fullScreen = true }
+                        .accessibilityLabel("Full Screen")
+                }
+            }
+            .padding(10)
+        }
+        .environment(\.colorScheme, .dark)
+        .background(Color.black)
+        .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 28, style: .continuous).strokeBorder(.white.opacity(0.12), lineWidth: 0.5))
+        .shadow(color: .black.opacity(0.45), radius: 30, y: 14)
     }
     #endif
 }
@@ -1122,6 +1173,15 @@ extension View {
 
 struct CameraPresenter: ViewModifier {
     @Binding var camera: NestCameras.Camera?
+    /// iPhone: the camera shown, set without the cover's slide (the card floats in by itself).
+    @State private var shown: NestCameras.Camera?
+
+    private func show(_ cam: NestCameras.Camera?) {
+        var t = Transaction()
+        t.disablesAnimations = true
+        withTransaction(t) { shown = cam }
+    }
+
     func body(content: Content) -> some View {
         #if os(macOS)
         content.onChange(of: camera?.id, initial: true) { _, id in
@@ -1130,7 +1190,12 @@ struct CameraPresenter: ViewModifier {
             camera = nil
         }
         #else
-        content.sheet(item: $camera) { cam in CameraLiveView(camera: cam) }
+        // Over the whole screen, without the cover's slide: the camera floats in by itself.
+        content
+            .onChange(of: camera?.id, initial: true) { _, _ in show(camera) }
+            .fullScreenCover(item: Binding(get: { shown }, set: { v in show(v); if v == nil { camera = nil } })) { cam in
+                CameraLiveView(camera: cam, onClose: { show(nil); camera = nil })
+            }
         #endif
     }
 }
