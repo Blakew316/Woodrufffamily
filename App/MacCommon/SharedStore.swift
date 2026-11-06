@@ -3,6 +3,11 @@ import WoodruffKit
 
 /// What the Mac app shares with its desktop widgets, through the app group: the paired TVs (so a widget can
 /// ask them itself, and press their buttons, without the app running) and which TV the remote is on.
+///
+/// Known limitation: each TV's pairing key (`HubLink.key`) sits here in the app group's settings, unencrypted, because
+/// the widgets can't read the app's Keychain (sharing Keychain items between the app and its widgets needs
+/// `keychain-access-groups`, which this project doesn't use). Anything that can read this Mac's app-group settings can
+/// read the keys. They no longer open the family's synced settings on their own (those need the family code too).
 enum SharedStore {
     struct HubLink: Codable, Hashable {
         var id: String

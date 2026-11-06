@@ -342,4 +342,46 @@ final class HardeningTests: XCTestCase {
         }
         XCTAssertEqual(SyncMerge.stampNow(Date(timeIntervalSince1970: 1_700_000_000.123_456)), 1_700_000_000.123)
     }
+
+    // MARK: The family code
+
+    func testFamilyCodeReadsBackAsTyped() throws {
+        for _ in 0..<200 {
+            let code = FamilyCode.generate()
+            XCTAssertEqual(code.count, 25)
+            XCTAssertEqual(FamilyCode.normalize(code), code)
+            let shown = FamilyCode.formatted(code)
+            XCTAssertEqual(shown.split(separator: "-").map(\.count), [5, 5, 5, 5, 5])
+            // Typed in lower case, with spaces, O for 0 and L for 1.
+            let typed = shown.lowercased().replacingOccurrences(of: "-", with: " ").replacingOccurrences(of: "0", with: "o").replacingOccurrences(of: "1", with: "l")
+            XCTAssertEqual(FamilyCode.normalize(typed), code)
+        }
+        XCTAssertNil(FamilyCode.normalize(""))
+        XCTAssertNil(FamilyCode.normalize("ABCDE"))
+    }
+
+    func testFamilyCodeCatchesOneWrongCharacter() {
+        let alphabet = FamilyCode.alphabet
+        for _ in 0..<50 {
+            let code = Array(FamilyCode.generate())
+            for i in 0..<code.count {
+                for ch in alphabet where ch != code[i] {
+                    var typo = code
+                    typo[i] = ch
+                    XCTAssertNil(FamilyCode.normalize(String(typo)))
+                }
+            }
+        }
+    }
+
+    #if canImport(CryptoKit)
+    func testFamilyKeysDependOnTheCode() {
+        let a = FamilyCode.generate(), b = FamilyCode.generate()
+        XCTAssertEqual(FamilyCode.fingerprint(FamilyCode.key(a)), FamilyCode.fingerprint(FamilyCode.key(a)))
+        XCTAssertNotEqual(FamilyCode.fingerprint(FamilyCode.key(a)), FamilyCode.fingerprint(FamilyCode.key(b)))
+        XCTAssertEqual(FamilyCode.tag("m", FamilyCode.key(a)), FamilyCode.tag("m", FamilyCode.key(a)))
+        XCTAssertNotEqual(FamilyCode.tag("m", FamilyCode.key(a)), FamilyCode.tag("m", FamilyCode.key(b)))
+        XCTAssertNotEqual(FamilyCode.tag("m", FamilyCode.key(a)), FamilyCode.tag("n", FamilyCode.key(a)))
+    }
+    #endif
 }

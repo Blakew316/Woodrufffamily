@@ -1117,6 +1117,8 @@ struct EveryTVSection: View {
 struct SyncSection: View {
     private let sync = SettingsSync.shared
     @State private var busy = false
+    @State private var codeText = ""
+    @State private var codeError: String?
 
     var body: some View {
         Section {
@@ -1126,6 +1128,23 @@ struct SyncSection: View {
                     Text(t, style: .relative).font(.footnote).foregroundStyle(.secondary) + Text(" ago").font(.footnote).foregroundStyle(.secondary)
                 }
             }
+            if let code = sync.familyCode {
+                LabeledContent("Family Code") {
+                    Text(code).font(.body.monospaced()).textSelection(.enabled)
+                }
+            }
+            if sync.familyCode == nil || sync.otherCode {
+                TextField("Enter Family Code", text: $codeText)
+                    .font(.body.monospaced())
+                    .autocorrectionDisabled()
+                    #if os(iOS)
+                    .textInputAutocapitalization(.characters)
+                    #endif
+                    .onSubmit(useCode)
+                Button("Use Code", action: useCode)
+                    .disabled(codeText.trimmingCharacters(in: .whitespaces).isEmpty)
+                if let codeError { Text(codeError).font(.caption).foregroundStyle(Palette.attention) }
+            }
             Button {
                 busy = true
                 Task { await sync.syncNow(); busy = false }
@@ -1134,7 +1153,12 @@ struct SyncSection: View {
             }
             .disabled(busy)
         } header: { Text("Sync Across Devices") } footer: {
-            Text("Keys, sign-ins, names, rooms, favourites, the Home layout and alert choices are kept on your TVs, so every iPhone and Mac paired with them has the same settings, even ones that were closed or away.")
+            Text("Keys, sign-ins, names, rooms, favourites, the Home layout and alert choices are kept on your TVs, so every iPhone and Mac paired with them has the same settings, even ones that were closed or away. Each device needs the family code once: it’s shown here on a device that has it.")
         }
+    }
+
+    private func useCode() {
+        codeError = sync.enter(code: codeText)
+        if codeError == nil { codeText = "" }
     }
 }

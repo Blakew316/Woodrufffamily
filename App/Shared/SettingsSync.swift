@@ -27,11 +27,16 @@ extension Notification.Name {
 ///    so they show within a couple of seconds.
 /// The newest change to each item wins (entry by entry for lists of names and rooms, part by part for the Home
 /// layout); a sign-out on one device signs out the others.
+///
+/// Both are sealed with the family code (`FamilyCode`): made on the first device to sync, kept in each device's
+/// Keychain, and typed in once on every other device. A TV's pairing key (which its own requests carry on the
+/// Wi‑Fi) is mixed in for the TVs' copies but never opens them alone.
 @Observable @MainActor
 final class SettingsSync {
     static let shared = SettingsSync()
     static let service = "_woodruffsync._tcp"
     /// The family's paired TVs (id → address, pairing key and name), so a TV paired on one device is paired on all.
+    /// The settings here keep only addresses and names; the keys are in the Keychain (`saveFamilyPairings`).
     static let familyPairingsKey = "familyPairings"
 
     /// Keychain items that travel.
@@ -61,6 +66,30 @@ final class SettingsSync {
     /// "Saved on Living Room, Master Bedroom" for Settings.
     private(set) var status = "Not synced yet"
     private(set) var lastSynced: Date?
+    /// The family code here, for Settings ("ABCDE-FGHJK-…"); nil when this device doesn't have it yet.
+    private(set) var familyCode: String?
+    /// The TVs keep the family's settings sealed with a code this device doesn't have: it's typed in here.
+    private(set) var needsCode = false
+    /// Some TVs keep settings sealed with another (older) family code than this device's.
+    private(set) var otherCode = false
+
+    static let enterCodeStatus = "Enter the family code from another device to sync."
+
+    /// The family code as read here (see `currentFamily`).
+    private struct Family {
+        var record: FamilyCode.Record
+        var key: SymmetricKey
+        var fp: Data
+        /// Seals what goes straight across the Wi‑Fi.
+        var peerKey: SymmetricKey
+        var created: UInt64 { UInt64(max(0, record.created)) }
+    }
+    @ObservationIgnored private var familyKept: Family?
+    /// The codes the TVs' copies were sealed with at the last round (fingerprint → when the code was made), so a code
+    /// typed in is checked against them.
+    @ObservationIgnored private var seenCodes: [Data: UInt64] = [:]
+    /// TVs whose copy from before the family code has been read (once) and replaced: never read the old way again.
+    @ObservationIgnored private var legacyRead: Set<String> = Set(UserDefaults.standard.stringArray(forKey: "sync.legacyRead") ?? [])
 
     @ObservationIgnored private let me: String = {
         if let s = UserDefaults.standard.string(forKey: "sync.id") { return s }
@@ -132,6 +161,8 @@ final class SettingsSync {
         guard !prepared, !Demo.isOn else { return }
         prepared = true
         self.fleet = fleet
+        _ = currentFamily()
+        _ = loadFamilyPairings()   // keys still in the settings from before move to the Keychain
         seedPairings(fleet)
         last = snapshot(keychain: true)
         lastKeychainLook = Date()
@@ -267,6 +298,12 @@ final class SettingsSync {
             return r.ok ? (r.value ?? "") : nil
         }
         guard let obj = UserDefaults.standard.object(forKey: name) else { return "" }
+        if name == Self.familyPairingsKey {
+            // With each TV's key from the Keychain (the settings keep only addresses and names).
+            guard let list = loadFamilyPairings() else { return nil }
+            guard let d = try? JSONEncoder().encode(list), let o = try? JSONSerialization.jsonObject(with: d) else { return "" }
+            return SyncMerge.canonical(o) ?? ""
+        }
         if key.hasPrefix("ud:") {
             guard let d = obj as? Data else { parsed[key] = nil; return "" }
             if let p = parsed[key], p.0 == d { return p.1 }
@@ -402,11 +439,63 @@ final class SettingsSync {
 
     // MARK: The paired TVs
 
-    /// One paired TV as the family's list keeps it.
+    /// One paired TV as the family's list keeps it (and as it travels, sealed, in the synced settings).
     private struct FamilyHub: Codable, Equatable {
         var base: String
         var key: String
         var name: String
+    }
+
+    /// One paired TV as the settings here keep it: its address and name. Its key is in the Keychain
+    /// (`familyKeyAccount`); `key` is only there in a list from before that (moved on the next read), or when the
+    /// Keychain wouldn't take it.
+    private struct FamilyHubSaved: Codable {
+        var base: String
+        var name: String
+        var key: String?
+    }
+
+    /// Where the family's list keeps a TV's key. Not one of the Keychain items that sync on their own: it travels
+    /// inside the family's list.
+    private static func familyKeyAccount(_ id: String) -> String { "family.hub." + id }
+
+    /// The family's list, keys and all; nil when a key can't be read just now (a locked Keychain).
+    private func loadFamilyPairings() -> [String: FamilyHub]? {
+        guard let saved = Saved.load(Self.familyPairingsKey, as: [String: FamilyHubSaved].self) else { return [:] }
+        var out: [String: FamilyHub] = [:]
+        var move = false
+        for (id, s) in saved {
+            if let k = s.key, !k.isEmpty {
+                move = true
+                out[id] = FamilyHub(base: s.base, key: k, name: s.name)
+                continue
+            }
+            let r = Keychain.read(Self.familyKeyAccount(id))
+            guard r.ok else { return nil }
+            out[id] = FamilyHub(base: s.base, key: r.value ?? "", name: s.name)
+        }
+        // Keys from before they were kept in the Keychain go there now, out of the settings.
+        if move { saveFamilyPairings(out) }
+        return out
+    }
+
+    /// Keeps the family's list: addresses and names in the settings, keys in the Keychain.
+    private func saveFamilyPairings(_ list: [String: FamilyHub]) {
+        let before = Saved.load(Self.familyPairingsKey, as: [String: FamilyHubSaved].self) ?? [:]
+        var saved: [String: FamilyHubSaved] = [:]
+        for (id, f) in list {
+            let account = Self.familyKeyAccount(id)
+            let kept: Bool
+            if f.key.isEmpty {
+                kept = Keychain.get(account) == nil || Keychain.set(nil, for: account)
+            } else {
+                kept = Keychain.get(account) == f.key || Keychain.set(f.key, for: account)
+            }
+            // Only a key the Keychain wouldn't take stays in the settings (so it's never lost).
+            saved[id] = FamilyHubSaved(base: f.base, name: f.name, key: kept || f.key.isEmpty ? nil : f.key)
+        }
+        for id in before.keys where list[id] == nil { Keychain.set(nil, for: Self.familyKeyAccount(id)) }
+        Saved.save(Self.familyPairingsKey, saved)
     }
 
     /// The first time: the family's list starts as the TVs paired here (as old, so it fills in and never replaces).
@@ -417,7 +506,7 @@ final class SettingsSync {
         for h in fleet.hubs where !h.connection.key.isEmpty {
             list[h.id] = FamilyHub(base: h.connection.base.absoluteString, key: h.connection.key, name: h.name)
         }
-        Saved.save(Self.familyPairingsKey, list)
+        saveFamilyPairings(list)
     }
 
     /// A TV paired (or paired again) here since the last look goes into the family's list, and one forgotten here
@@ -425,8 +514,7 @@ final class SettingsSync {
     private func notePairings() {
         guard let fleet else { return }
         let now = Dictionary(fleet.hubs.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
-        guard now != hubsSeen else { return }
-        var list = Saved.load(Self.familyPairingsKey, as: [String: FamilyHub].self) ?? [:]
+        guard now != hubsSeen, var list = loadFamilyPairings() else { return }
         let before = list
         for (id, h) in now where !h.connection.key.isEmpty {
             let was = hubsSeen[id]
@@ -439,14 +527,13 @@ final class SettingsSync {
             for id in hubsSeen.keys where now[id] == nil { list[id] = nil }
         }
         hubsSeen = now
-        if list != before { Saved.save(Self.familyPairingsKey, list) }
+        if list != before { saveFamilyPairings(list) }
     }
 
     /// The family's list changed on another device: a TV paired there is paired here too (with the same key), one
     /// forgotten there is forgotten here, and one paired again there with a new key takes the new key here.
     private func applyPairings() {
-        guard let fleet else { return }
-        let list = Saved.load(Self.familyPairingsKey, as: [String: FamilyHub].self) ?? [:]
+        guard let fleet, let list = loadFamilyPairings() else { return }
         var add: [Hub] = []
         var renew: [Hub] = []
         for (id, f) in list where !f.key.isEmpty {
@@ -524,7 +611,17 @@ final class SettingsSync {
 
     private func write(_ k: String, _ v: String) {
         let key = String(k.dropFirst(3))
-        if k.hasPrefix("kc:") {
+        if k == "ud:" + Self.familyPairingsKey {
+            // Keys into the Keychain, addresses and names into the settings.
+            let o = SyncMerge.object(v) as? [String: Any] ?? [:]
+            var list: [String: FamilyHub] = [:]
+            for (id, e) in o {
+                guard let e = e as? [String: Any] else { continue }
+                list[id] = FamilyHub(base: e["base"] as? String ?? "", key: e["key"] as? String ?? "", name: e["name"] as? String ?? "")
+            }
+            saveFamilyPairings(list)
+            if v.isEmpty { UserDefaults.standard.removeObject(forKey: key) }
+        } else if k.hasPrefix("kc:") {
             Keychain.set(v.isEmpty ? nil : v, for: key)
         } else if v.isEmpty {
             UserDefaults.standard.removeObject(forKey: key)
@@ -603,14 +700,110 @@ final class SettingsSync {
     /// One TV's copy as read.
     private struct TVCopy: Sendable {
         var folder: String
-        /// The copy's settings (decrypted JSON); nil when there's none yet or it can't be read (it's replaced).
-        var plain: Data?
+        /// The copy's file as it came (sealed); nil when there's none yet or it didn't come (it's replaced).
+        var raw: Data?
         /// A file is there (one that can't be read is replaced).
         var exists: Bool
     }
 
-    private func storeKey(_ hub: Hub) -> SymmetricKey {
+    /// A copy sealed with a family code starts with this, the code's fingerprint (8 bytes) and when the code was made
+    /// (8 bytes, seconds). A copy from before the family code is only the sealed box.
+    private static let copyMagic = Data("WFS2".utf8)
+
+    private struct CopyHead {
+        var fp: Data
+        var created: UInt64
+        var box: Data
+    }
+
+    private static func head(_ raw: Data) -> CopyHead? {
+        let b = [UInt8](raw)
+        guard b.count > 20 + 28, Data(b[0..<4]) == copyMagic else { return nil }
+        var t: UInt64 = 0
+        for x in b[12..<20] { t = t << 8 | UInt64(x) }
+        return CopyHead(fp: Data(b[4..<12]), created: t, box: Data(b[20...]))
+    }
+
+    private static func sealCopy(_ plain: Data, _ fam: Family, with key: SymmetricKey) -> Data? {
+        guard let box = try? AES.GCM.seal(plain, using: key).combined else { return nil }
+        var out = copyMagic
+        out.append(fam.fp)
+        let t = fam.created
+        for i in (0..<8).reversed() { out.append(UInt8(truncatingIfNeeded: t >> UInt64(i * 8))) }
+        out.append(box)
+        return out
+    }
+
+    private static func open(_ d: Data, _ key: SymmetricKey) -> Data? {
+        guard let box = try? AES.GCM.SealedBox(combined: d) else { return nil }
+        return try? AES.GCM.open(box, using: key)
+    }
+
+    /// Whether a copy's code is older than this device's (the older code is the family's; on the same second, the
+    /// lower fingerprint), so every device settles on the same one.
+    private static func older(_ h: CopyHead, than fam: Family) -> Bool {
+        h.created != fam.created ? h.created < fam.created : h.fp.lexicographicallyPrecedes(fam.fp)
+    }
+
+    /// A TV's copy is sealed with a key made from the family code and the TV's pairing key: the pairing key alone
+    /// (which the TV's own requests carry) no longer opens it.
+    private func storeKey(_ hub: Hub, _ fam: Family) -> SymmetricKey {
+        FamilyCode.derive(fam.key, "woodruff-settings-store", hub.connection.key)
+    }
+
+    /// How copies were sealed before the family code (read once from each TV, then replaced).
+    private func legacyStoreKey(_ hub: Hub) -> SymmetricKey {
         SymmetricKey(data: SHA256.hash(data: Data("woodruff-settings-store:\(hub.connection.key)".utf8)))
+    }
+
+    // MARK: The family code
+
+    /// The family code here, read again only when it changed. `ok` false when the Keychain can't be read just now
+    /// (then the code last read, if any, is used).
+    private func currentFamily() -> (family: Family?, ok: Bool) {
+        let l = FamilyCode.load()
+        guard l.ok else { return (familyKept, false) }
+        guard let rec = l.record else {
+            familyKept = nil
+            showCode(nil)
+            return (nil, true)
+        }
+        if let f = familyKept, f.record == rec { return (f, true) }
+        let key = FamilyCode.key(rec.code)
+        let f = Family(record: rec, key: key, fp: FamilyCode.fingerprint(key), peerKey: FamilyCode.derive(key, "woodruff-settings-sync"))
+        familyKept = f
+        showCode(rec.code)
+        return (f, true)
+    }
+
+    private func showCode(_ code: String?) {
+        let shown = code.map { FamilyCode.formatted($0) }
+        if familyCode != shown { familyCode = shown }
+    }
+
+    /// The first device to sync since the family code came makes it. For ten minutes it gives way to an older one
+    /// found on a TV (another device made one at the same moment).
+    private func makeCode() -> Family? {
+        let now = Date().timeIntervalSince1970.rounded(.down)
+        guard FamilyCode.save(FamilyCode.Record(code: FamilyCode.generate(), created: now, provisionalUntil: now + 600)) else { return nil }
+        return currentFamily().family
+    }
+
+    /// Takes the family code typed in here (from another device's Settings). Nil once it's taken; otherwise what's
+    /// wrong with it.
+    func enter(code text: String) -> String? {
+        guard let code = FamilyCode.normalize(text) else { return "That isn’t a family code. Check it and try again." }
+        let fp = FamilyCode.fingerprint(FamilyCode.key(code))
+        // Checked against the codes the TVs' copies were sealed with, when there are any.
+        if !seenCodes.isEmpty && seenCodes[fp] == nil { return "That code doesn’t match your TVs. Check it on another device." }
+        let created = seenCodes[fp].map { Double($0) } ?? Date().timeIntervalSince1970.rounded(.down)
+        guard FamilyCode.save(FamilyCode.Record(code: code, created: created)) else { return "The code couldn’t be saved. Try again." }
+        _ = currentFamily()
+        needsCode = false
+        otherCode = false
+        status = "Syncing…"
+        Task { await syncNow() }
+        return nil
     }
 
     /// Reads every TV's copy, takes what's newer, and writes back to each TV whose copy is behind. One round at a
@@ -653,13 +846,59 @@ final class SettingsSync {
                 if let copy { copies[id] = copy }
             }
         }
+        // Which family code each copy is sealed with (none: from before the family code).
+        var heads: [String: CopyHead] = [:]
+        for (id, copy) in copies {
+            if let raw = copy.raw, let h = Self.head(raw) { heads[id] = h }
+        }
+        if !heads.isEmpty {
+            seenCodes = [:]
+            for h in heads.values { seenCodes[h.fp] = min(seenCodes[h.fp] ?? h.created, h.created) }
+        }
+        let here = currentFamily()
+        guard here.ok else { return }   // the Keychain can't be read just now: next round
+        if here.family == nil {
+            // No code here. The TVs already keep the family's settings sealed with one: it's typed in from another
+            // device. None does yet: this is the first device to sync since the family code came, and makes it.
+            guard heads.isEmpty else {
+                needsCode = true
+                status = Self.enterCodeStatus
+                return
+            }
+            guard copies.values.contains(where: { $0.raw != nil || !$0.exists }) else {
+                status = "Can’t reach a TV right now. Changes are kept here and saved when one answers."
+                return
+            }
+        }
+        guard let fam = here.family ?? makeCode() else { return }
+        needsCode = false
+        // Another device made a code at the same moment as this one: the newer code gives way (and this device is
+        // given the family's code like any other).
+        let foreign = heads.filter { $0.value.fp != fam.fp }
+        if fam.record.provisionalUntil > Date().timeIntervalSince1970, foreign.values.contains(where: { Self.older($0, than: fam) }) {
+            FamilyCode.save(nil)
+            _ = currentFamily()
+            needsCode = true
+            status = Self.enterCodeStatus
+            return
+        }
         // 2. Whatever is newer in any of them comes in. A change made here a moment ago is stamped first (once),
-        //    and copies that are the same bytes are read and taken in once.
+        //    and copies that are the same bytes are read and taken in once. A copy from before the family code is
+        //    read once from each TV (it holds the family's settings until then), then replaced.
         check()
         var remote: [String: [String: [String: Any]]] = [:]
         var opened: [Data: [String: [String: Any]]] = [:]
+        var ours: Set<String> = []
         for hub in hubs {
-            guard let plain = copies[hub.id]?.plain else { continue }
+            guard let raw = copies[hub.id]?.raw else { continue }
+            let plain: Data?
+            if let h = heads[hub.id] {
+                plain = h.fp == fam.fp ? Self.open(h.box, storeKey(hub, fam)) : nil
+                if plain != nil { ours.insert(hub.id) }
+            } else {
+                plain = legacyRead.contains(hub.id) ? nil : Self.open(raw, legacyStoreKey(hub))
+            }
+            guard let plain else { continue }
             if let its = opened[plain] { remote[hub.id] = its; continue }
             guard let its = Self.copyItems(plain) else { continue }
             opened[plain] = its
@@ -667,20 +906,23 @@ final class SettingsSync {
             apply(its, checked: true)
         }
         // 3. Each TV whose copy is behind gets everything from here (keeping anything this version doesn't know,
-        //    and anything the copy has newer).
+        //    and anything the copy has newer), sealed with the family code. A copy sealed with an older family code
+        //    than this device's is left alone (this device is given that code).
         let changesWritten = changes
         let mine = items()
         var current: Set<String> = []
         var pending: [(Hub, TVCopy, Data)] = []
+        var elsewhere: [String] = []
         for hub in hubs {
             // (One the family forgot meanwhile isn't written to.)
             guard let copy = copies[hub.id], fleet.hub(hub.id) != nil else { continue }
+            if let h = foreign[hub.id], Self.older(h, than: fam) { elsewhere.append(hub.name); continue }
             let its = remote[hub.id]
             var out = mine
             for (k, item) in its ?? [:] where out[k] == nil || Self.stampOf(item) > Self.stampOf(out[k]) { out[k] = item }
-            if let its, !Self.behind(its, out) { current.insert(hub.id); continue }
-            guard let plain = try? JSONSerialization.data(withJSONObject: ["v": 1, "from": me, "items": out]),
-                  let sealed = try? AES.GCM.seal(plain, using: storeKey(hub)).combined else { continue }
+            if ours.contains(hub.id), let its, !Self.behind(its, out) { current.insert(hub.id); continue }
+            guard let plain = try? JSONSerialization.data(withJSONObject: ["v": 2, "from": me, "items": out]),
+                  let sealed = Self.sealCopy(plain, fam, with: storeKey(hub, fam)) else { continue }
             pending.append((hub, copy, sealed))
         }
         await withTaskGroup(of: (String, Bool).self) { g in
@@ -692,12 +934,20 @@ final class SettingsSync {
             }
             for await (id, ok) in g where ok { current.insert(id) }
         }
+        // These TVs' copies are sealed with the family code now: a copy from before it is never read from them again.
+        if !current.isSubset(of: legacyRead) {
+            legacyRead.formUnion(current)
+            UserDefaults.standard.set(legacyRead.sorted(), forKey: "sync.legacyRead")
+        }
+        otherCode = !elsewhere.isEmpty
         let saved = hubs.filter { current.contains($0.id) }.map(\.name)
         if saved.isEmpty {
-            status = "Can’t reach a TV right now. Changes are kept here and saved when one answers."
+            status = elsewhere.isEmpty ? "Can’t reach a TV right now. Changes are kept here and saved when one answers."
+                : "Your TVs use another family code. Enter the code from another device."
         } else {
             lastSynced = Date()
             status = "Saved on \(saved.joined(separator: ", "))"
+            if !elsewhere.isEmpty { status += ". \(elsewhere.joined(separator: ", ")) use\(elsewhere.count == 1 ? "s" : "") another family code." }
             if changes == changesWritten { unsaved = false }
         }
     }
@@ -717,7 +967,7 @@ final class SettingsSync {
         if let got = try? await c.t.data("GET", "/api/download", query: ["path": path], contentType: nil, timeout: wait) {
             misses[hub.id] = nil
             stuck[hub.id] = nil
-            return TVCopy(folder: dir, plain: unseal(got.0, from: hub), exists: true)
+            return TVCopy(folder: dir, raw: got.0, exists: true)
         }
         // Nothing came: no copy there yet (a new TV, or the first device to sync), or a hiccup. The folder says which.
         guard let listing = try? await c.t.get("/api/list", ["path": dir], as: FolderListing.self, timeout: wait) else {
@@ -730,16 +980,10 @@ final class SettingsSync {
             // It's there but didn't come: next round. One that never comes is replaced.
             let n = (stuck[hub.id] ?? 0) + 1
             stuck[hub.id] = n
-            return n >= 3 ? TVCopy(folder: dir, plain: nil, exists: true) : nil
+            return n >= 3 ? TVCopy(folder: dir, raw: nil, exists: true) : nil
         }
         stuck[hub.id] = nil
-        return TVCopy(folder: dir, plain: nil, exists: false)
-    }
-
-    /// A TV's copy opened with its key: the settings in it (JSON), or nil when it can't be read.
-    private func unseal(_ d: Data, from hub: Hub) -> Data? {
-        guard let box = try? AES.GCM.SealedBox(combined: d), let plain = try? AES.GCM.open(box, using: storeKey(hub)) else { return nil }
-        return plain
+        return TVCopy(folder: dir, raw: nil, exists: false)
     }
 
     private static func copyItems(_ plain: Data) -> [String: [String: Any]]? {
@@ -820,23 +1064,12 @@ final class SettingsSync {
 
     // MARK: 2. Straight across the Wi‑Fi
 
+    /// Everything from here, sealed with the family code (nothing goes without one), and that code's fingerprint.
     private func payload() -> Data? {
-        guard let plain = try? JSONSerialization.data(withJSONObject: ["from": me, "items": items()]) else { return nil }
-        var boxes: [String: String] = [:]
-        for (id, key) in keys() {
-            if let sealed = try? AES.GCM.seal(plain, using: key).combined { boxes[id] = sealed.base64EncodedString() }
-        }
-        guard !boxes.isEmpty else { return nil }
-        return try? JSONSerialization.data(withJSONObject: ["boxes": boxes])
-    }
-
-    /// One key per paired TV, from its pairing key.
-    private func keys() -> [String: SymmetricKey] {
-        var out: [String: SymmetricKey] = [:]
-        for h in fleet?.hubs ?? [] where !h.connection.key.isEmpty {
-            out[h.id] = SymmetricKey(data: SHA256.hash(data: Data("woodruff-settings-sync:\(h.connection.key)".utf8)))
-        }
-        return out
+        guard let fam = currentFamily().family,
+              let plain = try? JSONSerialization.data(withJSONObject: ["from": me, "items": items()]),
+              let sealed = try? AES.GCM.seal(plain, using: fam.peerKey).combined else { return nil }
+        return try? JSONSerialization.data(withJSONObject: ["fp": fam.fp.base64EncodedString(), "box": sealed.base64EncodedString()])
     }
 
     private func broadcast() {
@@ -925,17 +1158,16 @@ final class SettingsSync {
         }
     }
 
+    /// Settings from another device, taken only when they're sealed with this device's family code.
     private func handle(_ data: Data) {
-        guard let o = try? JSONSerialization.jsonObject(with: data) as? [String: Any], let boxes = o["boxes"] as? [String: String] else { return }
-        let mine = keys()
-        for (id, b64) in boxes {
-            guard let key = mine[id], let raw = Data(base64Encoded: b64), let box = try? AES.GCM.SealedBox(combined: raw),
-                  let plain = try? AES.GCM.open(box, using: key),
-                  let p = try? JSONSerialization.jsonObject(with: plain) as? [String: Any],
-                  (p["from"] as? String) != me, let items = p["items"] as? [String: [String: Any]] else { continue }
-            if apply(items) { broadcast() }
-            return
-        }
+        guard let fam = currentFamily().family,
+              let o = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let fp = (o["fp"] as? String).flatMap({ Data(base64Encoded: $0) }), fp == fam.fp,
+              let raw = (o["box"] as? String).flatMap({ Data(base64Encoded: $0) }),
+              let plain = Self.open(raw, fam.peerKey),
+              let p = try? JSONSerialization.jsonObject(with: plain) as? [String: Any],
+              (p["from"] as? String) != me, let items = p["items"] as? [String: [String: Any]] else { return }
+        if apply(items) { broadcast() }
     }
 
     private func browse() {

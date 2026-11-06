@@ -416,10 +416,22 @@ public final class Fleet {
 
     // MARK: Pairing
 
-    /// Pairs with the TV at [connection]: asks who it is, keeps it, says hello as this phone.
+    /// A pairing link for a TV that's already paired here with another key or address (see `handle(url:)`).
+    public struct AlreadyPaired: LocalizedError, Equatable, Sendable {
+        public var name: String
+        public init(name: String) { self.name = name }
+        public var errorDescription: String? { "Already paired with \(name); forget it first to pair again." }
+    }
+
+    /// Pairs with the TV at [connection]: asks who it is, keeps it, says hello as this phone. With [replacing] false
+    /// (a link opened from elsewhere), a TV already paired here with another key or address is left as it is, and
+    /// `AlreadyPaired` is thrown.
     @discardableResult
-    public func pair(_ connection: TVConnection) async throws -> Hub {
+    public func pair(_ connection: TVConnection, replacing: Bool = true) async throws -> Hub {
         let status: TVStatus = try await TVTransport(connection).get("/api/status")
+        if !replacing, let have = hub(status.id), have.connection != connection {
+            throw AlreadyPaired(name: tv(have.id)?.name ?? have.name)
+        }
         let hub = Hub(id: status.id, name: status.name, connection: connection)
         hubs.removeAll { $0.id == hub.id }
         hubs.append(hub)
@@ -460,7 +472,12 @@ public final class Fleet {
            let u = URL(string: inner) { target = u }
         guard let c = TVConnection.parse(target.absoluteString) else { return }
         Task {
-            do { let h = try await pair(c); banner = Banner(title: "Paired", message: "\(h.name) is connected.") } catch { show(error) }
+            do {
+                let h = try await pair(c, replacing: false)
+                banner = Banner(title: "Paired", message: "\(h.name) is connected.")
+            } catch let e as AlreadyPaired {
+                banner = Banner(title: "Not Paired", message: e.localizedDescription)
+            } catch { show(error) }
         }
     }
 

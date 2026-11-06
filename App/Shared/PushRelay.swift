@@ -66,6 +66,11 @@ final class PushRelay {
     @ObservationIgnored private var listener: NWListener?
     @ObservationIgnored private var browser: NWBrowser?
     @ObservationIgnored private var wakeWatch: NSObjectProtocol?
+    /// Every other Mac heard saying it's ready to send (its name → the proof in its advertisement). Only those whose
+    /// proof checks out count (`recount`).
+    @ObservationIgnored private var heard: [String: String] = [:]
+    /// Renews this Mac's proof and checks the others' again, every two minutes.
+    @ObservationIgnored private var renewal: Task<Void, Never>?
 
     // MARK: iPhone: registering
 
@@ -83,6 +88,16 @@ final class PushRelay {
                 MainActor.assumeIsolated { self?.wokeUp() }
             }
         }
+        if renewal == nil {
+            renewal = Task { [weak self] in
+                while !Task.isCancelled {
+                    try? await Task.sleep(nanoseconds: 120_000_000_000)
+                    guard let self else { return }
+                    self.advertise()
+                    self.recount()
+                }
+            }
+        }
         #endif
     }
 
@@ -98,6 +113,7 @@ final class PushRelay {
         jwt = nil
         keyChanges += 1
         advertise()
+        recount()
     }
 
     /// The iPhone's push address, put where every Mac can read it.
@@ -255,13 +271,45 @@ final class PushRelay {
 
     // MARK: Mac: which one sends
 
+    /// The proof a Mac puts in its advertisement: made with the family key over its id and the time (in 5-minute
+    /// steps), so a device on the Wi‑Fi without the family code can't pose as a Mac that sends and stop the alerts.
+    static func proof(_ id: String, window: Int, key: SymmetricKey) -> String {
+        FamilyCode.tag("woodruff-relay|\(id)|\(window)", key)
+    }
+
+    static func window(_ date: Date = Date()) -> Int { Int(date.timeIntervalSince1970 / 300) }
+
+    /// This Mac's advertisement, with its proof (none without the family code: then no other Mac counts it).
+    private static func advertisement() -> NWListener.Service {
+        var txt = NWTXTRecord()
+        if let key = FamilyCode.savedKey() { txt["a"] = proof(DeviceID.value, window: window(), key: key) }
+        return NWListener.Service(name: DeviceID.value, type: service, txtRecord: txt)
+    }
+
+    /// Only the other Macs whose proof checks out (this window, or the one either side for clocks a little apart)
+    /// count as sending. Without the family code here, none can be checked: this Mac sends (the iPhone shows a repeat
+    /// once).
+    private func recount() {
+        var ok: [String] = []
+        if let key = FamilyCode.savedKey() {
+            let w = Self.window()
+            for (name, proof) in heard where name != DeviceID.value && !proof.isEmpty {
+                if (w - 1...w + 1).contains(where: { Self.proof(name, window: $0, key: key) == proof }) { ok.append(name) }
+            }
+        }
+        ok.sort()
+        if ok != otherRelays { otherRelays = ok }
+    }
+
     /// Macs ready to send say so on the Wi‑Fi, so only one of them does.
     private func advertise() {
         #if os(macOS)
         let want = hasKey && sendsFromHere
         if !want { listener?.cancel(); listener = nil; return }
-        guard listener == nil, let l = try? NWListener(using: .tcp) else { return }
-        l.service = NWListener.Service(name: DeviceID.value, type: Self.service)
+        // Already saying so: the proof is renewed.
+        if let l = listener { l.service = Self.advertisement(); return }
+        guard let l = try? NWListener(using: .tcp) else { return }
+        l.service = Self.advertisement()
         l.newConnectionHandler = { $0.cancel() }
         l.stateUpdateHandler = { [weak self] s in
             if case .failed = s { Task { @MainActor in self?.listener = nil; try? await Task.sleep(nanoseconds: 5_000_000_000); self?.advertise() } }
@@ -274,11 +322,19 @@ final class PushRelay {
     private func browse() {
         // One search at a time: start() runs each time the main window opens.
         browser?.cancel(); browser = nil
-        let b = NWBrowser(for: .bonjour(type: Self.service, domain: nil), using: .tcp)
+        let b = NWBrowser(for: .bonjourWithTXTRecord(type: Self.service, domain: nil), using: .tcp)
         b.browseResultsChangedHandler = { [weak self] results, _ in
-            var names: [String] = []
-            for r in results { if case let .service(name, _, _, _) = r.endpoint { names.append(name) } }
-            Task { @MainActor in self?.otherRelays = names.filter { $0 != DeviceID.value } }
+            var found: [String: String] = [:]
+            for r in results {
+                guard case let .service(name, _, _, _) = r.endpoint else { continue }
+                var proof = ""
+                if case let .bonjour(txt) = r.metadata { proof = txt["a"] ?? "" }
+                found[name] = proof
+            }
+            Task { @MainActor in
+                self?.heard = found
+                self?.recount()
+            }
         }
         b.stateUpdateHandler = { [weak self, weak b] s in
             guard case .failed = s else { return }
@@ -287,6 +343,7 @@ final class PushRelay {
                 guard let self, let b, self.browser === b else { return }
                 b.cancel()
                 self.browser = nil
+                self.heard = [:]
                 self.otherRelays = []
                 try? await Task.sleep(nanoseconds: 5_000_000_000)
                 if self.browser == nil { self.browse() }
