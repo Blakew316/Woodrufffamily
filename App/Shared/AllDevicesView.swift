@@ -375,7 +375,7 @@ struct DeviceGlyph: View {
     @ViewBuilder private var picture: some View {
         switch look {
         case .tv(let playing):
-            TVPicture(on: on, playing: playing).frame(width: (56) * scale, height: 44 * scale)
+            TVPicture(on: on, playing: playing).aspectRatio((56) / (44), contentMode: .fit).frame(maxWidth: (56) * scale, maxHeight: 44 * scale)
         case .speaker(let bar):
             if bar {
                 SoundbarPicture(on: on, tint: tint).frame(maxWidth: 104 * scale).frame(height: 50 * scale)
@@ -387,23 +387,23 @@ struct DeviceGlyph: View {
                     .symbolEffect(.bounce, value: on)
             }
         case .thermostat(let d):
-            EcobeePicture(device: d).frame(width: (52) * scale, height: 52 * scale)
+            EcobeePicture(device: d).aspectRatio((52) / (52), contentMode: .fit).frame(maxWidth: (52) * scale, maxHeight: 52 * scale)
         case .dreoFan(let pedestal, let speed):
-            DreoFanPicture(pedestal: pedestal, on: on, speed: speed).frame(width: (pedestal ? 40 : 52) * scale, height: 58 * scale)
+            DreoFanPicture(pedestal: pedestal, on: on, speed: speed).aspectRatio((pedestal ? 50 : 52) / ((pedestal ? 64 : 58)), contentMode: .fit).frame(maxWidth: (pedestal ? 50 : 52) * scale, maxHeight: (pedestal ? 64 : 58) * scale)
         case .floorLamp(let level):
-            FloorLampPicture(level: level, lit: on, color: tint).frame(width: (34) * scale, height: 56 * scale)
+            FloorLampPicture(level: level, lit: on, color: tint).aspectRatio((34) / (56), contentMode: .fit).frame(maxWidth: (34) * scale, maxHeight: 56 * scale)
         case .tableLamp(let level):
-            TableLampPicture(level: level, lit: on, color: tint).frame(width: (42) * scale, height: 56 * scale)
+            TableLampPicture(level: level, lit: on, color: tint).aspectRatio((42) / (56), contentMode: .fit).frame(maxWidth: (42) * scale, maxHeight: 56 * scale)
         case .stringLights(let level):
-            StringLightsPicture(level: level, lit: on, color: tint).frame(width: (80) * scale, height: 54 * scale)
+            StringLightsPicture(level: level, lit: on, color: tint).aspectRatio((80) / (54), contentMode: .fit).frame(maxWidth: (80) * scale, maxHeight: 54 * scale)
         case .underShelf(let level):
-            UnderShelfPicture(level: level, lit: on, color: tint).frame(width: (64) * scale, height: 56 * scale)
+            UnderShelfPicture(level: level, lit: on, color: tint).aspectRatio((64) / (56), contentMode: .fit).frame(maxWidth: (64) * scale, maxHeight: 56 * scale)
         case .bespoke(let model, let running, let alert):
-            BespokeAppliance(model: model, running: running, alert: alert).frame(width: (58) * scale, height: 56 * scale)
+            BespokeAppliance(model: model, running: running, alert: alert).aspectRatio((58) / (56), contentMode: .fit).frame(maxWidth: (58) * scale, maxHeight: 56 * scale)
         case .smartSensor(let motion):
-            SmartSensorPicture(motion: motion).frame(width: (54) * scale, height: 54 * scale)
+            SmartSensorPicture(motion: motion).aspectRatio((54) / (54), contentMode: .fit).frame(maxWidth: (54) * scale, maxHeight: 54 * scale)
         case .hexPanels(let level):
-            HexPanelsPicture(level: level, lit: on, color: tint).frame(width: (72) * scale, height: 56 * scale)
+            HexPanelsPicture(level: level, lit: on, color: tint).aspectRatio((72) / (56), contentMode: .fit).frame(maxWidth: (72) * scale, maxHeight: 56 * scale)
         case .homePod(let mini):
             Image(systemName: mini ? "homepodmini.fill" : "homepod.fill")
                 .font(.system(size: 21 * scale, weight: .semibold))
@@ -418,7 +418,7 @@ struct DeviceGlyph: View {
         case .device(let kind, let running, let symbol):
             if running && ApplianceArt.animates(kind) && kind != .fridge && kind != .fan {
                 ApplianceArt(kind: kind, running: true, minimumInterval: 1.0 / 20)
-                    .frame(width: (34) * scale, height: 34 * scale)
+                    .aspectRatio((34) / (34), contentMode: .fit).frame(maxWidth: (34) * scale, maxHeight: 34 * scale)
                     .clipShape(Circle())
             } else if kind == .fan {
                 Image(systemName: "fan.fill")
