@@ -187,6 +187,8 @@ final class PushRelay {
         guard let auth = token() else { lastError = "The push key couldn’t be read. Add it again."; return }
         var aps: [String: Any] = ["alert": ["title": title, "body": body], "sound": "default", "thread-id": userInfo["tv"] ?? id.components(separatedBy: "-").first ?? "woodruff"]
         if let category { aps["category"] = category }
+        // A camera's alert: the iPhone's notification extension fetches its clip or snapshot before it shows.
+        if userInfo["camera"] != nil { aps["mutable-content"] = 1 }
         var payload: [String: Any] = ["aps": aps]
         for (k, v) in userInfo { payload[k] = v }
         guard let data = try? JSONSerialization.data(withJSONObject: payload) else { return }

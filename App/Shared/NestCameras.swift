@@ -4,6 +4,9 @@ import WebKit
 import AppKit
 #endif
 import WoodruffKit
+#if os(iOS)
+import AVFoundation
+#endif
 
 /// Where the cameras are kept between launches (on this device only: never synced).
 private let nestCamerasKey = "nestCameras"
@@ -54,7 +57,17 @@ final class NestCameras {
         let alerts = (Keychain.get("nest.scopes") ?? "").contains("pubsub")
         if canAlert != alerts { canAlert = alerts }
         guard connected, !Demo.isOn else { return }
+        shareSignIn()
         if poll == nil { startPolling(now: true) } else { Task { await load() } }
+    }
+
+    /// The sign-in, where the notification extension can use it to fetch an alert's clip (iPhone and iPad only).
+    private func shareSignIn() {
+        #if os(iOS)
+        CameraEventMedia.keepCredentials(clientID: Keychain.get("nest.client"), secret: Keychain.get("nest.secret"),
+                                         refresh: Keychain.get("nest.refresh"), access: Keychain.get("nest.access"),
+                                         expires: Keychain.get("nest.expires").flatMap(Double.init))
+        #endif
     }
 
     /// Now (or after the first wait), then every five minutes: a camera going offline (or coming back)
@@ -117,6 +130,9 @@ final class NestCameras {
 
     func signOut() {
         for k in ["nest.refresh", "nest.access", "nest.expires"] { Keychain.set(nil, for: k) }
+        #if os(iOS)
+        CameraEventMedia.forgetCredentials()
+        #endif
         connected = false
         error = nil
         poll?.cancel(); poll = nil
@@ -135,6 +151,7 @@ final class NestCameras {
         if let r = t["refresh_token"] as? String { Keychain.set(r, for: "nest.refresh") }
         let exp = (t["expires_in"] as? Double) ?? Double((t["expires_in"] as? Int) ?? 3600)
         Keychain.set(String(Date().addingTimeInterval(exp - 120).timeIntervalSince1970), for: "nest.expires")
+        shareSignIn()
     }
 
     func accessToken() async throws -> String { try await token() }
@@ -352,6 +369,8 @@ final class CameraStreams {
     var requested: String?
     /// Mac: the camera filling the whole app window.
     var full: String?
+    /// The alert a camera was opened from: its clip or snapshot replays above the live view.
+    var replay: CameraReplay?
     @ObservationIgnored private var players: [String: LivePlayer] = [:]
     @ObservationIgnored private var watching = 0
     @ObservationIgnored private var idle: Task<Void, Never>?
@@ -619,6 +638,7 @@ struct CameraLiveView: View {
         .onAppear { streams.expanded = camera.id; streams.show(camera) }
         .onDisappear {
             player.setMuted(true)
+            if streams.replay?.camera == camera.id { streams.replay = nil }
             if streams.expanded == camera.id { streams.expanded = nil }
             streams.hide()
         }
@@ -643,6 +663,11 @@ struct CameraLiveView: View {
                 GlassCircle(symbol: "xmark", size: 40) { dismiss() }
                     .accessibilityLabel("Close")
             }
+            // Opened from an alert: what it saw, replaying above the live view.
+            if let r = streams.replay, r.camera == camera.id {
+                EventReplayView(replay: r)
+                Text("Live").font(.subheadline.weight(.semibold)).frame(maxWidth: .infinity, alignment: .leading)
+            }
             LiveWebView(player: player)
                 .aspectRatio(16 / 9, contentMode: .fit)
                 .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
@@ -652,7 +677,7 @@ struct CameraLiveView: View {
         .padding(20)
         // As wide as the phone (a fixed minimum wider than an iPhone pushed the close button off the edge).
         .frame(maxWidth: .infinity, minHeight: 340, alignment: .top)
-        .presentationDetents([.medium, .large])
+        .presentationDetents(streams.replay?.camera == camera.id ? [.large] : [.medium, .large])
     }
 }
 
@@ -970,3 +995,82 @@ struct CameraPresenter: ViewModifier {
     }
 }
 
+
+/// An alert's moment, replayed above the camera's live view when the alert is tapped.
+struct CameraReplay: Equatable {
+    var camera: String
+    var key: String
+    var event: String?
+    var clip: String?
+    var title: String
+    var at: Date
+}
+
+#if os(iOS)
+/// The alert's moment: its clip looping (muted) or its snapshot, with what it was and when.
+struct EventReplayView: View {
+    let replay: CameraReplay
+    @State private var file: URL?
+    @State private var tried = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Text(replay.title).font(.subheadline.weight(.semibold))
+                Text(replay.at.formatted(date: .omitted, time: .shortened)).font(.subheadline).foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+            }
+            ZStack {
+                Color.black
+                if let file {
+                    if file.pathExtension == "mp4" {
+                        LoopingClip(url: file)
+                    } else if let image = UIImage(contentsOfFile: file.path) {
+                        Image(uiImage: image).resizable().scaledToFit()
+                    }
+                } else if tried {
+                    Text("Google has no clip or snapshot for this one.")
+                        .font(.footnote).foregroundStyle(.white.opacity(0.7)).multilineTextAlignment(.center).padding()
+                } else {
+                    ProgressView().tint(.white)
+                }
+            }
+            .aspectRatio(16 / 9, contentMode: .fit)
+            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        }
+        .task(id: replay.key) {
+            file = await CameraEventMedia.fetch(camera: replay.camera, eventID: replay.event, clipURL: replay.clip, key: replay.key, timeout: 12)
+            tried = true
+        }
+    }
+}
+
+/// A short clip playing on a loop, muted, filling its frame.
+private struct LoopingClip: UIViewRepresentable {
+    let url: URL
+
+    final class ClipView: UIView {
+        override class var layerClass: AnyClass { AVPlayerLayer.self }
+        var playerLayer: AVPlayerLayer { layer as! AVPlayerLayer }
+        var looper: AVPlayerLooper?
+    }
+
+    func makeUIView(context: Context) -> ClipView {
+        let v = ClipView()
+        let player = AVQueuePlayer()
+        player.isMuted = true
+        v.looper = AVPlayerLooper(player: player, templateItem: AVPlayerItem(url: url))
+        v.playerLayer.player = player
+        v.playerLayer.videoGravity = .resizeAspect
+        player.play()
+        return v
+    }
+
+    func updateUIView(_ v: ClipView, context: Context) {}
+
+    static func dismantleUIView(_ v: ClipView, coordinator: ()) {
+        v.playerLayer.player?.pause()
+        v.looper = nil
+    }
+}
+#endif

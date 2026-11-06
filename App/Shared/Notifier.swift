@@ -90,6 +90,13 @@ final class NotificationHandler: NSObject, UNUserNotificationCenterDelegate, @un
             // A camera or doorbell alert: straight to that camera's live view.
             if let cameraID, action == UNNotificationDefaultActionIdentifier {
                 UserDefaults.standard.set("home", forKey: "section")
+                // What it saw, replayed above the live view.
+                let info = response.notification.request.content.userInfo
+                func text(_ k: String) -> String? { (info[k] as? String).flatMap { $0.isEmpty ? nil : $0 } }
+                CameraStreams.shared.replay = CameraReplay(camera: cameraID, key: text("key") ?? response.notification.request.identifier,
+                                                           event: text("event"), clip: text("clip"),
+                                                           title: response.notification.request.content.title,
+                                                           at: response.notification.date)
                 CameraStreams.shared.requested = cameraID
                 #if os(macOS)
                 // The camera opens in Woodruff's window: bring it forward if it's tucked away in the Dock.

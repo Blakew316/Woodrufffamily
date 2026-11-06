@@ -1249,6 +1249,12 @@ deploy_iphone() {
       iphone_failed "the built widgets are '$bid', not $IPHONE_WIDGETS_ID"
       return 1
     fi
+    # The notification extension (camera alerts' clips) needs a profile of its own, which only Xcode's signing
+    # makes: signed this way the app goes without it (its alerts come without the clip).
+    if [ -d "$copy/PlugIns/WoodruffNotifications.appex" ]; then
+      note "iPhone: leaving out the notification extension (only Xcode's signing has a profile for it)"
+      rm -rf "$copy/PlugIns/WoodruffNotifications.appex"
+    fi
     for item in "$copy/PlugIns/"*; do
       if [ -e "$item" ] && [ "$item" != "$appex" ]; then
         iphone_failed "the built app has PlugIns/$(basename "$item"), which no profile here can sign"

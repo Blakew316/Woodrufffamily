@@ -38,6 +38,7 @@ targets:
     dependencies:
       - package: WoodruffKit
       - target: WoodruffWidgets
+      - target: WoodruffNotifications
     settings:
       base:
         # Set WOODRUFF_BUNDLE_ID on the command line to sign with your own id; the widgets follow it.
@@ -115,6 +116,30 @@ targets:
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
           NSAllowsLocalNetworking: true
+
+  # Camera and doorbell pushes: fetches the event's clip or snapshot and puts it in the notification.
+  WoodruffNotifications:
+    type: app-extension
+    platform: iOS
+    sources:
+      - App/NotificationService
+      - path: App/Shared/CameraEventMedia.swift
+    settings:
+      base:
+        WOODRUFF_BUNDLE_ID: com.blakew316.woodruff
+        PRODUCT_BUNDLE_IDENTIFIER: $(WOODRUFF_BUNDLE_ID).notifications
+        PRODUCT_NAME: WoodruffNotifications
+        TARGETED_DEVICE_FAMILY: "1,2"
+        CODE_SIGN_ENTITLEMENTS: App/NotificationService/WoodruffNotifications.entitlements
+        SKIP_INSTALL: YES
+    info:
+      path: App/NotificationService/Info.plist
+      properties:
+        CFBundleDisplayName: Woodruff
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.usernotifications.service
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).NotificationService
 
   WoodruffFamilyMac:
     type: application

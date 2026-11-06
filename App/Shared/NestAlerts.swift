@@ -133,33 +133,50 @@ final class NestAlerts {
            t.timeIntervalSinceNow < -600 { return }
         let camera = NestCameras.shared.cameras.first { $0.id == device }
         let name = camera?.name ?? "Camera"
+        // The event's short clip, when the camera sends one (newer Nest cameras and doorbells).
+        let clip = (events["sdm.devices.events.CameraClipPreview.ClipPreview"] as? [String: Any])?["previewUrl"] as? String
         for (type, value) in events {
             // The same event, however often Google sends it, is one key (and one notification, by its id).
             let session = (value as? [String: Any])?["eventSessionId"] as? String ?? ev["eventId"] as? String ?? messageID ?? UUID().uuidString
+            // Its snapshot, for the cameras without clips (Google makes it only within 30 seconds of the event).
+            let eventID = (value as? [String: Any])?["eventId"] as? String
             let key = "\(type)|\(session)"
             guard seen[key] == nil else { continue }
             seen[key] = Date()
             switch type {
             case "sdm.devices.events.DoorbellChime.Chime" where doorbell:
-                post(title: "Someone’s at the door", body: name, camera: device, key: key)
+                post(title: "Someone’s at the door", body: name, camera: device, key: key, event: eventID, clip: clip)
             case "sdm.devices.events.CameraPerson.Person" where person:
-                post(title: "Person seen", body: name, camera: device, key: key)
+                post(title: "Person seen", body: name, camera: device, key: key, event: eventID, clip: clip)
             case "sdm.devices.events.CameraMotion.Motion" where motion:
-                post(title: "Motion seen", body: name, camera: device, key: key)
+                post(title: "Motion seen", body: name, camera: device, key: key, event: eventID, clip: clip)
             default: break
             }
         }
         seen = seen.filter { $0.value.timeIntervalSinceNow > -3600 }
     }
 
-    private func post(title: String, body: String, camera: String, key: String) {
+    private func post(title: String, body: String, camera: String, key: String, event: String?, clip: String?) {
+        let short = Self.shortID(key)
         let c = UNMutableNotificationContent()
         c.title = title
         c.body = body
         c.sound = .default
         c.threadIdentifier = "nest-\(camera)"
-        c.userInfo = ["camera": camera]
-        Notifier.deliver(c, id: "nest-" + Self.shortID(key))
+        // What the iPhones need to fetch the moment (the Mac's push carries these to them).
+        c.userInfo = ["camera": camera, "key": short, "event": event ?? "", "clip": clip ?? ""]
+        #if os(iOS)
+        // Here: the clip or snapshot in the alert, if Google has it within a few seconds (else the alert as it is).
+        Task {
+            if let file = await CameraEventMedia.fetch(camera: camera, eventID: event, clipURL: clip, key: short, timeout: 4),
+               let a = CameraEventMedia.attachment(file) {
+                c.attachments = [a]
+            }
+            Notifier.deliver(c, id: "nest-" + short)
+        }
+        #else
+        Notifier.deliver(c, id: "nest-" + short)
+        #endif
     }
 
     /// A short name for an event, the same on every device. Google's event ids are long, and the Mac's push to the
