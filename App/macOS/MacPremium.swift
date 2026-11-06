@@ -144,19 +144,10 @@ final class NowPlayingBridge {
         guard !wired else { return }
         wired = true
         let c = MPRemoteCommandCenter.shared()
-        // The play/pause key and Now Playing's button send this. The plain "pause" and "play" are left alone: macOS
-        // sends those by itself (an app starting the microphone, a dictation, AirPods taken out), and passed on
-        // they paused or restarted the TV with no one pressing anything.
-        // Not while any app is listening to the microphone: macOS sends a play/pause of its own when one starts
-        // (dictation, a voice chat), and it isn't someone pressing the key. Looked at a moment later, once the
-        // microphone has started.
-        c.togglePlayPauseCommand.addTarget { _ in
-            Task { @MainActor in
-                try? await Task.sleep(nanoseconds: 400_000_000)
-                if !Self.microphoneInUse() { self.key("playpause") }
-            }
-            return .success
-        }
+        // None of macOS's play and pause reach the TV: macOS sends them by itself (an app starting the microphone
+        // on this Mac or, through AirPods and Handoff, on the iPhone), and they paused the TV with no one pressing
+        // anything. The TV is played and paused from Woodruff's own controls.
+        c.togglePlayPauseCommand.isEnabled = false
         c.playCommand.isEnabled = false
         c.pauseCommand.isEnabled = false
         c.skipBackwardCommand.preferredIntervals = [10]
