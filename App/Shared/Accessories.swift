@@ -245,7 +245,7 @@ struct DeviceTile: View, Equatable {
         }
         .contentShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         .modifier(DeviceGlass(on: lit))
-        .opacity(device.reachable ? 1 : 0.6)
+        .opacity(device.reachable || device.bespokeLook != nil ? 1 : 0.6)
         .animation(.smooth(duration: 0.25), value: lit)
         .onTapGesture { if HomeLayout.shared.tapsAllowed { tap() } }
         // Press and hold arranges Home's tiles (on the Mac too); the controls are in the menu.

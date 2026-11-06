@@ -31,6 +31,11 @@ struct BespokeAppliance: View {
         TimelineView(.animation(minimumInterval: 1.0 / 20, paused: !moves)) { tl in
             let t = moves ? tl.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 3600) : 0.3
             Canvas { ctx, size in
+                // A soft light behind it, so its detail shows on a dark tile even while it's idle.
+                let w = size.width, h = size.height
+                ctx.fill(Path(ellipseIn: CGRect(x: -w * 0.1, y: -h * 0.05, width: w * 1.2, height: h * 1.1)),
+                         with: .radialGradient(Gradient(colors: [.white.opacity(running ? 0.1 : 0.16), .white.opacity(0)]),
+                                               center: CGPoint(x: w / 2, y: h * 0.45), startRadius: 0, endRadius: max(w, h) * 0.62))
                 let d = Drawing(ctx: ctx, w: size.width, h: size.height, t: t)
                 switch model {
                 case .fridge: d.fridge(alert: alert)

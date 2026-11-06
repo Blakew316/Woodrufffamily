@@ -162,7 +162,9 @@ struct AllDevicesView: View {
         }
         .modifier(TileGlass(on: f.on))
         .contentShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-        .opacity(f.reachable ? 1 : 0.55)
+        // The Samsung appliances say they're out of reach whenever they're idle: their pictures stay clear (the
+        // state under them still says so).
+        .opacity(f.reachable || f.isAppliance ? 1 : 0.55)
         .animation(.spring(response: 0.35, dampingFraction: 0.75), value: f.on)
         .onTapGesture { tap(item) }
         .onLongPressGesture(minimumDuration: 0.4) { open(item) }
@@ -183,6 +185,7 @@ struct AllDevicesView: View {
         var reachable: Bool
         var look: DeviceGlyph.Look
         var tint: Color
+        var isAppliance: Bool { if case .bespoke = look { return true } else { return false } }
     }
 
     private func facts(_ item: Item) -> Facts {
