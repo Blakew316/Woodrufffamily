@@ -137,14 +137,22 @@ struct AllDevicesView: View {
 
     // MARK: One tile
 
+    /// The pictures' size in the tiles: larger on the Mac and iPad's wide tiles than on iPhone's narrow ones.
+    #if os(macOS)
+    static let glyphScale: CGFloat = 1.4
+    #else
+    static let glyphScale: CGFloat = UIDevice.current.userInterfaceIdiom == .pad ? 1.35 : 1.2
+    #endif
+
     private func tile(_ item: Item) -> some View {
         let f = facts(item)
         // Centred, the same in every tile: the picture in a square of its own at the top, the name and state under it
         // at the same height whatever the picture is.
         return VStack(alignment: .center, spacing: 10) {
-            DeviceGlyph(look: f.look, on: f.on, tint: f.tint)
-                .frame(width: 58, height: 56, alignment: .center)
+            // Drawn larger than the standard size, so each picture fills its tile.
+            DeviceGlyph(look: f.look, on: f.on, tint: f.tint, scale: Self.glyphScale)
                 .frame(maxWidth: .infinity)
+                .frame(height: 56 * Self.glyphScale, alignment: .center)
             VStack(spacing: 2) {
                 Text(f.name).font(.footnote.weight(.semibold)).lineLimit(2)
                 // Two lines, so a TV's title reads in full more often.
@@ -337,6 +345,8 @@ struct DeviceGlyph: View {
     var look: Look
     var on: Bool
     var tint: Color
+    /// How much larger than the standard size the picture is drawn (All Devices fills its tiles with it).
+    var scale: CGFloat = 1
 
     /// Drawn as the product itself (no circle behind it).
     private var drawn: Bool {
@@ -365,42 +375,42 @@ struct DeviceGlyph: View {
     @ViewBuilder private var picture: some View {
         switch look {
         case .tv(let playing):
-            TVPicture(on: on, playing: playing).frame(width: 56, height: 44)
+            TVPicture(on: on, playing: playing).frame(width: (56) * scale, height: 44 * scale)
         case .speaker(let bar):
             if bar {
-                SoundbarPicture(on: on, tint: tint).frame(width: 104, height: 50)
+                SoundbarPicture(on: on, tint: tint).frame(maxWidth: 104 * scale).frame(height: 50 * scale)
             } else {
                 Image(systemName: on ? "hifispeaker.fill" : "hifispeaker")
-                    .font(.system(size: 20, weight: .semibold))
+                    .font(.system(size: 20 * scale, weight: .semibold))
                     .foregroundStyle(on ? tint : .secondary)
                     .symbolEffect(.variableColor.iterative, options: .repeating, isActive: on)
                     .symbolEffect(.bounce, value: on)
             }
         case .thermostat(let d):
-            EcobeePicture(device: d).frame(width: 52, height: 52)
+            EcobeePicture(device: d).frame(width: (52) * scale, height: 52 * scale)
         case .dreoFan(let pedestal, let speed):
-            DreoFanPicture(pedestal: pedestal, on: on, speed: speed).frame(width: pedestal ? 40 : 52, height: 58)
+            DreoFanPicture(pedestal: pedestal, on: on, speed: speed).frame(width: (pedestal ? 40 : 52) * scale, height: 58 * scale)
         case .floorLamp(let level):
-            FloorLampPicture(level: level, lit: on, color: tint).frame(width: 34, height: 56)
+            FloorLampPicture(level: level, lit: on, color: tint).frame(width: (34) * scale, height: 56 * scale)
         case .tableLamp(let level):
-            TableLampPicture(level: level, lit: on, color: tint).frame(width: 42, height: 56)
+            TableLampPicture(level: level, lit: on, color: tint).frame(width: (42) * scale, height: 56 * scale)
         case .stringLights(let level):
-            StringLightsPicture(level: level, lit: on, color: tint).frame(width: 80, height: 54)
+            StringLightsPicture(level: level, lit: on, color: tint).frame(width: (80) * scale, height: 54 * scale)
         case .underShelf(let level):
-            UnderShelfPicture(level: level, lit: on, color: tint).frame(width: 64, height: 56)
+            UnderShelfPicture(level: level, lit: on, color: tint).frame(width: (64) * scale, height: 56 * scale)
         case .bespoke(let model, let running, let alert):
-            BespokeAppliance(model: model, running: running, alert: alert).frame(width: 58, height: 56)
+            BespokeAppliance(model: model, running: running, alert: alert).frame(width: (58) * scale, height: 56 * scale)
         case .smartSensor(let motion):
-            SmartSensorPicture(motion: motion).frame(width: 54, height: 54)
+            SmartSensorPicture(motion: motion).frame(width: (54) * scale, height: 54 * scale)
         case .hexPanels(let level):
-            HexPanelsPicture(level: level, lit: on, color: tint).frame(width: 72, height: 56)
+            HexPanelsPicture(level: level, lit: on, color: tint).frame(width: (72) * scale, height: 56 * scale)
         case .homePod(let mini):
             Image(systemName: mini ? "homepodmini.fill" : "homepod.fill")
-                .font(.system(size: 21, weight: .semibold))
+                .font(.system(size: 21 * scale, weight: .semibold))
                 .foregroundStyle(.secondary)
         case .light:
             Image(systemName: on ? "lightbulb.max.fill" : "lightbulb")
-                .font(.system(size: 21, weight: .semibold))
+                .font(.system(size: 21 * scale, weight: .semibold))
                 .foregroundStyle(on ? tint : .secondary)
                 .shadow(color: on ? tint.opacity(0.9) : .clear, radius: 8)
                 .symbolEffect(.breathe, options: .repeating, isActive: on)
@@ -408,16 +418,16 @@ struct DeviceGlyph: View {
         case .device(let kind, let running, let symbol):
             if running && ApplianceArt.animates(kind) && kind != .fridge && kind != .fan {
                 ApplianceArt(kind: kind, running: true, minimumInterval: 1.0 / 20)
-                    .frame(width: 34, height: 34)
+                    .frame(width: (34) * scale, height: 34 * scale)
                     .clipShape(Circle())
             } else if kind == .fan {
                 Image(systemName: "fan.fill")
-                    .font(.system(size: 20, weight: .semibold))
+                    .font(.system(size: 20 * scale, weight: .semibold))
                     .foregroundStyle(on ? tint : .secondary)
                     .symbolEffect(.rotate, options: .repeating, isActive: on)
             } else {
                 Image(systemName: symbolFor(kind, on: on) ?? symbol)
-                    .font(.system(size: 20, weight: .semibold))
+                    .font(.system(size: 20 * scale, weight: .semibold))
                     .foregroundStyle(on ? tint : .secondary)
                     .contentTransition(.symbolEffect(.replace))
                     .symbolEffect(.bounce, value: on)
