@@ -137,6 +137,18 @@ Woodruff Home Helper (Apple Home on the Macs) is development-signed by the Mac S
 registered under Devices at developer.apple.com. A Mac that isn't registered skips the shared helper; once it's
 registered, the Mac Studio's next build includes it.
 
+### Adding an iPhone or iPad
+
+The app runs on iPhone and iPad (iOS and iPadOS 26). To add one:
+
+1. Plug it into the Mac Studio, unlock it and tap Trust. In Xcode, Window → Devices and Simulators, select it, tick
+   "Connect via network" and copy its Identifier.
+2. On the device, turn on Settings → Privacy & Security → Developer Mode (it restarts).
+3. Register it at developer.apple.com → Certificates, IDs & Profiles → Devices → + (platform iOS, its Identifier).
+4. The next release's iPhone build includes it, and the Mac Studio installs the app on it from then on. Check for
+   Updates Now alone doesn't: the build it reuses was signed before the device was registered.
+5. In the app: Settings → General → Sync Across Devices → Enter Family Code.
+
 ### By hand
 
 `scripts/deploy.sh` is what the updater runs. It also works by hand, in Terminal from the repository folder:
