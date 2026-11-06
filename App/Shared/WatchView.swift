@@ -16,6 +16,10 @@ struct WatchView: View {
     @State private var removed: Set<String> = []
     /// A film playing on this device (Settings → Watch: the Play button plays here).
     @State private var here: PhonePlay?
+    /// Movies or TV Shows, as on the TV's streaming screen.
+    @AppStorage("watch.section") private var section = "movies"
+    /// Every title of each, for its banner and rows.
+    @State private var sectionTitles: [String: [Title]] = [:]
 
     private var client: (any WatchSource)? { WatchSources.current(fleet) }
 
@@ -66,7 +70,7 @@ struct WatchView: View {
         #if os(macOS)
         .navigationTitle("Watch")
         #endif
-        .navigationDestination(for: LibraryRef.self) { LibraryGrid(place: $0.place) }
+        .navigationDestination(for: LibraryRef.self) { LibraryGrid(place: $0.place, genre: $0.genre, sort: $0.sort ?? "az") }
         .sheet(item: Binding(get: { openTitle.map { TitleRef(id: $0) } }, set: { openTitle = $0?.id })) { ref in
             TitleSheet(id: ref.id).zoomDestination(ref.id, zoom).macResizable(width: 760, height: 820, minWidth: 520, minHeight: 500)
         }
@@ -104,21 +108,63 @@ struct WatchView: View {
         if h.state != "ready" && (h.featured ?? []).isEmpty && (h.continue ?? []).isEmpty {
             EmptyState(symbol: "film.stack", title: stateTitle(h.state), message: stateMessage(h.state, tv: h.tv)).padding(.top, 60)
         }
-        if let featured = h.featured, !featured.isEmpty {
-            Billboard(titles: featured, page: $page, client: client)
+        // Movies or TV Shows, as on the TV: the day's five across the top, then the rows.
+        let place = section == "shows" ? "shows" : "movies"
+        let titles = sectionTitles[place] ?? []
+        let featured = WatchRows.featured(titles, section: place)
+        ZStack(alignment: .top) {
+            if !featured.isEmpty {
+                Billboard(titles: featured, page: $page, client: client).id(place)
+            } else {
+                Color.clear.frame(height: 150)
+            }
+            sectionPicker
         }
-        if let c = h.continue?.filter({ !removed.contains($0.key) }), !c.isEmpty {
-            ShelfRow("Continue Watching") { ForEach(c) { ContinueTile(item: $0, poster: client?.artURL($0.poster)) } }
+        let watching = (h.continue ?? []).filter { !removed.contains($0.key) && ($0.kind == "show") == (place == "shows") }
+        if !watching.isEmpty {
+            ShelfRow("Continue Watching") { ForEach(watching) { ContinueTile(item: $0, poster: client?.artURL($0.poster)) } }
         }
-        if let r = h.recent, !r.isEmpty {
-            ShelfRow("Recently Added") { ForEach(r) { PosterTile(title: $0, poster: client?.artURL($0.poster)) } }
+        let shownIDs = Set(watching.compactMap(\.titleId))
+        ForEach(WatchRows.rows(titles, shown: shownIDs), id: \.name) { row in
+            ShelfRow(row.name, all: LibraryRef(place: place, genre: row.genre, sort: row.name == "Top Rated" ? "rated" : row.name == "Recently Added" ? "recent" : nil)) {
+                ForEach(row.titles) { PosterTile(title: $0, poster: client?.artURL($0.poster)) }
+            }
         }
-        if let m = h.movies, m.count > 0 {
-            ShelfRow("Movies", all: LibraryRef(place: "movies")) { ForEach(m.items) { PosterTile(title: $0, poster: client?.artURL($0.poster)) } }
+    }
+
+    /// Movies | TV Shows, over the top of the banner.
+    private var sectionPicker: some View {
+        Picker("Library", selection: $section) {
+            Text("Movies").tag("movies")
+            Text("TV Shows").tag("shows")
         }
-        if let s = h.shows, s.count > 0 {
-            ShelfRow("TV Shows", all: LibraryRef(place: "shows")) { ForEach(s.items) { PosterTile(title: $0, poster: client?.artURL($0.poster)) } }
+        .pickerStyle(.segmented)
+        .frame(maxWidth: 280)
+        .padding(4)
+        .glassEffect(.regular, in: Capsule())
+        #if os(iOS)
+        .padding(.top, 104)
+        #else
+        .padding(.top, 14)
+        #endif
+        .onChange(of: section) { _, _ in
+            page = 0
+            Task { await loadSection() }
         }
+    }
+
+    /// Every title of the section shown (a page at a time from the library), for its banner and rows.
+    private func loadSection() async {
+        guard let c = client else { return }
+        let place = section == "shows" ? "shows" : "movies"
+        var all: [Title] = []
+        var offset = 0
+        while let p = try? await c.library(place: place, sort: "recent", unwatched: false, genre: nil, q: nil, offset: offset, limit: 120) {
+            all += p.items
+            offset += p.items.count
+            if p.items.isEmpty || offset >= p.count || offset >= 3000 { break }
+        }
+        if !all.isEmpty || sectionTitles[place] == nil { sectionTitles[place] = all }
     }
 
     private func load() async {
@@ -137,7 +183,8 @@ struct WatchView: View {
                     if !removed.isEmpty { removed = [] }
                 }
             }
-            if loadedHub != hubID { loadedHub = hubID }
+            if loadedHub != hubID { loadedHub = hubID; sectionTitles = [:] }
+            await loadSection()
             if error != nil { error = nil }
         } catch {
             if Task.isCancelled { return }
@@ -202,7 +249,13 @@ private struct PlayingWatcher: View {
 }
 
 struct TitleRef: Hashable, Identifiable { var id: String }
-struct LibraryRef: Hashable { var place: String }
+struct LibraryRef: Hashable {
+    var place: String
+    /// Opened from a genre's row: the list filtered to it.
+    var genre: String? = nil
+    /// Opened from Recently Added or Top Rated: sorted that way.
+    var sort: String? = nil
+}
 
 /// Opens a title's sheet from anywhere in Watch.
 struct OpenTitleAction { var open: (String) -> Void; func callAsFunction(_ id: String) { open(id) } }
@@ -248,6 +301,12 @@ struct Billboard: View {
         }
         .tabViewStyle(.page(indexDisplayMode: .never))
         .aspectRatio(0.82, contentMode: .fit)
+        // On to the next after 12 seconds, as on the TV (a swipe starts the 12 seconds again).
+        .task(id: page) {
+            try? await Task.sleep(nanoseconds: 12_000_000_000)
+            guard !Task.isCancelled, titles.count > 1 else { return }
+            withAnimation(.easeInOut(duration: 0.7)) { page = (page + 1) % titles.count }
+        }
     }
     #else
     /// The Mac has no swiping pages (a plain TabView there is a strip of blank tabs): one card at a time that moves
@@ -261,9 +320,9 @@ struct Billboard: View {
         .aspectRatio(2.2, contentMode: .fit)
         .clipped()
         .task(id: page) {
-            try? await Task.sleep(nanoseconds: 9_000_000_000)
+            try? await Task.sleep(nanoseconds: 12_000_000_000)
             guard !Task.isCancelled, titles.count > 1 else { return }
-            withAnimation(.smooth(duration: 0.6)) { page = (page + 1) % titles.count }
+            withAnimation(.easeInOut(duration: 0.7)) { page = (page + 1) % titles.count }
         }
     }
     #endif
@@ -350,7 +409,7 @@ struct ShelfRow<Content: View>: View {
                 if let all {
                     #if os(macOS)
                     // On the Mac's own page stack, so Woodruff's Back button returns from it.
-                    PageLink(title) { LibraryGrid(place: all.place) } label: { heading }
+                    PageLink(title) { LibraryGrid(place: all.place, genre: all.genre, sort: all.sort ?? "az") } label: { heading }
                         .buttonStyle(.plain)
                     #else
                     NavigationLink(value: all) { heading }
@@ -977,6 +1036,12 @@ struct LibraryGrid: View {
     @Environment(\.watchChanged) private var watchChanged
     @State private var openTitle: String?
     var place: String
+
+    init(place: String, genre: String? = nil, sort: String = "az") {
+        self.place = place
+        _genre = State(initialValue: genre)
+        _sort = State(initialValue: sort)
+    }
     @State private var items: [Title] = []
     @State private var count = 0
     @State private var genres: [String] = []
