@@ -28,13 +28,28 @@ enum GoogleDrive {
         Keychain.set(s.isEmpty ? nil : s, for: "gdrive.secret")
     }
 
+    /// Reading Drive's files was allowed at sign-in (unknown counts as yes).
+    static var canReadFiles: Bool {
+        guard let s = Keychain.get("gdrive.scopes"), !s.isEmpty else { return true }
+        return s.contains("auth/drive.readonly") || s.contains("auth/drive ") || s.hasSuffix("auth/drive")
+    }
+
+    /// The Google account signed in, as Drive says.
+    static var email: String? { Keychain.get("gdrive.email").flatMap { $0.isEmpty ? nil : $0 } }
+
+    static func loadEmail() async {
+        guard let j = try? await get(URL(string: "https://www.googleapis.com/drive/v3/about?fields=user(emailAddress)")!),
+              let e = (j["user"] as? [String: Any])?["emailAddress"] as? String else { return }
+        Keychain.set(e, for: "gdrive.email")
+    }
+
     static func signOut() {
         if let r = Keychain.get("gdrive.refresh"), !r.isEmpty {
             var req = URLRequest(url: URL(string: "https://oauth2.googleapis.com/revoke?token=\(r)")!)
             req.httpMethod = "POST"
             URLSession.shared.dataTask(with: req).resume()
         }
-        for k in ["gdrive.refresh", "gdrive.access", "gdrive.expires"] { Keychain.set(nil, for: k) }
+        for k in ["gdrive.refresh", "gdrive.access", "gdrive.expires", "gdrive.scopes", "gdrive.email"] { Keychain.set(nil, for: k) }
     }
 
     struct Failure: LocalizedError {
@@ -86,10 +101,13 @@ enum GoogleDrive {
         guard let refresh = j["refresh_token"] as? String else { throw Failure("Google didn’t give a lasting sign-in. Try again.") }
         Keychain.set(refresh, for: "gdrive.refresh")
         keep(j)
+        await loadEmail()
     }
 
     private static func keep(_ j: [String: Any]) {
         if let a = j["access_token"] as? String { Keychain.set(a, for: "gdrive.access") }
+        // What Google let the app have (each permission is a box the person can leave unticked).
+        if let s = j["scope"] as? String { Keychain.set(s, for: "gdrive.scopes") }
         let life = (j["expires_in"] as? NSNumber)?.doubleValue ?? 3600
         Keychain.set(String(Date().timeIntervalSince1970 + life), for: "gdrive.expires")
     }
@@ -140,12 +158,26 @@ enum GoogleDrive {
     struct File: Codable, Hashable {
         var id: String
         var name: String
-        var mimeType: String
+        var mimeType: String = ""
         var size: String?
         var modifiedTime: String?
         var createdTime: String?
         var thumbnailLink: String?
         var parents: [String]?
+
+        // Read whatever fields were asked for: a search that asks only for ids still gives files.
+        enum CodingKeys: String, CodingKey { case id, name, mimeType, size, modifiedTime, createdTime, thumbnailLink, parents }
+        init(from d: Decoder) throws {
+            let c = try d.container(keyedBy: CodingKeys.self)
+            id = try c.decode(String.self, forKey: .id)
+            name = try c.decodeIfPresent(String.self, forKey: .name) ?? ""
+            mimeType = try c.decodeIfPresent(String.self, forKey: .mimeType) ?? ""
+            size = try c.decodeIfPresent(String.self, forKey: .size)
+            modifiedTime = try c.decodeIfPresent(String.self, forKey: .modifiedTime)
+            createdTime = try c.decodeIfPresent(String.self, forKey: .createdTime)
+            thumbnailLink = try c.decodeIfPresent(String.self, forKey: .thumbnailLink)
+            parents = try c.decodeIfPresent([String].self, forKey: .parents)
+        }
         var isFolder: Bool { mimeType == "application/vnd.google-apps.folder" }
         var isVideo: Bool {
             if mimeType.hasPrefix("video/") { return true }
@@ -182,13 +214,14 @@ enum GoogleDrive {
         throw Failure("Google Drive refused the sign-in. Sign in again in Settings.")
     }
 
-    private static func filesURL(_ q: String, orderBy: String? = nil, fields: String, pageSize: Int, page: String?) -> URL {
+    private static func filesURL(_ q: String, orderBy: String? = nil, fields: String, pageSize: Int, page: String?, allDrives: Bool = false) -> URL {
         var c = URLComponents(string: filesBase)!
         var items: [URLQueryItem] = [.init(name: "q", value: q), .init(name: "pageSize", value: String(pageSize)),
                                      .init(name: "fields", value: fields),
                                      .init(name: "includeItemsFromAllDrives", value: "true"), .init(name: "supportsAllDrives", value: "true")]
         if let orderBy { items.append(.init(name: "orderBy", value: orderBy)) }
         if let page { items.append(.init(name: "pageToken", value: page)) }
+        if allDrives { items.append(.init(name: "corpora", value: "allDrives")) }
         c.queryItems = items
         // "+" in a query value means a space to Google; encode it.
         c.percentEncodedQuery = c.percentEncodedQuery?.replacingOccurrences(of: "+", with: "%2B")
@@ -198,11 +231,11 @@ enum GoogleDrive {
     nonisolated static let fileFields = "nextPageToken,files(id,name,mimeType,size,modifiedTime,createdTime,thumbnailLink)"
 
     /// Every file matching [q] (all pages, up to [limit]).
-    static func files(_ q: String, orderBy: String? = "folder,name_natural", fields: String = fileFields, limit: Int = 20_000) async throws -> [File] {
+    static func files(_ q: String, orderBy: String? = "folder,name_natural", fields: String = fileFields, limit: Int = 20_000, allDrives: Bool = false) async throws -> [File] {
         var out: [File] = []
         var page: String?
         repeat {
-            let j = try await get(filesURL(q, orderBy: orderBy, fields: fields, pageSize: 1000, page: page))
+            let j = try await get(filesURL(q, orderBy: orderBy, fields: fields, pageSize: min(1000, limit), page: page, allDrives: allDrives))
             let data = try JSONSerialization.data(withJSONObject: j["files"] ?? [])
             out += (try? JSONDecoder().decode([File].self, from: data)) ?? []
             page = j["nextPageToken"] as? String
@@ -219,13 +252,28 @@ enum GoogleDrive {
 
     /// The library folder called one of [names]: at the top of My Drive first, then anywhere (the TV's order).
     static func findFolder(_ names: [String]) async throws -> String? {
+        let folder = "mimeType = 'application/vnd.google-apps.folder' and trashed = false"
         for top in [true, false] {
             for n in names {
-                let q = "mimeType = 'application/vnd.google-apps.folder' and name = \(quoted(n)) and trashed = false" + (top ? " and 'root' in parents" : "")
-                if let f = try await files(q, orderBy: nil, fields: "files(id)", limit: 1).first { return f.id }
+                let q = "\(folder) and name = \(quoted(n))" + (top ? " and 'root' in parents" : "")
+                if let f = try await files(q, orderBy: nil, fields: "files(id,name,mimeType)", limit: 1).first { return f.id }
             }
         }
+        // In a shared drive, or named a little differently ("movies", "My Movies").
+        for n in names {
+            if let f = try? await files("\(folder) and name = \(quoted(n))", orderBy: nil, fields: "files(id)", limit: 1, allDrives: true).first { return f.id }
+        }
+        for n in names {
+            let found = (try? await files("\(folder) and name contains \(quoted(n))", orderBy: nil, fields: "files(id,name,mimeType)", limit: 20, allDrives: true)) ?? []
+            if let f = found.first(where: { $0.name.lowercased() == n.lowercased() }) ?? found.first { return f.id }
+        }
         return nil
+    }
+
+    /// The folders at the top of My Drive (for saying what the app can see).
+    static func topFolders() async -> [String] {
+        let q = "mimeType = 'application/vnd.google-apps.folder' and trashed = false and 'root' in parents"
+        return ((try? await files(q, orderBy: "name_natural", fields: "files(id,name,mimeType)", limit: 12)) ?? []).map(\.name)
     }
 
     /// The file's bytes, from where the player or a download asks.

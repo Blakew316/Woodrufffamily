@@ -140,7 +140,15 @@ final class DriveLibrary: WatchSource {
             let moviesID = try await GoogleDrive.findFolder(["Movies", "Movie", "Films"])
             let showsID = try await GoogleDrive.findFolder(["TV Shows", "TV shows", "TV", "Shows", "Series"])
             guard moviesID != nil || showsID != nil else {
-                throw GoogleDrive.Failure("There’s no “Movies” or “TV Shows” folder in this Google Drive.")
+                if GoogleDrive.email == nil { await GoogleDrive.loadEmail() }
+                let who = GoogleDrive.email.map { "\($0)’s Drive" } ?? "this Google Drive"
+                if !GoogleDrive.canReadFiles {
+                    throw GoogleDrive.Failure("Google didn’t give the app access to your Drive files. Sign Out, sign in again, and on Google’s screen tick “See and download all your Google Drive files”.")
+                }
+                let seen = await GoogleDrive.topFolders()
+                throw GoogleDrive.Failure("No “Movies” or “TV Shows” folder in \(who)." + (seen.isEmpty
+                    ? " The app can’t see any folders there: sign out and sign in again, ticking the Drive box on Google’s screen, or use the account the TVs use."
+                    : " Folders it can see: \(seen.joined(separator: ", ")). If that’s the wrong account, sign out and sign in with the one the TVs use."))
             }
             var movies: [Entry] = [], shows: [Entry] = []
             if let m = moviesID { movies = try await films(in: m) }

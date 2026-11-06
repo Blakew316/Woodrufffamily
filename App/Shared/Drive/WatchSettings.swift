@@ -54,6 +54,7 @@ struct WatchSettingsView: View {
             Section {
                 if signedIn {
                     LabeledContent("Status", value: "Signed in")
+                    if let e = GoogleDrive.email { LabeledContent("Account", value: e) }
                     LabeledContent("Titles", value: library.busy ? "Reading Drive…" : "\(library.titleCount)")
                     if let u = library.updated {
                         LabeledContent("Updated", value: u.formatted(date: .abbreviated, time: .shortened))

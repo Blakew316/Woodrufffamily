@@ -41,7 +41,7 @@ final class SettingsSync {
         "nest.project", "nest.client", "nest.secret", "nest.access", "nest.refresh", "nest.expires", "nest.scopes", "nest.subscription",
         "github.token", "dreo.email", "dreo.password", "deco.host", "deco.password",
         "cync.email", "cync.access", "cync.refresh", "cync.authorize", "cync.user", "cync.expires",
-        "gdrive.client", "gdrive.secret", "gdrive.refresh", "gdrive.access", "gdrive.expires", "tmdb.key",
+        "gdrive.client", "gdrive.secret", "gdrive.refresh", "gdrive.access", "gdrive.expires", "gdrive.scopes", "gdrive.email", "tmdb.key",
         "apns.key", "apns.keyid", "apns.team",
     ]
     /// Saved settings that travel (JSON in UserDefaults).
