@@ -298,7 +298,7 @@ extension GoveeLight {
     }
 }
 
-/// A light bar under an oak shelf, its light spraying down in a cone onto the counter. Turned on, the cone grows down
+/// A light bar under a floating oak shelf, its light spraying down in a cone onto the counter and washing the wall. Turned on, the cone grows down
 /// from the bar; the brighter it's set, the brighter the beam, the further it reaches and the wider it spreads.
 struct UnderShelfPicture: View {
     var level: Double
@@ -332,60 +332,91 @@ private struct UnderShelfDrawing: View, Animatable {
         }
     }
 
+    /// The beam: four cones from the bar down to [reach], each a little wider and fainter, so its edges are soft.
+    private func beam(_ ctx: GraphicsContext, _ x0: CGFloat, _ x1: CGFloat, _ y: CGFloat, _ reach: CGFloat, _ spread: CGFloat,
+                      _ power: CGFloat, _ lv: CGFloat) {
+        let cx = (x0 + x1) / 2, bw = x1 - x0
+        for k in 0..<4 {
+            let s = spread * (0.75 + 0.17 * CGFloat(k)), inset = bw * (0.1 - 0.04 * CGFloat(k))
+            var cone = Path()
+            cone.move(to: CGPoint(x: x0 + inset, y: y))
+            cone.addLine(to: CGPoint(x: x1 - inset, y: y))
+            cone.addLine(to: CGPoint(x: cx + s, y: reach))
+            cone.addLine(to: CGPoint(x: cx - s, y: reach))
+            cone.closeSubpath()
+            var c = ctx
+            c.opacity = power * 0.32
+            c.fill(cone, with: down(y, reach, [(0, color.mix(with: .white, by: 0.5).opacity(0.8 * lv + 0.1)), (0.4, color.opacity(0.4 * lv + 0.05)),
+                                               (0.85, color.opacity(0.06 * lv)), (1, color.opacity(0))]))
+        }
+    }
+
     private func draw(_ ctx: GraphicsContext, w: CGFloat, h: CGFloat) {
         let power = CGFloat(max(0, min(1, self.power)))
         let lv = CGFloat(0.08 + 0.92 * max(0, min(1, level)))
-        let shW = w * 0.94, shH = h * 0.13, shX = (w - shW) / 2, shY = h * 0.1
-        let brW = shW * 0.7, brH = max(1.5, h * 0.045), brX = (w - brW) / 2, brY = shY + shH
-        let floorY = h * 0.94
         let cx = w / 2
+        // A floating shelf seen from a little above: its top face, then its front face.
+        let shW = w * 0.94, shX = (w - shW) / 2, topY = h * 0.06, depth = h * 0.1, faceH = h * 0.12
+        let faceY = topY + depth, under = faceY + faceH
+        let brW = shW * 0.74, brX = (w - brW) / 2, brH = max(1.4, h * 0.035), brY = under - brH * 0.2
+        let floorY = h * 0.95
+
+        // The shelf's shadow on the wall.
+        ctx.fill(Path(CGRect(x: shX + shW * 0.03, y: under, width: shW * 0.94, height: h * 0.08)),
+                 with: down(under, under + h * 0.08, [(0, .black.opacity(0.28)), (1, .black.opacity(0))]))
 
         if power > 0 {
             let reach = brY + brH + (floorY - brY - brH) * (0.55 + 0.45 * lv) * (0.3 + 0.7 * power)
-            let top = brY + brH * 0.6
-            // Four cones, each a little wider and fainter, so the beam's edges are soft.
-            for k in 0..<4 {
-                let spread = w * (0.36 + 0.2 * lv) * (0.75 + 0.17 * CGFloat(k))
-                let inset = brW * (0.1 - 0.04 * CGFloat(k))
-                var cone = Path()
-                cone.move(to: CGPoint(x: brX + inset, y: top))
-                cone.addLine(to: CGPoint(x: brX + brW - inset, y: top))
-                cone.addLine(to: CGPoint(x: cx + spread, y: reach))
-                cone.addLine(to: CGPoint(x: cx - spread, y: reach))
-                cone.closeSubpath()
-                var c = ctx
-                c.opacity = power * 0.32
-                c.fill(cone, with: down(top, reach, [(0, color.mix(with: .white, by: 0.5).opacity(0.8 * lv + 0.1)), (0.4, color.opacity(0.4 * lv + 0.05)),
-                                                     (0.85, color.opacity(0.06 * lv)), (1, color.opacity(0))]))
-            }
-            // The pool of light on the counter.
-            var pool = ctx
-            pool.opacity = power
-            glow(pool, at: CGPoint(x: cx, y: min(floorY, reach)), radius: w * (0.35 + 0.25 * lv), scaleY: 0.16,
+            var lit = ctx
+            lit.opacity = power
+            // The wall lit behind the beam, only below the shelf.
+            var wall = lit
+            wall.clip(to: Path(CGRect(x: -w, y: under, width: w * 3, height: h * 2)))
+            glow(wall, at: CGPoint(x: cx, y: brY + brH), radius: w * (0.32 + 0.12 * lv), scaleY: 1.5 * (0.6 + 0.4 * power),
+                 [(0, color.opacity(0.3 * lv)), (0.5, color.opacity(0.11 * lv)), (1, color.opacity(0))])
+            beam(ctx, brX, brX + brW, brY + brH * 0.6, reach, w * (0.36 + 0.2 * lv), power, lv)
+            // The pool of light where it lands.
+            glow(lit, at: CGPoint(x: cx, y: min(floorY, reach)), radius: w * (0.35 + 0.25 * lv), scaleY: 0.16,
                  [(0, color.mix(with: .white, by: 0.4).opacity(0.75 * lv)), (0.6, color.opacity(0.25 * lv)), (1, color.opacity(0))])
-            // A soft glow round the bar.
-            glow(pool, at: CGPoint(x: cx, y: brY + brH), radius: brW * 0.75, scaleY: 0.35,
-                 [(0, color.mix(with: .white, by: 0.5).opacity(0.7 * lv)), (1, color.opacity(0))])
         }
 
-        // The shelf: oak, lighter along its top edge, darker underneath.
-        let shelf = roundedRect(CGRect(x: shX, y: shY, width: shW, height: shH), top: shH * 0.12, bottom: shH * 0.12)
-        ctx.fill(shelf, with: down(shY, shY + shH, [(0, hex(0xD7B48A)), (0.18, hex(0xC49A6C)), (0.8, hex(0xA77B4F)), (1, hex(0x7D5835))]))
-        ctx.fill(shelf, with: across(shX, shX + shW, [(0, .black.opacity(0.18)), (0.15, .black.opacity(0)), (0.85, .black.opacity(0)), (1, .black.opacity(0.18))]))
-        // Its grain.
-        let grain = hex(0x5A3719, 0.18)
-        ctx.fill(Path(CGRect(x: shX + shW * 0.05, y: shY + shH * 0.4, width: shW * 0.5, height: max(0.4, shH * 0.06))), with: .color(grain))
-        ctx.fill(Path(CGRect(x: shX + shW * 0.45, y: shY + shH * 0.65, width: shW * 0.45, height: max(0.4, shH * 0.06))), with: .color(grain))
+        // Top face: lighter, narrowing back to the wall.
+        let ins = depth * 0.9
+        var top = Path()
+        top.move(to: CGPoint(x: shX, y: faceY))
+        top.addLine(to: CGPoint(x: shX + shW, y: faceY))
+        top.addLine(to: CGPoint(x: shX + shW - ins, y: topY))
+        top.addLine(to: CGPoint(x: shX + ins, y: topY))
+        top.closeSubpath()
+        ctx.fill(top, with: down(topY, faceY, [(0, hex(0xC9A477)), (1, hex(0xE2C49C))]))
+        // Front face: oak, darker at the ends, a bright edge where the faces meet, and its grain.
+        let face = roundedRect(CGRect(x: shX, y: faceY, width: shW, height: faceH), top: 0, bottom: faceH * 0.12)
+        ctx.fill(face, with: down(faceY, under, [(0, hex(0xC99D6A)), (0.5, hex(0xB3854F)), (1, hex(0x8F653A))]))
+        ctx.fill(face, with: across(shX, shX + shW, [(0, .black.opacity(0.2)), (0.12, .black.opacity(0)), (0.88, .black.opacity(0)), (1, .black.opacity(0.2))]))
+        ctx.fill(Path(CGRect(x: shX, y: faceY, width: shW, height: max(0.5, faceH * 0.08))), with: .color(hex(0xFFECCD, 0.55)))
+        let grain = hex(0x5F3C1C, 0.22)
+        ctx.fill(Path(CGRect(x: shX + shW * 0.08, y: faceY + faceH * 0.45, width: shW * 0.42, height: max(0.4, faceH * 0.06))), with: .color(grain))
+        ctx.fill(Path(CGRect(x: shX + shW * 0.52, y: faceY + faceH * 0.7, width: shW * 0.36, height: max(0.4, faceH * 0.06))), with: .color(grain))
+        // Its lower edge catching the light.
+        if power > 0 {
+            var e = ctx
+            e.opacity = power
+            e.clip(to: face)
+            e.fill(Path(CGRect(x: shX, y: under - faceH * 0.45, width: shW, height: faceH * 0.45)),
+                   with: down(under - faceH * 0.45, under, [(0, color.opacity(0)), (1, color.mix(with: .white, by: 0.4).opacity(0.55 * lv))]))
+        }
 
         // The light bar: brushed aluminium, its diffuser underneath lit in the colour.
-        let bar = roundedRect(CGRect(x: brX, y: brY, width: brW, height: brH), top: brH * 0.2, bottom: brH * 0.45)
-        ctx.fill(bar, with: down(brY, brY + brH, [(0, hex(0x5A5A5E)), (0.45, hex(0xC9C9CD)), (1, hex(0x8A8A8F))]))
-        let diffuser = roundedRect(CGRect(x: brX + brW * 0.03, y: brY + brH * 0.55, width: brW * 0.94, height: brH * 0.45), top: 0, bottom: brH * 0.2)
-        ctx.fill(diffuser, with: .color(hex(0xE8E8EA)))
+        let bar = roundedRect(CGRect(x: brX, y: brY, width: brW, height: brH), top: brH * 0.2, bottom: brH * 0.5)
+        ctx.fill(bar, with: down(brY, brY + brH, [(0, hex(0x4A4A4E)), (0.5, hex(0xB8B8BD)), (1, hex(0x7A7A80))]))
+        let diffuser = roundedRect(CGRect(x: brX + brW * 0.03, y: brY + brH * 0.5, width: brW * 0.94, height: brH * 0.5), top: 0, bottom: brH * 0.25)
+        ctx.fill(diffuser, with: .color(hex(0xDCDCE0)))
         if power > 0 {
             var d = ctx
             d.opacity = power
-            d.fill(diffuser, with: .color(color.mix(with: .white, by: 0.55)))
+            d.fill(diffuser, with: .color(color.mix(with: .white, by: 0.6)))
+            glow(d, at: CGPoint(x: cx, y: brY + brH), radius: brW * 0.6, scaleY: 0.25,
+                 [(0, color.mix(with: .white, by: 0.7).opacity(0.9 * lv)), (1, color.opacity(0))])
         }
     }
 }
