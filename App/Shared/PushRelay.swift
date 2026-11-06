@@ -194,7 +194,7 @@ final class PushRelay {
             return
         }
         await send(id: "nest-test-\(Int(Date().timeIntervalSince1970))", title: "Test: \(e.title)", body: e.body, category: nil,
-                   userInfo: ["camera": e.camera, "key": e.key, "event": e.event, "clip": e.clip])
+                   userInfo: ["camera": e.camera, "key": e.key, "event": e.event, "clip": e.clip, "thumb": e.thumb ?? ""])
     }
 
     private func send(id: String, title: String, body: String, category: String?, userInfo: [String: String]) async {
@@ -205,7 +205,13 @@ final class PushRelay {
         if userInfo["camera"] != nil { aps["mutable-content"] = 1 }
         var payload: [String: Any] = ["aps": aps]
         for (k, v) in userInfo { payload[k] = v }
-        guard let data = try? JSONSerialization.data(withJSONObject: payload) else { return }
+        guard var data = try? JSONSerialization.data(withJSONObject: payload) else { return }
+        // Apple takes at most 4 KB: a camera's small picture goes if it doesn't fit (the iPhone fetches its own).
+        if data.count > 4000, payload["thumb"] != nil {
+            payload["thumb"] = nil
+            guard let smaller = try? JSONSerialization.data(withJSONObject: payload) else { return }
+            data = smaller
+        }
         var gone: [String] = []
         var anySent = false
         var failure: String?

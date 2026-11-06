@@ -165,9 +165,6 @@ final class NestAlerts {
         c.threadIdentifier = "nest-\(camera)"
         // What the iPhones need to fetch the moment (the Mac's push carries these to them).
         c.userInfo = ["camera": camera, "key": short, "event": event ?? "", "clip": clip ?? ""]
-        // The latest event, for the Mac's Send Test Camera Alert.
-        Saved.save(LastCameraEvent.savedKey, LastCameraEvent(title: title, body: body, camera: camera, key: short,
-                                                             event: event ?? "", clip: clip ?? "", at: Date()))
         #if os(iOS)
         // Here: the clip or snapshot in the alert, if Google has it within a few seconds (else the alert as it is).
         Task {
@@ -178,7 +175,20 @@ final class NestAlerts {
             Notifier.deliver(c, id: "nest-" + short)
         }
         #else
-        Notifier.deliver(c, id: "nest-" + short)
+        // The Mac fetches the moment itself (within a few seconds) and sends a small picture of it in the push, so
+        // every iPhone shows one, signed in to the cameras or not. Later than that, the alert goes without it.
+        Task {
+            var thumb: String?
+            if let token = try? await NestCameras.shared.accessToken(),
+               let file = await CameraEventMedia.fetch(camera: camera, eventID: event, clipURL: clip, key: short, timeout: 5, using: token) {
+                thumb = await CameraEventMedia.thumbnail(file)
+            }
+            if let thumb { c.userInfo["thumb"] = thumb }
+            // The latest event, for Send Test Camera Alert.
+            Saved.save(LastCameraEvent.savedKey, LastCameraEvent(title: title, body: body, camera: camera, key: short,
+                                                                 event: event ?? "", clip: clip ?? "", at: Date(), thumb: thumb))
+            Notifier.deliver(c, id: "nest-" + short)
+        }
         #endif
     }
 
@@ -205,6 +215,8 @@ struct LastCameraEvent: Codable, Equatable {
     var event: String
     var clip: String
     var at: Date
+    /// The small picture the Mac sent with it.
+    var thumb: String? = nil
 }
 
 /// The cameras' alerts on this device: Settings → Notifications → Camera Alerts.

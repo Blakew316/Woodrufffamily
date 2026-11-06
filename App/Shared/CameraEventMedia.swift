@@ -1,5 +1,8 @@
 import Foundation
 import UserNotifications
+import AVFoundation
+import ImageIO
+import UniformTypeIdentifiers
 
 /// What a camera saw for an alert, from Google: the event's short clip (newer Nest cameras and doorbells send one) or
 /// a snapshot of the moment (the older ones; Google makes it only within 30 seconds of the event). Fetched the moment
@@ -15,7 +18,9 @@ enum CameraEventMedia {
     private static var store: UserDefaults? { UserDefaults(suiteName: group) }
 
     static var folder: URL? {
-        guard let base = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: group) else { return nil }
+        // The Mac app has no app group: its own temporary folder (it only needs the file for a moment).
+        let base = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: group)
+            ?? URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
         let f = base.appendingPathComponent("CameraEvents", isDirectory: true)
         try? FileManager.default.createDirectory(at: f, withIntermediateDirectories: true)
         return f
@@ -85,9 +90,12 @@ enum CameraEventMedia {
 
     /// The event's clip (from [clipURL]) or else its snapshot (by [eventID]), saved under [key]; nil when Google has
     /// neither for it, or it doesn't come within [timeout] seconds.
-    static func fetch(camera: String, eventID: String?, clipURL: String?, key: String, timeout: Double) async -> URL? {
+    /// [using] is a Google token the caller already has (the Mac's own sign-in); else the one kept for the extension.
+    static func fetch(camera: String, eventID: String?, clipURL: String?, key: String, timeout: Double, using: String? = nil) async -> URL? {
         if let kept = cached(key) { return kept }
-        guard let f = folder, let token = await token() else { return nil }
+        var given = using
+        if given == nil { given = await token() }
+        guard let f = folder, let token = given else { return nil }
         prune(f)
         if let clipURL, !clipURL.isEmpty, let u = URL(string: clipURL) {
             var r = URLRequest(url: u, timeoutInterval: timeout)
@@ -126,6 +134,66 @@ enum CameraEventMedia {
         // A clip's thumbnail (the picture on the alert's right) from a second in, where who was seen is usually in view.
         let options: [AnyHashable: Any]? = file.pathExtension == "mp4" ? [UNNotificationAttachmentOptionsThumbnailTimeKey: 1] : nil
         return try? UNNotificationAttachment(identifier: "media", url: copy, options: options)
+    }
+
+    // MARK: The small picture the Mac sends inside the push
+
+    /// Most of a push's 4 KB is left for this: a small JPEG of the moment, as base64.
+    static let thumbnailLimit = 2400
+
+    /// A small picture of the moment, from a snapshot or a clip's frame a second in, as base64 that fits in a push.
+    /// The Mac adds it to a camera's push, so every iPhone has a picture for the alert even when it can't fetch one
+    /// (no camera sign-in there, or the snapshot's 30 seconds are over: Send Test Camera Alert).
+    static func thumbnail(_ file: URL) async -> String? {
+        var image: CGImage?
+        if file.pathExtension == "mp4" {
+            let generator = AVAssetImageGenerator(asset: AVURLAsset(url: file))
+            generator.appliesPreferredTrackTransform = true
+            generator.maximumSize = CGSize(width: 480, height: 480)
+            image = try? await generator.image(at: CMTime(seconds: 1, preferredTimescale: 600)).image
+        } else if let src = CGImageSourceCreateWithURL(file as CFURL, nil) {
+            image = CGImageSourceCreateThumbnailAtIndex(src, 0, [kCGImageSourceCreateThumbnailFromImageAlways: true,
+                                                                 kCGImageSourceThumbnailMaxPixelSize: 480,
+                                                                 kCGImageSourceCreateThumbnailWithTransform: true] as CFDictionary)
+        }
+        guard let image else { return nil }
+        for side in [256, 208, 168, 136, 112] {
+            guard let small = scaled(image, maxSide: side) else { continue }
+            for quality in [0.6, 0.45, 0.3] {
+                if let d = jpeg(small, quality: quality) {
+                    let b64 = d.base64EncodedString()
+                    if b64.count <= thumbnailLimit { return b64 }
+                }
+            }
+        }
+        return nil
+    }
+
+    /// The Mac's small picture as a file to attach (the full clip or snapshot couldn't be fetched here).
+    static func thumbnailFile(_ base64: String) -> URL? {
+        guard let d = Data(base64Encoded: base64), !d.isEmpty else { return nil }
+        let u = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".jpg")
+        return (try? d.write(to: u, options: .atomic)) != nil ? u : nil
+    }
+
+    private static func scaled(_ image: CGImage, maxSide: Int) -> CGImage? {
+        let w = image.width, h = image.height
+        guard w > 0, h > 0 else { return nil }
+        let scale = min(1, Double(maxSide) / Double(max(w, h)))
+        let nw = max(1, Int(Double(w) * scale)), nh = max(1, Int(Double(h) * scale))
+        guard let ctx = CGContext(data: nil, width: nw, height: nh, bitsPerComponent: 8, bytesPerRow: 0,
+                                  space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { return nil }
+        ctx.interpolationQuality = .high
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: nw, height: nh))
+        return ctx.makeImage()
+    }
+
+    private static func jpeg(_ image: CGImage, quality: Double) -> Data? {
+        let out = NSMutableData()
+        guard let dest = CGImageDestinationCreateWithData(out, UTType.jpeg.identifier as CFString, 1, nil) else { return nil }
+        CGImageDestinationAddImage(dest, image, [kCGImageDestinationLossyCompressionQuality: quality] as CFDictionary)
+        return CGImageDestinationFinalize(dest) ? out as Data : nil
     }
 
     /// Clips and snapshots older than ten minutes are let go, and anything left from the alerts' attachments.
