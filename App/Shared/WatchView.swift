@@ -52,10 +52,6 @@ struct WatchView: View {
         }
         .scrollIndicators(.hidden)
         #if os(iOS)
-        // The billboard runs under the top bar, edge to edge, like the Apple TV app.
-        .ignoresSafeArea(edges: .top)
-        #endif
-        #if os(iOS)
         .toolbar {
             ToolbarItem(placement: .principal) { TVPicker() }.sharedBackgroundVisibility(.hidden)
             ToolbarItem(placement: .primaryAction) {
@@ -112,14 +108,13 @@ struct WatchView: View {
         let place = section == "shows" ? "shows" : "movies"
         let titles = sectionTitles[place] ?? []
         let featured = WatchRows.featured(titles, section: place)
-        ZStack(alignment: .top) {
+        VStack(spacing: 12) {
+            sectionPicker
             if !featured.isEmpty {
                 Billboard(titles: featured, page: $page, client: client).id(place)
-            } else {
-                Color.clear.frame(height: 150)
             }
-            sectionPicker
         }
+        .padding(.top, 8)
         let watching = (h.continue ?? []).filter { !removed.contains($0.key) && ($0.kind == "show") == (place == "shows") }
         if !watching.isEmpty {
             ShelfRow("Continue Watching") { ForEach(watching) { ContinueTile(item: $0, poster: client?.artURL($0.poster)) } }
@@ -139,14 +134,9 @@ struct WatchView: View {
             Text("TV Shows").tag("shows")
         }
         .pickerStyle(.segmented)
-        .frame(maxWidth: 280)
-        .padding(4)
-        .glassEffect(.regular, in: Capsule())
-        #if os(iOS)
-        .padding(.top, 104)
-        #else
-        .padding(.top, 14)
-        #endif
+        .labelsHidden()
+        .frame(maxWidth: 300)
+        .frame(maxWidth: .infinity)
         .onChange(of: section) { _, _ in
             page = 0
             Task { await loadSection() }
@@ -288,8 +278,8 @@ struct Billboard: View {
 
     var body: some View {
         pages
-            .frame(maxWidth: .infinity)
             .overlay(alignment: .bottomTrailing) { dots }
+            .frame(maxWidth: .infinity)
             // A shorter list after a refresh: never a page that isn't there.
             .onChange(of: titles.count) { _, n in if page >= n { page = 0 } }
     }
@@ -300,7 +290,9 @@ struct Billboard: View {
             ForEach(Array(titles.enumerated()), id: \.offset) { i, t in card(t).tag(i) }
         }
         .tabViewStyle(.page(indexDisplayMode: .never))
-        .aspectRatio(0.82, contentMode: .fit)
+        // The picture's own shape (16:9), the whole of it, across the screen with a margin.
+        .aspectRatio(16.0 / 9.0, contentMode: .fit)
+        .padding(.horizontal, 16)
         // On to the next after 12 seconds, as on the TV (a swipe starts the 12 seconds again).
         .task(id: page) {
             try? await Task.sleep(nanoseconds: 12_000_000_000)
@@ -317,8 +309,9 @@ struct Billboard: View {
                 card(t).id(t.id).transition(.opacity)
             }
         }
-        .aspectRatio(2.2, contentMode: .fit)
-        .clipped()
+        // 16:9, the whole picture, no wider than 720 points: the rows show under it.
+        .aspectRatio(16.0 / 9.0, contentMode: .fit)
+        .frame(maxWidth: 720)
         .task(id: page) {
             try? await Task.sleep(nanoseconds: 12_000_000_000)
             guard !Task.isCancelled, titles.count > 1 else { return }
@@ -342,33 +335,34 @@ struct Billboard: View {
                 #endif
             }
         }
-        .padding(.trailing, 24).padding(.bottom, 34)
+        .padding(.trailing, 30).padding(.bottom, 14)
         .animation(.snappy, value: page)
     }
 
     private func card(_ t: Title) -> some View {
         ZStack(alignment: .bottomLeading) {
             Color.clear.overlay { Artwork(url: client?.artURL(t.backdrop ?? t.poster), maxPixel: 1800) }.clipped()
-            // Fades into the page, so the billboard has no edge.
-            LinearGradient(stops: [.init(color: .black.opacity(0.35), location: 0), .init(color: .clear, location: 0.25),
-                                   .init(color: .clear, location: 0.42), .init(color: .black.opacity(0.82), location: 0.9),
-                                   .init(color: Palette.groupedBackground, location: 1)],
+            // Darker toward the bottom, for the words.
+            LinearGradient(stops: [.init(color: .clear, location: 0.45), .init(color: .black.opacity(0.8), location: 1)],
                            startPoint: .top, endPoint: .bottom)
-            VStack(alignment: .leading, spacing: 6) {
-                Text(t.title).font(.largeTitle.bold()).foregroundStyle(.white).lineLimit(2).shadow(color: .black.opacity(0.4), radius: 8)
-                Text(meta(t)).font(.footnote.weight(.medium)).foregroundStyle(.white.opacity(0.75))
-                HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(t.title).font(.title3.bold()).foregroundStyle(.white).lineLimit(1).shadow(color: .black.opacity(0.4), radius: 6)
+                Text(meta(t)).font(.caption.weight(.medium)).foregroundStyle(.white.opacity(0.8)).lineLimit(1)
+                HStack(spacing: 8) {
                     if let p = t.play {
                         CapsuleButton(title: p.label ?? "Play", symbol: "play.fill") { PlayRouter.start(p, fleet: fleet) }
                     }
                     CapsuleButton(title: "Details", symbol: nil, prominent: false) { open(t) }
                 }
-                .padding(.top, 6)
+                .controlSize(.small)
+                .scaleEffect(0.85, anchor: .leading)
+                .padding(.top, 2)
             }
-            .padding(.horizontal, 20)
-            .padding(.bottom, 24)
+            .padding(.horizontal, 14)
+            .padding(.bottom, 10)
         }
-        .contentShape(Rectangle())
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .onTapGesture { open(t) }
         .contextMenu { TitleMenu(title: t) }
     }
