@@ -690,27 +690,24 @@ struct CameraLiveView: View {
             ZStack(alignment: .topTrailing) {
                 if let r = replay, !showLive {
                     EventReplayView(replay: r) { withAnimation(.smooth(duration: 0.25)) { showLive = true } }
-                    Button { withAnimation(.smooth(duration: 0.25)) { showLive = true } } label: {
-                        Text("Live").font(.subheadline.weight(.semibold)).padding(.horizontal, 14).padding(.vertical, 8)
-                    }
-                    .buttonStyle(.glass)
-                    .environment(\.colorScheme, .dark)
-                    .padding(10)
+                    // Small, in the corner: the picture stays clear.
+                    GlassCircle(symbol: "dot.radiowaves.left.and.right", size: 28) { withAnimation(.smooth(duration: 0.25)) { showLive = true } }
+                        .accessibilityLabel("Live")
+                        .environment(\.colorScheme, .dark)
+                        .padding(6)
                 } else {
                     // The picture is in one place at a time: here, or full screen.
                     if fullScreen { Color.black } else { LiveWebView(player: player).id(reattach) }
-                    HStack(spacing: 8) {
+                    HStack(spacing: 6) {
                         if replay != nil {
-                            Button { withAnimation(.smooth(duration: 0.25)) { showLive = false } } label: {
-                                Text("Replay").font(.subheadline.weight(.semibold)).padding(.horizontal, 14).padding(.vertical, 8)
-                            }
-                            .buttonStyle(.glass)
+                            GlassCircle(symbol: "gobackward", size: 28) { withAnimation(.smooth(duration: 0.25)) { showLive = false } }
+                                .accessibilityLabel("Replay")
                         }
-                        GlassCircle(symbol: "arrow.up.left.and.arrow.down.right", size: 34) { fullScreen = true }
+                        GlassCircle(symbol: "arrow.up.left.and.arrow.down.right", size: 28) { fullScreen = true }
                             .accessibilityLabel("Full Screen")
                     }
                     .environment(\.colorScheme, .dark)
-                    .padding(10)
+                    .padding(6)
                 }
             }
             .aspectRatio(16 / 9, contentMode: .fit)
