@@ -193,13 +193,15 @@ show_matches() {
   grep -E -- "$1" "$2" 2>/dev/null | awk '!seen[$0]++' | head -n "$3" | indent
 }
 
-show_build() {  # $1 = xcodebuild log
+show_build() {  # $1 = xcodebuild log (a build's or an archive's)
   if grep -q '\*\* BUILD SUCCEEDED \*\*' "$1" 2>/dev/null; then
     say "    BUILD SUCCEEDED"
-  elif grep -q '\*\* BUILD FAILED \*\*' "$1" 2>/dev/null; then
+  elif grep -q '\*\* ARCHIVE SUCCEEDED \*\*' "$1" 2>/dev/null; then
+    say "    ARCHIVE SUCCEEDED"
+  elif grep -qE '\*\* (BUILD|ARCHIVE) FAILED \*\*' "$1" 2>/dev/null; then
     say "    BUILD FAILED"
   else
-    say "    (xcodebuild printed neither BUILD SUCCEEDED nor BUILD FAILED)"
+    say "    (xcodebuild printed neither SUCCEEDED nor FAILED)"
   fi
   show_matches 'error:' "$1" 40
   say "    log: $1"
