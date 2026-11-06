@@ -1,5 +1,6 @@
 import SwiftUI
 import Network
+import CryptoKit
 import WoodruffKit
 
 /// Cync lights (GE's, now Savant's), through the Cync account, the way the Cync app does it. Cync has no public API;
@@ -18,6 +19,9 @@ final class Cync {
     private static let api = "https://api.gelighting.com"
     private static let host = "cm-sec.gelighting.com"
     private static let port: UInt16 = 23779
+    /// The command server's certificate, remembered the first time: Cync's has long expired and doesn't carry the
+    /// server's name, so Apple's usual check refuses it. The one seen first is trusted, and no other after it.
+    nonisolated static let pinKey = "cync.serverPin"
     /// Cync's warm and cool ends; its white scale runs 1 (warm) to 100 (cool) between them.
     static let warmest = 2000, coolest = 7000
     /// Cync's device types that are lights (from pycync's list); plugs, switches and sensors aren't shown.
@@ -134,6 +138,8 @@ final class Cync {
         loop?.cancel(); loop = nil
         disconnect()
         for k in ["cync.access", "cync.refresh", "cync.authorize", "cync.user", "cync.expires"] { Keychain.set(nil, for: k) }
+        // Signing in again trusts the server's certificate afresh.
+        UserDefaults.standard.removeObject(forKey: Self.pinKey)
         lights = [:]; hubs = [:]; index()
         needsCode = false
         error = nil
@@ -277,8 +283,20 @@ final class Cync {
             if loggedIn { queryStates() }
             return
         }
-        // Cync's command server over TLS, its certificate checked as usual.
+        // Cync's command server over TLS: a certificate Apple trusts is taken as usual; otherwise only the one this
+        // device first saw from it (Cync's own, long expired and without the server's name).
         let tls = NWProtocolTLS.Options()
+        let pinKey = Self.pinKey
+        sec_protocol_options_set_verify_block(tls.securityProtocolOptions, { _, secTrust, complete in
+            let trust = sec_trust_copy_ref(secTrust).takeRetainedValue()
+            if SecTrustEvaluateWithError(trust, nil) { complete(true); return }
+            guard let leaf = (SecTrustCopyCertificateChain(trust) as? [SecCertificate])?.first else { complete(false); return }
+            let print = SHA256.hash(data: SecCertificateCopyData(leaf) as Data).map { String(format: "%02x", $0) }.joined()
+            let defaults = UserDefaults.standard
+            if let pinned = defaults.string(forKey: pinKey) { complete(pinned == print); return }
+            defaults.set(print, forKey: pinKey)
+            complete(true)
+        }, DispatchQueue.global(qos: .userInitiated))
         let c = NWConnection(host: NWEndpoint.Host(Self.host), port: NWEndpoint.Port(rawValue: Self.port)!,
                              using: NWParameters(tls: tls))
         connection = c
@@ -298,16 +316,19 @@ final class Cync {
             receive(c)
         case .failed(let e):
             // A certificate Apple won't trust is said plainly; the lights stay listed but can't be changed.
-            if case .tls = e { error = "Cync’s command server didn’t pass the security check, so the lights can’t be changed from here." }
+            if case .tls = e { error = Self.tlsRefused }
             fallthrough
         case .cancelled:
             disconnect()
             reconnectSoon()
         case .waiting(let e):
-            if case .tls = e { error = "Cync’s command server didn’t pass the security check, so the lights can’t be changed from here." }
+            if case .tls = e { error = Self.tlsRefused }
         default: break
         }
     }
+
+    /// The command server's certificate isn't the one trusted before.
+    static let tlsRefused = "Cync’s command server showed a different certificate from the one trusted before, so the lights can’t be reached. If Cync changed it, sign out of Cync and back in to trust the new one."
 
     private func disconnect() {
         pinger?.cancel(); pinger = nil
@@ -370,6 +391,7 @@ final class Cync {
         switch type {
         case 1:   // signed in
             loggedIn = true
+            if error == Self.tlsRefused { error = nil }
             pinger?.cancel()
             pinger = Task { [weak self] in
                 while !Task.isCancelled {
