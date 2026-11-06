@@ -208,6 +208,9 @@ struct AllDevicesView: View {
         case .device(let d) where d.product?.hasPrefix("HomePod") == true:
             return Facts(name: d.name, state: d.reachable ? d.status : "Not Responding", on: false, reachable: d.reachable,
                          look: .homePod(mini: d.product == "HomePod mini"), tint: .gray)
+        case .device(let d) where d.bespokeLook != nil:
+            return Facts(name: d.name, state: d.reachable ? d.status : "Not Responding", on: lit(d), reachable: d.reachable,
+                         look: .bespoke(d.bespokeLook!, running: d.isRunning && d.kind != .fridge, alert: d.alert), tint: .orange)
         case .device(let d) where d.isMotionSensor:
             return Facts(name: d.name, state: d.reachable ? d.status : "Not Responding", on: false, reachable: d.reachable,
                          look: .smartSensor(motion: d.sensesMotion), tint: .green)
@@ -316,6 +319,7 @@ struct DeviceGlyph: View {
         case underShelf(level: Double)
         case hexPanels(level: Double)
         case smartSensor(motion: Bool)
+        case bespoke(BespokeAppliance.Model, running: Bool, alert: Bool)
         case dreoFan(pedestal: Bool, speed: Double)
         case thermostat(HomeDevice)
         case device(HomeDevice.Kind, running: Bool, symbol: String)
@@ -328,7 +332,7 @@ struct DeviceGlyph: View {
     /// Drawn as the product itself (no circle behind it).
     private var drawn: Bool {
         switch look {
-        case .tv, .floorLamp, .tableLamp, .stringLights, .underShelf, .hexPanels, .smartSensor, .dreoFan, .thermostat: return true
+        case .tv, .floorLamp, .tableLamp, .stringLights, .underShelf, .hexPanels, .smartSensor, .bespoke, .dreoFan, .thermostat: return true
         case .speaker(let bar): return bar
         default: return false
         }
@@ -375,6 +379,8 @@ struct DeviceGlyph: View {
             StringLightsPicture(level: level, lit: on, color: tint).frame(width: 80, height: 54)
         case .underShelf(let level):
             UnderShelfPicture(level: level, lit: on, color: tint).frame(width: 64, height: 56)
+        case .bespoke(let model, let running, let alert):
+            BespokeAppliance(model: model, running: running, alert: alert).frame(width: 58, height: 56)
         case .smartSensor(let motion):
             SmartSensorPicture(motion: motion).frame(width: 54, height: 54)
         case .hexPanels(let level):

@@ -212,6 +212,9 @@ struct DeviceTile: View, Equatable {
                         .frame(width: 36, height: 42)
                 } else if device.kind == .thermostat {
                     EcobeePicture(device: device).frame(width: 34, height: 34)
+                } else if let model = device.bespokeLook {
+                    BespokeAppliance(model: model, running: device.isRunning && device.kind != .fridge, alert: device.alert)
+                        .frame(width: 44, height: 44)
                 } else if device.isMotionSensor {
                     SmartSensorPicture(motion: device.sensesMotion).frame(width: 40, height: 40)
                 // A fridge is always "running": on a tile it's its still symbol (its page shows the snow falling).
