@@ -40,13 +40,19 @@ struct RemoteView: View {
                         TVPicker(allowAll: true)
                         Spacer()
                         Button { send("home") } label: { Image(systemName: "house") }
-                            .buttonStyle(.glass).help("Home")
+                            .buttonStyle(.glass).help("Home").accessibilityLabel("Home")
                         Button { typing = true } label: { Image(systemName: "keyboard") }
-                            .buttonStyle(.glass).help("Keyboard").disabled(all)
+                            .buttonStyle(.glass).help("Keyboard").accessibilityLabel("Keyboard").disabled(all)
                     }
                 }
                 if hasTop { status.frame(height: topH, alignment: .top) }
                 Clickpad(size: 200) { send($0) } onRepeat: { send($0, repeat: $1) }
+                    // Power in the clickpad's top-right corner, as on the iPhone.
+                    .overlay(alignment: .topTrailing) {
+                        CornerKey(symbol: "power", label: "Power", size: 34) { send("power") }
+                            .help("Power")
+                            .offset(x: 22, y: -6)
+                    }
                 keys(42, 11)
                 apps(34)
             }
@@ -234,31 +240,13 @@ struct RemoteView: View {
         for t in targets {
             Task {
                 do {
-                    if let lg = fleet.lg(for: t), let action = LGKeyMap.action(for: key) {
-                        try await action(lg)
-                        // LG direct control doesn't pass through Woodruff, so ask the TV again here (keys sent
-                        // through Woodruff do this by themselves).
-                        if !["volup", "voldown", "mute"].contains(key) { fleet.poke(t.id) }
-                    }
-                    else if AndroidTVRemote.handles(key), let host = fleet.androidRemoteHost(for: t) {
-                        // The Android TV remote reaches every app; when it can't, Woodruff on the TV still takes the key.
-                        do {
-                            try await AndroidTVRemote.shared.press(host: host, key: key)
-                            if !["volup", "voldown", "mute"].contains(key) { fleet.poke(t.id) }
-                        } catch {
-                            if key == "power" { throw error }
-                            try await fleet.client(for: t)?.key(key, repeat: n)
-                        }
-                    }
-                    else if key == "power" {
-                        // Not paired yet: only its remote (or an LG's own connection) can turn a TV off.
-                        fleet.say("Power", "Turning \(t.name) on and off needs its remote paired: Settings, TVs, \(t.name), Remote for Every App.")
-                    }
-                    else { try await fleet.client(for: t)?.key(key, repeat: n) }
+                    try await RemoteKeys.press(key, on: t, fleet: fleet, repeat: n)
                     if key == "ok" && !all {
                         try? await Task.sleep(nanoseconds: 400_000_000)
                         if let s = try? await fleet.client(for: t)?.typeField() { withAnimation(.snappy) { field = s } }
                     }
+                } catch RemoteKeys.Failure.powerNeedsPairing(let name) {
+                    if !all { fleet.say("Power", RemoteKeys.Failure.powerNeedsPairing(name).localizedDescription) }
                 } catch {
                     if !all && n == 0 { fleet.show(error) }
                 }
@@ -392,6 +380,7 @@ struct Clickpad: View {
                     }
                 }
         )
+        .onDisappear { hold?.cancel(); pressed = nil; began = false; held = false; swiped = false; touch = nil }
         .accessibilityElement()
         .accessibilityLabel("Clickpad")
         .accessibilityAction(named: "OK") { onKey("ok") }
@@ -416,7 +405,8 @@ struct Clickpad: View {
             guard !Task.isCancelled else { return }
             held = true
             var n = 0
-            while !Task.isCancelled {
+            // Never for ever: a touch the system took away doesn't end the gesture.
+            while !Task.isCancelled && n < 60 {
                 onRepeat(zone, n); n += 1
                 try? await Task.sleep(nanoseconds: 140_000_000)
             }
@@ -521,13 +511,17 @@ struct RepeatPress<Label: View>: View {
                     guard !down else { return }
                     down = true
                     onPress(0)
+                    task?.cancel()
                     task = Task {
                         try? await Task.sleep(nanoseconds: 450_000_000)
+                        // At most about 8 seconds: a touch the system took away (a sheet, a call) never ends the
+                        // gesture, and the volume mustn't keep climbing.
                         var n = 1
-                        while !Task.isCancelled { onPress(n); n += 1; try? await Task.sleep(nanoseconds: 140_000_000) }
+                        while !Task.isCancelled && n <= 60 { onPress(n); n += 1; try? await Task.sleep(nanoseconds: 140_000_000) }
                     }
                 }
                 .onEnded { _ in down = false; task?.cancel() })
+            .onDisappear { down = false; task?.cancel() }
             .accessibilityAddTraits(.isButton)
             .accessibilityAction { onPress(0) }
     }
@@ -552,6 +546,58 @@ struct AppKey: View {
             .background { Color.clear.glass(Capsule()) }
         }
         .buttonStyle(PressScale(scale: 0.96))
+    }
+}
+
+/// One key on one TV, the best way it allows (the remote, the Mac's menus and keyboard, Settings' All TVs): LG direct
+/// control when it's connected, then the Android TV remote when it's paired (both reach every app), otherwise
+/// Woodruff on the TV. Power turns an LG or Android TV off through its own connection, and turns a TV that's off on
+/// with Wake-on-LAN when its network address is known.
+@MainActor
+enum RemoteKeys {
+    enum Failure: LocalizedError {
+        case powerNeedsPairing(String), unreachable(String)
+        var errorDescription: String? {
+            switch self {
+            case .powerNeedsPairing(let name): return "Turning \(name) on and off needs its remote paired: Settings, TVs, \(name), Remote for Every App."
+            case .unreachable(let name): return "\(name) can’t be reached from here."
+            }
+        }
+    }
+
+    /// Keys that don't change what's on, so the TV isn't asked again after them.
+    private static let quiet: Set<String> = ["volup", "voldown", "mute"]
+
+    /// Presses [key] on [tv]. [android] false keeps the key on Woodruff (Woodruff Home, not the TV's own home screen).
+    static func press(_ key: String, on tv: FleetTV, fleet: Fleet, repeat n: Int = 0, android: Bool = true) async throws {
+        let canWake = !tv.online && fleet.extras[tv.id]?.mac != nil
+        let atvHost = android && AndroidTVRemote.handles(key) ? fleet.androidRemoteHost(for: tv) : nil
+        // Off, with no remote connection that can turn it on: Wake-on-LAN.
+        if key == "power", canWake, atvHost == nil { fleet.wake(tv); return }
+        if let lg = fleet.lg(for: tv), let action = LGKeyMap.action(for: key) {
+            try await action(lg)
+            // LG direct control doesn't pass through Woodruff, so ask the TV again here (keys sent through Woodruff
+            // do this by themselves).
+            if !quiet.contains(key) { fleet.poke(tv.id) }
+            return
+        }
+        if let atvHost {
+            // The Android TV remote reaches every app; when it can't, Woodruff on the TV still takes the key.
+            do {
+                try await AndroidTVRemote.shared.press(host: atvHost, key: key)
+                if !quiet.contains(key) { fleet.poke(tv.id) }
+                return
+            } catch {
+                if key == "power" {
+                    if canWake { fleet.wake(tv); return }
+                    throw error
+                }
+            }
+        }
+        // Not paired yet: only its remote (or an LG's own connection) can turn a TV off.
+        if key == "power" { throw Failure.powerNeedsPairing(tv.name) }
+        guard let c = fleet.client(for: tv) else { throw Failure.unreachable(tv.name) }
+        try await c.key(key, repeat: n)
     }
 }
 
@@ -592,19 +638,27 @@ struct LGMenu: View {
     var body: some View {
         Menu {
             Section {
-                Button { run { try await $0.press(.channelUp) } } label: { Label("Channel Up", systemImage: "chevron.up") }
-                Button { run { try await $0.press(.channelDown) } } label: { Label("Channel Down", systemImage: "chevron.down") }
+                Button("Channel Up") { run { try await $0.press(.channelUp) } }
+                Button("Channel Down") { run { try await $0.press(.channelDown) } }
             }
-            Menu { ForEach(apps) { a in Button(a.title) { run { try await $0.launch(a.id) } } } } label: { Label("Apps", systemImage: "square.grid.2x2") }
-            Menu { ForEach(inputs) { i in Button(i.title) { run { try await $0.switchInput(i.id) } } } } label: { Label("Inputs", systemImage: "cable.connector") }
+            // Empty until the TV has said what it has (or when it couldn't be asked).
+            Menu("Apps") { ForEach(apps) { a in Button(a.title) { run { try await $0.launch(a.id) } } } }
+                .disabled(apps.isEmpty)
+            Menu("Inputs") { ForEach(inputs) { i in Button(i.title) { run { try await $0.switchInput(i.id) } } } }
+                .disabled(inputs.isEmpty)
             Section {
-                Button { run { try await $0.screenOff() } } label: { Label("Turn Screen Off", systemImage: "rectangle.slash") }
-                Button(role: .destructive) { run { try await $0.turnOff() } } label: { Label("Turn Off \(tv.name)", systemImage: "power") }
+                Button("Turn Screen Off") { run { try await $0.screenOff() } }
+                Button("Turn Off \(tv.name)", role: .destructive) { run { try await $0.turnOff() } }
             }
         } label: {
             Image(systemName: "ellipsis")
         }
-        .task {
+        .accessibilityLabel("\(tv.name) Options")
+        .help("\(tv.name) Options")
+        // Asked again for another TV (the remote's TV changed while the menu stayed).
+        .task(id: tv.id) {
+            apps = []
+            inputs = []
             guard let lg = fleet.lg(for: tv) else { return }
             apps = (try? await lg.apps()) ?? []
             inputs = (try? await lg.inputs()) ?? []
@@ -632,6 +686,8 @@ struct KeyboardSheet: View {
     @State private var state: TypeState?
     @State private var fieldKey: String?
     @State private var pending: Task<Void, Never>?
+    @State private var sending = false
+    @State private var finished = false
     @FocusState private var focused: Bool
 
     var body: some View {
@@ -658,11 +714,20 @@ struct KeyboardSheet: View {
                 }
                 if let lg = fleet.lg(for: tv) {
                     Section {
-                        Button("Type into \(tv.name)’s Own Keyboard") {
+                        Button(sending ? "Typing…" : "Type into \(tv.name)’s Own Keyboard") {
                             let t = text
-                            Task { do { try await lg.insertText(t); try await lg.sendEnter() } catch { fleet.show(error) } }
+                            own { try await lg.insertText(t); try await lg.sendEnter() }
                         }
+                        .disabled(text.isEmpty || sending)
                     } footer: { Text("For other apps on this LG TV (Netflix, YouTube, the browser).") }
+                } else if let host = fleet.androidRemoteHost(for: tv) {
+                    Section {
+                        Button(sending ? "Typing…" : "Type into \(tv.name)’s Own Keyboard") {
+                            let t = text
+                            own { try await AndroidTVRemote.shared.type(host: host, text: t) }
+                        }
+                        .disabled(text.isEmpty || sending)
+                    } footer: { Text("For other apps on this TV, while their keyboard is on screen.") }
                 }
             }
             .formStyle(.grouped)
@@ -674,7 +739,7 @@ struct KeyboardSheet: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button(role: .close) { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Enter") { submit() }.buttonStyle(.glassProminent).disabled(state?.field == nil)
+                    Button("Enter") { submit() }.buttonStyle(.glassProminent).disabled(state?.field == nil || sending)
                 }
             }
             .task(id: fleet.isActive) { await loop() }
@@ -708,6 +773,8 @@ struct KeyboardSheet: View {
     private func clean(_ s: String) -> String { state?.field?.multiline == true ? s : s.replacingOccurrences(of: "\n", with: " ") }
 
     private func queue(_ new: String) {
+        // Sent and closing: the text emptied here mustn't empty the TV's box too.
+        guard !finished else { return }
         if new.contains("\n") && state?.field?.multiline != true { submit(); return }
         guard let f = state?.field else { return }
         pending?.cancel()
@@ -719,14 +786,34 @@ struct KeyboardSheet: View {
     }
 
     private func submit() {
-        guard let f = state?.field else { return }
+        // Return and the Enter button both land here: once is enough.
+        guard let f = state?.field, !sending else { return }
         let t = clean(text)
+        pending?.cancel()
+        sending = true
         Task {
             do {
-                try await fleet.client(for: tv)?.type(t, field: f.id, submit: true)
+                guard let c = fleet.client(for: tv) else { throw RemoteKeys.Failure.unreachable(tv.name) }
+                try await c.type(t, field: f.id, submit: true)
+                finished = true
                 text = ""
                 dismiss()
             } catch { fleet.show(error) }
+            sending = false
+        }
+    }
+
+    /// Text typed into the TV's own keyboard (another app's), then the sheet closes.
+    private func own(_ op: @escaping () async throws -> Void) {
+        guard !sending else { return }
+        pending?.cancel()
+        sending = true
+        Task {
+            do {
+                try await op()
+                dismiss()
+            } catch { fleet.show(error) }
+            sending = false
         }
     }
 }

@@ -127,6 +127,9 @@ final class PushRelay {
 
     func didFail(_ error: Error) { lastError = error.localizedDescription }
 
+    /// What the setup page shows under it (a key file that couldn't be read).
+    func showError(_ message: String) { lastError = message }
+
     /// "development" for apps installed from Xcode, "production" for TestFlight/App Store, from the app's own profile.
     /// (Reads only the app's own files, so from anywhere.)
     nonisolated static func provisionedEnvironment() -> String? {
@@ -164,7 +167,9 @@ final class PushRelay {
         var failure: String?
         for (device, t) in tokens {
             let host = t.env == "production" ? "api.push.apple.com" : "api.sandbox.push.apple.com"
-            guard let url = URL(string: "https://\(host)/3/device/\(t.token)") else { continue }
+            // A push address is hex (it arrives through the synced settings: nothing else goes into the path).
+            guard !t.token.isEmpty, t.token.allSatisfy(\.isHexDigit),
+                  let url = URL(string: "https://\(host)/3/device/\(t.token)") else { continue }
             var r = URLRequest(url: url, timeoutInterval: 20)
             r.httpMethod = "POST"
             r.httpBody = data
@@ -331,6 +336,7 @@ struct PushSettingsSection: View {
     @State private var keyID = ""
     @State private var team = "D8D94SXAG6"
     @State private var testing = false
+    @State private var confirmRemove = false
     #endif
 
     var body: some View {
@@ -351,7 +357,11 @@ struct PushSettingsSection: View {
                     Task { await push.sendTest(); testing = false }
                 }
                 .disabled(testing)
-                Button("Remove Push Key", role: .destructive) { push.removeKey() }
+                // It goes from every Mac (the key syncs): asked first.
+                Button("Remove Push Key", role: .destructive) { confirmRemove = true }
+                    .confirmationDialog("Remove the push key from every Mac?", isPresented: $confirmRemove) {
+                        Button("Remove Push Key", role: .destructive) { push.removeKey() }
+                    } message: { Text("iPhones stop getting alerts while Woodruff is closed until it’s added again.") }
             } else {
                 Button("Choose .p8 Key File…") { importing = true }
                 if !keyText.isEmpty { Text("Key file loaded.").font(.caption).foregroundStyle(.secondary) }
@@ -377,6 +387,7 @@ struct PushSettingsSection: View {
             let scoped = url.startAccessingSecurityScopedResource()
             defer { if scoped { url.stopAccessingSecurityScopedResource() } }
             keyText = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+            if keyText.isEmpty { push.showError("That file couldn’t be read. Choose the .p8 file you downloaded.") }
             // "AuthKey_ABC123DEFG.p8" carries the Key ID in its name.
             let name = url.deletingPathExtension().lastPathComponent
             if keyID.isEmpty, name.hasPrefix("AuthKey_") { keyID = String(name.dropFirst("AuthKey_".count)) }

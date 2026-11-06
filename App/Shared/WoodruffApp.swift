@@ -115,7 +115,11 @@ struct WoodruffApp: App {
                         #else
                         UserDefaults.standard.set("remote", forKey: "section")
                         #endif
-                    } else { fleet.handle(url: url) }
+                    } else if let local = pairingLinkIsLocal(url) {
+                        if local { fleet.handle(url: url) }
+                        // A link for a TV elsewhere (from a web page, a message) can't add one, or put another in its place.
+                        else { fleet.say("Not Paired", "That link isn’t for a TV on this Wi‑Fi. Pair from the TV’s Phone screen.") }
+                    }
                 }
                 .onContinueUserActivity("com.woodruff.family.remote") { a in
                     if let id = a.userInfo?["tv"] as? String, fleet.tv(id) != nil { fleet.remoteAll = false; fleet.selectedID = id }
@@ -815,3 +819,15 @@ struct MenuBarIcon: View {
     }
 }
 #endif
+
+/// Whether a pairing link (woodruff://…?url=…, or the TV's own address with its key) is for a TV on this network:
+/// only those pair straight from a link, so a link from anywhere else can't add a TV or take another's place.
+/// Nil when it isn't a pairing link at all (read the same way `Fleet.handle(url:)` reads it).
+@MainActor
+func pairingLinkIsLocal(_ url: URL) -> Bool? {
+    var target = url
+    if url.scheme == "woodruff", let inner = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "url" })?.value,
+       let u = URL(string: inner) { target = u }
+    guard let c = TVConnection.parse(target.absoluteString), let host = c.base.host else { return nil }
+    return AndroidTVRemote.isLocal(host)
+}

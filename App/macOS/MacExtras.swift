@@ -150,14 +150,16 @@ enum MacActions {
         send(key, to: targets, fleet: fleet)
     }
 
-    /// [key] on each of [targets] at once. Any that didn't go through say why (in one message).
-    static func send(_ key: String, to targets: [FleetTV], fleet: Fleet) {
+    /// [key] on each of [targets] at once. Any that didn't go through say why (in one message). [woodruffHome]: Home
+    /// opens Woodruff's Home, not an Android TV's own home screen.
+    static func send(_ key: String, to targets: [FleetTV], fleet: Fleet, woodruffHome: Bool = false) {
         guard !targets.isEmpty else { return }
+        let android = !(woodruffHome && key == "home")
         Task {
             var failed: [String] = []
             await withTaskGroup(of: String?.self) { group in
                 for tv in targets {
-                    group.addTask { await MacActions.press(key, on: tv, fleet: fleet) }
+                    group.addTask { await MacActions.press(key, on: tv, fleet: fleet, android: android) }
                 }
                 for await problem in group {
                     if let problem { failed.append(problem) }
@@ -168,21 +170,14 @@ enum MacActions {
         }
     }
 
-    /// Presses [key] on [tv]: LG direct control when it's connected (it reaches every app), otherwise Woodruff on
-    /// the TV. Nil when it went through, else what went wrong.
-    private static func press(_ key: String, on tv: FleetTV, fleet: Fleet) async -> String? {
+    /// Presses [key] on [tv] as the remote does (`RemoteKeys`: LG direct control or the Android TV remote when there
+    /// is one, otherwise Woodruff on the TV). Nil when it went through, else what went wrong.
+    private static func press(_ key: String, on tv: FleetTV, fleet: Fleet, android: Bool) async -> String? {
         do {
-            if let lg = fleet.lg(for: tv), let action = LGKeyMap.action(for: key) {
-                try await action(lg)
-                // LG direct control doesn't pass through Woodruff: ask the TV what it's doing now.
-                if !["volup", "voldown", "mute"].contains(key) { fleet.poke(tv.id) }
-            } else if let client = fleet.client(for: tv) {
-                // Woodruff tells the fleet itself, so what's playing updates at once.
-                try await client.key(key)
-            } else {
-                return "\(tv.name) can't be reached from this Mac."
-            }
+            try await RemoteKeys.press(key, on: tv, fleet: fleet, android: android)
             return nil
+        } catch let e as RemoteKeys.Failure {
+            return e.localizedDescription
         } catch {
             return "\(tv.name): \(error.localizedDescription)"
         }

@@ -95,7 +95,8 @@ final class AndroidTVRemote {
         } catch {
             link.close()
             if pairings[host] === link { pairings[host] = nil }
-            throw error
+            // The TV turned the code down: this pairing is over (its code can't be typed again).
+            throw (error as? ATVError) == .wrongCode ? ATVError.codeRefused : error
         }
         let pairingPrint = link.peer.fingerprint
         link.close()
@@ -104,6 +105,7 @@ final class AndroidTVRemote {
         // The remote port's certificate is the one pinned. It's normally the same as the pairing port's; if it isn't,
         // the one seen right after this pairing (which the code just proved) is kept.
         sessions[host]?.close()
+        sessions[host] = nil
         let session = ATVSession(host: host, pin: nil, identity: me.identity)
         var pin = pairingPrint
         do {
@@ -161,7 +163,7 @@ final class AndroidTVRemote {
         guard let pin = paired[host] else { throw ATVError.notPaired }
         guard Self.isLocal(host) else { throw ATVError.notLocal }
         guard let me = ATVClientIdentity.shared else { throw ATVError.noIdentity }
-        if let s = sessions[host], s.pin == pin { return s }
+        if let s = sessions[host], s.pin == pin, !s.ended { return s }
         sessions[host]?.close()
         let s = ATVSession(host: host, pin: pin, identity: me.identity)
         sessions[host] = s
@@ -230,7 +232,7 @@ extension Fleet {
 
 enum ATVError: LocalizedError, Equatable {
     case noIdentity, notLocal, notPaired, noAnswer, closed, refused, identityChanged, badAnswer
-    case pairingEnded, codeFormat, wrongCode, unknownKey
+    case pairingEnded, codeFormat, wrongCode, codeRefused, unknownKey, busy
     case network(String)
 
     var errorDescription: String? {
@@ -246,7 +248,9 @@ enum ATVError: LocalizedError, Equatable {
         case .pairingEnded: return "Pairing ended. Press Pair again."
         case .codeFormat: return "The code is 6 letters and numbers, like 4A7F2C."
         case .wrongCode: return "That code didn’t match. Check it and try again."
+        case .codeRefused: return "The TV didn’t take that code. Press Pair again for a new one."
         case .unknownKey: return "The TV has no such key."
+        case .busy: return "Still waiting for the TV. Try again in a moment."
         case .network(let m): return m
         }
     }
@@ -431,6 +435,8 @@ final class ATVLink {
     func next(timeout: Double) async throws -> [UInt8] {
         if !inbox.isEmpty { return inbox.removeFirst() }
         if closed { throw closeError ?? ATVError.closed }
+        // One question at a time: a second waiter would leave the first waiting for ever.
+        if waiter != nil { throw ATVError.busy }
         waiterToken += 1
         let token = waiterToken
         Task { [weak self] in
@@ -564,6 +570,8 @@ final class ATVSession {
     /// The TV is on (RemoteStart).
     private(set) var isOn = false
     private(set) var seenFingerprint: String?
+    /// Closed for good (`close`).
+    private(set) var ended = false
 
     init(host: String, pin: String?, identity: SecIdentity) {
         self.host = host; self.pin = pin; self.identity = identity
@@ -599,6 +607,7 @@ final class ATVSession {
     }
 
     private func readyLink() async throws -> ATVLink {
+        if ended { throw ATVError.closed }
         if ready, let l = link, l.isOpen { return l }
         if let running = connecting { return try await running.value }
         let t = Task { try await self.connect() }
@@ -630,15 +639,17 @@ final class ATVSession {
             self.dropLink(e)
         }
         try await l.open(timeout: 4)
+        // Closed here while it was connecting (the TV forgotten, or paired again): the new link goes too.
+        if ended { l.close(); throw ATVError.closed }
         seenFingerprint = l.peer.fingerprint
         lastHeard = Date()
         do {
             try await waitReady(timeout: 6)
-        } catch ATVError.closed {
+        } catch ATVError.closed where !ended {
             // TLS went through, then the TV hung up before saying anything: it doesn't know this device.
             throw ATVError.refused
         }
-        guard link === l, l.isOpen else { throw ATVError.closed }
+        guard !ended, link === l, l.isOpen else { l.close(); throw ATVError.closed }
         startWatchdog()
         return l
     }
@@ -714,7 +725,9 @@ final class ATVSession {
         l?.close()
     }
 
+    /// For good: this session is done with (a connection still being made is closed as soon as it's made).
     func close() {
+        ended = true
         connecting?.cancel()
         connecting = nil
         dropLink(ATVError.closed)

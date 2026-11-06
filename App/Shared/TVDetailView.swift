@@ -678,6 +678,8 @@ struct AndroidRemoteSection: View {
         Task {
             do {
                 try await remote.finishPairing(host: host, code: typed)
+                // An address typed here: kept as the TV's, so the remote finds it (see `Fleet.androidAddress`).
+                if fleet.androidAddress(for: tv) != host { fleet.extras[tv.id, default: TVExtras()].lastHost = host }
                 askingCode = false
                 code = ""
                 fleet.say("Paired", "The remote now works in every app on \(tv.name).")

@@ -1102,17 +1102,11 @@ struct EveryTVSection: View {
     /// Presses [key] on [tv]: nil when it went through, else what went wrong.
     @MainActor private static func press(_ key: String, on tv: FleetTV, fleet: Fleet) async -> String? {
         do {
-            if let lg = fleet.lg(for: tv), let action = LGKeyMap.action(for: key) {
-                try await action(lg)
-                // LG direct control doesn't pass through Woodruff: ask the TV what it's doing now.
-                if key != "mute" { fleet.poke(tv.id) }
-            } else if let c = fleet.client(for: tv) {
-                // Woodruff tells the fleet itself, so every screen shows the change at once.
-                try await c.key(key)
-            } else {
-                return "\(tv.name): can’t be reached from here."
-            }
+            // As the remote sends it; Woodruff Home stays Woodruff's (not an Android TV's own home screen).
+            try await RemoteKeys.press(key, on: tv, fleet: fleet, android: key != "home")
             return nil
+        } catch let e as RemoteKeys.Failure {
+            return e.localizedDescription
         } catch {
             return "\(tv.name): \(error.localizedDescription)"
         }

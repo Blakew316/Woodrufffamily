@@ -450,8 +450,8 @@ struct NowPlayingSheet: View {
     private func key(_ tv: FleetTV, _ k: String, _ n: Int) {
         Task {
             do {
-                if let lg = fleet.lg(for: tv), let a = LGKeyMap.action(for: k) { try await a(lg) }
-                else { try await fleet.client(for: tv)?.key(k, repeat: n) }
+                // As the remote sends it (an Android TV's own volume, when its remote is paired).
+                try await RemoteKeys.press(k, on: tv, fleet: fleet, repeat: n)
             } catch { if n == 0 { fleet.show(error) } }
         }
     }

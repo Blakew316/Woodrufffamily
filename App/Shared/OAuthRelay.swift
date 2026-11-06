@@ -32,8 +32,12 @@ final class OAuthRelay: NSObject, ASWebAuthenticationPresentationContextProvidin
 
     /// Opens the sign-in page [authorize] (given the state to pass along) and returns the code it hands back.
     func signIn(authorize: (String) -> URL) async throws -> String {
+        // One sign-in at a time on a relay: a second would leave the first waiting for ever.
+        guard continuation == nil, listener == nil else { throw Failure.refused("A sign-in is already open.") }
         guard let ip = LocalAddress.current() else { throw Failure.noWiFi }
-        let port = try await startListener()
+        let port: UInt16
+        do { port = try await startListener() } catch { listener?.cancel(); listener = nil; throw error }
+        guard port != 0 else { listener?.cancel(); listener = nil; throw Failure.noWiFi }
         nonce = UUID().uuidString
         let payload = ["r": "http://\(ip):\(port)", "n": nonce]
         let state = (try? JSONSerialization.data(withJSONObject: payload))?.base64EncodedString()
@@ -56,11 +60,13 @@ final class OAuthRelay: NSObject, ASWebAuthenticationPresentationContextProvidin
             s.prefersEphemeralWebBrowserSession = false
             session = s
             if !s.start() { finish(.failure(Failure.refused("Couldn’t open the sign-in page."))) }
-            // Never wait forever.
+            // Never wait forever (only this sign-in: a later one on the same relay keeps going).
+            let mine = nonce
             Task { @MainActor [weak self] in
                 try? await Task.sleep(nanoseconds: 300_000_000_000)
-                self?.finish(.failure(Failure.refused("Sign-in timed out.")))
-                self?.session?.cancel()
+                guard let self, self.nonce == mine, self.continuation != nil else { return }
+                self.finish(.failure(Failure.refused("Sign-in timed out.")))
+                self.session?.cancel()
             }
         }
     }

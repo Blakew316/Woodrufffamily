@@ -39,7 +39,7 @@ struct CommandPalette: View {
                 MacActions.send("mute", to: on, fleet: fleet)
             })
             all.append(Item(id: "a-home", title: "Woodruff Home on All", detail: "Every TV that’s on", symbol: "house.fill") {
-                MacActions.send("home", to: on, fleet: fleet)
+                MacActions.send("home", to: on, fleet: fleet, woodruffHome: true)
             })
             all.append(Item(id: "a-update", title: "Update All", detail: "Ask every Android TV to update", symbol: "arrow.down.circle") {
                 MacActions.updateAll(fleet)

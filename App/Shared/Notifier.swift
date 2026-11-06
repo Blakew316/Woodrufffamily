@@ -104,7 +104,8 @@ final class NotificationHandler: NSObject, UNUserNotificationCenterDelegate, @un
             case "hide":
                 if let tvID, let tv = fleet.tv(tvID) { fleet.hideAlerts(tv) }
             case "remote":
-                if let tvID { fleet.remoteAll = false; fleet.selectedID = tvID }
+                // Only a TV that's still here (the alert may be old, or pushed from another Mac).
+                if let tvID, fleet.tv(tvID) != nil { fleet.remoteAll = false; fleet.selectedID = tvID }
                 #if os(macOS)
                 // The Mac has no Remote page: its remote slides out beside the window.
                 fleet.remotePanel = true
