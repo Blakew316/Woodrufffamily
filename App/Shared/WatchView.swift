@@ -17,7 +17,7 @@ struct WatchView: View {
     /// A film playing on this device (from a tile's menu).
     @State private var here: PhonePlay?
 
-    private var client: TVClient? { fleet.hubClient() }
+    private var client: (any WatchSource)? { WatchSources.current(fleet) }
 
     var body: some View {
         // Worked out once for the page: the tiles are handed their pictures' addresses, so none of them looks at the
@@ -26,7 +26,7 @@ struct WatchView: View {
         // Until this page's own answer arrives, the library the app already has (it keeps one for the pictures of
         // what's playing): Watch opens with its shelves instead of placeholders. Only when it came from this page's
         // TV: another TV's library may hold titles this one doesn't.
-        let kept = client.flatMap { c in fleet.libraryFrom == c.hub.id ? fleet.library : nil }
+        let kept = client.flatMap { c in fleet.libraryFrom == c.sourceID ? fleet.library : nil }
         let shown = home ?? (error == nil ? kept : nil)
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 28) {
@@ -81,7 +81,7 @@ struct WatchView: View {
         })
         .refreshable { await load() }
         // Again from the start when the remote moves to a TV with another library.
-        .task(id: client?.hub.id) { await loop() }
+        .task(id: client?.sourceID) { await loop() }
         // Something started, paused or stopped on a TV: Continue Watching follows (the TV saves where it got to).
         .background {
             PlayingWatcher {
@@ -92,7 +92,7 @@ struct WatchView: View {
         .onAppear { if UserDefaults.standard.string(forKey: "route") == "title" { openTitle = "t_backyard_science" } }
     }
 
-    @ViewBuilder private func content(_ h: WatchHome, _ client: TVClient?) -> some View {
+    @ViewBuilder private func content(_ h: WatchHome, _ client: (any WatchSource)?) -> some View {
         if h.state != "ready" && (h.featured ?? []).isEmpty && (h.continue ?? []).isEmpty {
             EmptyState(symbol: "film.stack", title: stateTitle(h.state), message: stateMessage(h.state, tv: h.tv)).padding(.top, 60)
         }
@@ -100,26 +100,26 @@ struct WatchView: View {
             Billboard(titles: featured, page: $page, client: client)
         }
         if let c = h.continue?.filter({ !removed.contains($0.key) }), !c.isEmpty {
-            ShelfRow("Continue Watching") { ForEach(c) { ContinueTile(item: $0, poster: client?.art($0.poster)) } }
+            ShelfRow("Continue Watching") { ForEach(c) { ContinueTile(item: $0, poster: client?.artURL($0.poster)) } }
         }
         if let r = h.recent, !r.isEmpty {
-            ShelfRow("Recently Added") { ForEach(r) { PosterTile(title: $0, poster: client?.art($0.poster)) } }
+            ShelfRow("Recently Added") { ForEach(r) { PosterTile(title: $0, poster: client?.artURL($0.poster)) } }
         }
         if let m = h.movies, m.count > 0 {
-            ShelfRow("Movies", all: LibraryRef(place: "movies")) { ForEach(m.items) { PosterTile(title: $0, poster: client?.art($0.poster)) } }
+            ShelfRow("Movies", all: LibraryRef(place: "movies")) { ForEach(m.items) { PosterTile(title: $0, poster: client?.artURL($0.poster)) } }
         }
         if let s = h.shows, s.count > 0 {
-            ShelfRow("TV Shows", all: LibraryRef(place: "shows")) { ForEach(s.items) { PosterTile(title: $0, poster: client?.art($0.poster)) } }
+            ShelfRow("TV Shows", all: LibraryRef(place: "shows")) { ForEach(s.items) { PosterTile(title: $0, poster: client?.artURL($0.poster)) } }
         }
     }
 
     private func load() async {
         guard let c = client else { error = TVError.notPaired.localizedDescription; return }
-        let hubID = c.hub.id
+        let hubID = c.sourceID
         do {
             let h = try await c.watchHome()
             // The remote moved to a TV with another library meanwhile: this answer is for the old one.
-            guard client?.hub.id == hubID else { return }
+            guard client?.sourceID == hubID else { return }
             // Asked again every minute and after every play: the page redraws only for an answer that's new (what was
             // taken off Continue Watching here comes back if the TV still has it, as it always did).
             let changed = h != home
@@ -231,7 +231,7 @@ struct Billboard: View {
     var titles: [Title]
     @Binding var page: Int
     /// The TV the library is from (Watch works it out once for every picture on the page).
-    var client: TVClient?
+    var client: (any WatchSource)?
 
     var body: some View {
         pages
@@ -289,7 +289,7 @@ struct Billboard: View {
 
     private func card(_ t: Title) -> some View {
         ZStack(alignment: .bottomLeading) {
-            Color.clear.overlay { Artwork(url: client?.art(t.backdrop ?? t.poster), maxPixel: 1800) }.clipped()
+            Color.clear.overlay { Artwork(url: client?.artURL(t.backdrop ?? t.poster), maxPixel: 1800) }.clipped()
             // Fades into the page, so the billboard has no edge.
             LinearGradient(stops: [.init(color: .black.opacity(0.35), location: 0), .init(color: .clear, location: 0.25),
                                    .init(color: .clear, location: 0.42), .init(color: .black.opacity(0.82), location: 0.9),
@@ -397,7 +397,7 @@ struct PosterTile: View {
 
     private var poster: URL? {
         if let given { return given }
-        return fleet.hubClient()?.art(title.poster)
+        return WatchSources.current(fleet)?.artURL(title.poster)
     }
 
     var body: some View {
@@ -478,14 +478,14 @@ struct ContinueTile: View {
             if let id = item.titleId { Button { openTitle(id) } label: { Label(item.kind == "show" ? "Episodes" : "Details", systemImage: "info.circle") } }
             Button {
                 act {
-                    guard let c = fleet.hubClient() else { throw TVError.notPaired }
+                    guard let c = WatchSources.current(fleet) else { throw TVError.notPaired }
                     try await c.markWatched([item.key], true)
                     watchChanged(removed: item.key)
                 }
             } label: { Label("Mark as Watched", systemImage: "checkmark.circle") }
             Button(role: .destructive) {
                 act {
-                    guard let c = fleet.hubClient() else { throw TVError.notPaired }
+                    guard let c = WatchSources.current(fleet) else { throw TVError.notPaired }
                     try await c.removeContinue(key: item.key, title: item.playTitle)
                     watchChanged(removed: item.key)
                 }
@@ -522,7 +522,7 @@ struct TitleMenu: View {
             Button {
                 Task {
                     do {
-                        guard let c = fleet.hubClient() else { throw TVError.notPaired }
+                        guard let c = WatchSources.current(fleet) else { throw TVError.notPaired }
                         guard let k = try await c.title(title.id).watchKey else {
                             throw TVError.badAnswer("\(title.title) can’t be marked as watched from here.")
                         }
@@ -567,7 +567,7 @@ enum PlayRouter {
     /// Starts [a] on [tv] (the remote's TV when nil). False when there's nowhere to play it (and says so).
     @discardableResult
     static func start(_ a: PlayAction, fleet: Fleet, on tv: FleetTV? = nil, fromStart: Bool = false) -> Bool {
-        guard let c = fleet.hubClient(), let target = tv ?? fleet.selected, !target.isUnpaired else {
+        guard let c = WatchSources.current(fleet), let target = tv ?? fleet.selected, !target.isUnpaired else {
             fleet.show(TVError.notPaired)
             return false
         }
@@ -587,7 +587,7 @@ enum PlayRouter {
 
     @discardableResult
     static func together(_ a: PlayAction, fleet: Fleet) -> Bool {
-        guard let c = fleet.hubClient() else {
+        guard let c = WatchSources.current(fleet) else {
             fleet.show(TVError.notPaired)
             return false
         }
@@ -629,10 +629,10 @@ struct TitleSheet: View {
     /// Playing on this device.
     @State private var here: PhonePlay?
 
-    private var client: TVClient? { fleet.hubClient() }
+    private var client: (any WatchSource)? { WatchSources.current(fleet) }
 
     /// What's shown: the answer read here, else the one kept from the last time this title was opened.
-    private func details(_ c: TVClient?) -> TitleDetails? { d ?? TitleCache.shared.details(hub: c?.hub.id, id: id) }
+    private func details(_ c: (any WatchSource)?) -> TitleDetails? { d ?? TitleCache.shared.details(hub: c?.sourceID, id: id) }
 
     /// The season shown: the one picked, else the one the TV suggests.
     private func season(of d: TitleDetails?) -> Int { picked ?? d?.season ?? 0 }
@@ -680,13 +680,13 @@ struct TitleSheet: View {
                                         .buttonStyle(.glass)
                                 }
                                 ForEach(episodes) { e in
-                                    EpisodeRow(episode: e, still: c?.art(e.still, small: true), changed: { watchChanged(); Task { await loadEpisodes() } }, played: { dismiss() })
+                                    EpisodeRow(episode: e, still: c?.artURL(e.still, small: true), changed: { watchChanged(); Task { await loadEpisodes() } }, played: { dismiss() })
                                 }
                             }
                             if let films = d.films, !films.isEmpty {
                                 Text("In This Collection").font(.title3.bold()).padding(.top, 8)
                                 ForEach(films) { e in
-                                    EpisodeRow(episode: e, still: c?.art(e.still, small: true), changed: { watchChanged(); Task { await load() } }, played: { dismiss() })
+                                    EpisodeRow(episode: e, still: c?.artURL(e.still, small: true), changed: { watchChanged(); Task { await load() } }, played: { dismiss() })
                                 }
                             }
                         }
@@ -738,13 +738,13 @@ struct TitleSheet: View {
         #endif
     }
 
-    private func top(_ d: TitleDetails, _ c: TVClient?) -> SheetTop {
-        SheetTop(title: d.title, art: c?.art(d.backdrop ?? d.poster), facts: facts(d), play: d.play, restart: d.restart)
+    private func top(_ d: TitleDetails, _ c: (any WatchSource)?) -> SheetTop {
+        SheetTop(title: d.title, art: c?.artURL(d.backdrop ?? d.poster), facts: facts(d), play: d.play, restart: d.restart)
     }
 
     /// The top as the tile it was opened from knew it (its year: the rest of the line comes with the details).
-    private func top(_ t: Title, _ c: TVClient?) -> SheetTop {
-        SheetTop(title: t.title, art: c?.art(t.backdrop ?? t.poster), facts: t.year.map(String.init) ?? "", play: t.play, restart: nil)
+    private func top(_ t: Title, _ c: (any WatchSource)?) -> SheetTop {
+        SheetTop(title: t.title, art: c?.artURL(t.backdrop ?? t.poster), facts: t.year.map(String.init) ?? "", play: t.play, restart: nil)
     }
 
     private func header(_ top: SheetTop) -> some View {
@@ -797,7 +797,7 @@ struct TitleSheet: View {
         guard let c = client else { failed = TVError.notPaired.localizedDescription; return }
         do {
             let t = try await c.title(id)
-            TitleCache.shared.keep(t, hub: c.hub.id, id: id)
+            TitleCache.shared.keep(t, hub: c.sourceID, id: id)
             withAnimation(.smooth) { d = t }
             failed = nil
             // The season the TV suggests (the one in progress), the first time only: a reload keeps the one picked.
@@ -825,7 +825,7 @@ struct TitleSheet: View {
         guard let c = client, let d = details(c), let s = d.seasons?[safe: season(of: d)] else { return }
         // Another season: its episodes as they were last time (or none, never the last season's) while they're read.
         if episodesSeason != s.id {
-            let kept = TitleCache.shared.episodes(hub: c.hub.id, show: d.id, season: s.id)
+            let kept = TitleCache.shared.episodes(hub: c.sourceID, show: d.id, season: s.id)
             episodes = kept ?? []
             episodesSeason = kept == nil ? nil : s.id
         }
@@ -835,7 +835,7 @@ struct TitleSheet: View {
         do {
             let list = try await c.episodes(show: d.id, season: s.id)
             guard !Task.isCancelled else { return }
-            if !list.episodes.isEmpty { TitleCache.shared.keep(list.episodes, hub: c.hub.id, show: d.id, season: s.id) }
+            if !list.episodes.isEmpty { TitleCache.shared.keep(list.episodes, hub: c.sourceID, show: d.id, season: s.id) }
             withAnimation(.smooth) { episodes = list.episodes }
             episodesSeason = s.id
             if list.episodes.isEmpty {
@@ -970,7 +970,7 @@ struct EpisodeRow: View {
             Button {
                 Task {
                     do {
-                        guard let c = fleet.hubClient() else { throw TVError.notPaired }
+                        guard let c = WatchSources.current(fleet) else { throw TVError.notPaired }
                         try await c.markWatched([episode.key], !(episode.watched ?? false))
                         changed()
                     } catch { fleet.show(error) }
@@ -1015,7 +1015,7 @@ struct LibraryGrid: View {
 
     var body: some View {
         // Worked out once for the page: the tiles are handed their posters' addresses.
-        let client = fleet.hubClient()
+        let client = WatchSources.current(fleet)
         ScrollView {
             if items.isEmpty, let failed {
                 VStack(spacing: 14) {
@@ -1031,7 +1031,7 @@ struct LibraryGrid: View {
             }
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 104, maximum: 150), spacing: 12, alignment: .top)], spacing: 18) {
                 ForEach(items) { t in
-                    PosterTile(title: t, width: 104, poster: client?.art(t.poster))
+                    PosterTile(title: t, width: 104, poster: client?.artURL(t.poster))
                         .onAppear { nearEnd(t) }
                 }
             }
@@ -1070,7 +1070,7 @@ struct LibraryGrid: View {
     }
 
     private func load(more: Bool) async {
-        guard let c = fleet.hubClient() else { failed = TVError.notPaired.localizedDescription; return }
+        guard let c = WatchSources.current(fleet) else { failed = TVError.notPaired.localizedDescription; return }
         if more {
             guard !loading, items.count < count else { return }
         } else {
@@ -1098,8 +1098,8 @@ struct LibraryGrid: View {
 
     /// The page just read (below what's on screen): its posters are downloaded a few at a time, so they're there by the
     /// time it's scrolled to.
-    private func warm(_ titles: [Title], _ c: TVClient) {
-        let urls = titles.compactMap { c.art($0.poster) }
+    private func warm(_ titles: [Title], _ c: any WatchSource) {
+        let urls = titles.compactMap { c.artURL($0.poster) }
         warming?.cancel()
         warming = Task(priority: .utility) {
             await withTaskGroup(of: Void.self) { g in
@@ -1129,7 +1129,7 @@ struct LibraryGrid: View {
 
     /// Asks again for everything shown (a title was just marked watched), keeping the place in the list.
     private func reloadShown() async {
-        guard let c = fleet.hubClient(), !items.isEmpty else { return }
+        guard let c = WatchSources.current(fleet), !items.isEmpty else { return }
         generation += 1
         let gen = generation
         defer { if gen == generation { loading = false } }
@@ -1157,7 +1157,7 @@ struct SearchPage: View {
 
     var body: some View {
         // Worked out once for the page: the tiles are handed their posters' addresses.
-        let client = fleet.hubClient()
+        let client = WatchSources.current(fleet)
         ScrollView {
             VStack(alignment: .leading, spacing: 26) {
                 if !query.isEmpty, let failed {
@@ -1165,7 +1165,7 @@ struct SearchPage: View {
                 } else if let r, !query.isEmpty {
                     let sections = r.first == "shows" ? [("TV Shows", r.shows), ("Movies", r.movies)] : [("Movies", r.movies), ("TV Shows", r.shows)]
                     ForEach(sections, id: \.0) { name, list in
-                        if !list.isEmpty { ShelfRow(name) { ForEach(list) { PosterTile(title: $0, poster: client?.art($0.poster)) } } }
+                        if !list.isEmpty { ShelfRow(name) { ForEach(list) { PosterTile(title: $0, poster: client?.artURL($0.poster)) } } }
                     }
                     if r.movies.isEmpty && r.shows.isEmpty {
                         EmptyState(symbol: "magnifyingglass", title: "No Results", message: "Nothing in Movies or TV Shows matches “\(query)”.")
@@ -1188,7 +1188,7 @@ struct SearchPage: View {
             guard !query.isEmpty else { r = nil; failed = nil; return }
             try? await Task.sleep(nanoseconds: 200_000_000)
             guard !Task.isCancelled else { return }
-            guard let c = fleet.hubClient() else { failed = TVError.notPaired.localizedDescription; return }
+            guard let c = WatchSources.current(fleet) else { failed = TVError.notPaired.localizedDescription; return }
             do {
                 let found = try await c.search(query)
                 guard !Task.isCancelled else { return }

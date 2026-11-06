@@ -41,6 +41,7 @@ final class SettingsSync {
         "nest.project", "nest.client", "nest.secret", "nest.access", "nest.refresh", "nest.expires", "nest.scopes", "nest.subscription",
         "github.token", "dreo.email", "dreo.password", "deco.host", "deco.password",
         "cync.email", "cync.access", "cync.refresh", "cync.authorize", "cync.user", "cync.expires",
+        "gdrive.client", "gdrive.secret", "gdrive.refresh", "gdrive.access", "gdrive.expires", "tmdb.key",
         "apns.key", "apns.keyid", "apns.team",
     ]
     /// Saved settings that travel (JSON in UserDefaults).
@@ -48,7 +49,7 @@ final class SettingsSync {
                            "familyPairings"]
     /// Plain preferences that travel (property-list values in UserDefaults): alert choices, the remote's click, and
     /// Now Playing on the Lock Screen. (Home's tile sizes travel with the Home layout.)
-    static let valueKeys = ["nest.alert.person", "nest.alert.motion", "nest.alert.doorbell", "notifyFleet", "liveActivity", "remoteClick"]
+    static let valueKeys = ["watch.source", "nest.alert.person", "nest.alert.motion", "nest.alert.doorbell", "notifyFleet", "liveActivity", "remoteClick"]
 
     /// Saved settings kept entry by entry (one TV's name, one light's room, one paired TV, one tile's size; the Home
     /// layout part by part), so two devices changing different entries at the same time both keep their change.

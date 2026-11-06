@@ -115,6 +115,10 @@ struct SettingsView: View {
                 PageLink("Notes") { NotesView() } label: {
                     IconRow(symbol: "", color: .clear, title: "Notes", subtitle: "The notes on the TVs")
                 }
+                // Where Watch's films and shows come from (the TV, or Google Drive, which works anywhere).
+                PageLink("Watch") { WatchSettingsView() } label: {
+                    IconRow(symbol: "", color: .clear, title: "Watch", value: WatchSources.usesDrive ? "Google Drive" : "TV")
+                }
                 #if os(iOS)
                 // Messages, links and files to the TVs and phones: Send has no tab on iPhone (the Mac has it in its
                 // sidebar), so it's here, where it's easy to find.

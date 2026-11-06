@@ -223,6 +223,13 @@ public struct TVClient: Sendable {
         return c.url(relativeTo: hub.connection.base)?.absoluteURL
     }
 
+    /// A sign-in key the TVs share ("google": "<client id>\n<secret>", "tmdb"), for the app's own Drive library.
+    public func sharedKey(_ id: String) async throws -> String? {
+        struct Entry: Decodable { var value: String? }
+        let all: [String: Entry] = try await t.get("/api/keys", ["id": id])
+        return all[id]?.value ?? all.values.first?.value
+    }
+
     /// A library film or episode to play on this device: the TV streams it, from where the player asks (seeking).
     public func streamURL(_ key: String) -> URL { hub.connection.url("/api/stream", ["media": key]) }
 

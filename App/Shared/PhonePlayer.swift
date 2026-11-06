@@ -7,7 +7,10 @@ import WoodruffKit
 /// where it was left off.
 struct PhonePlay: Identifiable {
     let id = UUID()
-    var url: URL
+    /// Where it comes from: the TV's stream, or Google Drive itself (signed in here).
+    enum Source { case url(URL), drive(String) }
+    var source: Source
+    var key: String
     var title: String
     var start: Double   // seconds
 }
@@ -31,14 +34,18 @@ enum PhonePlayback {
 
     /// What to play [a] here, or nil (and it says why) when it can't be.
     static func play(_ a: PlayAction, fleet: Fleet, fromStart: Bool = false) -> PhonePlay? {
+        let start = fromStart ? 0 : max(0, (a.position ?? 0) / 1000)
+        // A Drive video with Drive signed in here: straight from Google, at home or away.
+        if a.key.hasPrefix("drive:"), GoogleDrive.signedIn {
+            return PhonePlay(source: .drive(String(a.key.dropFirst(6))), key: a.key, title: a.title, start: start)
+        }
         guard let c = fleet.hubClient() else { fleet.show(TVError.notPaired); return nil }
         let ext = (a.key as NSString).pathExtension.lowercased()
         if unplayable.contains(ext) {
             fleet.say("Can’t Play on \(deviceName)", "It’s an \(ext.uppercased()) file, which Apple’s player can’t open. Play it on a TV instead.")
             return nil
         }
-        let start = fromStart ? 0 : max(0, (a.position ?? 0) / 1000)
-        return PhonePlay(url: c.streamURL(a.key), title: a.title, start: start)
+        return PhonePlay(source: .url(c.streamURL(a.key)), key: a.key, title: a.title, start: start)
     }
 }
 
@@ -48,6 +55,9 @@ struct PhonePlayerView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var player = AVPlayer()
     @State private var failed: String?
+    /// Kept while a Drive video plays (it fetches the parts the player asks for).
+    @State private var stream: DriveStream?
+    @State private var ticker: Any?
 
     var body: some View {
         ZStack(alignment: .topLeading) {
@@ -74,7 +84,12 @@ struct PhonePlayerView: View {
         .frame(minWidth: 900, minHeight: 540)
         #endif
         .task { await begin() }
-        .onDisappear { player.pause(); player.replaceCurrentItem(with: nil) }
+        .onDisappear {
+            report()
+            if let t = ticker { player.removeTimeObserver(t) }
+            player.pause()
+            player.replaceCurrentItem(with: nil)
+        }
     }
 
     private func begin() async {
@@ -83,8 +98,20 @@ struct PhonePlayerView: View {
         try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
         try? AVAudioSession.sharedInstance().setActive(true)
         #endif
-        let item = AVPlayerItem(url: play.url)
+        let item: AVPlayerItem
+        switch play.source {
+        case .url(let u):
+            item = AVPlayerItem(url: u)
+        case .drive(let id):
+            let s = DriveStream(fileID: id)
+            stream = s
+            item = AVPlayerItem(asset: s.asset())
+        }
         player.replaceCurrentItem(with: item)
+        // Where it's got to, every 10 seconds (and when it closes), for Continue Watching.
+        ticker = player.addPeriodicTimeObserver(forInterval: CMTime(seconds: 10, preferredTimescale: 1), queue: .main) { _ in
+            Task { @MainActor in report() }
+        }
         if play.start > 5 {
             await player.seek(to: CMTime(seconds: play.start, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
         }
@@ -98,6 +125,14 @@ struct PhonePlayerView: View {
             }
             if item.status == .readyToPlay { return }
         }
+    }
+}
+
+extension PhonePlayerView {
+    @MainActor fileprivate func report() {
+        let pos = player.currentTime().seconds, dur = player.currentItem?.duration.seconds ?? 0
+        guard pos.isFinite, pos > 0 else { return }
+        DriveLibrary.shared.played(play.key, title: play.title, pos: pos * 1000, dur: dur.isFinite ? dur * 1000 : 0)
     }
 }
 
