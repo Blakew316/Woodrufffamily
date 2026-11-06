@@ -22,8 +22,8 @@ enum GoogleDrive {
 
     static func setKeys(id: String, secret: String) {
         let i = id.trimmingCharacters(in: .whitespacesAndNewlines), s = secret.trimmingCharacters(in: .whitespacesAndNewlines)
-        // Tokens belong to the keys they were made with.
-        if i != clientID { signOut() }
+        // Tokens belong to the keys they were made with (forgotten here only, never revoked).
+        if let old = clientID, i != old { signOut() }
         Keychain.set(i.isEmpty ? nil : i, for: "gdrive.client")
         Keychain.set(s.isEmpty ? nil : s, for: "gdrive.secret")
     }
@@ -43,12 +43,9 @@ enum GoogleDrive {
         Keychain.set(e, for: "gdrive.email")
     }
 
+    /// Forgets this app's Drive sign-in here. Never revoked at Google: the TVs sign in with the same keys, and a
+    /// revoke would end their sign-ins too (the Nest cameras, Drive, Photos, Calendar).
     static func signOut() {
-        if let r = Keychain.get("gdrive.refresh"), !r.isEmpty {
-            var req = URLRequest(url: URL(string: "https://oauth2.googleapis.com/revoke?token=\(r)")!)
-            req.httpMethod = "POST"
-            URLSession.shared.dataTask(with: req).resume()
-        }
         for k in ["gdrive.refresh", "gdrive.access", "gdrive.expires", "gdrive.scopes", "gdrive.email"] { Keychain.set(nil, for: k) }
     }
 
