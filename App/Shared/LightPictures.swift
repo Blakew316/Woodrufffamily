@@ -539,7 +539,8 @@ extension HomeDevice {
 }
 
 /// An ecobee SmartSensor as ecobee shows it: a soft white square with a thin grey line just inside its edge, on a
-/// short brushed-steel cone, against a deep green backdrop. While it senses motion the backdrop glows softly round it.
+/// short brushed-steel cone with a collar where it meets the sensor, on a deep green studio backdrop. While it senses
+/// motion a soft mint glow and a faint ring spread round it.
 struct SmartSensorPicture: View {
     var motion: Bool
 
@@ -554,21 +555,34 @@ struct SmartSensorPicture: View {
     }
 
     private func draw(_ ctx: GraphicsContext, w: CGFloat, h: CGFloat) {
-        // The backdrop: deep green, lit softly from above (more so while it senses motion).
         let backdrop = Path(roundedRect: CGRect(x: 0, y: 0, width: w, height: h), cornerRadius: w * 0.22, style: .continuous)
-        ctx.fill(backdrop, with: down(0, h, [(0, hex(0x24463E)), (1, hex(0x163029))]))
+        ctx.fill(backdrop, with: down(0, h, [(0, hex(0x28493F)), (1, hex(0x142B25))]))
         var c = ctx
         c.clip(to: backdrop)
-        c.fill(Path(CGRect(x: 0, y: 0, width: w, height: h)),
-               with: .radialGradient(stops([(0, motion ? Color(red: 0.75, green: 1, blue: 0.88).opacity(0.32) : .white.opacity(0.08)), (1, .white.opacity(0))]),
-                                     center: CGPoint(x: w * 0.5, y: h * 0.32), startRadius: 0, endRadius: w * 0.7))
+        let all = Path(CGRect(x: 0, y: 0, width: w, height: h))
+        let s = w * 0.48, cx = w / 2, cy = h * 0.41
+        let standTop = cy + s * 0.42, floor = cy + s * 0.5 + s * 0.36
 
-        let s = w * 0.48, cx = w / 2, cy = h * 0.42
-        let standTop = cy + s * 0.4, floor = cy + s * 0.5 + s * 0.36
+        // A studio sweep: the floor a touch lighter towards the front, a vignette round the edges, a key light above.
+        c.fill(Path(CGRect(x: 0, y: floor - s * 0.15, width: w, height: h)),
+               with: down(floor - s * 0.15, h, [(0, .white.opacity(0)), (0.4, .white.opacity(0.035)), (1, .black.opacity(0.12))]))
+        c.fill(all, with: .radialGradient(stops([(0, .black.opacity(0)), (1, .black.opacity(0.35))]),
+                                          center: CGPoint(x: cx, y: h * 0.45), startRadius: w * 0.3, endRadius: w * 0.78))
+        c.fill(all, with: .radialGradient(stops([(0, .white.opacity(0.1)), (1, .white.opacity(0))]),
+                                          center: CGPoint(x: cx, y: h * 0.3), startRadius: 0, endRadius: w * 0.62))
+        // Motion: a soft mint glow and a faint ring spreading from the sensor.
+        if motion {
+            let mint = Color(red: 0.67, green: 1, blue: 0.84)
+            c.fill(all, with: .radialGradient(stops([(0, mint.opacity(0.35)), (1, mint.opacity(0))]),
+                                              center: CGPoint(x: cx, y: cy), startRadius: s * 0.3, endRadius: w * 0.7))
+            c.stroke(square(cx, cy, s * (1 + 0.7 * 0.55), 0.28), with: .color(Color(red: 0.78, green: 1, blue: 0.9).opacity(0.22)),
+                     lineWidth: max(0.5, s * 0.025))
+        }
         // Its shadow on the floor.
-        glow(c, at: CGPoint(x: cx, y: floor), radius: s * 0.62, scaleY: 0.16, [(0, .black.opacity(0.5)), (1, .black.opacity(0))])
-        // The stand: a short brushed-steel cone flaring out to its base.
-        let nw = s * 0.07, bw = s * 0.3
+        glow(c, at: CGPoint(x: cx, y: floor), radius: s * 0.66, scaleY: 0.16, [(0, .black.opacity(0.55)), (1, .black.opacity(0))])
+
+        // The stand: brushed steel, a bright streak where the light catches it, fine brushing, a rim at its foot.
+        let nw = s * 0.075, bw = s * 0.3
         var stand = Path()
         stand.move(to: CGPoint(x: cx - nw, y: standTop))
         stand.addLine(to: CGPoint(x: cx + nw, y: standTop))
@@ -576,14 +590,40 @@ struct SmartSensorPicture: View {
         stand.addQuadCurve(to: CGPoint(x: cx - bw, y: floor - s * 0.03), control: CGPoint(x: cx, y: floor + s * 0.05))
         stand.addQuadCurve(to: CGPoint(x: cx - nw, y: standTop), control: CGPoint(x: cx - nw * 1.2, y: floor - s * 0.12))
         stand.closeSubpath()
-        c.fill(stand, with: across(cx - bw, cx + bw, [(0, hex(0x34383C)), (0.28, hex(0x8D9297)), (0.46, hex(0xEEF0F2)), (0.62, hex(0x9DA2A7)), (1, hex(0x3E4246))]))
-        c.fill(stand, with: down(standTop, floor, [(0, .black.opacity(0.35)), (0.4, .black.opacity(0))]))
-        // The sensor: soft white, a little shadow under it, and the thin line just inside its edge.
+        c.fill(stand, with: across(cx - bw, cx + bw, [(0, hex(0x2E3236)), (0.22, hex(0x7F858A)), (0.4, hex(0xD9DDE0)), (0.47, .white),
+                                                     (0.55, hex(0xC4C9CD)), (0.75, hex(0x80868B)), (1, hex(0x33373B))]))
+        var brushed = c
+        brushed.clip(to: stand)
+        for i in -6...6 {
+            var line = Path()
+            line.move(to: CGPoint(x: cx + CGFloat(i) * nw * 0.25, y: standTop))
+            line.addLine(to: CGPoint(x: cx + CGFloat(i) * bw / 6, y: floor))
+            brushed.stroke(line, with: .color(i % 2 != 0 ? .white.opacity(0.1) : .black.opacity(0.1)), lineWidth: max(0.25, s * 0.006))
+        }
+        brushed.fill(Path(CGRect(x: cx - bw, y: standTop, width: bw * 2, height: floor - standTop + s * 0.05)),
+                     with: down(standTop, floor, [(0, .black.opacity(0.45)), (0.35, .black.opacity(0)), (0.86, .black.opacity(0)), (1, .white.opacity(0.25))]))
+        // The collar where it meets the sensor.
+        let collar = roundedRect(CGRect(x: cx - nw * 1.25, y: standTop - s * 0.04, width: nw * 2.5, height: s * 0.06), top: s * 0.02, bottom: s * 0.02)
+        c.fill(collar, with: across(cx - nw * 1.25, cx + nw * 1.25, [(0, hex(0x2A2D30)), (0.5, hex(0x8A9095)), (1, hex(0x2A2D30))]))
+
+        // The sensor: its depth showing as a thin grey edge below and to the right, then the soft white face.
+        let depth = s * 0.035
+        c.fill(square(cx + depth * 0.4, cy + depth, s, 0.24), with: down(cy, cy + s / 2 + depth, [(0, hex(0xB9BDC1)), (1, hex(0x8E9398))]))
         let body = square(cx, cy, s, 0.24)
         var shadowed = c
-        shadowed.addFilter(.shadow(color: .black.opacity(0.35), radius: s * 0.06, x: 0, y: s * 0.04))
-        shadowed.fill(body, with: .linearGradient(stops([(0, .white), (1, hex(0xE4E6E8))]),
+        shadowed.addFilter(.shadow(color: .black.opacity(0.4), radius: s * 0.07, x: 0, y: s * 0.05))
+        shadowed.fill(body, with: .linearGradient(stops([(0, .white), (0.55, hex(0xF3F4F5)), (1, hex(0xDFE2E5))]),
                                                   startPoint: CGPoint(x: cx - s / 2, y: cy - s / 2), endPoint: CGPoint(x: cx + s / 2, y: cy + s / 2)))
-        c.stroke(square(cx, cy, s * 0.93, 0.22), with: .color(Color(red: 0.47, green: 0.49, blue: 0.51).opacity(0.55)), lineWidth: max(0.4, s * 0.012))
+        // A matte sheen across the face, a little shade at its foot.
+        var face = c
+        face.clip(to: body)
+        let box = Path(CGRect(x: cx - s, y: cy - s, width: s * 2, height: s * 2))
+        face.fill(box, with: .radialGradient(stops([(0, .white.opacity(0.9)), (0.6, .white.opacity(0))]),
+                                             center: CGPoint(x: cx - s * 0.18, y: cy - s * 0.22), startRadius: 0, endRadius: s * 0.8))
+        face.fill(box, with: down(cy - s / 2, cy + s / 2, [(0, .white.opacity(0)), (0.85, .black.opacity(0)), (1, .black.opacity(0.08))]))
+        // The edge catching the light, then the fine line just inside it with a soft highlight under it (a shallow groove).
+        c.stroke(square(cx, cy - s * 0.004, s * 0.995, 0.24), with: .color(.white.opacity(0.9)), lineWidth: max(0.35, s * 0.01))
+        c.stroke(square(cx, cy + s * 0.006, s * 0.93, 0.22), with: .color(.white.opacity(0.8)), lineWidth: max(0.4, s * 0.012))
+        c.stroke(square(cx, cy, s * 0.93, 0.22), with: .color(Color(red: 0.43, green: 0.45, blue: 0.48).opacity(0.6)), lineWidth: max(0.4, s * 0.012))
     }
 }
