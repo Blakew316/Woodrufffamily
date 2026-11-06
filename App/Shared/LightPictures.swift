@@ -29,7 +29,7 @@ struct TableLampPicture: View {
     }
 }
 
-/// Govee string lights: six frosted bulbs on black sockets, the cord looping over between them, hanging diagonally
+/// Govee string lights: six frosted bulbs on black sockets, the cord looping over between them, zigzagging diagonally
 /// down from the top left. Turned on, the bulbs light one after another down the string, each starting dim with a
 /// small glow that grows with the brightness.
 struct StringLightsPicture: View {
@@ -130,7 +130,7 @@ private struct TableLampDrawing: View, Animatable {
     private func draw(_ ctx: GraphicsContext, w: CGFloat, h: CGFloat) {
         let power = CGFloat(max(0, min(1, self.power)))
         let lv = CGFloat(0.08 + 0.92 * max(0, min(1, level)))
-        let sw = w * 0.56, sh = h * 0.7, sx = (w - sw) / 2, sy = h * 0.04
+        let sw = w * 0.64, sh = h * 0.6, sx = (w - sw) / 2, sy = h * 0.1
         let bw = sw * 0.9, bh = h * 0.17, bx = (w - bw) / 2, by = sy + sh
         let cx = w / 2
 
@@ -229,8 +229,10 @@ private struct StringLightsDrawing: View, Animatable {
         let left = bw * 0.6, right = w - bw * 0.6
         let dx = (right - left) / CGFloat(n - 1)
         let top = min(h * 0.2, dx * 0.8), last = h - bh - kh
+        // A zigzag down the diagonal: every other bulb hangs lower.
+        let zig = min((last - top) * 0.45, dx * 0.9)
         let points = (0..<n).map { i in
-            CGPoint(x: left + dx * CGFloat(i), y: top + (last - top) * CGFloat(i) / CGFloat(n - 1))
+            CGPoint(x: left + dx * CGFloat(i), y: top + (last - top - zig) * CGFloat(i) / CGFloat(n - 1) + (i % 2 == 1 ? zig : 0))
         }
         // Each bulb comes on just after the one before it.
         let stagger: CGFloat = 0.35
