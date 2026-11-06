@@ -162,6 +162,11 @@ iPad updates anywhere, on Wi‑Fi or cellular, it also archives each release and
 3. On each iPhone and iPad, install TestFlight from the App Store, accept the invite, open Woodruff Family there,
    and turn on Automatic Updates.
 
+The camera alerts' notification extension (`com.blakew316.woodruff.notifications`) needs the App Groups capability
+with `group.com.woodruff.family` on its identifier at developer.apple.com (Identifiers, the id, App Groups,
+Configure). Without it the build leaves the group off the extension alone: alerts then show the small picture the
+Mac puts in the push, but can't fetch the full clip.
+
 Until the app exists in App Store Connect the upload says "Not Set Up" in the Mac app's Settings > General and is
 tried again every 6 hours (or at Check for Updates Now). To turn uploads off, add `"testflight": false` to the
 updater's `config.json`. TestFlight builds use Apple's production push service, so Instant iPhone Alerts need a push
