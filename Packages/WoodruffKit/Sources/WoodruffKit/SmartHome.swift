@@ -825,7 +825,20 @@ public final class SmartHome {
         get { Keychain.get("govee.key") }
         set { Keychain.set(newValue, for: "govee.key"); Task { await refreshCloud() } }
     }
-    public private(set) var goveeError: String?
+    /// A light change or search that didn't work, said under Lights; it clears itself after 20 seconds (a newer one
+    /// replaces it), so an old failure doesn't stay there for good.
+    public private(set) var goveeError: String? {
+        didSet {
+            errorClear?.cancel()
+            guard let shown = goveeError else { return }
+            errorClear = Task { [weak self] in
+                try? await Task.sleep(nanoseconds: 20_000_000_000)
+                guard let self, !Task.isCancelled, self.goveeError == shown else { return }
+                self.goveeError = nil
+            }
+        }
+    }
+    @ObservationIgnored private var errorClear: Task<Void, Never>?
 
     private var sonosSeed: String? = UserDefaults.standard.string(forKey: "sonosSeed")
     private var loop: Task<Void, Never>?

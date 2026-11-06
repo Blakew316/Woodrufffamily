@@ -49,6 +49,22 @@ final class Cync {
     }
 
     private var lights: [String: Light] = [:]
+    /// Looked up on every packet, so kept as dictionaries: a device's home, a home's lights by mesh number, and each
+    /// home's first light (commands go through it when no light has answered on the Wi‑Fi).
+    @ObservationIgnored private var homeOfDevice: [Int: Int] = [:]
+    @ObservationIgnored private var lightAt: [Int: [Int: String]] = [:]
+    @ObservationIgnored private var firstDevice: [Int: Int] = [:]
+
+    private func index() {
+        var home: [Int: Int] = [:], at: [Int: [Int: String]] = [:], first: [Int: (String, Int)] = [:]
+        for l in lights.values {
+            home[l.deviceID] = l.home
+            at[l.home, default: [:]][l.mesh % 1000] = l.id
+            if let f = first[l.home], f.0 <= l.id { continue }
+            first[l.home] = (l.id, l.deviceID)
+        }
+        homeOfDevice = home; lightAt = at; firstDevice = first.mapValues(\.1)
+    }
     /// Each home's device that answered on the Wi‑Fi: commands for the home's lights go through it.
     private var hubs: [Int: Int] = [:]
     private var password = ""
@@ -118,7 +134,7 @@ final class Cync {
         loop?.cancel(); loop = nil
         disconnect()
         for k in ["cync.access", "cync.refresh", "cync.authorize", "cync.user", "cync.expires"] { Keychain.set(nil, for: k) }
-        lights = [:]; hubs = [:]
+        lights = [:]; hubs = [:]; index()
         needsCode = false
         error = nil
         SmartHome.shared.cyncControl = nil
@@ -233,6 +249,7 @@ final class Cync {
                 }
             }
             lights = found
+            index()
             error = nil
             publish()
             connect()
@@ -369,15 +386,15 @@ final class Cync {
         case 10:  // a light answered the probe
             guard version != 0, body.count >= 4 else { return }
             let device = be32(body, 0)
-            if let l = lights.values.first(where: { $0.deviceID == device }), hubs[l.home] == nil {
-                hubs[l.home] = device
+            if let home = homeOfDevice[device], hubs[home] == nil {
+                hubs[home] = device
                 queryStates()
             }
         case 4:   // a light changed (pushed)
             guard body.count >= 7 else { return }
             let device = be32(body, 0)
             guard body[4] == 1, body[5] == 1, body[6] == 6,
-                  let home = lights.values.first(where: { $0.deviceID == device })?.home else { return }
+                  let home = homeOfDevice[device] else { return }
             var rest = Array(body[7...])
             var changed = false
             while rest.count > 3 {
@@ -392,7 +409,7 @@ final class Cync {
         case 7:   // an answer through the pipe: the states of a home's lights
             guard body.count > 8, body[7] == 0x7e, body.last == 0x7e else { return }
             let device = be32(body, 0)
-            guard let home = lights.values.first(where: { $0.deviceID == device })?.home ?? hubs.first(where: { $0.value == device })?.key else { return }
+            guard let home = homeOfDevice[device] ?? hubs.first(where: { $0.value == device })?.key else { return }
             var f = unescape(Array(body[8..<(body.count - 1)]))
             guard f.count > 9 else { return }
             f = Array(f[4...])   // the sequence number
@@ -423,7 +440,7 @@ final class Cync {
 
     /// A light's state as Cync reports it; true when it changed.
     private func apply(home: Int, mesh: Int, on: Bool, brightness: Int, mode: Int, rgb: (UInt8, UInt8, UInt8), online: Bool?) -> Bool {
-        guard let id = lights.values.first(where: { $0.home == home && $0.mesh % 1000 == mesh })?.id, var l = lights[id] else { return false }
+        guard let id = lightAt[home]?[mesh], var l = lights[id] else { return false }
         let before = (l.on, l.brightness, l.kelvin, l.color, l.online)
         l.on = on
         l.brightness = max(0, min(100, brightness))
@@ -445,7 +462,7 @@ final class Cync {
 
     private func queryStates() {
         guard loggedIn else { return }
-        for home in Set(lights.values.map(\.home)) {
+        for home in firstDevice.keys {
             guard let hub = hub(home) else { continue }
             write(pipePacket(hub, inner(0x52, [0, 0, 0xff, 0xff, 0, 0], second: false)))
         }
@@ -453,7 +470,7 @@ final class Cync {
 
     /// The device commands for a home go through: one that answered on the Wi‑Fi, else any of its lights.
     private func hub(_ home: Int) -> Int? {
-        hubs[home] ?? lights.values.filter { $0.home == home }.sorted { $0.id < $1.id }.first?.deviceID
+        hubs[home] ?? firstDevice[home]
     }
 
     // MARK: Commands

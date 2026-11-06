@@ -183,9 +183,12 @@ final class DecoWifi {
             for i in ns.indices where !ns[i].online { ns[i].clients = 0 }
             let down = Set(ns.filter { !$0.online }.map(\.id))
             cs = cs.filter { !down.contains($0.value.node ?? "") }
-            nodes = ns.sorted { ($0.main ? 0 : 1, $0.name) < ($1.main ? 0 : 1, $1.name) }
-            clients = cs.values.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-            error = nil
+            // Written only when something changed: each write redraws everything that shows the Wi‑Fi.
+            let nextNodes = ns.sorted { ($0.main ? 0 : 1, $0.name) < ($1.main ? 0 : 1, $1.name) }
+            let nextClients = cs.values.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+            if nextNodes != nodes { nodes = nextNodes }
+            if nextClients != clients { clients = nextClients }
+            if error != nil { error = nil }
             updated = Date()
             noticeInternet()
         } catch WrongPassword.refused {
