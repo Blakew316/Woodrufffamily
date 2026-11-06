@@ -604,6 +604,14 @@ install_shared_helper() {
     rm -rf "$unz"
     return 1
   fi
+  # Only a helper signed for the family's team: anything else that turns up in iCloud Drive is never opened here.
+  local team
+  team=$(signing signer --app "$unz/$HELPER_NAME.app" 2>>"$hlog" >"$LOGDIR/helper-signer.json" && signing get "$LOGDIR/helper-signer.json" team 2>/dev/null)
+  if [ "$team" != "$TEAM" ]; then
+    warn "the shared $HELPER_NAME isn't signed for team $TEAM (it says '${team:-unknown}'), so it wasn't installed (log $hlog)"
+    rm -rf "$unz"
+    return 1
+  fi
   if ! helper_runs_here "$unz/$HELPER_NAME.app"; then
     warn "$HELPER_NAME isn't installed here: this Mac isn't in its signing profile (register it under Devices at developer.apple.com with the platform macOS, not iOS; the Mac Studio's next build includes it)"
     mkdir -p "$(dirname "$refused")" && printf '%s' "$name" >"$refused"
