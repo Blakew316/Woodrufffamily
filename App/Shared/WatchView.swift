@@ -826,7 +826,7 @@ struct TitleSheet: View {
             withAnimation(.smooth) { episodes = list.episodes }
             episodesSeason = s.id
             if list.episodes.isEmpty {
-                episodesNote = list.state == "loading" ? "\(c.hub.name) is still getting these episodes ready." : "No episodes in \(s.name)."
+                episodesNote = list.state == "loading" ? "The library is still getting these episodes ready." : "No episodes in \(s.name)."
             }
         } catch {
             if Task.isCancelled { return }
