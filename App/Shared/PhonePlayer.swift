@@ -34,6 +34,15 @@ final class PhonePlayback {
     /// Formats Apple's player can't open; the TV plays those.
     private static let unplayable: Set<String> = ["mkv", "avi", "wmv", "flv", "webm", "ts", "m2ts", "vob", "divx", "rmvb", "ogv"]
 
+    /// How close to where it was left off it starts: the nearest keyframe within two seconds, which needs no extra
+    /// fetching or decoding (an exact frame can take seconds longer over a stream).
+    nonisolated static let nearEnough = CMTime(seconds: 2, preferredTimescale: 600)
+
+    /// Starts as soon as it can: a short buffer before the first frame, the rest filled while it plays.
+    nonisolated static func quickStart(_ item: AVPlayerItem) {
+        item.preferredForwardBufferDuration = 2
+    }
+
     /// Something that plays one particular file (not "the next episode", which the TV works out).
     static func canPlay(_ a: PlayAction) -> Bool { a.latest != true }
 
@@ -118,6 +127,8 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
         title.extendedLanguageTag = "und"
         item.externalMetadata = [title]
 
+        PhonePlayback.quickStart(item)
+
         let p = AVPlayer(playerItem: item)
         player = p
         current = play
@@ -141,9 +152,9 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
         Self.top()?.present(c, animated: true) {
             Task { @MainActor in
                 if play.start > 5 {
-                    await p.seek(to: CMTime(seconds: play.start, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
+                    await p.seek(to: CMTime(seconds: play.start, preferredTimescale: 600), toleranceBefore: PhonePlayback.nearEnough, toleranceAfter: PhonePlayback.nearEnough)
                 }
-                p.play()
+                p.playImmediately(atRate: 1)
             }
         }
     }
@@ -260,6 +271,7 @@ final class MacPlayer: NSObject, NSWindowDelegate {
             stream = s
             item = AVPlayerItem(asset: s.asset())
         }
+        PhonePlayback.quickStart(item)
         let p = AVPlayer(playerItem: item)
         player = p
 
@@ -288,9 +300,9 @@ final class MacPlayer: NSObject, NSWindowDelegate {
         }
         watch = Task { [weak self] in
             if play.start > 5 {
-                await p.seek(to: CMTime(seconds: play.start, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
+                await p.seek(to: CMTime(seconds: play.start, preferredTimescale: 600), toleranceBefore: PhonePlayback.nearEnough, toleranceAfter: PhonePlayback.nearEnough)
             }
-            p.play()
+            p.playImmediately(atRate: 1)
             // A file Apple's player can't open, or the source out of reach: said over the player.
             for _ in 0..<40 {
                 try? await Task.sleep(nanoseconds: 500_000_000)

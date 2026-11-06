@@ -122,6 +122,8 @@ struct WatchView: View {
         }
         // Again from the start when the remote moves to a TV with another library.
         .task(id: client?.sourceID) { await loop() }
+        // A fresh Google token ready before Play is pressed (fetching one then adds a round trip to the start).
+        .task { if GoogleDrive.signedIn { _ = try? await GoogleDrive.token() } }
         // The other library picked in Settings → Watch: its titles, read afresh.
         .onChange(of: source) { _, _ in
             sectionTitles = [:]
@@ -756,15 +758,12 @@ enum PlayRouter {
             #if os(iOS)
             // Once the title page that asked has closed (Apple's player shows over the topmost screen).
             Task { @MainActor in
-                try? await Task.sleep(nanoseconds: 450_000_000)
+                try? await Task.sleep(nanoseconds: 300_000_000)
                 NativePlayer.shared.present(p)
             }
             #else
-            // In a player window of its own, once the title page that asked has closed.
-            Task { @MainActor in
-                try? await Task.sleep(nanoseconds: 450_000_000)
-                MacPlayer.shared.present(p)
-            }
+            // In a player window of its own, straight away (it opens over the title page, which closes behind it).
+            MacPlayer.shared.present(p)
             #endif
             return true
         }
