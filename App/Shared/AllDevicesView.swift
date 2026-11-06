@@ -199,7 +199,10 @@ struct AllDevicesView: View {
         case .light(let l):
             let state = l.isOffline ? "Offline" : l.isLit ? "\(l.brightness)%" : "Off"
             return Facts(name: l.name, state: state, on: l.isLit, reachable: !l.isOffline,
-                         look: l.isFloorLamp ? .floorLamp(level: Double(l.brightness) / 100) : .light, tint: l.shade)
+                         look: l.isFloorLamp ? .floorLamp(level: Double(l.brightness) / 100)
+                            : l.isTableLamp ? .tableLamp(level: Double(l.brightness) / 100)
+                            : l.isStringLights ? .stringLights(level: Double(l.brightness) / 100) : .light,
+                         tint: l.shade)
         case .device(let d) where d.product?.hasPrefix("HomePod") == true:
             return Facts(name: d.name, state: d.reachable ? d.status : "Not Responding", on: false, reachable: d.reachable,
                          look: .homePod(mini: d.product == "HomePod mini"), tint: .gray)
@@ -303,6 +306,8 @@ struct DeviceGlyph: View {
         case homePod(mini: Bool)
         case light
         case floorLamp(level: Double)
+        case tableLamp(level: Double)
+        case stringLights(level: Double)
         case dreoFan(pedestal: Bool, speed: Double)
         case thermostat(HomeDevice)
         case device(HomeDevice.Kind, running: Bool, symbol: String)
@@ -315,7 +320,7 @@ struct DeviceGlyph: View {
     /// Drawn as the product itself (no circle behind it).
     private var drawn: Bool {
         switch look {
-        case .tv, .floorLamp, .dreoFan, .thermostat: return true
+        case .tv, .floorLamp, .tableLamp, .stringLights, .dreoFan, .thermostat: return true
         case .speaker(let bar): return bar
         default: return false
         }
@@ -356,6 +361,10 @@ struct DeviceGlyph: View {
             DreoFanPicture(pedestal: pedestal, on: on, speed: speed).frame(width: pedestal ? 40 : 52, height: 58)
         case .floorLamp(let level):
             FloorLampPicture(level: level, lit: on, color: tint).frame(width: 34, height: 56)
+        case .tableLamp(let level):
+            TableLampPicture(level: level, lit: on, color: tint).frame(width: 42, height: 56)
+        case .stringLights(let level):
+            StringLightsPicture(level: level, lit: on, color: tint).frame(width: 72, height: 54)
         case .homePod(let mini):
             Image(systemName: mini ? "homepodmini.fill" : "homepod.fill")
                 .font(.system(size: 21, weight: .semibold))

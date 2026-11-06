@@ -226,6 +226,12 @@ struct LightTile: View {
                 // The lamp as on All Devices: its pole lit from the base up to the brightness.
                 FloorLampPicture(level: Double(light.brightness) / 100, lit: lit, color: light.shade)
                     .frame(width: 24, height: 44)
+            } else if light.isTableLamp {
+                TableLampPicture(level: Double(light.brightness) / 100, lit: lit, color: light.shade)
+                    .frame(width: 30, height: 42)
+            } else if light.isStringLights {
+                StringLightsPicture(level: Double(light.brightness) / 100, lit: lit, color: light.shade)
+                    .frame(width: 58, height: 40)
             } else {
             Circle()
                 .fill(lit ? light.shade : .white.opacity(0.18))
@@ -236,7 +242,7 @@ struct LightTile: View {
                 }
             }
             }
-            .frame(width: 44, height: 44, alignment: .center)
+            .frame(width: light.isStringLights ? 58 : 44, height: 44, alignment: .center)
             VStack(alignment: .leading, spacing: 1) {
                 Text(light.name).font(.footnote.weight(.semibold)).lineLimit(2)
                 Text(light.isOffline ? "Offline" : lit ? "\(light.brightness)%" : "Off").font(.caption)
@@ -394,6 +400,12 @@ struct LightSheet: View {
                 if light.isFloorLamp {
                     // The lamp itself: its bar lights from the base up to the level under the finger.
                     FloorLampPicture(level: level / 100, lit: shown, color: light.shade)
+                } else if light.isTableLamp {
+                    TableLampPicture(level: level / 100, lit: shown, color: light.shade)
+                        .frame(width: 110, height: 150)
+                        .frame(maxHeight: .infinity)
+                } else if light.isStringLights {
+                    StringLightsPicture(level: level / 100, lit: shown, color: light.shade)
                 } else {
                     ZStack(alignment: .bottom) {
                         Rectangle().fill(.white.opacity(0.12))
