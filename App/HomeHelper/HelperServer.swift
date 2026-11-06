@@ -18,6 +18,16 @@ final class HelperServer {
     @ObservationIgnored private var listener: NWListener?
     @ObservationIgnored private let token = UUID().uuidString + "-" + UUID().uuidString
 
+    /// The secret compared in constant time (how long a wrong guess takes says nothing about how close it was).
+    private static func same(_ given: String?, _ token: String) -> Bool {
+        guard let given else { return false }
+        let a = Array(given.utf8), b = Array(token.utf8)
+        guard a.count == b.count else { return false }
+        var diff: UInt8 = 0
+        for i in a.indices { diff |= a[i] ^ b[i] }
+        return diff == 0
+    }
+
     func start() {
         guard listener == nil else { return }
         let params = NWParameters.tcp
@@ -93,7 +103,7 @@ final class HelperServer {
     }
 
     private func respond(_ c: NWConnection, _ r: Request) {
-        guard r.headers[HomeBridge.tokenHeader.lowercased()] == token else {
+        guard Self.same(r.headers[HomeBridge.tokenHeader.lowercased()], token) else {
             return reply(c, 403, message: "Not allowed.")
         }
         if lastAsked == nil { lastAsked = Date() }
