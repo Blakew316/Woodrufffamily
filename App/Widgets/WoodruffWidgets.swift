@@ -313,6 +313,7 @@ struct SonosVolumeUpControl: ControlWidget {
             }
         }
         .displayName("Sonos Volume Up")
+        .description("Turns the playing Sonos room up.")
     }
 }
 
@@ -324,6 +325,7 @@ struct SonosVolumeDownControl: ControlWidget {
             }
         }
         .displayName("Sonos Volume Down")
+        .description("Turns the playing Sonos room down.")
     }
 }
 
@@ -404,7 +406,9 @@ struct ApplianceTimeLeft: View {
         if state.done {
             Text("Done").foregroundStyle(.green)
         } else if let end = state.endsAt, end > state.startedAt, !state.paused {
-            Text(timerInterval: Date()...end, countsDown: true, showsHours: true)
+            // From the cycle's start, not "now": the view is drawn again later, when now can be past the end (a
+            // range whose start is after its end would crash the widget). Past the end it reads 0:00.
+            Text(timerInterval: state.startedAt...end, countsDown: true, showsHours: true)
                 .monospacedDigit().multilineTextAlignment(.trailing)
         } else if state.paused {
             Text("Paused").foregroundStyle(.secondary)

@@ -27,8 +27,14 @@ struct ShareProvider: TimelineProvider {
     }
     func getTimeline(in context: Context, completion: @escaping (Timeline<ShareEntry>) -> Void) {
         // The app reloads the widgets when anything changes; this is only a fallback.
-        completion(Timeline(entries: [ShareEntry(date: Date(), s: PhoneWidgetShare.load())],
-                            policy: .after(Date().addingTimeInterval(1800))))
+        let now = Date()
+        let s = PhoneWidgetShare.load()
+        var entries = [ShareEntry(date: now, s: s)]
+        // Once what the TVs were doing is too old to show as now, a second entry stops showing it.
+        if let at = s?.savedAt, !(s?.tvsStale(at: now) ?? true) {
+            entries.append(ShareEntry(date: at.addingTimeInterval(PhoneWidgetShare.staleAfter + 1), s: s))
+        }
+        completion(Timeline(entries: entries, policy: .after(now.addingTimeInterval(1800))))
     }
 }
 
@@ -37,7 +43,7 @@ struct ShareProvider: TimelineProvider {
 struct NowPlayingWidget: Widget {
     var body: some WidgetConfiguration {
         StaticConfiguration(kind: PhoneWidgetShare.nowPlayingKind, provider: ShareProvider()) { entry in
-            TVsWidgetView(s: entry.s)
+            TVsWidgetView(s: entry.s, stale: entry.s?.tvsStale(at: entry.date) ?? false)
                 .environment(\.colorScheme, .dark)
                 .widgetURL(URL(string: "woodruff://remote"))
         }
@@ -50,8 +56,13 @@ struct NowPlayingWidget: Widget {
 struct TVsWidgetView: View {
     @Environment(\.widgetFamily) private var family
     let s: PhoneWidgetShare.Snapshot?
+    /// The app hasn't checked the TVs for a while: their names only, not what they were playing then.
+    var stale = false
 
-    private var tvs: [PhoneWidgetShare.TVLine] { s?.tvs ?? [] }
+    private var tvs: [PhoneWidgetShare.TVLine] {
+        let list = s?.tvs ?? []
+        return stale ? list.map { var t = $0; t.title = nil; t.isPlaying = false; return t } : list
+    }
 
     var body: some View {
         Group {
@@ -68,7 +79,7 @@ struct TVsWidgetView: View {
             }
         }
         .containerBackground(for: .widget) {
-            if family == .accessoryRectangular { Color.clear } else { TVsBackground(art: s?.art) }
+            if family == .accessoryRectangular { Color.clear } else { TVsBackground(art: stale ? nil : s?.art) }
         }
     }
 
@@ -131,11 +142,13 @@ struct TVsWidgetView: View {
     }
 
     private func status(_ tv: PhoneWidgetShare.TVLine) -> String {
+        if stale { return "Not checked lately" }
         if let t = tv.title { return t }
         return tv.online ? "Nothing playing" : "Off"
     }
 
     private func short(_ tv: PhoneWidgetShare.TVLine) -> String {
+        if stale { return "Not checked" }
         if tv.isPlaying { return "Playing" }
         if tv.title != nil { return "Paused" }
         return tv.online ? "On" : "Off"

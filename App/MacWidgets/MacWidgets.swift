@@ -37,6 +37,8 @@ struct TVsEntry: TimelineEntry {
 
 /// What a widget button that didn't work says, for a minute and a half (by widget: "tvs" or "home").
 enum WidgetProblem {
+    /// How long a note shows, in seconds.
+    static let lasts: TimeInterval = 90
     private static func key(_ kind: String) -> String { "widget.problem.\(kind)" }
 
     static func set(_ text: String?, for kind: String) {
@@ -48,7 +50,7 @@ enum WidgetProblem {
     static func current(_ kind: String) -> String? {
         guard let d = SharedStore.defaults?.dictionary(forKey: key(kind)),
               let text = d["text"] as? String, let at = d["at"] as? Double else { return nil }
-        return Date().timeIntervalSince1970 - at < 90 ? text : nil
+        return Date().timeIntervalSince1970 - at < lasts ? text : nil
     }
 }
 
@@ -80,10 +82,12 @@ struct TVsProvider: TimelineProvider {
     func getTimeline(in context: Context, completion: @escaping (Timeline<TVsEntry>) -> Void) {
         Task {
             let e = await load()
-            // While something plays, again in two minutes (and the app reloads these the moment a TV changes while
-            // it runs); otherwise every ten.
+            // While something plays, again in five minutes (the bars move by themselves, and the app reloads these the
+            // moment a TV changes while it runs); otherwise every fifteen. Sooner when a note about a button that
+            // didn't work is showing, so it goes once it's old.
             let playing = e.tvs.contains { $0.playing?.isPlaying == true }
-            completion(Timeline(entries: [e], policy: .after(.now.addingTimeInterval(playing ? 120 : 600))))
+            let next: TimeInterval = e.problem != nil ? WidgetProblem.lasts + 5 : (playing ? 300 : 900)
+            completion(Timeline(entries: [e], policy: .after(.now.addingTimeInterval(next))))
         }
     }
 
@@ -199,37 +203,41 @@ struct TVsProvider: TimelineProvider {
 
 // MARK: - Buttons
 
-/// Presses a key on a TV straight from the widget.
+/// Presses a key on a TV straight from the widget. It names the hub by its id and finds its pairing key in what the
+/// app shared when pressed, so the key isn't kept in the widget's buttons.
 struct WidgetKeyIntent: AppIntent {
     static let title: LocalizedStringResource = "Press a TV Key"
+    // Only for the widgets' buttons (Shortcuts has Play or Pause a TV).
+    static var isDiscoverable: Bool { false }
     @Parameter(title: "Hub") var hub: String
-    @Parameter(title: "Pairing") var pairing: String
     @Parameter(title: "TV") var route: String
     @Parameter(title: "Key") var key: String
     @Parameter(title: "Name") var name: String?
 
     init() {}
     init(tv: WidgetTV, key: String) {
-        self.hub = tv.hub.base.absoluteString
-        self.pairing = tv.hub.key
+        self.hub = tv.hub.id
         self.route = tv.routeID
         self.key = key
         self.name = tv.name
     }
 
     func perform() async throws -> some IntentResult {
-        if let base = URL(string: hub) {
-            let c = TVClient(hub: Hub(id: "", name: "", connection: TVConnection(base: base, key: pairing)), routeID: route)
-            do {
-                try await c.key(key)
-                WidgetProblem.set(nil, for: "tvs")
-            } catch {
-                // Said in the widget: a button that looks like it worked but didn't is worse than none.
-                WidgetProblem.set("\(name ?? "The TV"): \(error.localizedDescription)", for: "tvs")
-            }
-            // A moment for the TV to make the change, so the widget shows it when it draws again.
-            try? await Task.sleep(nanoseconds: 800_000_000)
+        guard let link = SharedStore.load()?.hubs.first(where: { $0.id == hub }) else {
+            WidgetProblem.set("Open Woodruff once so the widget finds \(name ?? "that TV") again.", for: "tvs")
+            WidgetCenter.shared.reloadAllTimelines()
+            return .result()
         }
+        let c = TVClient(hub: Hub(id: link.id, name: link.name, connection: TVConnection(base: link.base, key: link.key)), routeID: route)
+        do {
+            try await c.key(key)
+            WidgetProblem.set(nil, for: "tvs")
+        } catch {
+            // Said in the widget: a button that looks like it worked but didn't is worse than none.
+            WidgetProblem.set("\(name ?? "The TV"): \(error.localizedDescription)", for: "tvs")
+        }
+        // A moment for the TV to make the change, so the widget shows it when it draws again.
+        try? await Task.sleep(nanoseconds: 800_000_000)
         WidgetCenter.shared.reloadAllTimelines()
         return .result()
     }
@@ -422,7 +430,8 @@ struct HomeProvider: TimelineProvider {
     func getTimeline(in context: Context, completion: @escaping (Timeline<HomeEntry>) -> Void) {
         Task {
             let e = await load()
-            completion(Timeline(entries: [e], policy: .after(.now.addingTimeInterval(e.speaker?.isPlaying == true ? 120 : 600))))
+            let next: TimeInterval = e.problem != nil ? WidgetProblem.lasts + 5 : (e.speaker?.isPlaying == true ? 300 : 900)
+            completion(Timeline(entries: [e], policy: .after(.now.addingTimeInterval(next))))
         }
     }
 
@@ -446,6 +455,7 @@ struct HomeProvider: TimelineProvider {
 /// Plays or pauses a Sonos room, or skips, straight from the widget.
 struct WidgetSonosIntent: AppIntent {
     static let title: LocalizedStringResource = "Control a Sonos Room"
+    static var isDiscoverable: Bool { false }
     @Parameter(title: "Room") var roomID: String
     @Parameter(title: "Action") var action: String
     init() {}
@@ -476,6 +486,7 @@ struct WidgetSonosIntent: AppIntent {
 /// Turns a light on or off over the Wi‑Fi from the widget.
 struct WidgetLightIntent: AppIntent {
     static let title: LocalizedStringResource = "Turn a Light On or Off"
+    static var isDiscoverable: Bool { false }
     @Parameter(title: "Light") var lightID: String
     init() {}
     init(lightID: String) { self.lightID = lightID }
@@ -520,7 +531,7 @@ struct HomeDevicesWidgetView: View {
                 HStack(spacing: 10) {
                     Group {
                         if let d = entry.art, let img = NSImage(data: d) { Image(nsImage: img).resizable().scaledToFill() }
-                        else { Color.white.opacity(0.1).overlay { Image(systemName: "hifispeaker.fill").foregroundStyle(.secondary) } }
+                        else { Color.primary.opacity(0.08).overlay { Image(systemName: "hifispeaker.fill").foregroundStyle(.secondary) } }
                     }
                     .frame(width: 40, height: 40).clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                     VStack(alignment: .leading, spacing: 1) {
@@ -578,6 +589,6 @@ struct HomeDevicesWidgetView: View {
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 10).padding(.vertical, 8)
-        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(l.isLit ? Color.white.opacity(0.22) : Color.white.opacity(0.07)))
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(l.isLit ? Color.yellow.opacity(0.22) : Color.primary.opacity(0.07)))
     }
 }

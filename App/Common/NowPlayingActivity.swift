@@ -150,8 +150,8 @@ struct PlayPauseTVOnIntent: LiveActivityIntent {
         guard let tv = fleet.tv(tvID) else { return .result() }
         let was = tv.playing
         try? await fleet.client(for: tv)?.key("playpause")
+        // settle brings the Live Activity and the widgets up to date.
         await TVIntentActions.settle(fleet, tv.id) { $0?.isPlaying != was?.isPlaying || $0?.title != was?.title }
-        await TVIntentActions.updateActivity?(fleet)
         return .result()
     }
 }
@@ -242,6 +242,8 @@ struct SonosPlayPauseControlIntent: LiveActivityIntent {
 
 struct SonosVolumeControlIntent: LiveActivityIntent {
     static let title: LocalizedStringResource = "Sonos Volume"
+    // Only for the controls (Shortcuts has Set Sonos Volume).
+    static var isDiscoverable: Bool { false }
     @Parameter(title: "Up") var up: Bool
     init() {}
     init(up: Bool) { self.up = up }
@@ -254,7 +256,7 @@ struct SonosVolumeControlIntent: LiveActivityIntent {
         if SmartHome.shared.speakers.isEmpty { await SmartHome.shared.findSonos() }
         guard let r0 = SmartHome.shared.lastSpeaker else { return .result() }
         let r = await Sonos.refresh(r0)
-        try? await Sonos.setVolume(r, r.volume + (up ? 5 : -5))
+        try? await Sonos.setVolume(r, max(0, min(100, r.volume + (up ? 5 : -5))))
         await SmartHome.shared.refreshSpeakers()
         return .result()
     }
@@ -277,6 +279,8 @@ enum SceneHook {
 
 struct RunSceneControlIntent: LiveActivityIntent {
     static let title: LocalizedStringResource = "Run a Scene"
+    // Only for the controls and widget buttons: it takes a scene's id, and Shortcuts has Run Scene by name.
+    static var isDiscoverable: Bool { false }
     @Parameter(title: "Scene") var sceneID: String
 
     init() {}
