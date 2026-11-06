@@ -389,7 +389,7 @@ struct DeviceGlyph: View {
         case .thermostat(let d):
             EcobeePicture(device: d).aspectRatio((52) / (52), contentMode: .fit).frame(maxWidth: (52) * scale, maxHeight: 52 * scale)
         case .dreoFan(let pedestal, let speed):
-            DreoFanPicture(pedestal: pedestal, on: on, speed: speed).aspectRatio((pedestal ? 50 : 52) / ((pedestal ? 64 : 58)), contentMode: .fit).frame(maxWidth: (pedestal ? 50 : 52) * scale, maxHeight: (pedestal ? 64 : 58) * scale)
+            DreoFanPicture(pedestal: pedestal, on: on, speed: speed).aspectRatio((pedestal ? 60 : 52) / ((pedestal ? 60 : 58)), contentMode: .fit).frame(maxWidth: (pedestal ? 60 : 52) * scale, maxHeight: (pedestal ? 60 : 58) * scale)
         case .floorLamp(let level):
             FloorLampPicture(level: level, lit: on, color: tint).aspectRatio((34) / (56), contentMode: .fit).frame(maxWidth: (34) * scale, maxHeight: 56 * scale)
         case .tableLamp(let level):
@@ -766,10 +766,11 @@ struct DreoFanPicture: View {
     private var pedestalFan: some View {
         GeometryReader { g in
             let w = g.size.width, h = g.size.height
-            let d = min(w * 0.52, h * 0.33), r = d / 2
+            // A big head on a shorter pole, so it reads at tile size (a third of the height made it a speck).
+            let d = min(w * 0.92, h * 0.56), r = d / 2
             let cx = w / 2, cy = r + h * 0.02
             let baseW = d * 0.78, baseH = h * 0.055
-            let poleW = max(1.8, w * 0.06)
+            let poleW = max(2.2, d * 0.1)
             let poleTop = cy + r * 0.85, poleBottom = h - baseH * 0.6
             ZStack(alignment: .topLeading) {
                 // Its shadow, and the base: a small dark disc, lit along its top.
