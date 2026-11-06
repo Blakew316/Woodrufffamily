@@ -15,8 +15,15 @@ struct PhonePlay: Identifiable {
     var start: Double   // seconds
 }
 
-@MainActor
-enum PhonePlayback {
+@Observable @MainActor
+final class PhonePlayback {
+    static let shared = PhonePlayback()
+    /// A play waiting for Watch to show the player.
+    var request: PhonePlay?
+
+    /// Settings → Watch: the Play button plays on this device instead of the TV.
+    static var playsHere: Bool { UserDefaults.standard.string(forKey: "watch.playOn") == "here" }
+
     /// "iPhone", "iPad" or "This Mac", for the button.
     static var deviceName: String {
         #if os(iOS)

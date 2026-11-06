@@ -9,6 +9,7 @@ struct WatchSettingsView: View {
     @Environment(Fleet.self) private var fleet
     @Environment(\.webAuthenticationSession) private var webAuth
     @AppStorage("watch.source") private var source = "tv"
+    @AppStorage("watch.playOn") private var playOn = "tv"
     private let library = DriveLibrary.shared
 
     @State private var signedIn = GoogleDrive.signedIn
@@ -32,6 +33,16 @@ struct WatchSettingsView: View {
             } footer: {
                 Text(signedIn ? "TV reads the library from the TV on the home Wi‑Fi. Google Drive reads it straight from Drive, at home or away. Watch looks the same either way."
                               : "Sign in to Google Drive below to choose Google Drive, which works at home or away.")
+            }
+
+            Section {
+                Picker("Play Button Plays On", selection: $playOn) {
+                    Text("TV").tag("tv")
+                    Text(PhonePlayback.deviceName).tag("here")
+                }
+            } footer: {
+                Text(playOn == "here" ? "Play opens the film or episode here, from where it was left off. Play On… still sends it to a TV."
+                                      : "Play sends the film or episode to the TV the remote is on.")
             }
 
             Section {
