@@ -535,7 +535,12 @@ extension HomeDevice {
     /// A motion sensor (an ecobee SmartSensor and the like): its state says whether it sees motion.
     var isMotionSensor: Bool {
         kind == .sensor && (status.contains("Motion") || status.contains("Occupied") || status.contains("Empty")
-            || name.localizedCaseInsensitiveContains("ecosense") || name.localizedCaseInsensitiveContains("smartsensor"))
+            || named)
+    }
+    /// Named as one (“Living Room Sensor”), and not a leak, smoke or door sensor.
+    private var named: Bool {
+        let n = name.lowercased()
+        return (n.contains("sensor") || n.contains("ecosense")) && !["leak", "water", "smoke", "door", "window", "contact"].contains { n.contains($0) }
     }
     /// Seeing motion (or someone there) right now.
     var sensesMotion: Bool {
