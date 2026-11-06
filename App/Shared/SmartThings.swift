@@ -665,13 +665,15 @@ final class SmartThings {
             var s = d.isOn == true ? "On" : "Off"
             if d.isOn == true, let w = (value(st, "powerMeter", "power") as? NSNumber)?.doubleValue, w >= 1 { s += " · \(Int(w.rounded())) W" }
             d.status = s
-        } else if ["contactSensor", "waterSensor", "motionSensor", "temperatureMeasurement", "relativeHumidityMeasurement", "smokeDetector"].contains(where: { c.contains($0) }) {
+        } else if ["contactSensor", "waterSensor", "motionSensor", "occupancySensor", "temperatureMeasurement", "relativeHumidityMeasurement", "smokeDetector"].contains(where: { c.contains($0) }) {
             d.kind = .sensor
             var bits: [String] = []
             if (value(st, "waterSensor", "water") as? String) == "wet" { bits.append("Leak"); d.alert = true }
             if (value(st, "smokeDetector", "smoke") as? String) == "detected" { bits.append("Smoke"); d.alert = true }
             if let contact = value(st, "contactSensor", "contact") as? String { bits.append(contact == "open" ? "Open" : "Closed") }
-            if (value(st, "motionSensor", "motion") as? String) == "active" { bits.append("Motion") }
+            // Said either way, as Apple Home does, so a motion sensor shows as one whether or not it sees anyone.
+            if c.contains("motionSensor") { bits.append((value(st, "motionSensor", "motion") as? String) == "active" ? "Motion" : "No Motion") }
+            if c.contains("occupancySensor") { bits.append((value(st, "occupancySensor", "occupancy") as? String) == "occupied" ? "Occupied" : "Empty") }
             if let t = celsius(st, "main") { d.temperature = t; bits.append(temperatureText(t)) }
             if let h = (value(st, "relativeHumidityMeasurement", "humidity") as? NSNumber)?.intValue { bits.append("\(h)%") }
             d.status = bits.isEmpty ? "Connected" : bits.joined(separator: " · ")

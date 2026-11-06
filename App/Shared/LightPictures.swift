@@ -533,9 +533,14 @@ private struct HexPanelsDrawing: View, Animatable {
 
 extension HomeDevice {
     /// A motion sensor (an ecobee SmartSensor and the like): its state says whether it sees motion.
-    var isMotionSensor: Bool { kind == .sensor && status.contains("Motion") }
-    /// Seeing motion right now.
-    var sensesMotion: Bool { isMotionSensor && !status.contains("No Motion") }
+    var isMotionSensor: Bool {
+        kind == .sensor && (status.contains("Motion") || status.contains("Occupied") || status.contains("Empty")
+            || name.localizedCaseInsensitiveContains("ecosense") || name.localizedCaseInsensitiveContains("smartsensor"))
+    }
+    /// Seeing motion (or someone there) right now.
+    var sensesMotion: Bool {
+        isMotionSensor && ((status.contains("Motion") && !status.contains("No Motion")) || status.contains("Occupied"))
+    }
 }
 
 /// An ecobee SmartSensor as ecobee shows it: a soft white square with a thin grey line just inside its edge, on a
