@@ -534,8 +534,9 @@ private struct HexPanelsDrawing: View, Animatable {
 extension HomeDevice {
     /// A motion sensor (an ecobee SmartSensor and the like): its state says whether it sees motion.
     var isMotionSensor: Bool {
-        kind == .sensor && (status.contains("Motion") || status.contains("Occupied") || status.contains("Empty")
-            || named)
+        // By what it reports, or by its name (also when SmartThings files it as something general).
+        (kind == .sensor && (status.contains("Motion") || status.contains("Occupied") || status.contains("Empty")))
+            || (named && [.sensor, .appliance, .toggle].contains(kind))
     }
     /// Named as one (“Living Room Sensor”), and not a leak, smoke or door sensor.
     private var named: Bool {
