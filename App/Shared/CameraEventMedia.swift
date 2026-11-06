@@ -159,18 +159,7 @@ enum CameraEventMedia {
     /// The Mac adds it to a camera's push, so every iPhone has a picture for the alert even when it can't fetch one
     /// (no camera sign-in there, or the snapshot's 30 seconds are over: Send Test Camera Alert).
     static func thumbnail(_ file: URL) async -> String? {
-        var image: CGImage?
-        if file.pathExtension == "mp4" {
-            let generator = AVAssetImageGenerator(asset: AVURLAsset(url: file))
-            generator.appliesPreferredTrackTransform = true
-            generator.maximumSize = CGSize(width: 480, height: 480)
-            image = try? await generator.image(at: CMTime(seconds: 1, preferredTimescale: 600)).image
-        } else if let src = CGImageSourceCreateWithURL(file as CFURL, nil) {
-            image = CGImageSourceCreateThumbnailAtIndex(src, 0, [kCGImageSourceCreateThumbnailFromImageAlways: true,
-                                                                 kCGImageSourceThumbnailMaxPixelSize: 480,
-                                                                 kCGImageSourceCreateThumbnailWithTransform: true] as CFDictionary)
-        }
-        guard let image else { return nil }
+        guard let image = await picture(file) else { return nil }
         for side in [256, 208, 168, 136, 112] {
             guard let small = scaled(image, maxSide: side) else { continue }
             for quality in [0.6, 0.45, 0.3] {
@@ -181,6 +170,26 @@ enum CameraEventMedia {
             }
         }
         return nil
+    }
+
+    /// A picture of the moment for the TVs & Cameras widget: a JPEG at most 480 pixels across.
+    static func still(_ file: URL) async -> Data? {
+        guard let image = await picture(file), let small = scaled(image, maxSide: 480) else { return nil }
+        return jpeg(small, quality: 0.75)
+    }
+
+    /// The moment as an image: the snapshot itself, or a clip's frame a second in.
+    private static func picture(_ file: URL) async -> CGImage? {
+        if file.pathExtension == "mp4" {
+            let generator = AVAssetImageGenerator(asset: AVURLAsset(url: file))
+            generator.appliesPreferredTrackTransform = true
+            generator.maximumSize = CGSize(width: 480, height: 480)
+            return try? await generator.image(at: CMTime(seconds: 1, preferredTimescale: 600)).image
+        }
+        guard let src = CGImageSourceCreateWithURL(file as CFURL, nil) else { return nil }
+        return CGImageSourceCreateThumbnailAtIndex(src, 0, [kCGImageSourceCreateThumbnailFromImageAlways: true,
+                                                            kCGImageSourceThumbnailMaxPixelSize: 480,
+                                                            kCGImageSourceCreateThumbnailWithTransform: true] as CFDictionary)
     }
 
     /// The Mac's small picture as a file to attach (the full clip or snapshot couldn't be fetched here).

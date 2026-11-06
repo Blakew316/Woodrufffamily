@@ -1,5 +1,8 @@
 import SwiftUI
 import WebKit
+#if os(iOS)
+import WidgetKit
+#endif
 import os
 #if os(macOS)
 import AppKit
@@ -915,12 +918,52 @@ final class LivePlayer: NSObject, WKNavigationDelegate {
         }
     }
 
+    #if os(iOS)
+    private var stills: Task<Void, Never>?
+    #endif
+
+    /// iPhone: while the picture is live, a still of it for the TVs & Cameras widget, a few seconds in and then every
+    /// two minutes.
+    private func keepStills() {
+        #if os(iOS)
+        stills?.cancel()
+        stills = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 4_000_000_000)
+            while let self, !Task.isCancelled, self.live, self.running {
+                self.saveStill()
+                try? await Task.sleep(nanoseconds: 120_000_000_000)
+            }
+        }
+        #endif
+    }
+
+    #if os(iOS)
+    private func saveStill() {
+        let cam = camera
+        // The video's current frame, drawn into a canvas in the page (a snapshot of the web view can miss the video).
+        let js = """
+        (() => { const v = document.querySelector('video'); if (!v || !v.videoWidth) return null;
+          const k = Math.min(1, 480 / Math.max(v.videoWidth, v.videoHeight)); const c = document.createElement('canvas');
+          c.width = Math.round(v.videoWidth * k); c.height = Math.round(v.videoHeight * k);
+          c.getContext('2d').drawImage(v, 0, 0, c.width, c.height); return c.toDataURL('image/jpeg', 0.75); })()
+        """
+        Task { @MainActor in
+            guard let url = try? await web.evaluateJavaScript(js) as? String,
+                  let comma = url.firstIndex(of: ","),
+                  let jpeg = Data(base64Encoded: String(url[url.index(after: comma)...])), jpeg.count > 1000 else { return }
+            if PhoneWidgetShare.saveCamera(id: cam.id, name: cam.name, doorbell: cam.doorbell, jpeg: jpeg) {
+                WidgetCenter.shared.reloadTimelines(ofKind: PhoneWidgetShare.tvsCamerasKind)
+            }
+        }
+    }
+    #endif
+
     func received(_ name: String, _ body: String) {
         if name == "state" {
             // A page being let go still reports ("closed"…): only a running stream speaks.
             guard running else { return }
             if body == "failed" { onStatus?("Reconnecting…"); reconnect(); return }
-            if body == "Live" { stage("live"); live = true; failures = 0; offline = false; watchdog?.cancel() }
+            if body == "Live" { stage("live"); live = true; failures = 0; offline = false; watchdog?.cancel(); keepStills() }
             // While it's known offline, the page's "Starting…" doesn't replace "Offline".
             if offline && body == "Starting…" { return }
             if body == "Reconnecting…", live {

@@ -7,6 +7,7 @@ enum PhoneWidgetShare {
     static let groupID = "group.com.woodruff.family"
     static let nowPlayingKind = "com.woodruff.family.widget.nowplaying"
     static let homeKind = "com.woodruff.family.widget.home"
+    static let tvsCamerasKind = "com.woodruff.family.widget.tvscameras"
 
     struct Snapshot: Codable, Equatable {
         var tvName: String?
@@ -28,6 +29,8 @@ enum PhoneWidgetShare {
         var tvs: [TVLine]? = nil
         /// When the app last checked all this (nil: written by an older build). Not part of "what changed".
         var savedAt: Date? = nil
+        /// The TV the remote is on.
+        var selectedTV: String? = nil
 
         static func == (a: Snapshot, b: Snapshot) -> Bool { a.sameContent(b) }
 
@@ -36,6 +39,7 @@ enum PhoneWidgetShare {
                 && weatherTemp == o.weatherTemp && weatherSymbol == o.weatherSymbol && weatherWords == o.weatherWords
                 && highLow == o.highLow && thermostatName == o.thermostatName && thermostatTemp == o.thermostatTemp
                 && thermostatSet == o.thermostatSet && thermostatAction == o.thermostatAction && tvs == o.tvs
+                && selectedTV == o.selectedTV
         }
 
         /// What the TVs were doing is too old to show as now: the app hasn't run for a while (it only writes this while
@@ -57,7 +61,60 @@ enum PhoneWidgetShare {
         /// What's on it (nil: nothing).
         var title: String?
         var isPlaying: Bool
+        /// Its title's picture in the container.
+        var art: String? = nil
+        /// How far through it is (0–1), and the time left ("14m", "1h 34m").
+        var progress: Double? = nil
+        var left: String? = nil
     }
+
+    /// One camera on the TVs & Cameras widget: its latest still (a file in the container), when it was taken, and the
+    /// last thing it saw.
+    struct CameraLine: Codable, Equatable, Identifiable {
+        var id: String
+        var name: String
+        var doorbell: Bool
+        var file: String?
+        var at: Date?
+        var event: String?
+        var eventAt: Date?
+    }
+
+    static func loadCameras() -> [CameraLine] {
+        guard let url = container?.appendingPathComponent("cameras.json"), let data = try? Data(contentsOf: url) else { return [] }
+        return (try? JSONDecoder().decode([CameraLine].self, from: data)) ?? []
+    }
+
+    /// Keeps a camera's latest still ([jpeg]) and/or its latest event for the widget. True when the widget should
+    /// reload (an event, or a still and the last reload for stills was over a minute ago).
+    @discardableResult
+    static func saveCamera(id: String, name: String, doorbell: Bool, jpeg: Data? = nil, event: String? = nil) -> Bool {
+        guard let dir = container else { return false }
+        var all = loadCameras()
+        var line = all.first { $0.id == id } ?? CameraLine(id: id, name: name, doorbell: doorbell)
+        line.name = name
+        line.doorbell = doorbell
+        if let jpeg {
+            let hash = id.utf8.reduce(UInt64(5381)) { ($0 &* 33) &+ UInt64($1) }
+            let file = "cam-\(hash % 100_000_000).jpg"
+            guard (try? jpeg.write(to: dir.appendingPathComponent(file), options: .atomic)) != nil else { return false }
+            line.file = file
+            line.at = Date()
+        }
+        if let event {
+            line.event = event
+            line.eventAt = Date()
+        }
+        all.removeAll { $0.id == id }
+        all.append(line)
+        guard let data = try? JSONEncoder().encode(all),
+              (try? data.write(to: dir.appendingPathComponent("cameras.json"), options: .atomic)) != nil else { return false }
+        if event != nil { lastStillReload = Date(); return true }
+        if Date().timeIntervalSince(lastStillReload) > 60 { lastStillReload = Date(); return true }
+        return false
+    }
+
+    nonisolated(unsafe) private static var lastStillReload = Date.distantPast
 
     static var container: URL? {
         FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: groupID)

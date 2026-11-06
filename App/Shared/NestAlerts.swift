@@ -1,6 +1,9 @@
 import SwiftUI
 import UserNotifications
 import WoodruffKit
+#if os(iOS)
+import WidgetKit
+#endif
 
 /// "Person seen · Front door doorbell", "Someone's at the front door": the cameras' events as notifications
 /// on this iPhone or Mac, like the Google Home app. They come the way the TVs get them: Google posts every
@@ -194,10 +197,21 @@ final class NestAlerts {
         // never holds the alert up.
         Notifier.deliver(c, id: "nest-" + short)
         #if os(iOS)
+        // The TVs & Cameras widget: the camera's red tag at once, its picture of the moment when it comes.
+        let doorbell = NestCameras.shared.cameras.first { $0.id == camera }?.doorbell ?? false
+        let tag = title.localizedCaseInsensitiveContains("person") ? "Person"
+            : title.localizedCaseInsensitiveContains("motion") ? "Motion" : title.localizedCaseInsensitiveContains("ring") || title.localizedCaseInsensitiveContains("door") ? "Ring" : "Event"
+        if PhoneWidgetShare.saveCamera(id: camera, name: body, doorbell: doorbell, event: tag) {
+            WidgetCenter.shared.reloadTimelines(ofKind: PhoneWidgetShare.tvsCamerasKind)
+        }
         // Here: the clip or snapshot added to the alert when Google has it.
         Task {
-            guard let file = await CameraEventMedia.fetch(camera: camera, eventID: event, clipURL: clip, key: short, timeout: 10),
-                  let a = CameraEventMedia.attachment(file),
+            guard let file = await CameraEventMedia.fetch(camera: camera, eventID: event, clipURL: clip, key: short, timeout: 10) else { return }
+            if let jpeg = await CameraEventMedia.still(file) {
+                PhoneWidgetShare.saveCamera(id: camera, name: body, doorbell: doorbell, jpeg: jpeg)
+                WidgetCenter.shared.reloadTimelines(ofKind: PhoneWidgetShare.tvsCamerasKind)
+            }
+            guard let a = CameraEventMedia.attachment(file),
                   let update = c.mutableCopy() as? UNMutableNotificationContent else { return }
             update.attachments = [a]
             update.sound = nil

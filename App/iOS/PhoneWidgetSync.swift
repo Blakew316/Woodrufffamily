@@ -8,7 +8,6 @@ import WoodruffKit
 @MainActor
 enum PhoneWidgetSync {
     private static var pending: Task<Void, Never>?
-    private static var artFor: String?
 
     static func update(_ fleet: Fleet) {
         guard PhoneWidgetShare.container != nil else { return }
@@ -33,8 +32,26 @@ enum PhoneWidgetSync {
                 s.art = await art(fleet, p)
             }
         }
-        s.tvs = fleet.tvs.filter { !$0.isUnpaired }.map { tv in
-            PhoneWidgetShare.TVLine(id: tv.id, name: tv.name, online: tv.online, title: tv.nowPlaying?.title, isPlaying: tv.nowPlaying?.isPlaying ?? false)
+        s.selectedTV = fleet.selected?.id
+        var lines: [PhoneWidgetShare.TVLine] = []
+        var keep: Set<String> = []
+        if let a = s.art { keep.insert(a) }
+        for tv in fleet.tvs where !tv.isUnpaired {
+            var line = PhoneWidgetShare.TVLine(id: tv.id, name: tv.name, online: tv.online, title: tv.nowPlaying?.title, isPlaying: tv.nowPlaying?.isPlaying ?? false)
+            if let p = tv.nowPlaying {
+                if let pr = p.progress { line.progress = (pr * 50).rounded() / 50 }
+                line.left = timeLeft(position: p.position, duration: p.duration).map { $0.replacingOccurrences(of: " left", with: "") }
+                line.art = await art(fleet, p)
+                if let a = line.art { keep.insert(a) }
+            }
+            lines.append(line)
+        }
+        s.tvs = lines
+        // Only the pictures something shows now are kept.
+        if let dir = PhoneWidgetShare.container {
+            for old in (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? [] where old.hasPrefix("art-") && !keep.contains(old) {
+                try? FileManager.default.removeItem(at: dir.appendingPathComponent(old))
+            }
         }
         if let w = HomeWeather.shared.now {
             s.weatherTemp = w.tempText
@@ -59,17 +76,11 @@ enum PhoneWidgetSync {
         // A name that stays the same from launch to launch for the same picture.
         let hash = url.absoluteString.utf8.reduce(UInt64(5381)) { ($0 &* 33) &+ UInt64($1) }
         let name = "art-" + String(hash % 100_000_000) + ".jpg"
-        if artFor == name, let file = PhoneWidgetShare.artURL(name), FileManager.default.fileExists(atPath: file.path) { return name }
-        guard let image = await ImageStore.shared.image(url, maxPixel: 600),
+        if let file = PhoneWidgetShare.artURL(name), FileManager.default.fileExists(atPath: file.path) { return name }
+        guard let image = await ImageStore.shared.image(url, maxPixel: 300),
               let data = image.jpegData(compressionQuality: 0.8),
-              let dir = PhoneWidgetShare.container,
               let file = PhoneWidgetShare.artURL(name) else { return nil }
-        // Only the current picture is kept.
-        for old in (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? [] where old.hasPrefix("art-") && old != name {
-            try? FileManager.default.removeItem(at: dir.appendingPathComponent(old))
-        }
         guard (try? data.write(to: file, options: .atomic)) != nil else { return nil }
-        artFor = name
         return name
     }
 }

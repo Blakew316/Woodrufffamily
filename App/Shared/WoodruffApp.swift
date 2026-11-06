@@ -109,7 +109,20 @@ struct WoodruffApp: App {
                         UserDefaults.standard.set("home", forKey: "section")
                         return
                     }
+                    // woodruff://camera?id=… (the TVs & Cameras widget): that camera, live.
+                    if url.scheme == "woodruff" && url.host == "camera" {
+                        let id = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "id" }?.value
+                        UserDefaults.standard.set("home", forKey: "section")
+                        if let id, !id.isEmpty { CameraStreams.shared.requested = id }
+                        return
+                    }
                     if url.scheme == "woodruff" && url.host == "remote" {
+                        // woodruff://remote?tv=… (the TVs & Cameras widget): the remote on that TV.
+                        if let id = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "tv" })?.value,
+                           fleet.tv(id) != nil {
+                            fleet.remoteAll = false
+                            fleet.selectedID = id
+                        }
                         #if os(macOS)
                         fleet.remotePanel = true
                         #else

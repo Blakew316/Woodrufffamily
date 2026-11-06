@@ -31,6 +31,7 @@ struct SceneControls: WidgetBundle {
         TVVolumeDownControl()
         NowPlayingWidget()
         HomeWidget()
+        TVsCamerasWidget()
     }
 }
 
