@@ -32,7 +32,7 @@ final class DriveDownloads: NSObject {
         set { UserDefaults.standard.set(newValue, forKey: "watch.cellularDownloads"); shared.session = shared.makeSession() }
     }
 
-    private static let folder: URL = {
+    nonisolated private static let folder: URL = {
         var dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Watch/Downloads", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         // Not in the iCloud backup: films are large and can be downloaded again.
@@ -41,7 +41,7 @@ final class DriveDownloads: NSObject {
         try? dir.setResourceValues(values)
         return dir
     }()
-    private static let list = folder.appendingPathComponent("downloads.json")
+    nonisolated private static let list = folder.appendingPathComponent("downloads.json")
 
     override private init() {
         super.init()
@@ -74,7 +74,7 @@ final class DriveDownloads: NSObject {
         if let d = try? JSONEncoder().encode(items) { try? d.write(to: Self.list, options: .atomic) }
     }
 
-    static func localFile(_ file: String) -> URL { folder.appendingPathComponent("\(file).mp4") }
+    nonisolated static func localFile(_ file: String) -> URL { folder.appendingPathComponent("\(file).mp4") }
 
     /// The downloaded copy, when there's a finished one.
     func local(_ key: String) -> URL? {
