@@ -600,6 +600,8 @@ struct CameraLiveView: View {
     @State private var fullScreen = false
     /// Bumped when full screen closes, so the live view takes the picture back.
     @State private var reattach = 0
+    /// Opened from an alert: the live picture instead of the event's replay.
+    @State private var showLive = false
     private let streams = CameraStreams.shared
 
     var body: some View {
@@ -660,12 +662,20 @@ struct CameraLiveView: View {
     }
 
     #if os(iOS)
+    /// The alert this camera was opened from, if any.
+    private var replay: CameraReplay? { streams.replay.flatMap { $0.camera == camera.id ? $0 : nil } }
+
+    private var subtitle: String {
+        if let r = replay, !showLive { return "\(r.title) · \(r.at.formatted(date: .omitted, time: .shortened))" }
+        return camera.online ? (streams.status[camera.id] ?? "Starting…") : "Offline"
+    }
+
     private func phoneBody(_ player: LivePlayer) -> some View {
         VStack(spacing: 14) {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(camera.name).font(.title3.bold())
-                    Text(camera.online ? (streams.status[camera.id] ?? "Starting…") : "Offline").font(.subheadline).foregroundStyle(.secondary)
+                    Text(subtitle).font(.subheadline).foregroundStyle(.secondary)
                 }
                 Spacer()
                 GlassCircle(symbol: muted ? "speaker.slash.fill" : "speaker.wave.2.fill", size: 40) {
@@ -675,18 +685,33 @@ struct CameraLiveView: View {
                 GlassCircle(symbol: "xmark", size: 40) { dismiss() }
                     .accessibilityLabel("Close")
             }
-            // Opened from an alert: what it saw, replaying above the live view.
-            if let r = streams.replay, r.camera == camera.id {
-                EventReplayView(replay: r)
-                Text("Live").font(.subheadline.weight(.semibold)).frame(maxWidth: .infinity, alignment: .leading)
-            }
+            // One picture: opened from an alert, the event first (its clip or picture), with Live to switch; with
+            // nothing to replay, straight to live.
             ZStack(alignment: .topTrailing) {
-                // The picture is in one place at a time: here, or full screen.
-                if fullScreen { Color.black } else { LiveWebView(player: player).id(reattach) }
-                GlassCircle(symbol: "arrow.up.left.and.arrow.down.right", size: 34) { fullScreen = true }
+                if let r = replay, !showLive {
+                    EventReplayView(replay: r) { withAnimation(.smooth(duration: 0.25)) { showLive = true } }
+                    Button { withAnimation(.smooth(duration: 0.25)) { showLive = true } } label: {
+                        Text("Live").font(.subheadline.weight(.semibold)).padding(.horizontal, 14).padding(.vertical, 8)
+                    }
+                    .buttonStyle(.glass)
                     .environment(\.colorScheme, .dark)
                     .padding(10)
-                    .accessibilityLabel("Full Screen")
+                } else {
+                    // The picture is in one place at a time: here, or full screen.
+                    if fullScreen { Color.black } else { LiveWebView(player: player).id(reattach) }
+                    HStack(spacing: 8) {
+                        if replay != nil {
+                            Button { withAnimation(.smooth(duration: 0.25)) { showLive = false } } label: {
+                                Text("Replay").font(.subheadline.weight(.semibold)).padding(.horizontal, 14).padding(.vertical, 8)
+                            }
+                            .buttonStyle(.glass)
+                        }
+                        GlassCircle(symbol: "arrow.up.left.and.arrow.down.right", size: 34) { fullScreen = true }
+                            .accessibilityLabel("Full Screen")
+                    }
+                    .environment(\.colorScheme, .dark)
+                    .padding(10)
+                }
             }
             .aspectRatio(16 / 9, contentMode: .fit)
             .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
@@ -696,7 +721,7 @@ struct CameraLiveView: View {
         .padding(20)
         // As wide as the phone (a fixed minimum wider than an iPhone pushed the close button off the edge).
         .frame(maxWidth: .infinity, minHeight: 340, alignment: .top)
-        .presentationDetents(streams.replay?.camera == camera.id ? [.large] : [.medium, .large])
+        .presentationDetents([.medium, .large])
         .fullScreenCover(isPresented: $fullScreen, onDismiss: { reattach += 1 }) {
             CameraFullScreen(camera: camera, player: player, muted: $muted)
         }
@@ -1082,43 +1107,45 @@ struct CameraReplay: Equatable {
     var clip: String?
     var title: String
     var at: Date
+    /// What the alert itself showed (its attachment), when it had one.
+    var media: URL? = nil
+    /// The Mac's small picture of the moment, from the push.
+    var thumb: String? = nil
 }
 
 #if os(iOS)
-/// The alert's moment: its clip looping (muted) or its snapshot, with what it was and when.
+/// The alert's moment filling the camera's picture box: its clip looping (muted) or its picture. Tries what the alert
+/// itself showed, then Google, then the Mac's small picture; with none of them it hands over to live ([none]).
 struct EventReplayView: View {
     let replay: CameraReplay
+    var none: () -> Void
     @State private var file: URL?
-    @State private var tried = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 6) {
-                Text(replay.title).font(.subheadline.weight(.semibold))
-                Text(replay.at.formatted(date: .omitted, time: .shortened)).font(.subheadline).foregroundStyle(.secondary)
-                Spacer(minLength: 0)
-            }
-            ZStack {
-                Color.black
-                if let file {
-                    if file.pathExtension == "mp4" {
-                        LoopingClip(url: file)
-                    } else if let image = UIImage(contentsOfFile: file.path) {
-                        Image(uiImage: image).resizable().scaledToFit()
-                    }
-                } else if tried {
-                    Text("Google has no clip or snapshot for this one.")
-                        .font(.footnote).foregroundStyle(.white.opacity(0.7)).multilineTextAlignment(.center).padding()
-                } else {
-                    ProgressView().tint(.white)
+        ZStack {
+            Color.black
+            if let file {
+                if file.pathExtension == "mp4" {
+                    LoopingClip(url: file)
+                } else if let image = UIImage(contentsOfFile: file.path) {
+                    Image(uiImage: image).resizable().scaledToFit()
                 }
+            } else {
+                ProgressView().tint(.white)
             }
-            .aspectRatio(16 / 9, contentMode: .fit)
-            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         }
         .task(id: replay.key) {
-            file = await CameraEventMedia.fetch(camera: replay.camera, eventID: replay.event, clipURL: replay.clip, key: replay.key, timeout: 12)
-            tried = true
+            if let m = replay.media, FileManager.default.fileExists(atPath: m.path) {
+                file = m
+                // The alert's own picture shows at once; Google's clip replaces it when it comes.
+                if m.pathExtension == "mp4" { return }
+            }
+            if let f = await CameraEventMedia.fetch(camera: replay.camera, eventID: replay.event, clipURL: replay.clip, key: replay.key, timeout: 6) {
+                file = f
+                return
+            }
+            if file == nil, let t = replay.thumb, let f = CameraEventMedia.thumbnailFile(t) { file = f }
+            if file == nil { none() }
         }
     }
 }

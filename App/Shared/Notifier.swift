@@ -93,6 +93,17 @@ final class NotificationHandler: NSObject, UNUserNotificationCenterDelegate, @un
         }
     }
 
+    /// The picture or clip the alert itself carried (what the notification extension attached), copied out of the
+    /// notification's store so the camera view can show the very same moment.
+    private static func attachedMedia(_ content: UNNotificationContent) -> URL? {
+        guard let a = content.attachments.first else { return nil }
+        let url = a.url
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        let copy = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + "." + url.pathExtension)
+        return (try? FileManager.default.copyItem(at: url, to: copy)) != nil ? copy : nil
+    }
+
     @MainActor private func handle(_ response: UNNotificationResponse) {
         let tvID = response.notification.request.content.userInfo["tv"] as? String
         let cameraID = response.notification.request.content.userInfo["camera"] as? String
@@ -108,7 +119,9 @@ final class NotificationHandler: NSObject, UNUserNotificationCenterDelegate, @un
                 CameraStreams.shared.replay = CameraReplay(camera: cameraID, key: text("key") ?? response.notification.request.identifier,
                                                            event: text("event"), clip: text("clip"),
                                                            title: response.notification.request.content.title,
-                                                           at: response.notification.date)
+                                                           at: response.notification.date,
+                                                           media: Self.attachedMedia(response.notification.request.content),
+                                                           thumb: text("thumb"))
                 CameraStreams.shared.requested = cameraID
                 #if os(macOS)
                 // The camera opens in Woodruff's window: bring it forward if it's tucked away in the Dock.
