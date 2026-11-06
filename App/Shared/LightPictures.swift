@@ -503,6 +503,9 @@ private struct HexPanelsDrawing: View, Animatable {
         // Each panel comes on just after the one before it.
         func each(_ i: Int) -> CGFloat { max(0, min(1, power * (1 + CGFloat(n - 1) * 0.3) - CGFloat(i) * 0.3)) }
 
+        // A soft light behind the panels, so their detail shows on a dark tile while they're off (fading as they light).
+        let cx = w / 2, cy = h / 2
+        glow(ctx, at: CGPoint(x: cx, y: cy), radius: max(w, h) * 0.62, [(0, Color.white.opacity(0.16 * Double(1 - power))), (1, Color.white.opacity(0))])
         // The glow behind the panels.
         for (i, p) in points.enumerated() {
             let b = each(i)
