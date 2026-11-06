@@ -154,10 +154,12 @@ struct AllDevicesView: View {
                 .frame(maxWidth: .infinity)
                 .frame(height: 56 * Self.glyphScale, alignment: .center)
             VStack(spacing: 2) {
-                Text(f.name).font(.footnote.weight(.semibold)).lineLimit(2)
+                // Two lines kept for the name and the state in every tile, used or not, so every tile in a row is the
+                // same height whatever its name ("Shelf Light" was shorter than "Shelf Light 2" beside it).
+                Text(f.name).font(.footnote.weight(.semibold)).lineLimit(2, reservesSpace: true)
                 // Two lines, so a TV's title reads in full more often.
                 Text(f.state).font(.caption)
-                    .foregroundStyle(f.on ? Color.black.opacity(0.55) : .secondary).lineLimit(2)
+                    .foregroundStyle(f.on ? Color.black.opacity(0.55) : .secondary).lineLimit(2, reservesSpace: true)
             }
             .multilineTextAlignment(.center)
             .frame(maxWidth: .infinity)
