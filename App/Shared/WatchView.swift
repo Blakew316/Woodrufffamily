@@ -735,10 +735,10 @@ enum PlayRouter {
                 NativePlayer.shared.present(p)
             }
             #else
-            // Shown by the window's root once the title page that asked has closed, whichever page asked.
+            // In a player window of its own, once the title page that asked has closed.
             Task { @MainActor in
                 try? await Task.sleep(nanoseconds: 450_000_000)
-                PhonePlayback.shared.request = p
+                MacPlayer.shared.present(p)
             }
             #endif
             return true

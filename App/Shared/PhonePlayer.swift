@@ -322,3 +322,107 @@ final class PlayerController: AVPlayerViewController {
     }
 }
 #endif
+
+#if os(macOS)
+
+/// Apple's Mac player (AVPlayerView, as in the TV app and QuickTime) in a window of its own: floating controls, full
+/// screen, picture in picture. Where it's got to is saved every 10 seconds and when the window closes, for Continue
+/// Watching.
+@MainActor
+final class MacPlayer: NSObject, NSWindowDelegate {
+    static let shared = MacPlayer()
+    private var window: NSWindow?
+    private var player: AVPlayer?
+    /// Kept while a Drive video plays (it fetches the parts the player asks for).
+    private var stream: DriveStream?
+    private var ticker: Any?
+    private var current: PhonePlay?
+    private var watch: Task<Void, Never>?
+
+    func present(_ play: PhonePlay) {
+        window?.close()
+        current = play
+        let item: AVPlayerItem
+        switch play.source {
+        case .url(let u):
+            item = AVPlayerItem(url: u)
+        case .drive(let id):
+            let s = DriveStream(fileID: id)
+            stream = s
+            item = AVPlayerItem(asset: s.asset())
+        }
+        let p = AVPlayer(playerItem: item)
+        player = p
+
+        let view = AVPlayerView()
+        view.player = p
+        view.controlsStyle = .floating
+        view.showsFullScreenToggleButton = true
+        view.allowsPictureInPicturePlayback = true
+        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1120, height: 630),
+                         styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+                         backing: .buffered, defer: false)
+        w.title = play.title
+        w.titlebarAppearsTransparent = true
+        w.backgroundColor = .black
+        w.isReleasedWhenClosed = false
+        w.contentView = view
+        w.contentAspectRatio = NSSize(width: 16, height: 9)
+        w.delegate = self
+        w.center()
+        w.makeKeyAndOrderFront(nil)
+        NSApp.activate()
+        window = w
+
+        ticker = p.addPeriodicTimeObserver(forInterval: CMTime(seconds: 10, preferredTimescale: 1), queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.report() }
+        }
+        watch = Task { [weak self] in
+            if play.start > 5 {
+                await p.seek(to: CMTime(seconds: play.start, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
+            }
+            p.play()
+            // A file Apple's player can't open, or the source out of reach: said over the player.
+            for _ in 0..<40 {
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                guard let self, self.player === p else { return }
+                if item.status == .failed { self.failed(PhonePlayback.failure(item.error, play)); return }
+                if item.status == .readyToPlay { return }
+            }
+        }
+    }
+
+    private func failed(_ words: String) {
+        guard let w = window else { return }
+        let alert = NSAlert()
+        alert.messageText = "Can’t Play This Here"
+        alert.informativeText = words
+        alert.addButton(withTitle: "OK")
+        alert.beginSheetModal(for: w) { _ in w.close() }
+    }
+
+    private func report() {
+        guard let play = current, let p = player else { return }
+        let pos = p.currentTime().seconds, dur = p.currentItem?.duration.seconds ?? 0
+        guard pos.isFinite, pos > 0 else { return }
+        DriveLibrary.shared.played(play.key, title: play.title, pos: pos * 1000, dur: dur.isFinite ? dur * 1000 : 0)
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        guard (notification.object as? NSWindow) === window else { return }
+        report()
+        DriveLibrary.shared.flush()
+        Task { await DriveLibrary.shared.sync() }
+        watch?.cancel(); watch = nil
+        if let t = ticker { player?.removeTimeObserver(t) }
+        ticker = nil
+        player?.pause()
+        player?.replaceCurrentItem(with: nil)
+        player = nil
+        stream = nil
+        current = nil
+        window?.delegate = nil
+        window = nil
+    }
+}
+#endif
