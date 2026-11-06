@@ -76,7 +76,7 @@ struct WatchView: View {
         }
         #else
         // The window's own bar has the search; the TV that plays is picked at the top of the page.
-        .macPageBar { TVPicker() }
+        // The TV it plays on and Movies | TV Shows are in the window's top bar.
         #endif
         .inlineTitle()
         #if os(macOS)
@@ -97,6 +97,11 @@ struct WatchView: View {
             }
         })
         .refreshable { await load() }
+        // Movies | TV Shows (on the Mac, switched in the window's top bar).
+        .onChange(of: section) { _, _ in
+            page = 0
+            Task { await loadSection(force: false) }
+        }
         // Again from the start when the remote moves to a TV with another library.
         .task(id: client?.sourceID) { await loop() }
         // The other library picked in Settings → Watch: its titles, read afresh.
@@ -126,7 +131,9 @@ struct WatchView: View {
         let worked = shelves.get(place: place, titles: titles, shown: watchingIDs)
         let featured = worked.featured
         VStack(spacing: 12) {
+            #if os(iOS)
             sectionPicker
+            #endif
             if !featured.isEmpty {
                 Billboard(titles: featured, page: $page, client: client).id(place)
             }
@@ -153,10 +160,7 @@ struct WatchView: View {
         .labelsHidden()
         .frame(maxWidth: 300)
         .frame(maxWidth: .infinity)
-        .onChange(of: section) { _, _ in
-            page = 0
-            Task { await loadSection(force: false) }
-        }
+
     }
 
     /// Every title of the section shown (a page at a time from the library), for its banner and rows.
@@ -301,6 +305,8 @@ struct Billboard: View {
     @Binding var page: Int
     /// The TV the library is from (Watch works it out once for every picture on the page).
     var client: (any WatchSource)?
+    /// What each featured title is about (the Mac's banner shows it), read once each.
+    @State private var overviews: [String: String] = [:]
 
     var body: some View {
         pages
@@ -359,8 +365,8 @@ struct Billboard: View {
                 Color.clear.overlay { Artwork(url: art, maxPixel: 900) }.clipped().blur(radius: 40).opacity(0.75)
                 Color.black.opacity(0.45)
                 HStack(spacing: 24) {
+                    // From the top: the name, its facts, Play and Details, then what it's about.
                     VStack(alignment: .leading, spacing: 8) {
-                        Spacer(minLength: 0)
                         Text(t.title).font(.system(size: max(22, min(40, g.size.height * 0.11)), weight: .bold))
                             .foregroundStyle(.white).lineLimit(2).minimumScaleFactor(0.7)
                         Text(meta(t)).font(.callout.weight(.medium)).foregroundStyle(.white.opacity(0.8)).lineLimit(1)
@@ -370,9 +376,17 @@ struct Billboard: View {
                             }
                             CapsuleButton(title: "Details", symbol: nil, prominent: false) { open(t) }
                         }
-                        .padding(.top, 6)
+                        .padding(.top, 4)
+                        if let o = overviews[t.id], !o.isEmpty {
+                            Text(o).font(.body).foregroundStyle(.white.opacity(0.85))
+                                .lineLimit(max(2, Int((g.size.height - 190) / 22)))
+                                .fixedSize(horizontal: false, vertical: true)
+                                .padding(.top, 8)
+                                .transition(.opacity)
+                        }
                         Spacer(minLength: 0)
                     }
+                    .padding(.top, 10)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     Color.clear
                         .overlay { Artwork(url: art, maxPixel: 1800) }
@@ -387,6 +401,19 @@ struct Billboard: View {
         .contentShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
         .onTapGesture { open(t) }
         .contextMenu { TitleMenu(title: t) }
+        .task(id: t.id) { await overview(t) }
+    }
+
+    /// The title's story, from the details kept from an earlier look or read now.
+    private func overview(_ t: Title) async {
+        guard overviews[t.id] == nil, let c = client else { return }
+        if let kept = TitleCache.shared.details(hub: c.sourceID, id: t.id)?.overview {
+            overviews[t.id] = kept
+            return
+        }
+        guard let d = try? await c.title(t.id) else { return }
+        TitleCache.shared.keep(d, hub: c.sourceID, id: t.id)
+        withAnimation(.easeOut(duration: 0.3)) { overviews[t.id] = d.overview ?? "" }
     }
     #endif
 

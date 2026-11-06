@@ -421,6 +421,12 @@ struct MacRoot: View {
         section == .home && tvSelection == nil && deviceSelection == nil && query.isEmpty && nav.path.isEmpty
     }
 
+    /// Watch's own page (not a list opened from it): its Movies | TV Shows and the TV it plays on sit in the top bar.
+    private var onWatch: Bool {
+        section == .watch && tvSelection == nil && deviceSelection == nil && query.isEmpty && nav.path.isEmpty
+    }
+    @AppStorage("watch.section") private var watchSection = "movies"
+
     var body: some View {
         @Bindable var fleet = fleet
         @Bindable var nav = nav
@@ -601,6 +607,17 @@ struct MacRoot: View {
                     MacGreetingPill(compact: width < 1150)
                         .transition(.opacity.combined(with: .scale(scale: 0.96)))
                     Spacer(minLength: 8)
+                }
+                if onWatch {
+                    Picker("Library", selection: $watchSection) {
+                        Text("Movies").tag("movies")
+                        Text("TV Shows").tag("shows")
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .fixedSize()
+                    Spacer(minLength: 8)
+                    TVPicker()
                 }
                 Button { withAnimation(.smooth) { fleet.remotePanel.toggle() } } label: {
                     Image(systemName: "appletvremote.gen4")

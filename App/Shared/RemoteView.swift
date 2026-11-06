@@ -240,6 +240,10 @@ struct RemoteView: View {
                         // through Woodruff do this by themselves).
                         if !["volup", "voldown", "mute"].contains(key) { fleet.poke(t.id) }
                     }
+                    else if key == "power" {
+                        // Only an LG can be turned off through its own connection so far.
+                        fleet.say("Power", "Turning \(t.name) on and off from here needs its remote paired (Settings, TVs, \(t.name)).")
+                    }
                     else { try await fleet.client(for: t)?.key(key, repeat: n) }
                     if key == "ok" && !all {
                         try? await Task.sleep(nanoseconds: 400_000_000)
