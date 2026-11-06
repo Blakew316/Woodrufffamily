@@ -565,7 +565,7 @@ enum PlayRouter {
             PhonePlayback.shared.request = p
             return true
         }
-        guard let c = WatchSources.current(fleet), let target = tv ?? fleet.selected, !target.isUnpaired else {
+        guard let c = fleet.hubClient(), let target = tv ?? fleet.selected, !target.isUnpaired else {
             fleet.show(TVError.notPaired)
             return false
         }
@@ -585,7 +585,7 @@ enum PlayRouter {
 
     @discardableResult
     static func together(_ a: PlayAction, fleet: Fleet) -> Bool {
-        guard let c = WatchSources.current(fleet) else {
+        guard let c = fleet.hubClient() else {
             fleet.show(TVError.notPaired)
             return false
         }
