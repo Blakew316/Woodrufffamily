@@ -1,5 +1,6 @@
 import SwiftUI
 import WebKit
+import os
 #if os(macOS)
 import AppKit
 #endif
@@ -272,7 +273,10 @@ final class NestCameras {
         var busy = 0
         while true {
             try Task.checkCancellation()
-            let wait = max(nextAny, nextFor[cam] ?? .distantPast).timeIntervalSinceNow
+            // The camera that's open goes first: it doesn't wait behind the tiles' starts and renewals (only its own
+            // turn, and Google's wait after a refusal).
+            let open = CameraStreams.shared.expanded == cam || CameraStreams.shared.full == cam
+            let wait = max(open ? .distantPast : nextAny, nextFor[cam] ?? .distantPast).timeIntervalSinceNow
             if wait > 0 { try await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000)) ; continue }
             nextAny = Date().addingTimeInterval(2)
             nextFor[cam] = Date().addingTimeInterval(8)
@@ -378,6 +382,8 @@ final class CameraStreams {
     @ObservationIgnored private var watching = 0
     @ObservationIgnored private var idle: Task<Void, Never>?
     @ObservationIgnored private var backgroundAt: Date?
+    /// iPhone: the tiles' streams paused while a camera is open over them.
+    @ObservationIgnored private var heldBack: [String] = []
 
     /// Lets every stream go and forgets them (signed out).
     func reset() {
@@ -419,6 +425,26 @@ final class CameraStreams {
                 if watching > 0 { p.start() } else { status[c.id] = "Paused" }
             }
         }
+    }
+
+    /// iPhone: a camera opened over Home. The other streams pause meanwhile (their tiles are behind it), so this
+    /// one has the phone's bandwidth and Google's camera commands to itself.
+    func focus(_ id: String) {
+        #if os(iOS)
+        for (k, p) in players where k != id && p.isRunning {
+            p.pause()
+            heldBack.append(k)
+            if status[k] != "Offline" { status[k] = "Paused" }
+        }
+        #endif
+    }
+
+    /// It closed: the tiles' streams start again (if Home is still showing them).
+    func unfocus() {
+        let back = heldBack
+        heldBack = []
+        guard watching > 0 else { return }
+        for k in back { if let p = players[k], p.camera.online { p.start() } }
     }
 
     /// One went off screen; if nothing is watched for two minutes, the streams are let go.
@@ -648,12 +674,13 @@ struct CameraLiveView: View {
             phoneBody(player)
             #endif
         }
-        .onAppear { streams.expanded = camera.id; streams.show(camera) }
+        .onAppear { streams.expanded = camera.id; streams.focus(camera.id); streams.show(camera) }
         .onDisappear {
             player.setMuted(true)
             if streams.replay?.camera == camera.id { streams.replay = nil }
             if streams.expanded == camera.id { streams.expanded = nil }
             streams.hide()
+            streams.unfocus()
         }
     }
 
@@ -744,6 +771,15 @@ final class LivePlayer: NSObject, WKNavigationDelegate {
     private var failures = 0
     /// Google's last answer was that the camera is offline (it's tried again every minute, quietly).
     private var offline = false
+    /// When this start began, for the stage times in the log (Console: subsystem com.woodruff.family, category camera).
+    private var startedAt: Date?
+    private static let log = Logger(subsystem: "com.woodruff.family", category: "camera")
+    var isRunning: Bool { running }
+
+    private func stage(_ what: String) {
+        guard let t = startedAt else { return }
+        Self.log.notice("\(self.camera.name, privacy: .public): \(what, privacy: .public) after \(String(format: "%.1f", Date().timeIntervalSince(t)), privacy: .public)s")
+    }
 
     init(camera: NestCameras.Camera) {
         self.camera = camera
@@ -772,6 +808,8 @@ final class LivePlayer: NSObject, WKNavigationDelegate {
         retry?.cancel(); retry = nil
         running = true
         live = false
+        startedAt = Date()
+        stage("start")
         onStatus?(offline ? "Offline" : "Starting…")
         web.loadHTMLString(Self.page, baseURL: URL(string: "https://localhost/"))
     }
@@ -831,7 +869,7 @@ final class LivePlayer: NSObject, WKNavigationDelegate {
             // A page being let go still reports ("closed"…): only a running stream speaks.
             guard running else { return }
             if body == "failed" { onStatus?("Reconnecting…"); reconnect(); return }
-            if body == "Live" { live = true; failures = 0; offline = false; watchdog?.cancel() }
+            if body == "Live" { stage("live"); live = true; failures = 0; offline = false; watchdog?.cancel() }
             // While it's known offline, the page's "Starting…" doesn't replace "Offline".
             if offline && body == "Starting…" { return }
             if body == "Reconnecting…", live {
@@ -853,7 +891,9 @@ final class LivePlayer: NSObject, WKNavigationDelegate {
             guard let self else { return }
             do {
                 if !self.offline { self.onStatus?("Starting…") }
+                self.stage("offer ready")
                 let (answer, s) = try await NestCameras.shared.startStream(self.camera, offer: body)
+                self.stage("Google answered")
                 guard self.running, !Task.isCancelled else { return }
                 self.offline = false
                 self.onStatus?("Starting…")
