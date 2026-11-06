@@ -76,16 +76,28 @@ enum Notifier {
 
 /// What a tap on a notification (or one of its actions) does.
 final class NotificationHandler: NSObject, UNUserNotificationCenterDelegate, @unchecked Sendable {
-    func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
+    // The completion-handler forms, each answered on the main thread: with the async forms the system's completion ran
+    // on a background thread when the method returned, and UIKit (updating the app's snapshot after a tapped alert)
+    // aborted the app.
+    func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification,
+                                withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
         // Kept in Notification Center too: an alert that arrives while Woodruff is open was only a passing banner.
-        [.banner, .list, .sound]
+        DispatchQueue.main.async { completionHandler([.banner, .list, .sound]) }
     }
 
-    func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
+    func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
+                                withCompletionHandler completionHandler: @escaping () -> Void) {
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated { self.handle(response) }
+            completionHandler()
+        }
+    }
+
+    @MainActor private func handle(_ response: UNNotificationResponse) {
         let tvID = response.notification.request.content.userInfo["tv"] as? String
         let cameraID = response.notification.request.content.userInfo["camera"] as? String
         let action = response.actionIdentifier
-        await MainActor.run {
+        do {
             let fleet = Fleet.shared
             // A camera or doorbell alert: straight to that camera's live view.
             if let cameraID, action == UNNotificationDefaultActionIdentifier {
