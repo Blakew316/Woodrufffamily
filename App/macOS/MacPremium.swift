@@ -143,9 +143,12 @@ final class NowPlayingBridge {
         guard !wired else { return }
         wired = true
         let c = MPRemoteCommandCenter.shared()
+        // The play/pause key and Now Playing's button send this. The plain "pause" and "play" are left alone: macOS
+        // sends those by itself (an app starting the microphone, a dictation, AirPods taken out), and passed on
+        // they paused or restarted the TV with no one pressing anything.
         c.togglePlayPauseCommand.addTarget { _ in self.key("playpause"); return .success }
-        c.playCommand.addTarget { _ in self.key("playpause"); return .success }
-        c.pauseCommand.addTarget { _ in self.key("playpause"); return .success }
+        c.playCommand.isEnabled = false
+        c.pauseCommand.isEnabled = false
         c.skipBackwardCommand.preferredIntervals = [10]
         c.skipForwardCommand.preferredIntervals = [30]
         c.skipBackwardCommand.addTarget { _ in self.media("back10"); return .success }
