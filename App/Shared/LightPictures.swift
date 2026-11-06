@@ -298,7 +298,7 @@ extension GoveeLight {
     }
 }
 
-/// A light bar under a floating oak shelf, its light spraying down in a cone onto the counter and washing the wall. Turned on, the cone grows down
+/// A light bar under a floating cherry shelf, its light spraying down in a cone onto the counter and washing the wall. Turned on, the cone grows down
 /// from the bar; the brighter it's set, the brighter the beam, the further it reaches and the wider it spreads.
 struct UnderShelfPicture: View {
     var level: Double
@@ -388,13 +388,13 @@ private struct UnderShelfDrawing: View, Animatable {
         top.addLine(to: CGPoint(x: shX + shW - ins, y: topY))
         top.addLine(to: CGPoint(x: shX + ins, y: topY))
         top.closeSubpath()
-        ctx.fill(top, with: down(topY, faceY, [(0, hex(0xC9A477)), (1, hex(0xE2C49C))]))
-        // Front face: oak, darker at the ends, a bright edge where the faces meet, and its grain.
+        ctx.fill(top, with: down(topY, faceY, [(0, hex(0x8A3F2C)), (1, hex(0xA65A40))]))
+        // Front face: cherry, darker at the ends, a bright edge where the faces meet, and its grain.
         let face = roundedRect(CGRect(x: shX, y: faceY, width: shW, height: faceH), top: 0, bottom: faceH * 0.12)
-        ctx.fill(face, with: down(faceY, under, [(0, hex(0xC99D6A)), (0.5, hex(0xB3854F)), (1, hex(0x8F653A))]))
+        ctx.fill(face, with: down(faceY, under, [(0, hex(0x8E3E2A)), (0.5, hex(0x743020)), (1, hex(0x562216))]))
         ctx.fill(face, with: across(shX, shX + shW, [(0, .black.opacity(0.2)), (0.12, .black.opacity(0)), (0.88, .black.opacity(0)), (1, .black.opacity(0.2))]))
-        ctx.fill(Path(CGRect(x: shX, y: faceY, width: shW, height: max(0.5, faceH * 0.08))), with: .color(hex(0xFFECCD, 0.55)))
-        let grain = hex(0x5F3C1C, 0.22)
+        ctx.fill(Path(CGRect(x: shX, y: faceY, width: shW, height: max(0.5, faceH * 0.08))), with: .color(hex(0xFFC4AA, 0.45)))
+        let grain = hex(0x280A04, 0.3)
         ctx.fill(Path(CGRect(x: shX + shW * 0.08, y: faceY + faceH * 0.45, width: shW * 0.42, height: max(0.4, faceH * 0.06))), with: .color(grain))
         ctx.fill(Path(CGRect(x: shX + shW * 0.52, y: faceY + faceH * 0.7, width: shW * 0.36, height: max(0.4, faceH * 0.06))), with: .color(grain))
         // Its lower edge catching the light.
@@ -417,6 +417,115 @@ private struct UnderShelfDrawing: View, Animatable {
             d.fill(diffuser, with: .color(color.mix(with: .white, by: 0.6)))
             glow(d, at: CGPoint(x: cx, y: brY + brH), radius: brW * 0.6, scaleY: 0.25,
                  [(0, color.mix(with: .white, by: 0.7).opacity(0.9 * lv)), (1, color.opacity(0))])
+        }
+    }
+}
+
+extension GoveeLight {
+    /// Govee Glide Hexa light panels (Blake's desk).
+    var isHexPanels: Bool {
+        ["H6058", "H6061", "H6066", "H606A"].contains(sku.uppercased())
+            || name.localizedCaseInsensitiveContains("hexa") || name.localizedCaseInsensitiveContains("desk")
+    }
+}
+
+/// Govee Glide Hexa panels: six hexagons in a zigzag down the diagonal, frosted grey when off. Turned on, they light
+/// one after another, each glowing from its centre, a little lighter or deeper than its neighbours as the real ones
+/// blend, with a glow round them that grows with the brightness.
+struct HexPanelsPicture: View {
+    var level: Double
+    var lit: Bool
+    var color: Color
+
+    var body: some View {
+        HexPanelsDrawing(power: lit ? 1 : 0, level: level, color: color)
+            .animation(.easeInOut(duration: 1.4), value: lit)
+            .animation(.easeOut(duration: 0.35), value: level)
+    }
+}
+
+private struct HexPanelsDrawing: View, Animatable {
+    var power: Double
+    var level: Double
+    var color: Color
+
+    var animatableData: AnimatablePair<Double, Double> {
+        get { AnimatablePair(power, level) }
+        set { power = newValue.first; level = newValue.second }
+    }
+
+    var body: some View {
+        Overhang(fraction: 0.5) { size, m in
+            Canvas { context, _ in
+                var ctx = context
+                ctx.translateBy(x: m, y: m)
+                draw(ctx, w: size.width, h: size.height)
+            }
+        }
+    }
+
+    /// A hexagon standing on a point, its corners softened by [round] (a share of each side).
+    private func hexagon(_ c: CGPoint, _ r: CGFloat, round: CGFloat = 0.16) -> Path {
+        let pts = (0..<6).map { i -> CGPoint in
+            let a = CGFloat.pi / 180 * (60 * CGFloat(i) - 90)
+            return CGPoint(x: c.x + r * cos(a), y: c.y + r * sin(a))
+        }
+        var p = Path()
+        for i in 0..<6 {
+            let p0 = pts[(i + 5) % 6], p1 = pts[i], p2 = pts[(i + 1) % 6]
+            let a = CGPoint(x: p1.x + (p0.x - p1.x) * round, y: p1.y + (p0.y - p1.y) * round)
+            let b = CGPoint(x: p1.x + (p2.x - p1.x) * round, y: p1.y + (p2.y - p1.y) * round)
+            if i == 0 { p.move(to: a) } else { p.addLine(to: a) }
+            p.addQuadCurve(to: b, control: p1)
+        }
+        p.closeSubpath()
+        return p
+    }
+
+    private func draw(_ ctx: GraphicsContext, w: CGFloat, h: CGFloat) {
+        let power = CGFloat(max(0, min(1, self.power)))
+        let lv = CGFloat(0.08 + 0.92 * max(0, min(1, level)))
+        // The panels on a honeycomb (unit size): down-right, right, down-right… from the top left.
+        let s3 = CGFloat(3).squareRoot()
+        var cells: [CGPoint] = [.zero]
+        for move in ["dr", "r", "dr", "r", "dr"] {
+            let last = cells[cells.count - 1]
+            cells.append(move == "r" ? CGPoint(x: last.x + s3, y: last.y) : CGPoint(x: last.x + s3 / 2, y: last.y + 1.5))
+        }
+        let minX = cells.map(\.x).min()! - s3 / 2, maxX = cells.map(\.x).max()! + s3 / 2
+        let minY = cells.map(\.y).min()! - 1, maxY = cells.map(\.y).max()! + 1
+        let k = min(w / (maxX - minX), h / (maxY - minY))
+        let ox = (w - (maxX - minX) * k) / 2 - minX * k, oy = (h - (maxY - minY) * k) / 2 - minY * k
+        let r = k * 0.94
+        let n = cells.count
+        let points = cells.map { CGPoint(x: ox + $0.x * k, y: oy + $0.y * k) }
+        // Each panel comes on just after the one before it.
+        func each(_ i: Int) -> CGFloat { max(0, min(1, power * (1 + CGFloat(n - 1) * 0.3) - CGFloat(i) * 0.3)) }
+
+        // The glow behind the panels.
+        for (i, p) in points.enumerated() {
+            let b = each(i)
+            guard b > 0 else { continue }
+            glow(ctx, at: p, radius: r * (1.3 + 1.1 * lv), [(0, color.opacity(0.45 * b * lv)), (0.5, color.opacity(0.15 * b * lv)), (1, color.opacity(0))])
+        }
+        for (i, p) in points.enumerated() {
+            let b = each(i)
+            let panel = hexagon(p, r)
+            // Off: frosted, lighter at the top.
+            ctx.fill(panel, with: down(p.y - r, p.y + r, [(0, hex(0xB4B4B9)), (1, hex(0x86868C))]))
+            if b > 0 {
+                // A little lighter or deeper by its place, as the real panels blend.
+                let c = i % 3 == 0 ? color.mix(with: .white, by: 0.18) : i % 3 == 2 ? color.mix(with: .black, by: 0.12) : color
+                var l = ctx
+                l.opacity = b
+                l.fill(panel, with: .radialGradient(stops([(0, c.mix(with: .white, by: 0.55 + 0.3 * lv)), (0.55, c.mix(with: .white, by: 0.15 * lv)),
+                                                           (1, c.mix(with: .black, by: 0.25 * (1 - lv)))]),
+                                                    center: CGPoint(x: p.x, y: p.y - r * 0.15), startRadius: 0, endRadius: r * 1.05))
+            }
+            // The frame, and the diffuser's thin lighter rim inside it.
+            let frame = b > 0 ? color.mix(with: .black, by: 0.45).opacity(0.55 + 0.4 * (1 - b)) : hex(0x141416, 0.7)
+            ctx.stroke(panel, with: .color(frame), lineWidth: max(0.5, r * 0.06))
+            ctx.stroke(hexagon(p, r * 0.86), with: .color(.white.opacity(b > 0 ? 0.35 * b : 0.12)), lineWidth: max(0.4, r * 0.04))
         }
     }
 }

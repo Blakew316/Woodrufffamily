@@ -279,6 +279,9 @@ struct LightTile: View {
             } else if light.isUnderShelf {
                 UnderShelfPicture(level: Double(light.brightness) / 100, lit: lit, color: light.shade)
                     .frame(width: 50, height: 42)
+            } else if light.isHexPanels {
+                HexPanelsPicture(level: Double(light.brightness) / 100, lit: lit, color: light.shade)
+                    .frame(width: 48, height: 42)
             } else {
             Circle()
                 .fill(lit ? light.shade : .white.opacity(0.18))
@@ -289,7 +292,7 @@ struct LightTile: View {
                 }
             }
             }
-            .frame(width: light.isStringLights ? 58 : light.isUnderShelf ? 50 : 44, height: 44, alignment: .center)
+            .frame(width: light.isStringLights ? 58 : light.isUnderShelf || light.isHexPanels ? 50 : 44, height: 44, alignment: .center)
             VStack(alignment: .leading, spacing: 1) {
                 Text(light.name).font(.footnote.weight(.semibold)).lineLimit(2)
                 Text(light.isOffline ? "Offline" : lit ? (light.inScene ? "Scene · \(light.brightness)%" : "\(light.brightness)%") : "Off").font(.caption)
@@ -457,6 +460,10 @@ struct LightSheet: View {
                 } else if light.isUnderShelf {
                     UnderShelfPicture(level: level / 100, lit: shown, color: light.shade)
                         .frame(width: 110, height: 150)
+                        .frame(maxHeight: .infinity)
+                } else if light.isHexPanels {
+                    HexPanelsPicture(level: level / 100, lit: shown, color: light.shade)
+                        .frame(width: 100, height: 120)
                         .frame(maxHeight: .infinity)
                 } else {
                     ZStack(alignment: .bottom) {

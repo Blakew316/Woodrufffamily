@@ -202,7 +202,8 @@ struct AllDevicesView: View {
                          look: l.isFloorLamp ? .floorLamp(level: Double(l.brightness) / 100)
                             : l.isTableLamp ? .tableLamp(level: Double(l.brightness) / 100)
                             : l.isStringLights ? .stringLights(level: Double(l.brightness) / 100)
-                            : l.isUnderShelf ? .underShelf(level: Double(l.brightness) / 100) : .light,
+                            : l.isUnderShelf ? .underShelf(level: Double(l.brightness) / 100)
+                            : l.isHexPanels ? .hexPanels(level: Double(l.brightness) / 100) : .light,
                          tint: l.shade)
         case .device(let d) where d.product?.hasPrefix("HomePod") == true:
             return Facts(name: d.name, state: d.reachable ? d.status : "Not Responding", on: false, reachable: d.reachable,
@@ -310,6 +311,7 @@ struct DeviceGlyph: View {
         case tableLamp(level: Double)
         case stringLights(level: Double)
         case underShelf(level: Double)
+        case hexPanels(level: Double)
         case dreoFan(pedestal: Bool, speed: Double)
         case thermostat(HomeDevice)
         case device(HomeDevice.Kind, running: Bool, symbol: String)
@@ -322,7 +324,7 @@ struct DeviceGlyph: View {
     /// Drawn as the product itself (no circle behind it).
     private var drawn: Bool {
         switch look {
-        case .tv, .floorLamp, .tableLamp, .stringLights, .underShelf, .dreoFan, .thermostat: return true
+        case .tv, .floorLamp, .tableLamp, .stringLights, .underShelf, .hexPanels, .dreoFan, .thermostat: return true
         case .speaker(let bar): return bar
         default: return false
         }
@@ -369,6 +371,8 @@ struct DeviceGlyph: View {
             StringLightsPicture(level: level, lit: on, color: tint).frame(width: 80, height: 54)
         case .underShelf(let level):
             UnderShelfPicture(level: level, lit: on, color: tint).frame(width: 64, height: 56)
+        case .hexPanels(let level):
+            HexPanelsPicture(level: level, lit: on, color: tint).frame(width: 64, height: 56)
         case .homePod(let mini):
             Image(systemName: mini ? "homepodmini.fill" : "homepod.fill")
                 .font(.system(size: 21, weight: .semibold))
