@@ -165,6 +165,9 @@ final class NestAlerts {
         c.threadIdentifier = "nest-\(camera)"
         // What the iPhones need to fetch the moment (the Mac's push carries these to them).
         c.userInfo = ["camera": camera, "key": short, "event": event ?? "", "clip": clip ?? ""]
+        // The latest event, for the Mac's Send Test Camera Alert.
+        Saved.save(LastCameraEvent.savedKey, LastCameraEvent(title: title, body: body, camera: camera, key: short,
+                                                             event: event ?? "", clip: clip ?? "", at: Date()))
         #if os(iOS)
         // Here: the clip or snapshot in the alert, if Google has it within a few seconds (else the alert as it is).
         Task {
@@ -179,6 +182,9 @@ final class NestAlerts {
         #endif
     }
 
+    /// The latest camera event this device alerted for (Send Test Camera Alert sends it again).
+    static var lastEvent: LastCameraEvent? { Saved.load(LastCameraEvent.savedKey, as: LastCameraEvent.self) }
+
     /// A short name for an event, the same on every device. Google's event ids are long, and the Mac's push to the
     /// iPhones carries at most 64 characters of it (Apple's limit), so the iPhone's own alert for the same event had
     /// a different id and showed a second time; with the same short id the two are one notification.
@@ -189,7 +195,19 @@ final class NestAlerts {
     }
 }
 
-/// The cameras' alerts on this device: Settings → Smart Home → Cameras, and Settings → Notifications.
+/// A camera alert as it went out: what Send Test Camera Alert sends again, picture and clip included.
+struct LastCameraEvent: Codable, Equatable {
+    static let savedKey = "nest.lastEvent"
+    var title: String
+    var body: String
+    var camera: String
+    var key: String
+    var event: String
+    var clip: String
+    var at: Date
+}
+
+/// The cameras' alerts on this device: Settings → Notifications → Camera Alerts.
 struct AlertsSection: View {
     var title = "Alerts on This Device"
     /// Offers to connect the cameras again when they can't alert yet (it signs them out first, so only where the

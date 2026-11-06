@@ -183,6 +183,20 @@ final class PushRelay {
         await send(id: "test-\(Int(Date().timeIntervalSince1970))", title: "Woodruff", body: "Alerts from this Mac reach your iPhone.", category: nil, userInfo: [:])
     }
 
+    /// Sends the latest camera event again to every iPhone, as a camera alert: each fetches its picture and clip
+    /// (Google keeps a clip for a while; a snapshot only within 30 seconds of the event), and tapping it opens the
+    /// camera with the replay. Under its own id, so it shows as a new alert.
+    func sendTestCamera() async {
+        guard hasKey else { lastError = "Add the push key first."; return }
+        guard !tokens.isEmpty else { lastError = "No iPhone has signed up yet. Open Woodruff on each iPhone once."; return }
+        guard let e = NestAlerts.lastEvent else {
+            lastError = "No camera event yet. Walk past a camera once, then try again."
+            return
+        }
+        await send(id: "nest-test-\(Int(Date().timeIntervalSince1970))", title: "Test: \(e.title)", body: e.body, category: nil,
+                   userInfo: ["camera": e.camera, "key": e.key, "event": e.event, "clip": e.clip])
+    }
+
     private func send(id: String, title: String, body: String, category: String?, userInfo: [String: String]) async {
         guard let auth = token() else { lastError = "The push key couldn’t be read. Add it again."; return }
         var aps: [String: Any] = ["alert": ["title": title, "body": body], "sound": "default", "thread-id": userInfo["tv"] ?? id.components(separatedBy: "-").first ?? "woodruff"]
@@ -421,6 +435,7 @@ struct PushSettingsSection: View {
     @State private var keyID = ""
     @State private var team = "D8D94SXAG6"
     @State private var testing = false
+    @State private var testingCamera = false
     @State private var confirmRemove = false
     #endif
 
@@ -442,6 +457,14 @@ struct PushSettingsSection: View {
                     Task { await push.sendTest(); testing = false }
                 }
                 .disabled(testing)
+                if let e = NestAlerts.lastEvent {
+                    LabeledContent("Last Camera Event", value: "\(e.title), \(e.body), \(e.at.formatted(date: .omitted, time: .shortened))")
+                }
+                Button(testingCamera ? "Sending…" : "Send Test Camera Alert") {
+                    testingCamera = true
+                    Task { await push.sendTestCamera(); testingCamera = false }
+                }
+                .disabled(testingCamera || NestAlerts.lastEvent == nil)
                 // It goes from every Mac (the key syncs): asked first.
                 Button("Remove Push Key", role: .destructive) { confirmRemove = true }
                     .confirmationDialog("Remove the push key from every Mac?", isPresented: $confirmRemove) {
