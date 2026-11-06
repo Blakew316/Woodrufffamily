@@ -571,6 +571,33 @@ class Hub(UpdaterTest):
         doc = self.run_once(when)
         self.assertEqual(self.phone(doc, P2)["state"], "current")
 
+    def test_check_now_retries_an_iphone_still_waiting(self):
+        self.configure("hub")
+
+        def first(env, opts):
+            commit = opts["expect"]
+            env.install_mac(commit)
+            env.keep_iphone(opts["keep"], commit)
+            return [("mac", "installed", commit, "installed and running"), ("share", "ok", commit, "shared"),
+                    ("iphone-build", "ok", commit, "kept"),
+                    ("iphone", "installed", P1, "Blake’s iPhone: installed"),
+                    ("iphone", "failed", P2, "Mia's iPhone: the install failed: ERROR: Developer Mode is disabled")]
+        self.env.deploy = first
+        doc = self.run_once()
+        self.assertEqual(self.phone(doc, P2)["next_try"], self.at(15))
+        # +5: not due yet, but Check for Updates Now was pressed: tried at once.
+        request = updater.paths(self.env)["request"]
+        os.makedirs(os.path.dirname(request), exist_ok=True)
+        with open(request, "w"):
+            pass
+        stamp = (T0 + timedelta(minutes=5)).timestamp()
+        os.utime(request, (stamp, stamp))
+        mark = len(self.env.calls)
+        doc = self.run_once(5)
+        installs = [c["argv"] for c in self.env.calls[mark:] if c["argv"][0] == "xcrun"]
+        self.assertEqual([a[6] for a in installs], [P2])
+        self.assertEqual(self.phone(doc, P2)["state"], "current")
+
     def test_unpaired_iphone_is_skipped(self):
         self.configure("hub")
 

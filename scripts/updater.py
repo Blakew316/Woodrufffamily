@@ -1019,7 +1019,8 @@ class Updater(object):
             record = self.phone(device["udid"], device["name"])
             if record.get("commit") == release and record.get("state") == "current":
                 continue
-            if not record.get("retry", True) or not due(record, now):
+            # Check for Updates Now tries every iPhone at once, whatever its wait after an earlier failure.
+            if not record.get("retry", True) or not (due(record, now) or self.requested_now()):
                 continue
             todo.append(record)
         if not todo:
