@@ -1,8 +1,8 @@
 import SwiftUI
 
 extension HomeDevice {
-    /// One of the family's Samsung Bespoke appliances, drawn as itself: the fridge, dishwasher, washer and dryer, and
-    /// the oven named "Bespoke" (the landlord's oven keeps its usual picture).
+    /// One of the family's Samsung appliances, drawn as itself: the Bespoke fridge, dishwasher, washer and dryer, the
+    /// oven named "Bespoke" (a white-glass induction range), and the landlord's oven (a Tuscan steel gas range).
     var bespokeLook: BespokeAppliance.Model? {
         guard source == "smartthings" else { return nil }
         switch kind {
@@ -10,7 +10,7 @@ extension HomeDevice {
         case .dishwasher: return .dishwasher
         case .washer: return .washer
         case .dryer: return .dryer
-        case .oven: return name.localizedCaseInsensitiveContains("bespoke") ? .range : nil
+        case .oven: return name.localizedCaseInsensitiveContains("bespoke") ? .range : .gasRange
         default: return nil
         }
     }
@@ -20,7 +20,7 @@ extension HomeDevice {
 /// dishwasher with its top lip, the white-glass slide-in range, and the forest-green washer and dryer. Running, the
 /// washer's drum and the dryer's turn, the range's window glows, and the dishwasher shows its blue light.
 struct BespokeAppliance: View {
-    enum Model { case fridge, dishwasher, range, washer, dryer }
+    enum Model { case fridge, dishwasher, range, gasRange, washer, dryer }
     var model: Model
     var running: Bool
     var alert = false
@@ -36,6 +36,7 @@ struct BespokeAppliance: View {
                 case .fridge: d.fridge(alert: alert)
                 case .dishwasher: d.dishwasher(running: running)
                 case .range: d.range(running: running)
+                case .gasRange: d.gasRange(running: running)
                 case .washer: d.laundry(dryer: false, running: running)
                 case .dryer: d.laundry(dryer: true, running: running)
                 }
@@ -267,6 +268,109 @@ private struct Drawing {
         ctx.fill(rect(x, sy, bw, dh + sh), with: sheen)
         ctx.fill(rect(x, ry + bh * 0.025, bw, y + bh - ry - bh * 0.025), with: sheen)
         ctx.stroke(rect(x, sy, bw, y + bh - sy), with: .color(.black.opacity(0.25)), lineWidth: line)
+        feet(x + bw * 0.04, x + bw * 0.96, y + bh, bw * 0.06, h * 0.02)
+    }
+
+    // MARK: Slide-in gas range, Tuscan steel (the landlord's)
+
+    func gasRange(running: Bool) {
+        let bw = min(w * 0.82, h * 0.84), bh = h * 0.88, x = (w - bw) / 2, y = h * 0.04, cx = w / 2
+        shadowUnder(cx, y + bh + h * 0.02, bw * 0.7)
+        func tuscan(_ x0: CGFloat, _ y0: CGFloat, _ x1: CGFloat, _ y1: CGFloat) -> GraphicsContext.Shading {
+            linear(x0, y0, x1, y1, [(0, rgb(0x4A3938)), (0.2, rgb(0x7A6261)), (0.42, rgb(0x9A8180)), (0.55, rgb(0x7D6564)), (0.8, rgb(0x5E4A49)), (1, rgb(0x3F302F))])
+        }
+        // The cooktop, seen from a little above: black grates over five burners.
+        let ct = bh * 0.13
+        var top = Path()
+        top.move(to: CGPoint(x: x + bw * 0.05, y: y)); top.addLine(to: CGPoint(x: x + bw * 0.95, y: y))
+        top.addLine(to: CGPoint(x: x + bw, y: y + ct)); top.addLine(to: CGPoint(x: x, y: y + ct)); top.closeSubpath()
+        ctx.fill(top, with: linear(0, y, 0, y + ct, [(0, rgb(0x2A2A2C)), (1, rgb(0x121213))]))
+        var cook = ctx
+        cook.clip(to: top)
+        // Burner caps (the middle one largest), its flame showing while it cooks.
+        let caps: [(CGFloat, CGFloat, CGFloat)] = [(0.2, 0.38, 0.07), (0.8, 0.38, 0.07), (0.5, 0.45, 0.09), (0.22, 0.75, 0.08), (0.78, 0.75, 0.08)]
+        for (fx, fy, fr) in caps {
+            let bx = x + bw * fx, by = y + ct * fy, r = bw * fr
+            cook.fill(Path(ellipseIn: CGRect(x: bx - r, y: by - r * 0.38, width: r * 2, height: r * 0.76)),
+                      with: linear(0, by - r * 0.4, 0, by + r * 0.4, [(0, rgb(0x5B5B5F)), (1, rgb(0x1D1D1F))]))
+            if running && fx == 0.5 {
+                cook.stroke(Path(ellipseIn: CGRect(x: bx - r * 1.15, y: by - r * 0.44, width: r * 2.3, height: r * 0.88)),
+                            with: .color(Color(red: 0.35, green: 0.63, blue: 1).opacity(0.85)), lineWidth: max(0.4, bw * 0.008))
+            }
+            cook.fill(Path(ellipseIn: CGRect(x: bx - r * 0.6, y: by - r * 0.24, width: r * 0.8, height: r * 0.24)), with: .color(.white.opacity(0.18)))
+        }
+        // The grates: a grid of black cast iron, their top edges catching the light.
+        let iron = GraphicsContext.Shading.color(rgb(0x0A0A0B)), bar = max(0.6, bw * 0.02)
+        func line(_ a: CGPoint, _ b: CGPoint) -> Path { var p = Path(); p.move(to: a); p.addLine(to: b); return p }
+        for fx: CGFloat in [0.33, 0.67] { cook.stroke(line(CGPoint(x: x + bw * (0.05 + fx * 0.9), y: y), CGPoint(x: x + bw * fx, y: y + ct)), with: iron, lineWidth: bar) }
+        for fy: CGFloat in [0.15, 0.6, 0.95] { cook.stroke(line(CGPoint(x: x, y: y + ct * fy), CGPoint(x: x + bw, y: y + ct * fy)), with: iron, lineWidth: bar) }
+        for i in 0..<7 {
+            let fx = 0.08 + CGFloat(i) * 0.14
+            cook.stroke(line(CGPoint(x: x + bw * (0.05 + fx * 0.9), y: y), CGPoint(x: x + bw * fx, y: y + ct)), with: iron, lineWidth: bar)
+        }
+        for fy: CGFloat in [0.15, 0.6, 0.95] {
+            cook.stroke(line(CGPoint(x: x, y: y + ct * fy - bw * 0.008), CGPoint(x: x + bw, y: y + ct * fy - bw * 0.008)), with: .color(.white.opacity(0.12)), lineWidth: max(0.25, bw * 0.005))
+        }
+
+        // The control band: Tuscan steel, three knobs on the left and two on the right, the black display between.
+        let cy0 = y + ct, ch = bh * 0.12
+        ctx.fill(rect(x, cy0, bw, ch), with: tuscan(x, cy0, x + bw, cy0 + ch))
+        ctx.fill(rect(x, cy0, bw, max(0.3, ch * 0.05)), with: .color(.white.opacity(0.25)))
+        let kr = ch * 0.32, ky = cy0 + ch * 0.52
+        for fx: CGFloat in [0.08, 0.19, 0.3, 0.81, 0.92] {
+            let k = CGPoint(x: x + bw * fx, y: ky)
+            ctx.fill(circle(CGPoint(x: k.x + kr * 0.08, y: k.y + kr * 0.12), kr * 1.05), with: .color(.black.opacity(0.35)))
+            ctx.fill(circle(k, kr), with: radial(k.x - kr * 0.35, k.y - kr * 0.35, 0, kr * 1.3, [(0, rgb(0xC3AAA8)), (0.45, rgb(0x8A7170)), (1, rgb(0x3E302F))]))
+            ctx.stroke(circle(k, kr), with: .color(.black.opacity(0.4)), lineWidth: max(0.25, kr * 0.08))
+            ctx.stroke(line(CGPoint(x: k.x, y: k.y - kr * 0.75), CGPoint(x: k.x, y: k.y - kr * 0.3)), with: .color(.white.opacity(0.7)), lineWidth: max(0.3, kr * 0.12))
+        }
+        let dx = x + bw * 0.38, dw = bw * 0.32, dyy = cy0 + ch * 0.12, dh = ch * 0.76
+        ctx.fill(box(dx, dyy, dw, dh, top: bw * 0.006, bottom: bw * 0.006), with: linear(0, dyy, 0, dyy + dh, [(0, rgb(0x1C1C1E)), (1, rgb(0x080809))]))
+        for r in 0..<3 {
+            for c in 0..<3 {
+                ctx.fill(rect(dx + dw * (0.06 + CGFloat(c) * 0.1), dyy + dh * (0.18 + CGFloat(r) * 0.26), dw * 0.06, max(0.3, dh * 0.06)), with: .color(.white.opacity(0.55)))
+            }
+            ctx.fill(rect(dx + dw * 0.82, dyy + dh * (0.18 + CGFloat(r) * 0.26), dw * 0.12, max(0.3, dh * 0.08)), with: .color(.white.opacity(0.4)))
+        }
+        for i in 0..<4 {
+            ctx.fill(rect(dx + dw * (0.42 + CGFloat(i) * 0.07), dyy + dh * 0.36, dw * 0.045, dh * 0.26), with: .color(.white.opacity(running ? 0.95 : 0.75)))
+        }
+        // The handle across the top of the door.
+        let hy = cy0 + ch, hh = bh * 0.05
+        ctx.fill(rect(x, hy, bw, hh), with: linear(0, hy, 0, hy + hh, [(0, rgb(0x2A2020)), (1, rgb(0x1A1414))]))
+        ctx.fill(rect(x + bw * 0.07, hy + hh * 0.25, bw * 0.86, hh * 0.42), with: tuscan(x, hy, x + bw, hy + hh))
+        ctx.fill(rect(x + bw * 0.07, hy + hh * 0.25, bw * 0.86, max(0.3, hh * 0.08)), with: .color(.white.opacity(0.45)))
+        ctx.fill(rect(x + bw * 0.07, hy + hh * 0.6, bw * 0.86, max(0.3, hh * 0.08)), with: .color(.black.opacity(0.35)))
+        // The door: black glass, the window a shade lighter inside it (glowing while it cooks), the wordmark low down.
+        let gy = hy + hh, gh = bh * 0.5
+        ctx.fill(rect(x, gy, bw, gh), with: linear(0, gy, 0, gy + gh, [(0, rgb(0x1D1D1F)), (1, rgb(0x0D0D0E))]))
+        let wx = x + bw * 0.15, wy = gy + gh * 0.12, ww = bw * 0.7, wh = gh * 0.62
+        let window = box(wx, wy, ww, wh, top: bw * 0.008, bottom: bw * 0.008)
+        ctx.fill(window, with: linear(0, wy, 0, wy + wh, [(0, rgb(0x2A2A2D)), (1, rgb(0x141416))]))
+        if running {
+            let k = 0.8 + 0.2 * sin(t * 1.7)
+            var glow = ctx
+            glow.clip(to: window)
+            glow.fill(rect(wx, wy, ww, wh), with: radial(cx, wy + wh * 0.6, 0, ww * 0.6, [(0, Color(red: 1, green: 0.59, blue: 0.24).opacity(0.75 * k)),
+                                                                                       (0.6, Color(red: 0.78, green: 0.27, blue: 0.08).opacity(0.4 * k)),
+                                                                                       (1, Color(red: 0.35, green: 0.1, blue: 0).opacity(0.2))]))
+        }
+        ctx.stroke(window, with: .color(.white.opacity(0.08)), lineWidth: max(0.3, bw * 0.004))
+        var sheen = ctx
+        sheen.clip(to: rect(x, gy, bw, gh))
+        sheen.fill(rect(x, gy, bw, gh), with: linear(x, gy, x + bw, gy + gh, [(0, .white.opacity(0.1)), (0.3, .white.opacity(0.02)), (0.31, .white.opacity(0))]))
+        ctx.draw(Text("SAMSUNG").font(.system(size: max(1.5, gh * 0.05), weight: .medium)).foregroundStyle(Color.white.opacity(0.6)),
+                 at: CGPoint(x: cx, y: gy + gh * 0.86), anchor: .center)
+        // The drawer: Tuscan steel.
+        let ry = gy + gh, rh = y + bh - ry
+        ctx.fill(rect(x, ry, bw, max(0.4, bh * 0.01)), with: .color(rgb(0x0D0B0B)))
+        ctx.fill(rect(x, ry + bh * 0.01, bw, rh - bh * 0.01), with: tuscan(x, ry, x + bw, ry + rh))
+        ctx.fill(rect(x, ry + bh * 0.01, bw, max(0.3, rh * 0.05)), with: .color(.white.opacity(0.22)))
+        var steel = Path()
+        steel.addRect(CGRect(x: x, y: cy0, width: bw, height: ch))
+        steel.addRect(CGRect(x: x, y: ry, width: bw, height: rh))
+        brushed(steel, x, cy0, bw, y + bh - cy0, vertical: false, 0.03)
+        ctx.stroke(rect(x, cy0, bw, y + bh - cy0), with: .color(.black.opacity(0.35)), lineWidth: max(0.3, bw * 0.005))
         feet(x + bw * 0.04, x + bw * 0.96, y + bh, bw * 0.06, h * 0.02)
     }
 
