@@ -450,6 +450,9 @@ public struct GoveeLight: Identifiable, Hashable, Sendable, Codable {
     /// The white temperatures it takes, in kelvin (from Govee's account API when known).
     public var kelvinMin: Int? = nil
     public var kelvinMax: Int? = nil
+    /// True while it plays one of Govee's scenes: Govee says a scene is on but not what colours it shows.
+    public var scene: Bool? = nil
+    public var inScene: Bool { scene == true }
     public var isHome: Bool { source == "home" }
     public var isCync: Bool { source == "cync" }
     public var isOffline: Bool { offline == true }
@@ -564,12 +567,23 @@ public enum Govee {
         }
     }
 
+    /// A scene value Govee reports as playing (an empty string, 0 or {} means none).
+    static func isSet(_ v: Any?) -> Bool {
+        switch v {
+        case let s as String: return !s.isEmpty
+        case let n as NSNumber: return n.intValue != 0
+        case let d as [String: Any]: return d.values.contains { isSet($0) }
+        default: return false
+        }
+    }
+
     public static func openState(_ l: GoveeLight, key: String) async -> GoveeLight {
         var l = l
         guard let j = try? await open("/device/state", key: key, body: ["requestId": UUID().uuidString, "payload": ["sku": l.sku, "device": l.id]]),
               let caps = (j["payload"] as? [String: Any])?["capabilities"] as? [[String: Any]] else { return l }
         var rgb: LightColor?
         var kelvin: Int?
+        var sceneOn = false
         for c in caps {
             let v = (c["state"] as? [String: Any])?["value"]
             switch c["instance"] as? String {
@@ -581,11 +595,14 @@ public enum Govee {
             case "colorRgb":
                 if let n = (v as? NSNumber)?.intValue, n > 0 { rgb = LightColor(r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255) }
             case "colorTemperatureK": if let n = (v as? NSNumber)?.intValue, n > 0 { kelvin = n }
+            case "lightScene", "diyScene", "snapshot":
+                if Self.isSet(v) { sceneOn = true }
             default: break
             }
         }
         // White (a temperature) or a colour, never both: Govee keeps the last colour while in white.
         if let kelvin { l.kelvin = kelvin; l.color = nil } else if let rgb { l.color = rgb; l.kelvin = nil }
+        if sceneOn { l.scene = true } else if kelvin != nil || rgb != nil { l.scene = nil }
         return l
     }
 
@@ -811,6 +828,10 @@ public final class SmartHome {
     /// Which room each speaker and light is in (device id → room).
     public var rooms: [String: String] = Saved.load("smartRooms", as: [String: String].self) ?? [:] {
         didSet { Saved.save("smartRooms", rooms) }
+    }
+    /// The colour each light is drawn in while it plays a Govee scene (light id → "RRGGBB"), chosen on its page.
+    public var sceneColors: [String: String] = Saved.load("smartSceneColors", as: [String: String].self) ?? [:] {
+        didSet { Saved.save("smartSceneColors", sceneColors) }
     }
     /// Rooms added by hand (besides the TVs' rooms and Sonos's own).
     public var extraRooms: [String] = Saved.load("smartExtraRooms", as: [String].self) ?? [] {
@@ -1534,6 +1555,8 @@ public final class SmartHome {
         if r != rooms { rooms = r }
         let x = Saved.load("smartExtraRooms", as: [String].self) ?? []
         if x != extraRooms { extraRooms = x }
+        let sc = Saved.load("smartSceneColors", as: [String: String].self) ?? [:]
+        if sc != sceneColors { sceneColors = sc }
         manualIPs = Saved.load("goveeManualIPs", as: [String].self) ?? []
     }
 
@@ -1637,7 +1660,7 @@ public final class SmartHome {
             return incoming
         }
         var l = incoming
-        l.on = s.on; l.brightness = s.brightness; l.color = s.color; l.kelvin = s.kelvin
+        l.on = s.on; l.brightness = s.brightness; l.color = s.color; l.kelvin = s.kelvin; l.scene = s.scene
         return l
     }
 
@@ -1699,8 +1722,10 @@ public final class SmartHome {
         // Some lamps say 0 while off; keep the level they'll come back on at.
         if brightness > 0 { l.brightness = min(100, brightness) }
         // White (a colour temperature) or a colour, never a stale mix of both.
-        if let kelvin, kelvin > 0 { l.kelvin = kelvin; l.color = nil }
-        else if let color, color != LightColor(r: 0, g: 0, b: 0) { l.color = color; l.kelvin = nil }
+        if let kelvin, kelvin > 0 { l.kelvin = kelvin; l.color = nil; l.scene = nil }
+        else if let color, color != LightColor(r: 0, g: 0, b: 0) { l.color = color; l.kelvin = nil; l.scene = nil }
+        // On with neither a colour nor a white: playing a scene.
+        else if on { l.scene = true }
         l = holding(l)
         l.offline = nil
         // Lamps answer every few seconds; only an actual change redraws anything.
@@ -1766,6 +1791,7 @@ public final class SmartHome {
                 l.brightness = fresh.brightness
                 l.color = fresh.color
                 l.kelvin = fresh.kelvin
+                l.scene = fresh.scene
                 l = holding(l)
                 if l != lights[i] { lights[i] = l }
             }
@@ -1803,7 +1829,7 @@ public final class SmartHome {
     public func setColor(_ l: GoveeLight, _ c: LightColor) {
         let c = LightColor(r: max(0, min(255, c.r)), g: max(0, min(255, c.g)), b: max(0, min(255, c.b)))
         let wasOn = light(l.id)?.isLit ?? l.on
-        let before = update(l) { $0.color = c; $0.kelvin = nil; $0.on = true }
+        let before = update(l) { $0.color = c; $0.kelvin = nil; $0.scene = nil; $0.on = true }
         send(l.id, .color(c), turnOn: !wasOn, before: before)
     }
 
@@ -1812,7 +1838,7 @@ public final class SmartHome {
         // Apple Home lights clamp to their own range; Govee lamps to their model's.
         let k = current.isHome ? max(1000, min(10_000, kelvin)) : current.clampKelvin(kelvin)
         let wasOn = current.isLit
-        let before = update(l) { $0.kelvin = k; $0.color = nil; $0.on = true }
+        let before = update(l) { $0.kelvin = k; $0.color = nil; $0.scene = nil; $0.on = true }
         send(l.id, .kelvin(k), turnOn: !wasOn, before: before)
     }
 
@@ -1839,6 +1865,7 @@ public final class SmartHome {
         lights[i].brightness = before.brightness
         lights[i].color = before.color
         lights[i].kelvin = before.kelvin
+        lights[i].scene = before.scene
         onChange?()
     }
 

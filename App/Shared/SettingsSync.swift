@@ -51,7 +51,7 @@ final class SettingsSync {
     ]
     /// Saved settings that travel (JSON in UserDefaults).
     static let dataKeys = ["smartNames", "smartRooms", "smartExtraRooms", "goveeManualIPs", "homeLayout", "extras", "hiddenAlerts", "pushTokens",
-                           "familyPairings", "atvRemote.paired"]
+                           "familyPairings", "atvRemote.paired", "smartSceneColors"]
     /// Plain preferences that travel (property-list values in UserDefaults): alert choices, the remote's click, and
     /// Now Playing on the Lock Screen. (Home's tile sizes travel with the Home layout.)
     static let valueKeys = ["watch.source", "nest.alert.person", "nest.alert.motion", "nest.alert.doorbell", "notifyFleet", "liveActivity", "remoteClick"]
@@ -59,7 +59,7 @@ final class SettingsSync {
     /// Saved settings kept entry by entry (one TV's name, one light's room, one paired TV, one tile's size; the Home
     /// layout part by part), so two devices changing different entries at the same time both keep their change.
     static let entryKeys: Set<String> = ["ud:smartNames", "ud:smartRooms", "ud:extras", "ud:hiddenAlerts", "ud:pushTokens", "ud:homeLayout",
-                                         "ud:familyPairings", "ud:atvRemote.paired"]
+                                         "ud:familyPairings", "ud:atvRemote.paired", "ud:smartSceneColors"]
     /// Kept whole before they were kept part by part: a copy from then counts each part as old as the whole was.
     static let wholeBefore: Set<String> = ["ud:homeLayout"]
 
@@ -636,7 +636,7 @@ final class SettingsSync {
     /// [before]: the values from just before they were taken in.
     private func reload(_ keys: Set<String>, was before: [String: String]) {
         func any(_ prefixes: [String]) -> Bool { keys.contains { k in prefixes.contains { k.hasPrefix($0) } } }
-        if any(["ud:smartNames", "ud:smartRooms", "ud:smartExtraRooms", "ud:goveeManualIPs"]) { SmartHome.shared.reloadSaved() }
+        if any(["ud:smartNames", "ud:smartRooms", "ud:smartExtraRooms", "ud:goveeManualIPs", "ud:smartSceneColors"]) { SmartHome.shared.reloadSaved() }
         if keys.contains("ud:homeLayout") { HomeLayout.shared.reload() }
         if keys.contains("ud:familyPairings") { applyPairings() }
         if any(["ud:extras", "ud:hiddenAlerts", "kc:lg."]) { fleet?.reloadSynced() }

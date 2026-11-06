@@ -206,7 +206,51 @@ extension LightColor {
 }
 
 extension GoveeLight {
-    var shade: Color { color?.color ?? kelvin.map(LightColor.kelvin) ?? Color(red: 1, green: 0.86, blue: 0.62) }
+    /// The colour it's drawn in: while it plays a Govee scene, the colour chosen for its scenes (Govee doesn't say
+    /// what a scene shows).
+    @MainActor var shade: Color {
+        if inScene, let c = SmartHome.shared.sceneColors[id].flatMap(LightColor.init(hex:)) { return c.color }
+        return color?.color ?? kelvin.map(LightColor.kelvin) ?? Color(red: 1, green: 0.86, blue: 0.62)
+    }
+}
+
+extension LightColor {
+    /// "RRGGBB".
+    var hex: String { String(format: "%02X%02X%02X", r, g, b) }
+    init?(hex: String) {
+        guard hex.count == 6, let v = Int(hex, radix: 16) else { return nil }
+        self.init(r: (v >> 16) & 255, g: (v >> 8) & 255, b: v & 255)
+    }
+}
+
+/// While a light plays a Govee scene: the colour the app shows it in, since Govee doesn't share a scene's colours.
+struct SceneColorPicker: View {
+    var light: GoveeLight
+    var home = SmartHome.shared
+
+    var body: some View {
+        let chosen = home.sceneColors[light.id]
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Scene Colour").font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
+            HStack(spacing: 10) {
+                ForEach(LightSheet.colors.indices, id: \.self) { i in
+                    let c = LightSheet.colors[i]
+                    Button {
+                        home.sceneColors[light.id] = c.hex
+                    } label: {
+                        Circle().fill(c.color).frame(width: 28, height: 28)
+                            .overlay { if chosen == c.hex { Circle().strokeBorder(.white, lineWidth: 3).padding(-4) } }
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(LightSheet.colorNames[i])
+                    .accessibilityAddTraits(chosen == c.hex ? .isSelected : [])
+                }
+            }
+            Text("Playing a Govee scene. Govee doesn’t share a scene’s colours, so choose the one to show it in here.")
+                .font(.footnote).foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
 }
 
 /// Like a Home app accessory: lit up in the light's own colour when it's on, glass when it's off. Tap turns it
@@ -245,7 +289,7 @@ struct LightTile: View {
             .frame(width: light.isStringLights ? 58 : 44, height: 44, alignment: .center)
             VStack(alignment: .leading, spacing: 1) {
                 Text(light.name).font(.footnote.weight(.semibold)).lineLimit(2)
-                Text(light.isOffline ? "Offline" : lit ? "\(light.brightness)%" : "Off").font(.caption)
+                Text(light.isOffline ? "Offline" : lit ? (light.inScene ? "Scene · \(light.brightness)%" : "\(light.brightness)%") : "Off").font(.caption)
                     .foregroundStyle(lit ? Color.black.opacity(0.55) : .secondary)
             }
             Spacer(minLength: 0)
@@ -344,7 +388,7 @@ struct LightSheet: View {
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(light.name).font(.title3.bold())
-                        Text(light.isOffline ? "Offline" : light.on || dragging ? "\(Int(level))%" : "Off")
+                        Text(light.isOffline ? "Offline" : light.on || dragging ? (light.inScene && !dragging ? "Scene · \(Int(level))%" : "\(Int(level))%") : "Off")
                             .font(.subheadline).foregroundStyle(.secondary).monospacedDigit()
                     }
                     Spacer()
@@ -364,10 +408,11 @@ struct LightSheet: View {
                         .buttonStyle(.glass)
                     VStack(alignment: .leading, spacing: 10) {
                         Text("Colour").font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
-                        swatches(Self.colors.enumerated().map { i, c in (c.color, light.color == c, Self.colorNames[i], { home.setColor(light, c) }) })
+                        swatches(Self.colors.enumerated().map { i, c in (c.color, !light.inScene && light.color == c, Self.colorNames[i], { home.setColor(light, c) }) })
                         Text("White").font(.subheadline.weight(.semibold)).foregroundStyle(.secondary).padding(.top, 4)
-                        swatches(Self.whites.map { k in (LightColor.kelvin(k), Self.isWhite(light, k), Self.whiteName(k), { home.setWhite(light, kelvin: k) }) })
+                        swatches(Self.whites.map { k in (LightColor.kelvin(k), !light.inScene && Self.isWhite(light, k), Self.whiteName(k), { home.setWhite(light, kelvin: k) }) })
                     }
+                    if light.inScene && light.isLit { SceneColorPicker(light: light) }
                 }
                 .disabled(light.isOffline)
                 .opacity(light.isOffline ? 0.4 : 1)
@@ -661,8 +706,9 @@ struct LightDetailView: View {
                                     }
                                 Image(systemName: "sun.max.fill").foregroundStyle(.secondary)
                             }
-                            swatches(LightSheet.colors.enumerated().map { i, c in (c.color, l.color == c, LightSheet.colorNames[i], { home.setColor(l, c) }) })
-                            swatches(LightSheet.whites.map { k in (LightColor.kelvin(k), LightSheet.isWhite(l, k), LightSheet.whiteName(k), { home.setWhite(l, kelvin: k) }) })
+                            swatches(LightSheet.colors.enumerated().map { i, c in (c.color, !l.inScene && l.color == c, LightSheet.colorNames[i], { home.setColor(l, c) }) })
+                            swatches(LightSheet.whites.map { k in (LightColor.kelvin(k), !l.inScene && LightSheet.isWhite(l, k), LightSheet.whiteName(k), { home.setWhite(l, kelvin: k) }) })
+                            if l.inScene && l.isLit { SceneColorPicker(light: l) }
                         }
                         .disabled(l.isOffline)
                         if let e = home.goveeError {

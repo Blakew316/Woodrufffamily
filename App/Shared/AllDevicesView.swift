@@ -197,7 +197,7 @@ struct AllDevicesView: View {
             let state = s.isOffline ? "Offline" : s.isPlaying ? (s.title ?? "Playing") : "Paused"
             return Facts(name: s.name, state: state, on: s.isPlaying, reachable: !s.isOffline, look: .speaker(bar: Self.isSoundbar(s)), tint: .teal)
         case .light(let l):
-            let state = l.isOffline ? "Offline" : l.isLit ? "\(l.brightness)%" : "Off"
+            let state = l.isOffline ? "Offline" : l.isLit ? (l.inScene ? "Scene · \(l.brightness)%" : "\(l.brightness)%") : "Off"
             return Facts(name: l.name, state: state, on: l.isLit, reachable: !l.isOffline,
                          look: l.isFloorLamp ? .floorLamp(level: Double(l.brightness) / 100)
                             : l.isTableLamp ? .tableLamp(level: Double(l.brightness) / 100)
