@@ -293,6 +293,12 @@ final class PushRelay {
         }
     }
 
+    /// "3 s after it happened", "4 min 10 s after it happened".
+    static func lateness(_ seconds: TimeInterval) -> String {
+        let s = max(0, Int(seconds.rounded()))
+        return s < 60 ? "\(s) s after it happened" : "\(s / 60) min \(s % 60) s after it happened"
+    }
+
     static func explain(_ reason: String) -> String {
         switch reason {
         case "InvalidProviderToken": return "Apple didn’t accept the push key. Check the Key ID matches the key."
@@ -506,6 +512,10 @@ struct PushSettingsSection: View {
                 .disabled(testing)
                 if let e = NestAlerts.lastEvent {
                     LabeledContent("Last Camera Event", value: "\(e.title), \(e.body), \(e.at.formatted(date: .omitted, time: .shortened))")
+                    // How late Google delivered it to this Mac: the alert can't go out before it arrives.
+                    if let h = e.happened {
+                        LabeledContent("Reached This Mac", value: PushRelay.lateness(e.at.timeIntervalSince(h)))
+                    }
                 }
                 Button(testingCamera ? "Sending…" : "Send Test Camera Alert") {
                     testingCamera = true

@@ -35,6 +35,8 @@ final class NestAlerts {
         var at: Date
     }
     private weak var fleet: Fleet?
+    /// When the event being posted happened (Google's timestamp), for Settings' Last Camera Event.
+    private var eventHappened: Date?
 
     private func flag(_ k: String, _ d: Bool) -> Bool { UserDefaults.standard.object(forKey: k) as? Bool ?? d }
 
@@ -143,9 +145,18 @@ final class NestAlerts {
             NestCameras.shared.setOnline(device, status.uppercased() != "OFFLINE")
         }
         guard let events = upd["events"] as? [String: Any] else { return }
-        // Old news (the phone was asleep) isn't worth a buzz.
-        if let ts = ev["timestamp"] as? String, let t = ISO8601DateFormatter.withFraction.date(from: ts) ?? ISO8601DateFormatter().date(from: ts),
-           t.timeIntervalSinceNow < -600 { return }
+        // When it happened, by Google's clock: how late it reached this device is logged and shown in Settings.
+        let happened = (ev["timestamp"] as? String).flatMap { ISO8601DateFormatter.withFraction.date(from: $0) ?? ISO8601DateFormatter().date(from: $0) }
+        if let happened {
+            let late = Int(-happened.timeIntervalSinceNow)
+            PushRelay.log.notice("camera event reached this device \(late, privacy: .public) s after it happened")
+            // Old news (the phone was asleep) isn't worth a buzz.
+            if late > 600 {
+                PushRelay.log.notice("camera event dropped: \(late, privacy: .public) s old")
+                return
+            }
+        }
+        eventHappened = happened
         let camera = NestCameras.shared.cameras.first { $0.id == device }
         let name = camera?.name ?? "Camera"
         // The event's short clip, when the camera sends one (newer Nest cameras and doorbells).
@@ -220,6 +231,7 @@ final class NestAlerts {
         #else
         // The Mac fetches the moment itself and sends a small picture of it as a quiet update, so every iPhone shows
         // one, signed in to the cameras or not.
+        let received = Date(), happened = eventHappened
         Task {
             var thumb: String?
             if let token = try? await NestCameras.shared.accessToken(),
@@ -227,8 +239,8 @@ final class NestAlerts {
                 thumb = await CameraEventMedia.thumbnail(file)
             }
             // The latest event, for Send Test Camera Alert.
-            Saved.save(LastCameraEvent.savedKey, LastCameraEvent(title: title, body: body, camera: camera, key: short,
-                                                                 event: event ?? "", clip: clip ?? "", at: Date(), thumb: thumb))
+            Saved.save(LastCameraEvent.savedKey, LastCameraEvent(title: title, body: body, camera: camera, key: short, happened: happened,
+                                                                 event: event ?? "", clip: clip ?? "", at: received, thumb: thumb))
             PushRelay.log.notice("picture for \(body, privacy: .public)\(quiet ? " (clip came later)" : "", privacy: .public): \(thumb.map { "\($0.count) characters" } ?? "none (Google gave no clip or snapshot in time)", privacy: .public)")
             guard let thumb, let update = c.mutableCopy() as? UNMutableNotificationContent else { return }
             update.userInfo["thumb"] = thumb
@@ -258,6 +270,8 @@ struct LastCameraEvent: Codable, Equatable {
     var body: String
     var camera: String
     var key: String
+    /// When it happened by Google's clock (nil: an older record).
+    var happened: Date? = nil
     var event: String
     var clip: String
     var at: Date
