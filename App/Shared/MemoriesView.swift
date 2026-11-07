@@ -64,7 +64,13 @@ struct MemoriesView: View {
         // Worked out once for the page: the tiles are handed their pictures' addresses.
         let client = self.client
         ScrollView {
-            if let m = memories {
+            if memories != nil, error != nil {
+                // Away from home: the pictures are on the TVs, so there's nothing to show but where they are (a grid
+                // of tiles that can't load is only grey squares).
+                EmptyState(symbol: "photo.on.rectangle", title: "Memories Are at Home",
+                           message: "They’re kept on the TVs. Connect to the home Wi‑Fi to see them or add more.")
+                    .padding(.top, 60)
+            } else if let m = memories {
                 if let u = uploading {
                     ProgressView("Adding \(u.done + 1) of \(u.of)…", value: Double(u.done), total: Double(u.of))
                         .padding(.horizontal, 20).padding(.bottom, 10)
@@ -89,12 +95,6 @@ struct MemoriesView: View {
                     }
                     .onEnded { _ in pinchBase = nil })
                 #endif
-                // Shown from what was kept: say so, and why nothing new can come in.
-                if error != nil {
-                    Text("From your last visit home. The memories are on the TVs: connect to the home Wi‑Fi to see new ones or add more.")
-                        .font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center)
-                        .padding(.horizontal, 24).padding(.top, 14)
-                }
                 if m.items.isEmpty {
                     EmptyState(symbol: "photo.on.rectangle", title: "No Memories Yet", message: "Add photos and videos from this device. Every TV’s slideshow can show them.")
                         .padding(.top, 60)
@@ -129,10 +129,10 @@ struct MemoriesView: View {
         #endif
         .refreshable { await load() }
         #if os(iOS)
-        .toolbar { ToolbarItemGroup(placement: .primaryAction) { pageButtons } }
+        .toolbar { ToolbarItemGroup(placement: .primaryAction) { if error == nil { pageButtons } } }
         #else
         // The window draws its own bar on the Mac: these sit at the top of the page.
-        .macPageBar { pageButtons.buttonStyle(.glass) }
+        .macPageBar { if error == nil { pageButtons.buttonStyle(.glass) } }
         #endif
         .onChange(of: picks) { _, new in if !new.isEmpty { Task { await add(new) } } }
         .fileImporter(isPresented: $importing, allowedContentTypes: [.image, .movie], allowsMultipleSelection: true) { r in

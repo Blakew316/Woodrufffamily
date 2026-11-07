@@ -623,6 +623,9 @@ struct MacRoot: View {
     /// and the thermostat on the right, at any window size. (Back sits at the top of each opened page, under this.)
     private var topBar: some View {
         let greeting = onHome && width >= 900
+        // Wide enough: the greeting sits in the very middle of the page, the remote, Edit Home and the thermostat at
+        // the far right. Narrower, it sits between them as before (centred, it would run into them).
+        let centred = greeting && width >= 1320
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 10) {
                 if columns == .detailOnly {
@@ -645,7 +648,7 @@ struct MacRoot: View {
                         .frame(minWidth: 120, idealWidth: greeting ? 240 : 300, maxWidth: 320)
                 }
                 Spacer(minLength: 8)
-                if greeting {
+                if greeting && !centred {
                     MacGreetingPill(compact: width < 1150)
                         .transition(.opacity.combined(with: .scale(scale: 0.96)))
                     Spacer(minLength: 8)
@@ -690,6 +693,12 @@ struct MacRoot: View {
             }
             // Always the same height, so the pages below never jump as the bar's contents change.
             .frame(height: 46)
+            .overlay {
+                if centred {
+                    MacGreetingPill(compact: width < 1420)
+                        .transition(.opacity.combined(with: .scale(scale: 0.96)))
+                }
+            }
         }
         .padding(.horizontal, 18)
         .padding(.top, 4)
