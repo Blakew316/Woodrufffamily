@@ -215,11 +215,11 @@ final class NestAlerts {
             case "sdm.devices.events.CameraPerson.Person" where person: title = "Person seen"
             case "sdm.devices.events.CameraMotion.Motion" where motion: title = "Motion seen"
             case "sdm.devices.events.CameraClipPreview.ClipPreview":
-                // The clip of an alert already shown: the same alert again, quietly, now with it.
+                // The clip of an alert already shown: not a second alert (one per event, its picture in it).
                 if let url = (value as? [String: Any])?["previewUrl"] as? String, !url.isEmpty,
                    let p = posted[session], !p.hasClip {
                     posted[session]?.hasClip = true
-                    post(title: p.title, body: p.body, camera: p.camera, key: p.key, event: p.event, clip: url, quiet: true)
+                    PushRelay.log.notice("clip for \(p.body, privacy: .public) came after its alert (no second alert)")
                 }
             default: break
             }
@@ -259,9 +259,7 @@ final class NestAlerts {
         c.userInfo = ["camera": camera, "key": short, "event": event ?? "", "clip": clip ?? ""]
         // The doorbell itself rang: the iPhones show it as a Live Activity too (started by the Mac's push).
         if title.localizedCaseInsensitiveContains("at the door") { c.userInfo["ring"] = "1" }
-        // The alert goes at once; its picture follows as a quiet update of the same alert (same id), so fetching it
-        // never holds the alert up.
-        Notifier.deliver(c, id: "nest-" + short)
+        let id = "nest-" + short
         if !quiet { CameraStreams.shared.noteAlert(camera) }
         #if os(macOS)
         if !quiet { WeeklyNote.countAlert(camera: body) }
@@ -274,22 +272,35 @@ final class NestAlerts {
         if PhoneWidgetShare.saveCamera(id: camera, name: body, doorbell: doorbell, event: tag) {
             WidgetCenter.shared.reloadTimelines(ofKind: PhoneWidgetShare.tvsCamerasKind); WidgetCenter.shared.reloadTimelines(ofKind: PhoneWidgetShare.doorbellKind)
         }
-        // Here: the clip or snapshot added to the alert when Google has it.
+        // One alert per event, with its picture. The Mac's push normally brings it (picture included), so the iPhone
+        // shows its own only when that hasn't come: after a short wait for it, or at once when catching up.
         Task {
-            guard let file = await CameraEventMedia.fetch(camera: camera, eventID: event, clipURL: clip, key: short, timeout: 10) else { return }
-            if let jpeg = await CameraEventMedia.still(file) {
+            if !quiet { try? await Task.sleep(nanoseconds: 15_000_000_000) }
+            let shown = await Self.alreadyShown(id: id, key: short)
+            let file = await CameraEventMedia.fetch(camera: camera, eventID: event, clipURL: clip, key: short, timeout: shown ? 10 : 8)
+            if let file, let jpeg = await CameraEventMedia.still(file) {
                 PhoneWidgetShare.saveCamera(id: camera, name: body, doorbell: doorbell, jpeg: jpeg)
                 WidgetCenter.shared.reloadTimelines(ofKind: PhoneWidgetShare.tvsCamerasKind); WidgetCenter.shared.reloadTimelines(ofKind: PhoneWidgetShare.doorbellKind)
             }
-            guard let a = CameraEventMedia.attachment(file),
-                  let update = c.mutableCopy() as? UNMutableNotificationContent else { return }
-            update.attachments = [a]
-            update.sound = nil
-            Notifier.deliver(update, id: "nest-" + short)
+            if shown {
+                PushRelay.log.notice("alert for \(body, privacy: .public) already shown from the Mac (not shown twice)")
+                return
+            }
+            if let file, let a = CameraEventMedia.attachment(file) { c.attachments = [a] }
+            Notifier.deliver(c, id: id)
         }
         #else
-        // The Mac fetches the moment itself and sends a small picture of it as a quiet update, so every iPhone shows
-        // one, signed in to the cameras or not.
+        // One alert per event, with its picture: it waits for the picture (a few seconds at most, less for the
+        // doorbell), then goes once, here and to every iPhone. A picture that comes later doesn't send it again.
+        let once = SentOnce()
+        let cap: UInt64 = c.userInfo["ring"] != nil ? 4 : 7
+        Task {
+            try? await Task.sleep(nanoseconds: cap * 1_000_000_000)
+            guard !once.done else { return }
+            once.done = true
+            PushRelay.log.notice("alert for \(body, privacy: .public) sent without a picture (none in \(cap) s)")
+            Notifier.deliver(c, id: id)
+        }
         let received = Date(), happened = eventHappened
         // The Mac's TVs & Cameras widget: the camera's red tag at once, its picture of the moment when there is one.
         let macCam = NestCameras.shared.cameras.first { $0.id == camera }
@@ -330,14 +341,25 @@ final class NestAlerts {
             Saved.save(LastCameraEvent.savedKey, LastCameraEvent(title: title, body: body, camera: camera, key: short, happened: happened,
                                                                  event: event ?? "", clip: clip ?? "", at: received, thumb: thumb))
             PushRelay.log.notice("picture for \(body, privacy: .public)\(quiet ? " (clip came later)" : "", privacy: .public): \(thumb.map { "\($0.count) characters, from \(how)" } ?? "none (no clip or snapshot from Google, and no frame from the live stream)", privacy: .public)")
-            guard let thumb, let update = c.mutableCopy() as? UNMutableNotificationContent else { return }
-            update.userInfo["thumb"] = thumb
-            update.userInfo["ring"] = nil   // the Live Activity started with the alert itself
-            update.sound = nil
-            Notifier.deliver(update, id: "nest-" + short)
+            guard !once.done else {
+                if thumb != nil { PushRelay.log.notice("picture for \(body, privacy: .public) came after its alert went (no second alert)") }
+                return
+            }
+            once.done = true
+            if let thumb { c.userInfo["thumb"] = thumb }
+            Notifier.deliver(c, id: id)
         }
         #endif
     }
+
+    #if os(iOS)
+    /// Whether this event's alert is already on the iPhone (the Mac's push), by its id or its event key.
+    static func alreadyShown(id: String, key: String) async -> Bool {
+        if NotificationHandler.presentedKeys.contains(key) { return true }
+        let delivered = await UNUserNotificationCenter.current().deliveredNotifications()
+        return delivered.contains { $0.request.identifier == id || ($0.request.content.userInfo["key"] as? String) == key }
+    }
+    #endif
 
     /// The latest camera event this device alerted for (Send Test Camera Alert sends it again).
     static var lastEvent: LastCameraEvent? { Saved.load(LastCameraEvent.savedKey, as: LastCameraEvent.self) }
@@ -350,6 +372,12 @@ final class NestAlerts {
         for b in key.utf8 { h = (h ^ UInt64(b)) &* 0x100000001b3 }
         return String(h, radix: 16)
     }
+}
+
+/// Whether an event's alert has gone out (the picture's wait and its time limit race; the first one sends it).
+@MainActor
+private final class SentOnce {
+    var done = false
 }
 
 /// A camera alert as it went out: what Send Test Camera Alert sends again, picture and clip included.

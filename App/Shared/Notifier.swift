@@ -79,10 +79,17 @@ final class NotificationHandler: NSObject, UNUserNotificationCenterDelegate, @un
     // The completion-handler forms, each answered on the main thread: with the async forms the system's completion ran
     // on a background thread when the method returned, and UIKit (updating the app's snapshot after a tapped alert)
     // aborted the app.
+    /// The camera events whose alert this device has shown while open (the iPhone doesn't show its own copy of one).
+    @MainActor static var presentedKeys: Set<String> = []
+
     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification,
                                 withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
         // Kept in Notification Center too: an alert that arrives while Woodruff is open was only a passing banner.
-        DispatchQueue.main.async { completionHandler([.banner, .list, .sound]) }
+        let key = notification.request.content.userInfo["key"] as? String
+        DispatchQueue.main.async {
+            if let key { MainActor.assumeIsolated { _ = Self.presentedKeys.insert(key) } }
+            completionHandler([.banner, .list, .sound])
+        }
     }
 
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
