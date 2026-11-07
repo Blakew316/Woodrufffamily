@@ -1351,6 +1351,7 @@ struct SearchPage: View {
     @State private var failed: String?
     /// Asked again (a result was marked watched).
     @State private var again = 0
+    @FocusState private var typing: Bool
 
     var body: some View {
         // Worked out once for the page: the tiles are handed their posters' addresses.
@@ -1374,7 +1375,15 @@ struct SearchPage: View {
             .padding(.vertical)
         }
         .navigationTitle("Search")
+        #if os(iOS)
+        // At the top and always showing, the keyboard up at once: iOS 26 puts a search field at the bottom by
+        // default, where the app's tab bar covered it (a blank page with nowhere to type).
+        .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Movies and TV Shows")
+        .searchFocused($typing)
+        .onAppear { typing = true }
+        #else
         .pageSearch(text: $query, prompt: "Movies and TV Shows")
+        #endif
         .environment(\.openTitle, OpenTitleAction { openTitle = $0 })
         .environment(\.watchChanged, WatchChanged { key in
             watchChanged(removed: key)

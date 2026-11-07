@@ -423,7 +423,8 @@ extension View {
     /// they stay in the toolbar, so [trailing] isn't shown there).
     @ViewBuilder func pageSearch<Trailing: View>(text: Binding<String>, prompt: String, @ViewBuilder trailing: () -> Trailing) -> some View {
         #if os(iOS)
-        self.searchable(text: text, prompt: prompt)
+        // Under the page's title, not at the bottom (iOS 26's default), where the app's tab bar covers it.
+        self.searchable(text: text, placement: .navigationBarDrawer, prompt: prompt)
         #else
         self.safeAreaInset(edge: .top, spacing: 0) {
             HStack(spacing: 10) {
