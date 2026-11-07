@@ -363,7 +363,7 @@ struct AllTVsWidgetView: View {
     private var list: some View {
         let shown = Array(entry.tvs.prefix(room))
         let more = entry.tvs.count - shown.count
-        VStack(alignment: .leading, spacing: family == .systemLarge ? 10 : 6) {
+        return VStack(alignment: .leading, spacing: family == .systemLarge ? 10 : 6) {
             HStack(alignment: .firstTextBaseline) {
                 Text("TVs").font(.headline)
                 Spacer()
