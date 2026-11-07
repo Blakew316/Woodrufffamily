@@ -1438,3 +1438,28 @@ final class ShelfCache {
         return value
     }
 }
+
+/// Watch's first pictures fetched while the app opens (when the library the app keeps is Watch's own): the titles at
+/// the top and Continue Watching on disk, and the first few posters ready to draw, so Watch opens with its pictures.
+@MainActor
+enum WatchPrefetch {
+    private static var done = false
+
+    static func start(_ fleet: Fleet) {
+        guard !done, !Demo.isOn else { return }
+        done = true
+        Task {
+            // The library comes with the TVs' first answers: a little while at most.
+            for _ in 0..<40 where fleet.library == nil { try? await Task.sleep(nanoseconds: 500_000_000) }
+            guard let h = fleet.library, let client = WatchSources.current(fleet),
+                  fleet.libraryFrom == client.sourceID else { return }
+            let continuing = (h.continue ?? []).prefix(8).compactMap { client.artURL($0.poster) }
+            let top = (h.featured ?? []).prefix(3).compactMap { client.artURL($0.backdrop ?? $0.poster) }
+            let recent = (h.recent ?? []).prefix(12).compactMap { client.artURL($0.poster) }
+            // The ones seen first, ready to draw; the rest only downloaded.
+            for u in continuing.prefix(6) { _ = await ImageStore.shared.image(u, maxPixel: 512) }
+            if let first = top.first { _ = await ImageStore.shared.image(first, maxPixel: 1800) }
+            for u in Array(continuing.dropFirst(6)) + Array(top.dropFirst()) + recent { await ImageStore.shared.prefetch(u) }
+        }
+    }
+}

@@ -135,9 +135,16 @@ final class SmartThings {
         if let e = Keychain.get("st.expires").flatMap(Double.init), Date().timeIntervalSince1970 >= e,
            Date().timeIntervalSince1970 < e + 3600 {
             let before = Keychain.get("st.access")
-            try? await Task.sleep(nanoseconds: 8_000_000_000)
-            if let a = Keychain.get("st.access"), a != before, let e2 = Keychain.get("st.expires").flatMap(Double.init),
-               e2 > Date().timeIntervalSince1970 { return a }
+            // The family's copy on the TVs, read now (at home, or away through Tailscale) rather than at the next round.
+            await SettingsSync.shared.syncNow()
+            func fresh() -> String? {
+                guard let a = Keychain.get("st.access"), a != before, let e2 = Keychain.get("st.expires").flatMap(Double.init),
+                      e2 > Date().timeIntervalSince1970 else { return nil }
+                return a
+            }
+            if let a = fresh() { return a }
+            try? await Task.sleep(nanoseconds: 4_000_000_000)
+            if let a = fresh() { return a }
             throw OAuthRelay.Failure.refused(Self.waitingForMac)
         }
         #endif
@@ -161,9 +168,14 @@ final class SmartThings {
             // arrived by sync in the meantime: use that one rather than giving up.
             var newer = Keychain.get("st.refresh")
             if newer == r {
-                // Its new key may still be on its way here: wait a moment for it.
-                try? await Task.sleep(nanoseconds: 8_000_000_000)
+                // Its new key may still be on its way here: the TVs' copy read now (at home, or away through
+                // Tailscale), then a moment more for one coming straight across the Wi‑Fi.
+                await SettingsSync.shared.syncNow()
                 newer = Keychain.get("st.refresh")
+                if newer == r {
+                    try? await Task.sleep(nanoseconds: 4_000_000_000)
+                    newer = Keychain.get("st.refresh")
+                }
             }
             guard let newer, newer != r else {
                 // Turned down (not a network hiccup): keep it from being sent again, and say so plainly.

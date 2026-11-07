@@ -537,9 +537,11 @@ final class CameraStreams {
             if !pinned.contains(cam.id), letGo || (started && expanded != cam.id && full != cam.id && watching == 0) { p.pause() }
         }
         let end = Date().addingTimeInterval(timeout)
+        // Already playing (on screen, or Vehicle Alerts keeping it): its picture now, no settling needed.
+        if !started, p.isLive, let jpeg = await p.frameJPEG() { return jpeg }
         var firstLive: Date?
         while Date() < end {
-            try? await Task.sleep(nanoseconds: 500_000_000)
+            try? await Task.sleep(nanoseconds: 200_000_000)
             guard p.isLive else { continue }
             if firstLive == nil { firstLive = Date() }
             // A second in, past the first frames (often grey while the picture settles).

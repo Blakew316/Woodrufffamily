@@ -90,7 +90,7 @@ struct WoodruffApp: App {
                     #endif
                     // 2. A moment later, what Home shows besides the TVs: speakers and lights, Samsung, the fans, the
                     //    cameras and Apple Home.
-                    try? await Task.sleep(nanoseconds: 400_000_000)
+                    try? await Task.sleep(nanoseconds: 150_000_000)
                     SmartHome.shared.start()
                     SmartThings.shared.start()
                     Dreo.shared.start()
@@ -103,10 +103,11 @@ struct WoodruffApp: App {
                     // Apple Home on the Mac, through Woodruff Home Helper.
                     HomeBridgeClient.shared.start()
                     #endif
-                    // 3. A couple of seconds in, what works behind the scenes: push, the weather's place, settings sync,
+                    // 3. About a second in, what works behind the scenes: push, the weather's place, settings sync,
                     //    doorbell alerts, the Wi‑Fi, Siri's names and the pictures' disk cache.
-                    try? await Task.sleep(nanoseconds: 2_100_000_000)
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)
                     if !Demo.isOn { PushRelay.shared.start() }
+                    WatchPrefetch.start(fleet)
                     if !Demo.isOn && !fleet.hubs.isEmpty { LocationWeather.shared.start(fleet) }
                     SettingsSync.shared.start(fleet)
                     NestAlerts.shared.start(fleet)
@@ -173,6 +174,10 @@ struct WoodruffApp: App {
                 DriveLibrary.shared.flush()
                 #if os(iOS)
                 AlertsRefresh.schedule()
+                // A smaller app in the background is less likely to be closed by iOS (so it opens at once): pictures
+                // not on screen are let go (they're on disk; the ones shown are kept by their views).
+                ImageStore.shared.memory.empty()
+                BlurStore.empty()
                 #endif
             }
             #if os(macOS)

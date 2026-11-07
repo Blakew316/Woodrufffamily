@@ -305,6 +305,8 @@ final class ImageMemory: @unchecked Sendable {
 
     func object(_ name: String) -> PlatformImage? { cache.object(forKey: name as NSString) }
     func set(_ image: PlatformImage, _ name: String, cost: Int) { cache.setObject(image, forKey: name as NSString, cost: cost) }
+    /// Lets go of every decoded picture (the ones on screen are held by their views, so nothing shown goes blank).
+    func empty() { cache.removeAllObjects() }
 }
 
 /// What a `CachedImage` asks for: a new address or size is a new picture.
@@ -437,6 +439,7 @@ enum BlurStore {
         "\(k.url?.absoluteString ?? "")|\(k.w)x\(k.h)|\(k.radius)|\(k.opaque)" as NSString
     }
     static func cached(_ k: BlurKey) -> CGImage? { cache.object(forKey: name(k))?.image }
+    static func empty() { cache.removeAllObjects() }
     static func keep(_ i: CGImage, _ k: BlurKey) { cache.setObject(CGImageBox(i), forKey: name(k)) }
 
     static func cgImage(_ p: PlatformImage) -> CGImage? {
