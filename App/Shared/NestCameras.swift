@@ -566,16 +566,16 @@ final class CameraStreams {
         let started = !p.isRunning
         grabbing.insert(cam.id)
         var borrowed = false
-        if p.web.window == nil, let host = grabWindow.contentView {
-            p.web.frame = host.bounds
-            host.addSubview(p.web)
+        if p.surface.window == nil, let host = grabWindow.contentView {
+            p.surface.frame = host.bounds
+            host.addSubview(p.surface)
             grabWindow.orderBack(nil)
             borrowed = true
         }
         if started { p.start() }
         defer {
             grabbing.remove(cam.id)
-            if borrowed, p.web.superview === grabWindow.contentView { p.web.removeFromSuperview() }
+            if borrowed, p.surface.superview === grabWindow.contentView { p.surface.removeFromSuperview() }
             if grabWindow.contentView?.subviews.isEmpty ?? true { grabWindow.orderOut(nil) }
             if !pinned.contains(cam.id), letGo || (started && expanded != cam.id && full != cam.id && watching == 0) { p.pause() }
         }
@@ -602,9 +602,9 @@ final class CameraStreams {
     func keepPlaying(_ cam: NestCameras.Camera) -> LivePlayer {
         pinned.insert(cam.id)
         let p = player(cam)
-        if p.web.window == nil, let host = grabWindow.contentView {
-            p.web.frame = host.bounds
-            host.addSubview(p.web)
+        if p.surface.window == nil, let host = grabWindow.contentView {
+            p.surface.frame = host.bounds
+            host.addSubview(p.surface)
             grabWindow.orderBack(nil)
         }
         if cam.online, !p.isRunning { p.start() }
@@ -614,7 +614,7 @@ final class CameraStreams {
     /// No longer kept playing (its switch went off): let go unless it's on screen.
     func stopKeeping(_ id: String) {
         guard pinned.remove(id) != nil, let p = players[id] else { return }
-        if p.web.superview === grabWindow.contentView { p.web.removeFromSuperview() }
+        if p.surface.superview === grabWindow.contentView { p.surface.removeFromSuperview() }
         if grabWindow.contentView?.subviews.isEmpty ?? true { grabWindow.orderOut(nil) }
         if letGo || (expanded != id && full != id && watching == 0) { p.pause() }
     }
@@ -1001,11 +1001,33 @@ struct CameraLiveView: View {
     #endif
 }
 
+#if os(iOS)
+typealias StageView = UIView
+#else
+typealias StageView = NSView
+#endif
+
 /// One camera's WebRTC session: the web view makes the offer, Google answers through Device Access, and
 /// it's renewed every four minutes (Google ends it after five). If it drops, it reconnects by itself.
 @MainActor
 final class LivePlayer: NSObject, WKNavigationDelegate {
     let web: WKWebView
+    /// What's put on screen (a tile, the big view, the Mac's off-screen window): the native picture, or the web page.
+    let surface: StageView
+    /// The native player, tried first for each stream; the web page takes over by itself if it doesn't go live.
+    private lazy var native: NativeRTC = {
+        let n = NativeRTC()
+        n.onState = { [weak self] s in self?.received("state", s) }
+        return n
+    }()
+    private var usingNative = false
+    /// The native player didn't work for this camera: the web page from now on (until the app restarts).
+    private var nativeOff = false
+    /// Sound was asked for: the web page plays it (the native player is picture only).
+    private var soundOn = false
+    private var nativeWatch: Task<Void, Never>?
+    /// The native player can be turned off for every camera (defaults on).
+    static var nativeEnabled: Bool { UserDefaults.standard.object(forKey: "camera.native") as? Bool ?? true }
     /// Kept current by CameraStreams (name, and whether Google can reach it).
     var camera: NestCameras.Camera
     var onStatus: ((String) -> Void)?
@@ -1037,7 +1059,19 @@ final class LivePlayer: NSObject, WKNavigationDelegate {
         #endif
         config.mediaTypesRequiringUserActionForPlayback = []
         web = WKWebView(frame: .zero, configuration: config)
+        surface = StageView(frame: .zero)
         super.init()
+        #if os(iOS)
+        surface.backgroundColor = .black
+        surface.clipsToBounds = true
+        web.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        #else
+        surface.wantsLayer = true
+        surface.layer?.backgroundColor = NSColor.black.cgColor
+        web.autoresizingMask = [.width, .height]
+        #endif
+        web.frame = surface.bounds
+        surface.addSubview(web)
         // A weak go-between, so the page doesn't keep the player alive forever.
         let proxy = ScriptProxy(self)
         config.userContentController.add(proxy, name: "offer")
@@ -1059,6 +1093,9 @@ final class LivePlayer: NSObject, WKNavigationDelegate {
         startedAt = Date()
         stage("start")
         onStatus?(offline ? "Offline" : "Starting…")
+        if Self.nativeEnabled && !nativeOff && !soundOn { startNative(); return }
+        usingNative = false
+        show(native: false)
         // The page stays loaded between streams: starting again is a fresh connection in it, not a new page (quicker).
         if pageLoaded { web.evaluateJavaScript("start()") } else {
             web.loadHTMLString(Self.page, baseURL: URL(string: "https://localhost/"))
@@ -1068,6 +1105,60 @@ final class LivePlayer: NSObject, WKNavigationDelegate {
 
     /// The player's page has been loaded (it starts its first stream as it loads).
     private var pageLoaded = false
+
+    /// The native player's start: its offer goes to Google the same way as the page's.
+    private func startNative() {
+        usingNative = true
+        show(native: true)
+        stage("native start")
+        // Not live in 8 seconds: the web page takes over for this camera.
+        nativeWatch?.cancel()
+        nativeWatch = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 8_000_000_000)
+            guard let self, !Task.isCancelled, self.running, self.usingNative, !self.live else { return }
+            self.fallBack("not live in 8 s")
+        }
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let sdp = try await self.native.offer()
+                guard self.running, self.usingNative else { return }
+                self.received("offer", sdp)
+            } catch {
+                self.fallBack("no offer: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// The native player gave up on this camera: the web page plays it from now on.
+    private func fallBack(_ why: String) {
+        guard usingNative else { return }
+        Self.log.notice("\(self.camera.name, privacy: .public): native player off (\(why, privacy: .public)), using the web player")
+        nativeOff = true
+        usingNative = false
+        nativeWatch?.cancel()
+        native.stop()
+        show(native: false)
+        work?.cancel(); renew?.cancel(); watchdog?.cancel()
+        session = nil
+        if running { running = false; start() }
+    }
+
+    /// Which picture the stage shows.
+    private func show(native on: Bool) {
+        let v = native.view
+        if on && v.superview !== surface {
+            v.frame = surface.bounds
+            #if os(iOS)
+            v.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+            #else
+            v.autoresizingMask = [.width, .height]
+            #endif
+            surface.addSubview(v)
+        }
+        v.isHidden = !on
+        web.isHidden = on
+    }
 
     /// Starts over with a fresh stream.
     func restart() { pause(); start() }
@@ -1079,20 +1170,35 @@ final class LivePlayer: NSObject, WKNavigationDelegate {
         guard running else { return }
         running = false
         live = false
-        work?.cancel(); renew?.cancel()
+        work?.cancel(); renew?.cancel(); nativeWatch?.cancel()
         session = nil
-        web.evaluateJavaScript("stop()")
+        if usingNative { native.stop() } else { web.evaluateJavaScript("stop()") }
     }
 
     /// For good: no more page or messages.
     func close() {
         pause()
+        native.stop()
         pageLoaded = false
         web.configuration.userContentController.removeAllScriptMessageHandlers()
         web.navigationDelegate = nil
     }
 
-    func setMuted(_ m: Bool) { web.evaluateJavaScript("setMuted(\(m))") }
+    func setMuted(_ m: Bool) {
+        soundOn = !m
+        // Sound is the web page's: a native picture hands over to it when sound is asked for.
+        if !m && usingNative {
+            usingNative = false
+            nativeWatch?.cancel()
+            native.stop()
+            show(native: false)
+            work?.cancel(); renew?.cancel(); watchdog?.cancel()
+            session = nil
+            if running { running = false; start() }
+            return
+        }
+        web.evaluateJavaScript("setMuted(\(m))")
+    }
 
     /// Dropped: try again after a wait that grows each time it fails (5 s up to a minute), or a set wait.
     private func reconnect(after fixed: UInt64? = nil) {
@@ -1143,6 +1249,7 @@ final class LivePlayer: NSObject, WKNavigationDelegate {
     /// The video's current frame as a JPEG at most 480 pixels across, drawn into a canvas in the page (a snapshot of
     /// the web view can miss the video). Nil before the first frame.
     func frameJPEG() async -> Data? {
+        if usingNative { return native.frameJPEG() }
         let js = """
         (() => { const v = document.querySelector('video'); if (!v || !v.videoWidth) return null;
           const k = Math.min(1, 480 / Math.max(v.videoWidth, v.videoHeight)); const c = document.createElement('canvas');
@@ -1171,8 +1278,14 @@ final class LivePlayer: NSObject, WKNavigationDelegate {
         if name == "state" {
             // A page being let go still reports ("closed"…): only a running stream speaks.
             guard running else { return }
+            // The native player failed before it was ever live: the web page takes over.
+            if body == "failed", usingNative, !live { fallBack("failed"); return }
             if body == "failed" { onStatus?("Reconnecting…"); reconnect(); return }
-            if body == "Live" { stage("live"); live = true; failures = 0; offline = false; watchdog?.cancel(); keepStills() }
+            if body == "Live" {
+                stage(usingNative ? "live (native)" : "live")
+                live = true; failures = 0; offline = false; watchdog?.cancel(); nativeWatch?.cancel(); keepStills()
+                if !usingNative && soundOn { web.evaluateJavaScript("setMuted(false)") }
+            }
             // While it's known offline, the page's "Starting…" doesn't replace "Offline".
             if offline && body == "Starting…" { return }
             if body == "Reconnecting…", live {
@@ -1202,7 +1315,11 @@ final class LivePlayer: NSObject, WKNavigationDelegate {
                 self.onStatus?("Starting…")
                 self.session = s
                 let js = (try? String(data: JSONSerialization.data(withJSONObject: [answer]), encoding: .utf8)) ?? "[\"\"]"
-                _ = try? await self.web.evaluateJavaScript("answer(\(js)[0])")
+                if self.usingNative {
+                    do { try await self.native.answer(answer) } catch { self.fallBack("answer: \(error.localizedDescription)"); return }
+                } else {
+                    _ = try? await self.web.evaluateJavaScript("answer(\(js)[0])")
+                }
                 self.keepAlive()
                 // Not live within 15 seconds of Google's answer: start over.
                 self.watchdog?.cancel()
@@ -1295,13 +1412,13 @@ struct LiveWebView: UIViewRepresentable {
         let host = UIView()
         host.backgroundColor = .black
         host.clipsToBounds = true
-        Self.attach(player.web, to: host)
+        Self.attach(player.surface, to: host)
         return host
     }
     func updateUIView(_ host: UIView, context: Context) {
-        if player.web.superview !== host { Self.attach(player.web, to: host) }
+        if player.surface.superview !== host { Self.attach(player.surface, to: host) }
     }
-    static func attach(_ web: WKWebView, to host: UIView) {
+    static func attach(_ web: UIView, to host: UIView) {
         web.removeFromSuperview()
         web.frame = host.bounds
         web.autoresizingMask = [.flexibleWidth, .flexibleHeight]
@@ -1349,8 +1466,8 @@ struct CameraFullScreen: View {
 #else
 struct LiveWebView: NSViewRepresentable {
     var player: LivePlayer
-    func makeNSView(context: Context) -> WKWebView { player.web }
-    func updateNSView(_ v: WKWebView, context: Context) {}
+    func makeNSView(context: Context) -> NSView { player.surface }
+    func updateNSView(_ v: NSView, context: Context) {}
 }
 #endif
 
