@@ -448,7 +448,7 @@ final class CameraStreams {
         #if os(macOS)
         // The Mac's TVs & Cameras widget shows it too.
         if MacCameraShare.save(id: id, name: cam.name, doorbell: cam.doorbell, jpeg: jpeg) {
-            WidgetCenter.shared.reloadTimelines(ofKind: MacCameraShare.kind)
+            WidgetCenter.shared.reloadTimelines(ofKind: MacCameraShare.kind); WidgetCenter.shared.reloadTimelines(ofKind: "com.woodruff.family.widget.tvs")
         }
         #endif
         stillAt[id] = Date()

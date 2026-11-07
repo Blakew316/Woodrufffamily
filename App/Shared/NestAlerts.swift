@@ -272,7 +272,7 @@ final class NestAlerts {
         let macTag = title.localizedCaseInsensitiveContains("person") ? "Person"
             : title.localizedCaseInsensitiveContains("motion") ? "Motion" : title.localizedCaseInsensitiveContains("ring") || title.localizedCaseInsensitiveContains("door") ? "Ring" : "Event"
         if !quiet, MacCameraShare.save(id: camera, name: macCam?.name ?? body, doorbell: macCam?.doorbell ?? false, event: macTag) {
-            WidgetCenter.shared.reloadTimelines(ofKind: MacCameraShare.kind)
+            WidgetCenter.shared.reloadTimelines(ofKind: MacCameraShare.kind); WidgetCenter.shared.reloadTimelines(ofKind: "com.woodruff.family.widget.tvs")
         }
         Task {
             var thumb: String?
@@ -300,7 +300,7 @@ final class NestAlerts {
                 how = String(format: "the live stream, %.1f s", Date().timeIntervalSince(t0))
             }
             if let still, MacCameraShare.save(id: camera, name: macCam?.name ?? body, doorbell: macCam?.doorbell ?? false, jpeg: still) {
-                WidgetCenter.shared.reloadTimelines(ofKind: MacCameraShare.kind)
+                WidgetCenter.shared.reloadTimelines(ofKind: MacCameraShare.kind); WidgetCenter.shared.reloadTimelines(ofKind: "com.woodruff.family.widget.tvs")
             }
             // The latest event, for Send Test Camera Alert.
             Saved.save(LastCameraEvent.savedKey, LastCameraEvent(title: title, body: body, camera: camera, key: short, happened: happened,

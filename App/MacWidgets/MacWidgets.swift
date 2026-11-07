@@ -334,8 +334,9 @@ struct AllTVsWidget: Widget {
             AllTVsWidgetView(entry: e)
         }
         .configurationDisplayName("TVs")
-        .description("Every TV, what it’s playing, and play and pause.")
+        .description("Medium: what the TVs are playing with the doorbell and driveway beside them. Large: every TV.")
         .supportedFamilies([.systemMedium, .systemLarge])
+        .contentMarginsDisabled()
     }
 }
 
@@ -347,6 +348,19 @@ struct AllTVsWidgetView: View {
     private var room: Int { family == .systemLarge ? 8 : 6 }
 
     var body: some View {
+        // Medium: the iPhone's TVs & Cameras layout (what's playing on the left, the cameras on the right).
+        if family == .systemMedium {
+            MacTVsCamerasView(entry: entry, cameras: MacCameraShare.load())
+                .environment(\.colorScheme, .dark)
+                .containerBackground(for: .widget) {
+                    LinearGradient(colors: [WidgetPalette.navyTop, WidgetPalette.navyBottom], startPoint: .topLeading, endPoint: .bottomTrailing)
+                }
+        } else {
+            list
+        }
+    }
+
+    private var list: some View {
         let shown = Array(entry.tvs.prefix(room))
         let more = entry.tvs.count - shown.count
         VStack(alignment: .leading, spacing: family == .systemLarge ? 10 : 6) {
@@ -371,6 +385,7 @@ struct AllTVsWidgetView: View {
                 Text(problem).font(.caption2).foregroundStyle(.orange).lineLimit(1)
             }
         }
+        .padding(16)   // the widget's own margins are off (the medium size fills to its edges)
         .environment(\.colorScheme, .dark)
         .foregroundStyle(WidgetPalette.frost)
         .tint(WidgetPalette.sky)
