@@ -1095,7 +1095,7 @@ final class LivePlayer: NSObject, WKNavigationDelegate {
         startedAt = Date()
         stage("start")
         onStatus?(offline ? "Offline" : "Starting…")
-        if Self.nativeEnabled && !nativeOff && !soundOn { startNative(); return }
+        if Self.nativeEnabled && !nativeOff && !Self.soundNeedsWeb(soundOn) { startNative(); return }
         usingNative = false
         show(native: false)
         // The page stays loaded between streams: starting again is a fresh connection in it, not a new page (quicker).
@@ -1107,6 +1107,15 @@ final class LivePlayer: NSObject, WKNavigationDelegate {
 
     /// The player's page has been loaded (it starts its first stream as it loads).
     private var pageLoaded = false
+
+    /// Whether sound sends this camera to the web player (the iPhone's native player is picture only).
+    private static func soundNeedsWeb(_ on: Bool) -> Bool {
+        #if os(iOS)
+        return on
+        #else
+        return false
+        #endif
+    }
 
     /// The native player's start: its offer goes to Google the same way as the page's.
     private func startNative() {
@@ -1189,6 +1198,11 @@ final class LivePlayer: NSObject, WKNavigationDelegate {
 
     func setMuted(_ m: Bool) {
         soundOn = !m
+        #if os(macOS)
+        // The Mac's native player has sound of its own.
+        native.sound = !m
+        if usingNative { return }
+        #endif
         // Sound is the web page's: a native picture hands over to it when sound is asked for.
         if !m && usingNative {
             usingNative = false

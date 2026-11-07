@@ -19,7 +19,7 @@ final class NativeRTC: NSObject, RTCPeerConnectionDelegate, RTCVideoViewDelegate
     static let factory: RTCPeerConnectionFactory = {
         RTCInitializeSSL()
         #if os(iOS)
-        // No microphone and no audio session taken: the picture only (sound uses the web player).
+        // No microphone and no audio session taken on the iPhone: the picture only (sound uses the web player).
         let session = RTCAudioSession.sharedInstance()
         session.useManualAudio = true
         session.isAudioEnabled = false
@@ -44,6 +44,12 @@ final class NativeRTC: NSObject, RTCPeerConnectionDelegate, RTCVideoViewDelegate
     private let grabber = FrameGrabber()
     private var pc: RTCPeerConnection?
     private var videoTrack: RTCVideoTrack?
+    private var audioTracks: [RTCAudioTrack] = []
+    /// The Mac plays the camera's sound itself; the iPhone's sound stays with the web player (WebRTC's iPhone audio
+    /// would also open the microphone).
+    var sound = false {
+        didSet { for a in audioTracks { a.isEnabled = sound } }
+    }
     /// "Live", "Starting…", "Reconnecting…" or "failed", on the main thread.
     var onState: ((String) -> Void)?
 
@@ -101,6 +107,8 @@ final class NativeRTC: NSObject, RTCPeerConnectionDelegate, RTCVideoViewDelegate
             t.remove(grabber)
         }
         videoTrack = nil
+        for a in audioTracks { a.isEnabled = false }
+        audioTracks = []
         let old = pc
         pc = nil
         old?.close()
@@ -119,7 +127,7 @@ final class NativeRTC: NSObject, RTCPeerConnectionDelegate, RTCVideoViewDelegate
     func peerConnection(_ peerConnection: RTCPeerConnection, didChange stateChanged: RTCSignalingState) {}
     func peerConnection(_ peerConnection: RTCPeerConnection, didAdd stream: RTCMediaStream) {
         guard peerConnection === pc else { return }
-        for a in stream.audioTracks { a.isEnabled = false }
+        for a in stream.audioTracks { DispatchQueue.main.async { [weak self] in self?.attachAudio(a, from: peerConnection) } }
         if let v = stream.videoTracks.first { DispatchQueue.main.async { [weak self] in self?.attach(v, from: peerConnection) } }
     }
     func peerConnection(_ peerConnection: RTCPeerConnection, didRemove stream: RTCMediaStream) {}
@@ -143,8 +151,21 @@ final class NativeRTC: NSObject, RTCPeerConnectionDelegate, RTCVideoViewDelegate
 
     func peerConnection(_ peerConnection: RTCPeerConnection, didAdd rtpReceiver: RTCRtpReceiver, streams mediaStreams: [RTCMediaStream]) {
         guard peerConnection === pc else { return }
-        if let a = rtpReceiver.track as? RTCAudioTrack { a.isEnabled = false }
+        if let a = rtpReceiver.track as? RTCAudioTrack {
+            a.isEnabled = false
+            DispatchQueue.main.async { [weak self] in self?.attachAudio(a, from: peerConnection) }
+        }
         if let v = rtpReceiver.track as? RTCVideoTrack { DispatchQueue.main.async { [weak self] in self?.attach(v, from: peerConnection) } }
+    }
+
+    private func attachAudio(_ track: RTCAudioTrack, from connection: RTCPeerConnection) {
+        guard connection === pc else { return }
+        #if os(macOS)
+        track.isEnabled = sound
+        #else
+        track.isEnabled = false
+        #endif
+        if !audioTracks.contains(where: { $0 === track }) { audioTracks.append(track) }
     }
 
     /// On the main thread, and only for the connection still in use.
