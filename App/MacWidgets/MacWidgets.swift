@@ -287,7 +287,7 @@ struct NowPlayingWidgetView: View {
         let p = tv?.playing
         VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Text(tv?.name ?? "Woodruff").font(.caption.weight(.semibold)).foregroundStyle(.white.opacity(0.75))
+                Text(tv?.name ?? "Woodruff").font(.caption.weight(.bold)).foregroundStyle(WidgetPalette.sky)
                 Spacer()
                 if let tv, let p {
                     Button(intent: WidgetKeyIntent(tv: tv, key: "playpause")) {
@@ -298,23 +298,22 @@ struct NowPlayingWidgetView: View {
             }
             Spacer(minLength: 0)
             Text(p?.title ?? idleWords(tv)).font(family == .systemSmall ? .headline : .title3.bold()).lineLimit(2)
-            if let a = p?.app { Text(a).font(.caption).foregroundStyle(.white.opacity(0.7)).lineLimit(1) }
-            if let p { WidgetProgress(playing: p, at: entry.date).padding(.top, 4) }
+            if let a = p?.app { Text(a).font(.caption).foregroundStyle(WidgetPalette.sky).lineLimit(1) }
+            if let p { WidgetProgress(playing: p, at: entry.date, tint: WidgetPalette.sky).padding(.top, 4) }
             if let problem = entry.problem {
                 Text(problem).font(.caption2).foregroundStyle(.yellow).lineLimit(2)
             }
         }
-        .foregroundStyle(.white)
+        .foregroundStyle(WidgetPalette.frost)
         .containerBackground(for: .widget) {
             ZStack {
-                Color.black
+                // The family's navy, with what's playing softly behind it.
+                LinearGradient(colors: [WidgetPalette.navyTop, WidgetPalette.navyBottom], startPoint: .topLeading, endPoint: .bottomTrailing)
                 if let data = entry.art, let img = NSImage(data: data) {
                     Image(nsImage: img).resizable().aspectRatio(contentMode: .fill)
-                        .opacity(0.9)
-                } else {
-                    LinearGradient(colors: [Color(red: 0.16, green: 0.34, blue: 0.5), .black], startPoint: .topLeading, endPoint: .bottomTrailing)
+                        .opacity(0.45)
                 }
-                LinearGradient(colors: [.black.opacity(0.1), .black.opacity(0.8)], startPoint: .top, endPoint: .bottom)
+                LinearGradient(colors: [WidgetPalette.navyBottom.opacity(0.15), WidgetPalette.navyBottom.opacity(0.85)], startPoint: .top, endPoint: .bottom)
             }
         }
         .widgetURL(URL(string: "woodruff://remote"))
@@ -372,7 +371,12 @@ struct AllTVsWidgetView: View {
                 Text(problem).font(.caption2).foregroundStyle(.orange).lineLimit(1)
             }
         }
-        .containerBackground(.fill.tertiary, for: .widget)
+        .environment(\.colorScheme, .dark)
+        .foregroundStyle(WidgetPalette.frost)
+        .tint(WidgetPalette.sky)
+        .containerBackground(for: .widget) {
+            LinearGradient(colors: [WidgetPalette.navyTop, WidgetPalette.navyBottom], startPoint: .topLeading, endPoint: .bottomTrailing)
+        }
     }
 
     private func row(_ tv: WidgetTV, compact: Bool) -> some View {
@@ -382,7 +386,7 @@ struct AllTVsWidgetView: View {
                 Text(tv.name).font(compact ? Font.caption.weight(.semibold) : Font.subheadline.weight(.semibold)).lineLimit(1)
                 Text(status(tv)).font(compact ? Font.caption2 : Font.caption).foregroundStyle(.secondary).lineLimit(1)
                 if !compact, let p = tv.playing {
-                    WidgetProgress(playing: p, at: entry.date, tint: .accentColor).padding(.top, 2)
+                    WidgetProgress(playing: p, at: entry.date, tint: WidgetPalette.sky).padding(.top, 2)
                 }
             }
             Spacer(minLength: 0)
@@ -580,7 +584,12 @@ struct HomeDevicesWidgetView: View {
                 Text(problem).font(.caption2).foregroundStyle(.orange).lineLimit(2)
             }
         }
-        .containerBackground(.fill.tertiary, for: .widget)
+        .environment(\.colorScheme, .dark)
+        .foregroundStyle(WidgetPalette.frost)
+        .tint(WidgetPalette.sky)
+        .containerBackground(for: .widget) {
+            LinearGradient(colors: [WidgetPalette.navyTop, WidgetPalette.navyBottom], startPoint: .topLeading, endPoint: .bottomTrailing)
+        }
     }
 
     private func lightLabel(_ l: GoveeLight) -> some View {
@@ -605,8 +614,7 @@ struct MacTVsCamerasWidget: Widget {
             MacTVsCamerasView(entry: e, cameras: MacCameraShare.load())
                 .environment(\.colorScheme, .dark)
                 .containerBackground(for: .widget) {
-                    LinearGradient(colors: [Color(red: 0.13, green: 0.14, blue: 0.19), Color(red: 0.06, green: 0.06, blue: 0.09)],
-                                   startPoint: .topLeading, endPoint: .bottomTrailing)
+                    LinearGradient(colors: [WidgetPalette.navyTop, WidgetPalette.navyBottom], startPoint: .topLeading, endPoint: .bottomTrailing)
                 }
         }
         .configurationDisplayName("TVs & Cameras")
@@ -643,7 +651,7 @@ struct MacTVsCamerasView: View {
             VStack(spacing: 4) {
                 if tvs.isEmpty {
                     Text(entry.paired ? "No TVs answered." : "Open Woodruff to pair your TVs.")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(.caption).foregroundStyle(WidgetPalette.sky)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     ForEach(tvs) { tv in row(tv) }
@@ -653,8 +661,8 @@ struct MacTVsCamerasView: View {
             VStack(spacing: 6) {
                 ForEach(0..<2, id: \.self) { i in
                     if i < cams.count { camera(cams[i]) } else {
-                        RoundedRectangle(cornerRadius: 11, style: .continuous).fill(.white.opacity(0.06))
-                            .overlay(Text("Camera").font(.caption2).foregroundStyle(.tertiary))
+                        RoundedRectangle(cornerRadius: 11, style: .continuous).fill(WidgetPalette.sky.opacity(0.1))
+                            .overlay(Text("Camera").font(.caption2).foregroundStyle(WidgetPalette.sky.opacity(0.6)))
                     }
                 }
             }
@@ -669,19 +677,25 @@ struct MacTVsCamerasView: View {
         let selected = tv.id == entry.selected?.id
         let playing = tv.online ? tv.playing : nil
         return HStack(spacing: 8) {
-            RoundedRectangle(cornerRadius: 8, style: .continuous).fill(.white.opacity(0.07))
-                .frame(width: 34, height: 34)
-                .overlay(Image(systemName: "tv").font(.system(size: 14, weight: .medium)).foregroundStyle(.white.opacity(0.45)))
-            VStack(alignment: .leading, spacing: 1) {
-                HStack(spacing: 5) {
-                    Circle().fill(!tv.online ? Color.white.opacity(0.3) : playing == nil ? Color.white.opacity(0.5) : playing!.isPlaying ? Color.green : Color.yellow)
-                        .frame(width: 6, height: 6)
-                    Text(tv.name).font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary).lineLimit(1)
+            Group {
+                if selected, playing != nil, let data = entry.art, let img = NSImage(data: data) {
+                    Image(nsImage: img).resizable().scaledToFill()
+                } else {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous).fill(WidgetPalette.sky.opacity(0.12))
+                        .overlay(Image(systemName: "tv").font(.system(size: 14, weight: .semibold)).foregroundStyle(WidgetPalette.frost))
                 }
+            }
+            .frame(width: 34, height: 34)
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            VStack(alignment: .leading, spacing: 1) {
+                Text(tv.name).font(.system(size: 10, weight: .bold)).foregroundStyle(WidgetPalette.frost).lineLimit(1)
                 Text(playing?.title ?? (tv.online ? "On" : "Off"))
                     .font(.system(size: 12.5, weight: selected ? .bold : .semibold, design: .rounded))
-                    .foregroundStyle(playing != nil ? Color.primary : Color.secondary)
+                    .foregroundStyle(WidgetPalette.frost)
                     .lineLimit(1)
+                if let p = playing {
+                    WidgetProgress(playing: p, at: entry.date, tint: WidgetPalette.sky).padding(.top, 3)
+                }
             }
             Spacer(minLength: 0)
         }
@@ -689,14 +703,15 @@ struct MacTVsCamerasView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
         .background {
             if selected {
-                RoundedRectangle(cornerRadius: 12, style: .continuous).fill(.white.opacity(0.1))
+                RoundedRectangle(cornerRadius: 12, style: .continuous).fill(WidgetPalette.sky.opacity(0.14))
+                    .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(WidgetPalette.frost.opacity(0.85), lineWidth: 1))
             }
         }
     }
 
     private func camera(_ c: MacCameraShare.Line) -> some View {
         let fresh = c.eventAt.map { entry.date.timeIntervalSince($0) < 600 } ?? false
-        return Color.white.opacity(0.06)
+        return WidgetPalette.sky.opacity(0.1)
             .overlay {
                 if let data = MacCameraShare.picture(c), let image = NSImage(data: data) {
                     Image(nsImage: image).resizable().scaledToFill()
@@ -728,4 +743,13 @@ struct MacTVsCamerasView: View {
             }
             .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
     }
+}
+
+
+/// The widgets' colours, the same as the iPhone's: deep navy behind, light blue accents, frosty white lettering.
+enum WidgetPalette {
+    static let navyTop = Color(red: 0.07, green: 0.15, blue: 0.36)
+    static let navyBottom = Color(red: 0.02, green: 0.06, blue: 0.17)
+    static let sky = Color(red: 0.55, green: 0.76, blue: 1.0)
+    static let frost = Color(red: 0.93, green: 0.97, blue: 1.0)
 }

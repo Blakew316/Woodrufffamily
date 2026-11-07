@@ -45,6 +45,8 @@ struct NowPlayingWidget: Widget {
         StaticConfiguration(kind: PhoneWidgetShare.nowPlayingKind, provider: ShareProvider()) { entry in
             TVsWidgetView(s: entry.s, stale: entry.s?.tvsStale(at: entry.date) ?? false)
                 .environment(\.colorScheme, .dark)
+                .foregroundStyle(WidgetPalette.frost)
+                .tint(WidgetPalette.sky)
                 .widgetURL(URL(string: "woodruff://remote"))
         }
         .configurationDisplayName("TVs")
@@ -161,11 +163,11 @@ struct TVsBackground: View {
 
     var body: some View {
         ZStack {
-            LinearGradient(colors: [Color(red: 0.13, green: 0.14, blue: 0.20), Color(red: 0.05, green: 0.05, blue: 0.08)],
-                           startPoint: .topLeading, endPoint: .bottomTrailing)
+            // The family's navy, with what's playing softly behind it.
+            LinearGradient(colors: [WidgetPalette.navyTop, WidgetPalette.navyBottom], startPoint: .topLeading, endPoint: .bottomTrailing)
             if let art, let url = PhoneWidgetShare.artURL(art), let image = UIImage(contentsOfFile: url.path) {
-                Image(uiImage: image).resizable().scaledToFill().blur(radius: 24).opacity(0.45)
-                Color.black.opacity(0.35)
+                Image(uiImage: image).resizable().scaledToFill().blur(radius: 24).opacity(0.3)
+                WidgetPalette.navyBottom.opacity(0.45)
             }
         }
     }
@@ -178,6 +180,8 @@ struct HomeWidget: Widget {
         StaticConfiguration(kind: PhoneWidgetShare.homeKind, provider: ShareProvider()) { entry in
             HomeWidgetView(s: entry.s)
                 .environment(\.colorScheme, .dark)   // light text on its dark blue
+                .foregroundStyle(WidgetPalette.frost)
+                .tint(WidgetPalette.sky)
                 .widgetURL(URL(string: "woodruff://home"))
         }
         .configurationDisplayName("Home")
@@ -273,7 +277,6 @@ struct SceneButton: View {
 
 struct HomeBackground: View {
     var body: some View {
-        LinearGradient(colors: [Color(red: 0.16, green: 0.24, blue: 0.40), Color(red: 0.07, green: 0.10, blue: 0.20)],
-                       startPoint: .topLeading, endPoint: .bottomTrailing)
+        LinearGradient(colors: [WidgetPalette.navyTop, WidgetPalette.navyBottom], startPoint: .topLeading, endPoint: .bottomTrailing)
     }
 }
