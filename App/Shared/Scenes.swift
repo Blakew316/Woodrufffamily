@@ -41,6 +41,13 @@ final class SceneStore {
 
     func scene(_ id: String) -> HomeScene? { scenes.first { $0.id == id } }
 
+    /// The scenes came from another device.
+    func reload() {
+        guard let list = Saved.load("scenes", as: [HomeScene].self), list != scenes else { return }
+        scenes = list
+        WoodruffShortcuts.updateAppShortcutParameters()
+    }
+
     func save(_ s: HomeScene) {
         if let i = scenes.firstIndex(where: { $0.id == s.id }) {
             guard scenes[i] != s else { return }

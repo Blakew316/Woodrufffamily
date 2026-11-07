@@ -53,6 +53,13 @@ final class NestCameras {
     /// Keeps the cameras for the next launch.
     private func keep() { Saved.save(nestCamerasKey, cameras) }
 
+    /// The camera list came from another device: shown at once if this one has none yet (Google's list follows).
+    func reloadSaved() {
+        guard cameras.isEmpty else { return }
+        let list = Self.saved()
+        if !list.isEmpty { cameras = list }
+    }
+
     func start() {
         let signedIn = Keychain.get("nest.refresh") != nil
         if connected != signedIn { connected = signedIn }
@@ -287,13 +294,14 @@ final class NestCameras {
                 backoff[cam] = nil
                 return r
             } catch is RateLimited {
-                let who = cameras.first(where: { $0.id == cam })?.name ?? cam
-                let secs = Int(min(300, (backoff[cam] ?? 20) * 2))
-                Logger(subsystem: "com.woodruff.family", category: "camera").notice("Google refused a camera command (too many): \(who, privacy: .public) waits \(secs, privacy: .public) s")
-                let b = min(300, (backoff[cam] ?? 20) * 2)
+                // Google's refusals pass in seconds: try again soon (3, 6, 12… up to a minute), not after 40 s, and hold
+                // the other cameras back only briefly.
+                let b = min(60, (backoff[cam] ?? 1.5) * 2)
                 backoff[cam] = b
+                let who = cameras.first(where: { $0.id == cam })?.name ?? cam
+                Logger(subsystem: "com.woodruff.family", category: "camera").notice("Google refused a camera command (too many): \(who, privacy: .public) waits \(Int(b), privacy: .public) s")
                 nextFor[cam] = Date().addingTimeInterval(b)
-                nextAny = Date().addingTimeInterval(15)
+                nextAny = Date().addingTimeInterval(3)
             } catch is Busy {
                 // A couple of quick retries; after that the player starts over with a fresh offer.
                 busy += 1
@@ -456,20 +464,31 @@ final class CameraStreams {
     #if os(macOS)
     /// The Mac: while one of its windows can be seen, the doorbell's and driveway's streams play (off screen when no
     /// tile shows them), so opening either is instant; once none can be seen they're let go (unless Vehicle Alerts
-    /// watches them). The Mac that sends the family's alerts keeps those two live all the time, seen or not, so their
-    /// alerts' pictures are taken from the stream at once. Only those two: every stream kept open spends the family's
-    /// share of Google's camera commands (renewals, restarts), and with all of them open the iPhones' own requests
-    /// were refused and waited 40 seconds.
+    /// watches them). The Mac that sends the family's alerts keeps every camera live all the time, seen or not, so
+    /// each alert's picture is taken from the stream at once and a camera opened anywhere is already warm. They start
+    /// a few seconds apart (all at once, Google refused some and they waited), and each renews on its own clock.
     @ObservationIgnored private(set) var warmed: Set<String> = []
+    @ObservationIgnored private var warming: Task<Void, Never>?
     func keepWarm(_ on: Bool) {
         let always = PushRelay.shared.isSender
         if on || always {
-            for c in NestCameras.shared.cameras where c.webRTC && c.online && Self.isImportant(c) {
-                if warmed.contains(c.id), players[c.id]?.isRunning == true { continue }
-                keepPlaying(c)
-                warmed.insert(c.id)
+            let due = NestCameras.shared.cameras.filter { c in
+                c.webRTC && c.online && (always || Self.isImportant(c)) && !(warmed.contains(c.id) && players[c.id]?.isRunning == true)
+            }
+            guard !due.isEmpty, warming == nil else { return }
+            // The doorbell and driveway first.
+            let ordered = due.filter(Self.isImportant) + due.filter { !Self.isImportant($0) }
+            warming = Task { [weak self] in
+                for (i, c) in ordered.enumerated() {
+                    if i > 0 { try? await Task.sleep(nanoseconds: 4_000_000_000) }
+                    guard let self, !Task.isCancelled else { return }
+                    self.keepPlaying(c)
+                    self.warmed.insert(c.id)
+                }
+                self?.warming = nil
             }
         } else {
+            warming?.cancel(); warming = nil
             for id in warmed where !VehicleWatch.shared.watched.contains(id) { stopKeeping(id) }
             warmed = []
         }
