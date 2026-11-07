@@ -24,6 +24,8 @@ final class NestAlerts {
 
     private var loop: Task<Void, Never>?
     private var own: String?
+    /// When a listen last worked (the Mac's watchdog checks this).
+    private(set) var lastHeard: Date?
     private var seen: [String: Date] = [:]
     /// The alert that went out for each event session: the newer cameras send the event's clip a few seconds later,
     /// in a second message for the same session, and it's added to that alert then.
@@ -43,8 +45,18 @@ final class NestAlerts {
 
     private func flag(_ k: String, _ d: Bool) -> Bool { UserDefaults.standard.object(forKey: k) as? Bool ?? d }
 
+    /// The Mac's watchdog: listening again from scratch (a new subscription look-up, a new loop).
+    func restartListening() {
+        loop?.cancel(); loop = nil
+        own = nil
+        if let fleet { start(fleet) }
+    }
+
     func start(_ fleet: Fleet) {
         self.fleet = fleet
+        #if os(macOS)
+        AlertWatchdog.shared.start()
+        #endif
         guard loop == nil, !Demo.isOn else { return }
         loop = Task { [weak self] in
             var wait: UInt64 = 2
@@ -75,11 +87,13 @@ final class NestAlerts {
             }
             if !acks.isEmpty { _ = try? await call("POST", "\(sub):acknowledge", ["ackIds": acks]) }
             status = "On"
+            lastHeard = Date()
             return true
         } catch let e as URLError where e.code == .timedOut || e.code == .networkConnectionLost {
             // A long listen that ended without news (or a phone's connection changing): normal, and listened again.
             beat(received: 0)
             status = "On"
+            lastHeard = Date()
             return true
         } catch {
             status = error.localizedDescription
@@ -242,6 +256,10 @@ final class NestAlerts {
         // The alert goes at once; its picture follows as a quiet update of the same alert (same id), so fetching it
         // never holds the alert up.
         Notifier.deliver(c, id: "nest-" + short)
+        if !quiet { CameraStreams.shared.noteAlert(camera) }
+        #if os(macOS)
+        if !quiet { WeeklyNote.countAlert(camera: body) }
+        #endif
         #if os(iOS)
         // The TVs & Cameras widget: the camera's red tag at once, its picture of the moment when it comes.
         let doorbell = NestCameras.shared.cameras.first { $0.id == camera }?.doorbell ?? false

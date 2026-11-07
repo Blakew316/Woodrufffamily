@@ -33,6 +33,7 @@ struct NeedsAttentionSection: View {
             add("tv-\(tv.id)", tv.name, "Turned down this device’s link. Link it again with the code the TV shows.", accounts: false)
         }
         #if os(macOS)
+        add("alerts", "Camera Alerts", AlertWatchdog.shared.problem, accounts: false)
         let u = UpdaterStatus.shared
         if u.hasProblem { add("updates", "Updates", u.detail ?? u.summary, accounts: false) }
         if let tf = u.testFlight, tf.problem { add("testflight", "TestFlight", tf.detail ?? tf.value, accounts: false) }

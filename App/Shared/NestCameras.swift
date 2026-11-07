@@ -374,6 +374,10 @@ final class CameraStreams {
     private(set) var status: [String: String] = [:]
     /// Each camera's last live picture, kept between launches: its tile shows it while the stream connects.
     private(set) var stills: [String: PlatformImage] = [:]
+    /// When each camera last sent an alert: its tile glows for a minute after.
+    private(set) var alertAt: [String: Date] = [:]
+    func noteAlert(_ id: String) { alertAt[id] = Date() }
+
     /// When each of those was taken.
     @ObservationIgnored private(set) var stillAt: [String: Date] = [:]
     /// The camera open in the big view (its tile shows a still while it's there).
@@ -713,6 +717,12 @@ struct LiveCameraTile: View, Equatable {
         .modifier(CameraTileShape(fill: fill, compact: compact))
         .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).strokeBorder(.white.opacity(0.08)))
+        // Just sent an alert: a soft cyan glow pulses round it for a minute.
+        .overlay {
+            if let at = streams.alertAt[camera.id], Date().timeIntervalSince(at) < 60 {
+                AlertGlow(since: at).id(at)
+            }
+        }
         .contentShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         .onTapGesture {
             guard HomeLayout.shared.tapsAllowed else { return }
@@ -1483,3 +1493,25 @@ private struct LoopingClip: UIViewRepresentable {
     }
 }
 #endif
+
+
+/// A camera tile's glow after an alert: the app icon's cyan, breathing round its edge, gone a minute after the alert.
+private struct AlertGlow: View {
+    let since: Date
+    @State private var bright = false
+    @State private var over = false
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: 20, style: .continuous)
+            .strokeBorder(IconPalette.cyan.opacity(bright ? 0.95 : 0.35), lineWidth: bright ? 2.5 : 1.5)
+            .shadow(color: IconPalette.cyan.opacity(bright ? 0.7 : 0.2), radius: bright ? 12 : 4)
+            .opacity(over ? 0 : 1)
+            .allowsHitTesting(false)
+            .onAppear { withAnimation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true)) { bright = true } }
+            .task {
+                let left = max(0, 60 - Date().timeIntervalSince(since))
+                try? await Task.sleep(nanoseconds: UInt64(left * 1_000_000_000))
+                withAnimation(.easeOut(duration: 0.6)) { over = true }
+            }
+    }
+}
