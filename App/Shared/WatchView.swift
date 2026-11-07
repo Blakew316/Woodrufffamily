@@ -29,6 +29,8 @@ struct WatchView: View {
     #if os(iOS)
     @Environment(\.horizontalSizeClass) private var sizeClass
     #endif
+    /// iPhone: what's typed in Watch's own search field (its results take the shelves' place while there's any).
+    @State private var query = ""
 
     /// Posters sized so each row fills the page: on the Mac and iPad about 150 points each, as many as fit; 112 on
     /// iPhone.
@@ -58,7 +60,9 @@ struct WatchView: View {
         let shown = home ?? (error == nil ? kept : nil)
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 28) {
-                if let h = shown {
+                if !query.isEmpty {
+                    LibrarySearchResults(query: query)
+                } else if let h = shown {
                     content(h, client)
                 } else if let error {
                     VStack(spacing: 14) {
@@ -87,11 +91,9 @@ struct WatchView: View {
                 }
             }
             .sharedBackgroundVisibility(.hidden)
-            ToolbarItem(placement: .primaryAction) {
-                NavigationLink { SearchPage() } label: { Image(systemName: "magnifyingglass") }
-                    .accessibilityLabel("Search")
-            }
         }
+        // Search right here, under the title: the results take the shelves' place, nothing opens.
+        .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Movies and TV Shows")
         #else
         // The window's own bar has the search; the TV that plays is picked at the top of the page.
         // The TV it plays on and Movies | TV Shows are in the window's top bar.
@@ -1341,55 +1343,60 @@ struct LibraryGrid: View {
     }
 }
 
-/// Search Movies and TV Shows.
+/// Search Movies and TV Shows (the Mac's Search page; the iPhone searches in Watch itself).
 struct SearchPage: View {
     @Environment(Fleet.self) private var fleet
     @Environment(\.watchChanged) private var watchChanged
     @State private var query = ""
-    @State private var r: SearchResults?
     @State private var openTitle: String?
-    @State private var failed: String?
     /// Asked again (a result was marked watched).
     @State private var again = 0
-    @FocusState private var typing: Bool
 
     var body: some View {
-        // Worked out once for the page: the tiles are handed their posters' addresses.
-        let client = WatchSources.current(fleet)
         ScrollView {
-            VStack(alignment: .leading, spacing: 26) {
-                if !query.isEmpty, let failed {
-                    EmptyState(symbol: "wifi.exclamationmark", title: "Can’t Search", message: failed).padding(.top, 60)
-                } else if let r, !query.isEmpty {
-                    let sections = r.first == "shows" ? [("TV Shows", r.shows), ("Movies", r.movies)] : [("Movies", r.movies), ("TV Shows", r.shows)]
-                    ForEach(sections, id: \.0) { name, list in
-                        if !list.isEmpty { ShelfRow(name) { ForEach(list) { PosterTile(title: $0, poster: client?.artURL($0.poster)) } } }
-                    }
-                    if r.movies.isEmpty && r.shows.isEmpty {
-                        EmptyState(symbol: "magnifyingglass", title: "No Results", message: "Nothing in Movies or TV Shows matches “\(query)”.")
-                    }
-                } else {
-                    EmptyState(symbol: "magnifyingglass", title: "Search the Library", message: "Find a film or show in Movies and TV Shows.").padding(.top, 60)
-                }
-            }
-            .padding(.vertical)
+            LibrarySearchResults(query: query, again: again).padding(.vertical)
         }
         .navigationTitle("Search")
-        #if os(iOS)
-        // At the top and always showing, the keyboard up at once: iOS 26 puts a search field at the bottom by
-        // default, where the app's tab bar covered it (a blank page with nowhere to type).
-        .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Movies and TV Shows")
-        .searchFocused($typing)
-        .onAppear { typing = true }
-        #else
         .pageSearch(text: $query, prompt: "Movies and TV Shows")
-        #endif
         .environment(\.openTitle, OpenTitleAction { openTitle = $0 })
         .environment(\.watchChanged, WatchChanged { key in
             watchChanged(removed: key)
             again += 1
         })
         .sheet(item: Binding(get: { openTitle.map { TitleRef(id: $0) } }, set: { openTitle = $0?.id })) { TitleSheet(id: $0.id).macResizable(width: 760, height: 820, minWidth: 520, minHeight: 500) }
+    }
+}
+
+/// What [query] finds in Movies and TV Shows, as shelves (or why nothing came back). Opening a title is the page's
+/// (its `openTitle`). [again]: asked again when it changes.
+struct LibrarySearchResults: View {
+    @Environment(Fleet.self) private var fleet
+    var query: String
+    var again = 0
+    @State private var r: SearchResults?
+    @State private var failed: String?
+
+    var body: some View {
+        // Worked out once: the tiles are handed their posters' addresses.
+        let client = WatchSources.current(fleet)
+        VStack(alignment: .leading, spacing: 26) {
+            if !query.isEmpty, let failed {
+                EmptyState(symbol: "wifi.exclamationmark", title: "Can’t Search", message: failed).padding(.top, 60)
+            } else if let r, !query.isEmpty {
+                let sections = r.first == "shows" ? [("TV Shows", r.shows), ("Movies", r.movies)] : [("Movies", r.movies), ("TV Shows", r.shows)]
+                ForEach(sections, id: \.0) { name, list in
+                    if !list.isEmpty { ShelfRow(name) { ForEach(list) { PosterTile(title: $0, poster: client?.artURL($0.poster)) } } }
+                }
+                if r.movies.isEmpty && r.shows.isEmpty {
+                    EmptyState(symbol: "magnifyingglass", title: "No Results", message: "Nothing in Movies or TV Shows matches “\(query)”.")
+                        .padding(.top, 60)
+                }
+            } else if query.isEmpty {
+                EmptyState(symbol: "magnifyingglass", title: "Search the Library", message: "Find a film or show in Movies and TV Shows.").padding(.top, 60)
+            } else {
+                ProgressView().frame(maxWidth: .infinity).padding(.top, 60)
+            }
+        }
         .task(id: "\(query)|\(again)") {
             guard !query.isEmpty else { r = nil; failed = nil; return }
             try? await Task.sleep(nanoseconds: 200_000_000)
