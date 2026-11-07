@@ -3,6 +3,8 @@ import CoreGraphics
 import ImageIO
 import UniformTypeIdentifiers
 import Accelerate
+import CoreImage
+import os
 import WebRTC
 #if os(iOS)
 import UIKit
@@ -225,12 +227,28 @@ final class FrameGrabber: NSObject, RTCVideoRenderer {
     var hasFrame: Bool { lock.lock(); defer { lock.unlock() }; return latest != nil }
 
     /// The latest frame, scaled to fit [maxSide] pixels, as a JPEG (via a plain I420 → RGB conversion).
+    private static let log = Logger(subsystem: "com.woodruff.family", category: "camera")
+    private static let ci = CIContext(options: [.cacheIntermediates: false])
+
     func jpeg(maxSide: Int) -> Data? {
         lock.lock(); let frame = latest; lock.unlock()
-        guard let frame else { return nil }
-        let i420 = frame.buffer.toI420()
-        let w = Int(i420.width), h = Int(i420.height)
-        guard w > 0, h > 0, let full = Self.rgb(i420, width: w, height: h) else { return nil }
+        guard let frame else { Self.log.notice("native frame: none yet"); return nil }
+        // The hardware decoder's own picture when it has one (the usual case); otherwise a plain I420 conversion.
+        var picture: CGImage?
+        if let cv = frame.buffer as? RTCCVPixelBuffer {
+            let image = CIImage(cvPixelBuffer: cv.pixelBuffer)
+            picture = Self.ci.createCGImage(image, from: image.extent)
+        }
+        if picture == nil {
+            let i420 = frame.buffer.toI420()
+            let iw = Int(i420.width), ih = Int(i420.height)
+            if iw > 0, ih > 0 { picture = Self.rgb(i420, width: iw, height: ih) }
+        }
+        guard let full = picture else {
+            Self.log.notice("native frame: couldn't convert a \(Int(frame.width))x\(Int(frame.height)) frame")
+            return nil
+        }
+        let w = full.width, h = full.height
         let scale = min(1, Double(maxSide) / Double(max(w, h)))
         let tw = max(1, Int(Double(w) * scale)), th = max(1, Int(Double(h) * scale))
         guard let ctx = CGContext(data: nil, width: tw, height: th, bitsPerComponent: 8, bytesPerRow: 0,

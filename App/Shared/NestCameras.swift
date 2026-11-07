@@ -1123,13 +1123,7 @@ final class LivePlayer: NSObject, WKNavigationDelegate {
         native.sound = soundOn
         show(native: true)
         stage("native start")
-        // Not live in 8 seconds: the web page takes over for this camera.
         nativeWatch?.cancel()
-        nativeWatch = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 8_000_000_000)
-            guard let self, !Task.isCancelled, self.running, self.usingNative, !self.live else { return }
-            self.fallBack("not live in 8 s")
-        }
         Task { [weak self] in
             guard let self else { return }
             do {
@@ -1214,6 +1208,7 @@ final class LivePlayer: NSObject, WKNavigationDelegate {
         work?.cancel(); renew?.cancel(); watchdog?.cancel()
         session = nil
         failures += 1
+        stage("reconnecting (failure \(failures))")
         // Quick at first (a passing hiccup), slower if it keeps failing: 1, 3, 6, 12, 24 seconds, then a minute.
         let quick: [UInt64] = [1, 3, 6, 12, 24]
         let wait = fixed ?? (failures <= quick.count ? quick[failures - 1] : 60)
@@ -1286,6 +1281,7 @@ final class LivePlayer: NSObject, WKNavigationDelegate {
             guard running else { return }
             // The native player failed before it was ever live: the web page takes over.
             if body == "failed", usingNative, !live { fallBack("failed"); return }
+            if body != "Live" && body != "Starting…" { stage("\(usingNative ? "native" : "web"): \(body)") }
             if body == "failed" { onStatus?("Reconnecting…"); reconnect(); return }
             if body == "Live" {
                 stage(usingNative ? "live (native)" : "live")
@@ -1323,6 +1319,15 @@ final class LivePlayer: NSObject, WKNavigationDelegate {
                 let js = (try? String(data: JSONSerialization.data(withJSONObject: [answer]), encoding: .utf8)) ?? "[\"\"]"
                 if self.usingNative {
                     do { try await self.native.answer(answer) } catch { self.fallBack("answer: \(error.localizedDescription)"); return }
+                    // Not live 8 seconds after Google's answer: the web page takes over for this camera. (Counted from
+                    // the answer, not the start: the wait for Google, whose commands go two seconds apart, isn't the
+                    // player's.)
+                    self.nativeWatch?.cancel()
+                    self.nativeWatch = Task { [weak self] in
+                        try? await Task.sleep(nanoseconds: 8_000_000_000)
+                        guard let self, !Task.isCancelled, self.running, self.usingNative, !self.live else { return }
+                        self.fallBack("not live 8 s after Google answered")
+                    }
                 } else {
                     _ = try? await self.web.evaluateJavaScript("answer(\(js)[0])")
                 }
