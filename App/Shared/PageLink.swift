@@ -36,6 +36,19 @@ final class MacNav {
 #endif
 
 private struct MacPageStackKey: EnvironmentKey { static let defaultValue = false }
+#if os(macOS)
+/// Mac Settings' right-hand side: a page opened from it opens right there (not over the whole window).
+struct MacPanePush {
+    let push: (String, AnyView) -> Void
+}
+private struct MacPanePushKey: EnvironmentKey { static let defaultValue: MacPanePush? = nil }
+extension EnvironmentValues {
+    var macPanePush: MacPanePush? {
+        get { self[MacPanePushKey.self] }
+        set { self[MacPanePushKey.self] = newValue }
+    }
+}
+#endif
 private struct MacPageTitleKey: EnvironmentKey { static let defaultValue = "Back" }
 extension EnvironmentValues {
     /// Inside the Mac window's page stack (not a sheet with a stack of its own).
@@ -58,6 +71,9 @@ struct PageLink<Label: View, Destination: View>: View {
     var label: () -> Label
     @Environment(\.macPageStack) private var onStack
     @Environment(\.macPageTitle) private var here
+    #if os(macOS)
+    @Environment(\.macPanePush) private var panePush
+    #endif
 
     init(_ title: String, @ViewBuilder destination: @escaping () -> Destination, @ViewBuilder label: @escaping () -> Label) {
         self.title = title
@@ -67,8 +83,19 @@ struct PageLink<Label: View, Destination: View>: View {
 
     var body: some View {
         #if os(macOS)
+        // In Mac Settings' right-hand side: opened right there.
+        if let panePush {
+            Button { panePush.push(title, AnyView(destination().environment(\.macPageTitle, title))) } label: {
+                HStack(spacing: 8) {
+                    label().frame(maxWidth: .infinity, alignment: .leading)
+                    Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        }
         // The page opened carries its own Back button (under the search field), however it was opened.
-        if onStack {
+        else if onStack {
             NavigationLink(value: PageRoute(title: title, backTo: here, view: AnyView(page))) { label() }
         } else {
             NavigationLink { page } label: { label() }

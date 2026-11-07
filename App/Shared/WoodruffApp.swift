@@ -990,11 +990,15 @@ struct MacSettingsView: View {
     @Environment(Fleet.self) private var fleet
     @AppStorage("mac.settingsPage") private var picked = MacSettingsPage.tvs.rawValue
     private static let attention = "attention"
+    private struct Opened { let title: String; let view: AnyView }
+    /// Pages opened from the one picked, on this side.
+    @State private var opened: [Opened] = []
+    private var pageTitle: String { picked == Self.attention ? "Needs Attention" : (MacSettingsPage(rawValue: picked) ?? .tvs).title }
 
     var body: some View {
         let issues = NeedsAttentionSection.issues(fleet)
         HStack(spacing: 0) {
-            List(selection: Binding<String?>(get: { picked }, set: { if let v = $0 { picked = v } })) {
+            List(selection: Binding<String?>(get: { picked }, set: { if let v = $0 { picked = v; opened = [] } })) {
                 if !issues.isEmpty {
                     Text("Needs Attention").foregroundStyle(Palette.attention).tag(Self.attention)
                 }
@@ -1006,18 +1010,43 @@ struct MacSettingsView: View {
             .scrollContentBackground(.hidden)
             .frame(width: 220)
             Divider()
-            Group {
-                if picked == Self.attention, !issues.isEmpty {
-                    Form { NeedsAttentionSection(hub: HubSettings.shared) }.formStyle(.grouped)
-                } else {
-                    (MacSettingsPage(rawValue: picked) ?? .tvs).view
-                        .id(picked)
+            VStack(spacing: 0) {
+                // A page opened from the one picked: Back to it, at the top of this side.
+                if let open = opened.last {
+                    HStack {
+                        Button { withAnimation(.smooth(duration: 0.2)) { _ = opened.popLast() } } label: {
+                            HStack(spacing: 5) {
+                                Image(systemName: "chevron.left").font(.body.weight(.semibold))
+                                Text(opened.count > 1 ? opened[opened.count - 2].title : pageTitle).lineLimit(1)
+                            }
+                            .padding(.horizontal, 4)
+                        }
+                        .buttonStyle(.glass)
+                        .keyboardShortcut("[", modifiers: .command)
+                        Text(open.title).font(.headline).padding(.leading, 6)
+                        Spacer()
+                    }
+                    .padding(.horizontal, 20).padding(.top, 10).padding(.bottom, 4)
                 }
+                Group {
+                    if let open = opened.last {
+                        open.view
+                    } else if picked == Self.attention, !issues.isEmpty {
+                        Form { NeedsAttentionSection(hub: HubSettings.shared) }.formStyle(.grouped)
+                    } else {
+                        (MacSettingsPage(rawValue: picked) ?? .tvs).view
+                    }
+                }
+                .id("\(picked)|\(opened.count)")
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            // Each page's links open on the window's stack with this page's name on Back.
-            .environment(\.macPageTitle, picked == Self.attention ? "Settings" : (MacSettingsPage(rawValue: picked) ?? .tvs).title)
+            // Everything opened from here opens on this side, not over the window.
+            .environment(\.macPanePush, MacPanePush { title, view in
+                withAnimation(.smooth(duration: 0.2)) { opened.append(Opened(title: title, view: view)) }
+            })
+            .environment(\.macPageTitle, pageTitle)
         }
+        .onChange(of: picked) { _, _ in opened = [] }
         .task { await HubSettings.shared.loadIfNeeded(fleet) }
     }
 }
