@@ -198,7 +198,7 @@ struct AllDevicesView: View {
         /// Drawn as the thing itself and kept clear while it's out of reach (its state under it says so).
         var isAppliance: Bool {
             switch look {
-            case .bespoke, .hexPanels: return true
+            case .bespoke, .hexPanels, .smartSensor: return true
             default: return false
             }
         }
