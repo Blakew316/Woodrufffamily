@@ -126,6 +126,8 @@ targets:
     sources:
       - App/NotificationService
       - path: App/Shared/CameraEventMedia.swift
+      # The TVs & Cameras widget's store: each camera alert's picture goes to the widget too.
+      - path: App/Common/PhoneWidgetShare.swift
     settings:
       base:
         WOODRUFF_BUNDLE_ID: com.blakew316.woodruff
