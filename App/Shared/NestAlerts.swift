@@ -305,11 +305,16 @@ struct AlertsSection: View {
             }
         } header: { Text(title) } footer: {
             #if os(iOS)
-            Text("Status: \(status). Alerts come straight away while Woodruff is open or was used in the last little while; when it’s been closed a long time, iOS only lets it check now and then.")
-            if let last = CameraEventMedia.lastPush {
-                Text("Last alert from the Mac: \(last.at.formatted(date: .abbreviated, time: .shortened)). \(last.what).")
-            } else {
-                Text("No alert from the Mac has reached this iPhone yet.")
+            // One block of text: a footer shows only its first view, which hid the line about the last alert.
+            VStack(alignment: .leading, spacing: 6) {
+                if let last = CameraEventMedia.lastPush {
+                    Text("Last alert from the Mac: \(last.at.formatted(date: .abbreviated, time: .shortened)). \(last.what).")
+                        .foregroundStyle(.primary)
+                } else {
+                    Text("No alert from the Mac has reached this iPhone yet (or its picture step couldn’t report back).")
+                        .foregroundStyle(.primary)
+                }
+                Text("Status: \(status). Alerts come straight away while Woodruff is open or was used in the last little while; when it’s been closed a long time, iOS only lets it check now and then.")
             }
             #else
             Text("Status: \(status). The Mac listens all the time Woodruff is open (it keeps running in the menu bar).")
