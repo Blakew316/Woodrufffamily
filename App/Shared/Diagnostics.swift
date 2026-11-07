@@ -52,9 +52,10 @@ final class Diagnostics: NSObject {
             }
             for c in p.cpuExceptionDiagnostics ?? [] { new.append(report(c, "CPU", "\(seconds(c.totalCPUTime)) of CPU" + frames(c.callStackTree))) }
             for d in p.diskWriteExceptionDiagnostics ?? [] { new.append(report(d, "Disk Writes", "\(d.totalWritesCaused)" + frames(d.callStackTree))) }
-            if #available(iOS 16.0, macOS 13.0, *) {
-                for l in p.appLaunchDiagnostics ?? [] { new.append(report(l, "Slow Launch", "\(seconds(l.launchDuration)) to open" + frames(l.callStackTree))) }
-            }
+            #if os(iOS)
+            // Slow launches: reported on the iPhone only (Apple has none for the Mac).
+            for l in p.appLaunchDiagnostics ?? [] { new.append(report(l, "Slow Launch", "\(seconds(l.launchDuration)) to open" + frames(l.callStackTree))) }
+            #endif
         }
         guard !new.isEmpty else { return }
         var list = mine()
