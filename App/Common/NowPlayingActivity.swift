@@ -207,6 +207,15 @@ struct OpenRemoteIntent: AppIntent {
     }
 }
 
+struct OpenHomeIntent: AppIntent {
+    static let title: LocalizedStringResource = "Open Woodruff"
+    static let openAppWhenRun: Bool = true
+    @MainActor func perform() async throws -> some IntentResult {
+        UserDefaults.standard.set("home", forKey: "section")
+        return .result()
+    }
+}
+
 // MARK: - Speakers and lights (Control Center)
 
 struct LightsOffControlIntent: LiveActivityIntent {

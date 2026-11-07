@@ -33,7 +33,38 @@ struct SceneControls: WidgetBundle {
         HomeWidget()
         TVsCamerasWidget()
         DoorbellLockWidget()
+        MoreControls().body
+    }
+}
+
+struct MoreControls: WidgetBundle {
+    var body: some Widget {
         DoorbellLiveActivity()
+        WoodruffHomeControl()
+    }
+}
+
+/// Lock Screen and Control Center: opens Woodruff to Home. A house in the app icon's colours: an ice-blue roof
+/// over cyan walls and door (its own symbol, `woodruff.house`).
+struct WoodruffHomeControl: ControlWidget {
+    private static let cyan = Color(red: 0.227, green: 0.678, blue: 0.875)
+    private static let ice = Color(red: 0.659, green: 0.831, blue: 0.961)
+
+    var body: some ControlWidgetConfiguration {
+        StaticControlConfiguration(kind: "com.woodruff.family.control.home") {
+            ControlWidgetButton(action: OpenHomeIntent()) {
+                Label {
+                    Text("Woodruff")
+                } icon: {
+                    Image("woodruff.house")
+                        .symbolRenderingMode(.palette)
+                        .foregroundStyle(Self.cyan, Self.ice)
+                }
+            }
+            .tint(Self.cyan)
+        }
+        .displayName("Woodruff")
+        .description("Opens Woodruff to Home.")
     }
 }
 
