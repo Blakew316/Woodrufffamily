@@ -750,6 +750,14 @@ install_mac() {
     say "    (\"file added\" means files from the old version are still inside it: drag $product"
     say "    into Applications and choose Replace)"
   fi
+  # The widgets: macOS keeps the old ones (and the widget gallery's pictures of them) until it reads the new widget
+  # extension, so it's registered afresh and the widget service restarted (it starts again by itself at once).
+  /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$MAC_INSTALLED" \
+    </dev/null >/dev/null 2>&1 || true
+  for ext in "$MAC_INSTALLED"/Contents/PlugIns/*.appex; do
+    [ -d "$ext" ] && pluginkit -a "$ext" </dev/null >/dev/null 2>&1
+  done
+  killall chronod </dev/null >/dev/null 2>&1 || true
   # From the updater (in the background): opened without coming to the front over whatever someone is doing.
   if [ -n "${WOODRUFF_DEPLOY_BACKGROUND:-}" ]; then
     open_flags=(-g)
