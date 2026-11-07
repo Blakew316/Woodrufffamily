@@ -68,6 +68,8 @@ final class PushRelay {
     @ObservationIgnored private var jwt: (String, Date)?
     @ObservationIgnored private var listener: NWListener?
     @ObservationIgnored private var browser: NWBrowser?
+    /// The wait before searching again after a failed search: 5 s, doubling to five minutes, back to 5 s on a result.
+    @ObservationIgnored private var browseRetry: Double = 5
     @ObservationIgnored private var wakeWatch: NSObjectProtocol?
     /// Every other Mac heard saying it's ready to send (its name → the proof in its advertisement). Only those whose
     /// proof checks out count (`recount`).
@@ -430,6 +432,7 @@ final class PushRelay {
                 found[name] = proof
             }
             Task { @MainActor in
+                self?.browseRetry = 5
                 self?.heard = found
                 self?.recount()
             }
@@ -443,7 +446,9 @@ final class PushRelay {
                 self.browser = nil
                 self.heard = [:]
                 self.otherRelays = []
-                try? await Task.sleep(nanoseconds: 5_000_000_000)
+                let wait = self.browseRetry
+                self.browseRetry = min(wait * 2, 300)
+                try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
                 if self.browser == nil { self.browse() }
             }
         }
@@ -454,6 +459,7 @@ final class PushRelay {
     /// After the Mac wakes or the network changes, look again.
     func wake() {
         #if os(macOS)
+        browseRetry = 5
         browse()
         advertise()
         #endif

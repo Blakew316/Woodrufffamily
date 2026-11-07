@@ -520,7 +520,7 @@ struct FanControls: View {
         VStack(spacing: 14) {
             // 30 frames a second is plenty for the blades, until they turn so fast that each frame's step would look
             // like turning backwards: then 60.
-            TimelineView(.animation(minimumInterval: rate > 2.5 ? 1.0 / 60 : 1.0 / 30, paused: device.isOn != true || reduceMotion)) { tl in
+            TimelineView(.animation(minimumInterval: rate > 2.5 ? 1.0 / 60 : 1.0 / 30, paused: device.isOn != true || reduceMotion || !Fleet.shared.isActive)) { tl in
                 Image(systemName: "fan.fill")
                     .font(.system(size: 54))
                     .rotationEffect(.degrees(reduceMotion ? 0 : tl.date.timeIntervalSinceReferenceDate * 360 * rate))

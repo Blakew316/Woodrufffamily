@@ -692,9 +692,18 @@ private struct Jiggle: ViewModifier {
     var seed: Int
     var size: CGSize
 
-    func body(content: Content) -> some View {
+    @ViewBuilder func body(content: Content) -> some View {
+        // Only while arranging: a paused timeline around every tile still cost a pass over each one at rest.
+        if !active {
+            content
+        } else {
+            wobbling(content)
+        }
+    }
+
+    private func wobbling(_ content: Content) -> some View {
         // 60 a second at most: the wobble is only a degree or so, and ProMotion's 120 just doubled the work.
-        TimelineView(.animation(minimumInterval: 1.0 / 60, paused: !active)) { ctx in
+        TimelineView(.animation(minimumInterval: 1.0 / 60, paused: !Fleet.shared.isActive)) { ctx in
             let t = ctx.date.timeIntervalSinceReferenceDate
             let phase = Double(seed % 628) / 100
             let speed = 24 + Double(seed % 9)

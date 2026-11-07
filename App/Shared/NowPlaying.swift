@@ -104,7 +104,8 @@ struct LiveProgress: View {
 
     var body: some View {
         if let d = playing.duration, d > 0 {
-            TimelineView(.periodic(from: .now, by: interval(d))) { ctx in
+            // Not ticking while nothing can see it (window hidden or covered, app in the background).
+            TimelineView(.periodic(from: .now, by: fleet.isActive ? interval(d) : 3600)) { ctx in
                 // The TV's own clock for this title (when its answer arrived), so the bar never jumps back on a
                 // slightly stale answer; the app-wide time is only for an answer that doesn't carry one.
                 let pos = livePosition(playing, at: ctx.date, since: playing.reportedAt ?? fleet.refreshedAt)

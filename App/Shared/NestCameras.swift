@@ -84,7 +84,8 @@ final class NestCameras {
         poll = Task { [weak self] in
             var first = now
             while !Task.isCancelled {
-                if !first { try? await Task.sleep(nanoseconds: 300_000_000_000) }
+                // Every fifteen minutes while the app isn't in use (alerts come on their own, not from this).
+                if !first { await Fleet.pause(inUse: 300, idle: 900) }
                 first = false
                 guard !Task.isCancelled, let self, self.connected else { break }
                 await self.load()
@@ -387,6 +388,10 @@ final class CameraStreams {
     @ObservationIgnored private var backgroundAt: Date?
     /// Mac: cameras whose stream runs all the time (Vehicle Alerts watches them), never let go.
     @ObservationIgnored private(set) var pinned: Set<String> = []
+    /// The Mac: cameras whose picture is being taken for an alert right now.
+    @ObservationIgnored private var grabbing: Set<String> = []
+    /// Every stream was let go (nothing on screen); a picture taken meanwhile lets its stream go too.
+    @ObservationIgnored private var letGo = false
     /// iPhone: the tiles' streams paused while a camera is open over them.
     @ObservationIgnored private var heldBack: [String] = []
 
@@ -411,6 +416,7 @@ final class CameraStreams {
     func show(_ cam: NestCameras.Camera) {
         watching += 1
         idle?.cancel(); idle = nil
+        letGo = false
         let p = player(cam)
         p.camera = cam
         if cam.online { p.start() } else { p.pause(); status[cam.id] = "Offline" }
@@ -469,6 +475,7 @@ final class CameraStreams {
     func grabFrame(_ cam: NestCameras.Camera, timeout: Double = 20) async -> Data? {
         let p = player(cam)
         let started = !p.isRunning
+        grabbing.insert(cam.id)
         var borrowed = false
         if p.web.window == nil, let host = grabWindow.contentView {
             p.web.frame = host.bounds
@@ -478,9 +485,10 @@ final class CameraStreams {
         }
         if started { p.start() }
         defer {
+            grabbing.remove(cam.id)
             if borrowed, p.web.superview === grabWindow.contentView { p.web.removeFromSuperview() }
             if grabWindow.contentView?.subviews.isEmpty ?? true { grabWindow.orderOut(nil) }
-            if started, !pinned.contains(cam.id), expanded != cam.id, full != cam.id, watching == 0 { p.pause() }
+            if !pinned.contains(cam.id), letGo || (started && expanded != cam.id && full != cam.id && watching == 0) { p.pause() }
         }
         let end = Date().addingTimeInterval(timeout)
         var firstLive: Date?
@@ -517,7 +525,7 @@ final class CameraStreams {
         guard pinned.remove(id) != nil, let p = players[id] else { return }
         if p.web.superview === grabWindow.contentView { p.web.removeFromSuperview() }
         if grabWindow.contentView?.subviews.isEmpty ?? true { grabWindow.orderOut(nil) }
-        if expanded != id, full != id, watching == 0 { p.pause() }
+        if letGo || (expanded != id && full != id && watching == 0) { p.pause() }
     }
     #endif
 
@@ -528,8 +536,9 @@ final class CameraStreams {
         letGoSoon(after: 120)
     }
 
-    /// The app went to the background: keep the streams a minute, in case it's a quick switch.
-    func background() { backgroundAt = Date(); letGoSoon(after: 60) }
+    /// The app went to the background (or, on the Mac, every window went out of sight): keep the streams a while, in
+    /// case it's a quick switch.
+    func background(after seconds: Double = 60) { backgroundAt = Date(); letGoSoon(after: seconds) }
 
     func foreground() {
         #if os(iOS)
@@ -537,11 +546,13 @@ final class CameraStreams {
         CameraEventMedia.prune()
         #endif
         idle?.cancel(); idle = nil
+        letGo = false
         // Away more than a minute: iOS froze the streams, so start them fresh.
         let long = backgroundAt.map { $0.timeIntervalSinceNow < -60 } ?? false
         backgroundAt = nil
         guard watching > 0 else { return }
-        for p in players.values where p.camera.online { if long { p.restart() } else { p.start() } }
+        // One Vehicle Alerts kept playing isn't interrupted.
+        for (k, p) in players where p.camera.online { if long && !pinned.contains(k) { p.restart() } else { p.start() } }
     }
 
     private func letGoSoon(after seconds: Double) {
@@ -549,8 +560,11 @@ final class CameraStreams {
         idle = Task { [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
             guard !Task.isCancelled, let self else { return }
-            for (k, p) in self.players where !self.pinned.contains(k) { p.pause() }
-            for k in self.status.keys where self.status[k] != "Offline" && !self.pinned.contains(k) { self.status[k] = "Paused" }
+            self.letGo = true
+            // A stream Vehicle Alerts watches, or a picture being taken for an alert, keeps going.
+            func keep(_ k: String) -> Bool { self.pinned.contains(k) || self.grabbing.contains(k) }
+            for (k, p) in self.players where !keep(k) { p.pause() }
+            for k in self.status.keys where self.status[k] != "Offline" && !keep(k) { self.status[k] = "Paused" }
         }
     }
 }

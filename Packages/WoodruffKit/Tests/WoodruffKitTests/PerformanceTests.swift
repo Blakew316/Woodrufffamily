@@ -202,6 +202,19 @@ final class PerformanceTests: XCTestCase {
         XCTAssertFalse(c.value("here", now: t0.addingTimeInterval(31)).hit)
     }
 
+    func testNotThereIsKeptTenMinutesByDefault() {
+        let c = KeychainCache()
+        let t0 = Date(timeIntervalSince1970: 1_800_000_000)
+        c.readFinished("gone", nil, since: c.readStarted(), now: t0)
+        XCTAssertEqual(c.value("gone", now: t0.addingTimeInterval(599)).hit, true)
+        XCTAssertFalse(c.value("gone", now: t0.addingTimeInterval(600)).hit)
+        // A write here ends it at once.
+        c.readFinished("gone", nil, since: c.readStarted(), now: t0)
+        c.writeStarted("gone")
+        c.writeFinished("gone", "now", ok: true, now: t0)
+        XCTAssertEqual(c.value("gone", now: t0.addingTimeInterval(1)).value, "now")
+    }
+
     func testTheCacheIsSafeFromSeveralThreads() {
         let c = KeychainCache()
         DispatchQueue.concurrentPerform(iterations: 2_000) { i in

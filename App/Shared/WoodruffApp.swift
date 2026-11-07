@@ -790,7 +790,12 @@ enum WindowActivity {
         if on { visible.insert(id) } else { visible.remove(id) }
         let any = !visible.isEmpty
         // Only a change: the fleet asks every TV afresh each time it's made active.
-        if any != Fleet.shared.isActive { Fleet.shared.setActive(any) }
+        if any != Fleet.shared.isActive {
+            Fleet.shared.setActive(any)
+            // Nothing can be seen: the camera streams are let go after half a minute (they come back as a window is).
+            // Alerts keep listening either way.
+            if any { CameraStreams.shared.foreground() } else { CameraStreams.shared.background(after: 30) }
+        }
     }
 }
 

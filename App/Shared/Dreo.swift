@@ -60,7 +60,8 @@ final class Dreo {
                 guard let self else { return }
                 await self.refresh(full: n % 10 == 0)
                 n += 1
-                try? await Task.sleep(nanoseconds: 60_000_000_000)
+                // Every three minutes while the app isn't in use.
+                await Fleet.pause(inUse: 60, idle: 180)
             }
         }
     }

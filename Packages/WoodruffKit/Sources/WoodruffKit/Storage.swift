@@ -77,7 +77,8 @@ public enum Keychain {
 /// What each Keychain item held when this app last read or wrote it. Only this app writes these items, and every
 /// write goes through `Keychain.set`, which tells this, so what's kept stays true. A read that couldn't be made (a
 /// locked keychain) is never kept, nor is anything after a write that didn't go through: both are read afresh next
-/// time. "Not there" is believed only for `missingFor` seconds, so a stored item can never look missing for long.
+/// time. "Not there" is believed until a write here, or for `missingFor` seconds (ten minutes) at most, so an item
+/// stored some other way can't look missing for long.
 final class KeychainCache: @unchecked Sendable {
     private struct Entry {
         var value: String?
@@ -90,7 +91,7 @@ final class KeychainCache: @unchecked Sendable {
     private var writes = 0
     let missingFor: TimeInterval
 
-    init(missingFor: TimeInterval = 30) {
+    init(missingFor: TimeInterval = 600) {
         self.missingFor = missingFor
     }
 

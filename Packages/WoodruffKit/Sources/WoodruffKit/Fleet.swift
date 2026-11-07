@@ -156,7 +156,7 @@ public final class Fleet {
 
     public var atHome: Bool {
         #if canImport(Darwin)
-        let mine = LANScan.prefixes()
+        let mine = LANScan.recentPrefixes()
         let tvHosts = hubs.compactMap { $0.connection.base.host } + extras.values.compactMap(\.lastHost)
         // Same network, allowing for ones wider than 256 addresses (a Deco's is 192.168.68.0–71.255).
         func block(_ p: [Substring]) -> String? {
@@ -201,6 +201,17 @@ public final class Fleet {
     /// Whether the app is in use (on the Mac: its window can be seen): the house's speakers and lights, the sync and
     /// Apple Home on the Mac are asked less often while it isn't.
     public var isActive: Bool { active }
+
+    /// A polling loop's wait: [inUse] seconds while the app is in use, up to [idle] while it isn't (on the Mac, no
+    /// window seen). Back in use partway through, the wait ends within five seconds, so what's shown is fresh.
+    public static func pause(inUse: Double, idle: Double) async {
+        try? await Task.sleep(nanoseconds: UInt64(inUse * 1_000_000_000))
+        var waited = inUse
+        while waited < idle, !Task.isCancelled, !Fleet.shared.isActive {
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
+            waited += 5
+        }
+    }
     private var loop: Task<Void, Never>?
     @ObservationIgnored private var inboxLoop: Task<Void, Never>?
     @ObservationIgnored private var slowLoop: Task<Void, Never>?

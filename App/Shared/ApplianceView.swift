@@ -20,7 +20,7 @@ struct ApplianceArt: View {
     }
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: minimumInterval, paused: !running || reduceMotion)) { tl in
+        TimelineView(.animation(minimumInterval: minimumInterval, paused: !running || reduceMotion || !Fleet.shared.isActive)) { tl in
             let t = running && !reduceMotion ? tl.date.timeIntervalSinceReferenceDate : 0
             Canvas { ctx, size in draw(&ctx, size, t) }
         }

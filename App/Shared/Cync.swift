@@ -79,6 +79,8 @@ final class Cync {
     private var counter: UInt16 = 1
     private var innerCounter: UInt32 = 257
     private var pinger: Task<Void, Never>?
+    private var reconnecting: Task<Void, Never>?
+    private var reconnectWait: Double = 10
 
     func start() {
         guard connected, loop == nil, !Demo.isOn else { return }
@@ -136,6 +138,7 @@ final class Cync {
 
     func signOut() {
         loop?.cancel(); loop = nil
+        reconnecting?.cancel(); reconnecting = nil; reconnectWait = 10
         disconnect()
         for k in ["cync.access", "cync.refresh", "cync.authorize", "cync.user", "cync.expires"] { Keychain.set(nil, for: k) }
         // Signing in again trusts the server's certificate afresh.
@@ -151,6 +154,7 @@ final class Cync {
 
     private func begin() {
         loop?.cancel(); loop = nil
+        reconnecting?.cancel(); reconnecting = nil; reconnectWait = 10
         disconnect()
         start()
     }
@@ -340,12 +344,17 @@ final class Cync {
         hubs = [:]
     }
 
-    /// Tries the connection again in ten seconds, while signed in and the list is kept up to date.
+    /// Tries the connection again, while signed in and the list is kept up to date: in ten seconds, then twice as
+    /// long each time it fails again (up to five minutes), back to ten seconds once Cync signs it in.
     private func reconnectSoon() {
-        guard connected, loop != nil else { return }
-        Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 10_000_000_000)
-            guard let self, self.connected, self.loop != nil else { return }
+        guard connected, loop != nil, reconnecting == nil else { return }
+        let wait = reconnectWait
+        reconnectWait = min(wait * 2, 300)
+        reconnecting = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
+            guard let self else { return }
+            self.reconnecting = nil
+            guard self.connected, self.loop != nil else { return }
             self.connect()
         }
     }
@@ -391,6 +400,7 @@ final class Cync {
         switch type {
         case 1:   // signed in
             loggedIn = true
+            reconnectWait = 10
             if error == Self.tlsRefused { error = nil }
             pinger?.cancel()
             pinger = Task { [weak self] in

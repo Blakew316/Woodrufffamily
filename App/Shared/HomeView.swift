@@ -721,7 +721,8 @@ struct HomeBackdrop: View {
     @State private var lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled
 
     var body: some View {
-        let resting = reduceMotion || lowPower || (scroller?.scrolling ?? false)
+        // Also resting while the window can't be seen (hidden, minimised, covered) or the app is in the background.
+        let resting = reduceMotion || lowPower || (scroller?.scrolling ?? false) || !fleet.isActive
         ZStack {
             Color(red: 0.03, green: 0.05, blue: 0.09)
             // Twice a second is plenty for a drift this slow (each step moves it a fraction of a point), and none

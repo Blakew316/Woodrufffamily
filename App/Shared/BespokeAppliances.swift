@@ -1,4 +1,5 @@
 import SwiftUI
+import WoodruffKit
 
 extension HomeDevice {
     /// One of the family's Samsung appliances, drawn as itself: the Bespoke fridge, dishwasher, washer and dryer, the
@@ -28,7 +29,7 @@ struct BespokeAppliance: View {
 
     var body: some View {
         let moves = running && model != .fridge && !reduceMotion
-        TimelineView(.animation(minimumInterval: 1.0 / 20, paused: !moves)) { tl in
+        TimelineView(.animation(minimumInterval: 1.0 / 20, paused: !moves || !Fleet.shared.isActive)) { tl in
             let t = moves ? tl.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 3600) : 0.3
             Canvas { ctx, size in
                 // A soft light behind it, so its detail shows on a dark tile even while it's idle.

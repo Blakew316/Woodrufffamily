@@ -489,7 +489,7 @@ struct TVPicture: View {
         GeometryReader { g in
             let w = g.size.width, h = g.size.height
             let panelH = h * 0.8
-            TimelineView(.animation(minimumInterval: 1.0 / 24, paused: !(on && playing) || reduceMotion)) { ctx in
+            TimelineView(.animation(minimumInterval: 1.0 / 24, paused: !(on && playing) || reduceMotion || !Fleet.shared.isActive)) { ctx in
                 let t = ctx.date.timeIntervalSinceReferenceDate
                 ZStack(alignment: .top) {
                     // Its two slim feet, behind the panel, starting just below it.
@@ -577,7 +577,7 @@ struct EcobeePicture: View {
             let heatLook = heating || (mode == "heat" && !cooling)
             let accent: Color = heatLook ? .orange : mode == "off" ? .gray : Color(red: 0.16, green: 0.5, blue: 1)
             // Moving only while it heats or cools, and never in the tiny chip (always on screen, it would run all day).
-            TimelineView(.animation(minimumInterval: 1.0 / 10, paused: tiny || !(cooling || heating) || reduceMotion)) { ctx in
+            TimelineView(.animation(minimumInterval: 1.0 / 10, paused: tiny || !(cooling || heating) || reduceMotion || !Fleet.shared.isActive)) { ctx in
                 let t = ctx.date.timeIntervalSinceReferenceDate
                 let pulse = reduceMotion ? 0.5 : (sin(t * 2) + 1) / 2
                 ZStack {
@@ -693,7 +693,7 @@ struct DreoFanPicture: View {
             Circle().fill(LinearGradient(colors: rim, startPoint: .topLeading, endPoint: .bottomTrailing))
             Circle().fill(Color(white: 0.04)).padding(d * 0.045)
             // The blades behind the grille, turning while it's on.
-            TimelineView(.animation(minimumInterval: 1.0 / 30, paused: !on || reduceMotion)) { ctx in
+            TimelineView(.animation(minimumInterval: 1.0 / 30, paused: !on || reduceMotion || !Fleet.shared.isActive)) { ctx in
                 let turn = on && !reduceMotion ? ctx.date.timeIntervalSinceReferenceDate * (200 + 500 * max(0.1, speed)) : 0
                 ZStack {
                     FanBlades()
@@ -865,7 +865,7 @@ struct SoundbarPicture: View {
                 g.fill(Path(ellipseIn: glow), with: .color(.white.opacity(on ? 0.3 : 0.18)))
             }
             if on {
-                TimelineView(.animation(minimumInterval: 1.0 / 15, paused: reduceMotion)) { ctx in
+                TimelineView(.animation(minimumInterval: 1.0 / 15, paused: reduceMotion || !Fleet.shared.isActive)) { ctx in
                     let t = ctx.date.timeIntervalSinceReferenceDate
                     Canvas { g, size in
                         let w = size.width, h = size.height

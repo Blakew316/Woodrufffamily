@@ -244,6 +244,22 @@ import Darwin
 /// Finds Woodruff TVs by asking every address on the home network (for a TV whose network announcement doesn't
 /// reach Apple devices, as LG's can't): each TV answers `/manifest.webmanifest` with its name, no key needed.
 public enum LANScan {
+    private static let recentLock = NSLock()
+    nonisolated(unsafe) private static var recent: (at: Date, prefixes: [String])?
+
+    /// `prefixes()` as found in the last five seconds: for checks made on every redraw (whether this device is home),
+    /// which needn't list the network interfaces each time.
+    public static func recentPrefixes(now: Date = Date()) -> [String] {
+        recentLock.lock()
+        if let r = recent, now.timeIntervalSince(r.at) < 5, now >= r.at { recentLock.unlock(); return r.prefixes }
+        recentLock.unlock()
+        let found = prefixes()
+        recentLock.lock()
+        recent = (now, found)
+        recentLock.unlock()
+        return found
+    }
+
     /// This device's IPv4 networks as "a.b.c." prefixes (Wi‑Fi / Ethernet, not VPNs).
     public static func prefixes() -> [String] {
         var out: [String] = []
