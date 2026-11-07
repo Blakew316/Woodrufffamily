@@ -181,6 +181,14 @@ struct DevicesSection: View {
 }
 
 struct DeviceTile: View, Equatable {
+    /// The iPhone away from home (the Mac is always home).
+    @MainActor static var away: Bool {
+        #if os(iOS)
+        return Fleet.shared.probablyAway
+        #else
+        return false
+        #endif
+    }
     var device: HomeDevice
     var openControls: () -> Void
     @State private var confirmUnlock = false
@@ -245,7 +253,9 @@ struct DeviceTile: View, Equatable {
         }
         .contentShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         .modifier(DeviceGlass(on: lit))
-        .opacity(device.reachable || device.bespokeLook != nil ? 1 : 0.6)
+        // Kept clear: the appliances drawn as themselves, the motion sensors, and everything while the iPhone is away
+        // from home (Home says so once instead).
+        .opacity(device.reachable || device.bespokeLook != nil || device.isMotionSensor || DeviceTile.away ? 1 : 0.6)
         .animation(.smooth(duration: 0.25), value: lit)
         .onTapGesture { if HomeLayout.shared.tapsAllowed { tap() } }
         // Press and hold arranges Home's tiles (on the Mac too); the controls are in the menu.

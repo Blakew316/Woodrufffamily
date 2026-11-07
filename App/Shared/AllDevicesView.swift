@@ -144,6 +144,15 @@ struct AllDevicesView: View {
     static let glyphScale: CGFloat = UIDevice.current.userInterfaceIdiom == .pad ? 1.35 : 1.2
     #endif
 
+    /// The iPhone away from home (the Mac is always home): nothing dimmed for being out of reach.
+    private var awayFromHome: Bool {
+        #if os(iOS)
+        return fleet.probablyAway
+        #else
+        return false
+        #endif
+    }
+
     private func tile(_ item: Item) -> some View {
         let f = facts(item)
         // Centred, the same in every tile: the picture in a square of its own at the top, the name and state under it
@@ -174,7 +183,8 @@ struct AllDevicesView: View {
         .contentShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
         // The Samsung appliances say they're out of reach whenever they're idle: their pictures stay clear (the
         // state under them still says so).
-        .opacity(f.reachable || f.isAppliance ? 1 : 0.55)
+        // Away from home (the iPhone off the home Wi‑Fi) nothing is dimmed: Home says it once instead.
+        .opacity(f.reachable || f.isAppliance || awayFromHome ? 1 : 0.55)
         .animation(.spring(response: 0.35, dampingFraction: 0.75), value: f.on)
         .onTapGesture { tap(item) }
         .onLongPressGesture(minimumDuration: 0.4) { open(item) }

@@ -50,7 +50,7 @@ final class SettingsSync {
         "apns.key", "apns.keyid", "apns.team",
     ]
     /// Saved settings that travel (JSON in UserDefaults).
-    static let dataKeys = ["smartNames", "smartRooms", "smartExtraRooms", "goveeManualIPs", "homeLayout", "extras", "hiddenAlerts", "pushTokens",
+    static let dataKeys = ["smartNames", "smartRooms", "smartExtraRooms", "goveeManualIPs", "homeLayout", "extras", "hiddenAlerts", "pushTokens", "diagnostics",
                            "familyPairings", "atvRemote.paired", "smartSceneColors"]
     /// Plain preferences that travel (property-list values in UserDefaults): alert choices, the remote's click, and
     /// Now Playing on the Lock Screen. (Home's tile sizes travel with the Home layout.)
@@ -58,7 +58,7 @@ final class SettingsSync {
 
     /// Saved settings kept entry by entry (one TV's name, one light's room, one paired TV, one tile's size; the Home
     /// layout part by part), so two devices changing different entries at the same time both keep their change.
-    static let entryKeys: Set<String> = ["ud:smartNames", "ud:smartRooms", "ud:extras", "ud:hiddenAlerts", "ud:pushTokens", "ud:homeLayout",
+    static let entryKeys: Set<String> = ["ud:smartNames", "ud:smartRooms", "ud:extras", "ud:hiddenAlerts", "ud:pushTokens", "ud:homeLayout", "ud:diagnostics",
                                          "ud:familyPairings", "ud:atvRemote.paired", "ud:smartSceneColors"]
     /// Kept whole before they were kept part by part: a copy from then counts each part as old as the whole was.
     static let wholeBefore: Set<String> = ["ud:homeLayout"]
@@ -642,6 +642,10 @@ final class SettingsSync {
         if any(["ud:extras", "ud:hiddenAlerts", "kc:lg."]) { fleet?.reloadSynced() }
         if keys.contains("ud:pushTokens") { PushRelay.shared.reloadTokens() }
         if any(["kc:apns."]) { PushRelay.shared.keysChanged() }
+        #if os(macOS)
+        // Another device's crash and freeze reports: into this Mac's log of everyone's.
+        if keys.contains("ud:diagnostics") { Diagnostics.shared.writeFamilyLog() }
+        #endif
         // What the reloads saved back is the same settings (anything else they changed counts as a change made here).
         for k in keys { if let v = canonical(k) { last[k] = v } }
         NotificationCenter.default.post(name: .woodruffSettingsSynced, object: nil, userInfo: ["keys": keys.map { String($0.dropFirst(3)) }.sorted()])

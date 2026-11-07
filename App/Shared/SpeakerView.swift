@@ -109,6 +109,7 @@ struct SpeakerDetailView: View {
                     Image(systemName: r.muted ? "speaker.slash.fill" : "speaker.fill").frame(width: 22)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel(r.muted ? "Unmute \(r.name)" : "Mute \(r.name)")
                 .foregroundStyle(r.muted ? Palette.attention : .secondary)
                 Slider(value: $volume, in: 0...100) { e in dragging = e; if !e { home.setVolume(r, Int(volume)) } }
                     .tint(.white)

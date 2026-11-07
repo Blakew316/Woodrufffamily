@@ -107,6 +107,8 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
+            // Anything not working on this device, with where to fix it (nothing when all is well).
+            NeedsAttentionSection(hub: hub)
             Section {
                 // Every TV, Software Update and one tap for all of them.
                 PageLink("TVs") { TVsView() } label: { TVsSummaryRow() }

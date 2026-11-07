@@ -108,6 +108,8 @@ struct WoodruffApp: App {
                     try? await Task.sleep(nanoseconds: 1_000_000_000)
                     if !Demo.isOn { PushRelay.shared.start() }
                     WatchPrefetch.start(fleet)
+                    // Crash and freeze reports from Apple, passed to the family's Macs.
+                    Diagnostics.shared.start()
                     if !Demo.isOn && !fleet.hubs.isEmpty { LocationWeather.shared.start(fleet) }
                     SettingsSync.shared.start(fleet)
                     NestAlerts.shared.start(fleet)
@@ -690,6 +692,7 @@ struct MacRoot: View {
                     }
                     .buttonStyle(PressScale())
                     .help("Show the Sidebar")
+                    .accessibilityLabel("Show the Sidebar")
                     .accessibilityLabel("Show the Sidebar")
                     // Clear of the window's close, minimise and zoom buttons, which sit here with the sidebar hidden.
                     .padding(.leading, 64)

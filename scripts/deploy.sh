@@ -227,6 +227,16 @@ asc_key_args() {  # adds the API key to "sign" when there is one (see ASC_DIR)
   return 0
 }
 
+testflight_notes_later() {  # TestFlight's "What to Test" for the build just uploaded, set in the background
+  # (scripts/testflight_notes.py waits for Apple to list the build, then sets it; only ever logged, never waited on).
+  [ -n "$BUILD_NUMBER" ] && [ -f "$ROOT/scripts/testflight_notes.py" ] || return 0
+  local logs="$HOME/Library/Logs/Woodruff Family"
+  mkdir -p "$logs" 2>/dev/null || return 0
+  nohup /usr/bin/python3 "$ROOT/scripts/testflight_notes.py" --build "$BUILD_NUMBER" --bundle-id "$IPHONE_BUNDLE_ID" \
+    --repo "$ROOT" >>"$logs/testflight-notes.log" 2>&1 </dev/null &
+  return 0
+}
+
 hints() {  # $1 = a log; plain-English hints for failures seen before
   [ -f "$1" ] || return 0
   if grep -q 'errSecInternalComponent' "$1"; then
@@ -1456,6 +1466,7 @@ PLIST
   if [ "$status" -eq 0 ] && grep -qE '\*\* EXPORT SUCCEEDED \*\*|Upload succeeded|Uploaded ' "$ulog" 2>/dev/null; then
     note "TestFlight: uploaded build ${BUILD_NUMBER:-?}; the iPhones and iPads get it from TestFlight once Apple has processed it"
     result testflight ok "" "Uploaded build ${BUILD_NUMBER:-?}. Apple takes a few minutes to process it."
+    testflight_notes_later
     return 0
   fi
   # Already uploaded (an earlier try got through): nothing left to do.

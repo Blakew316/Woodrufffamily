@@ -94,6 +94,12 @@ struct HomeView: View {
                     .frame(minHeight: Self.pillHeight)
                     // Movie Night, Bedtime and the family's own scenes: one tap each.
                     if !arranging { ScenesStrip() }
+                    // Away from home most things can't be reached from here: said once, not on every tile.
+                    if !arranging && fleet.probablyAway {
+                        Text("Away from home. Devices update when you’re back.")
+                            .font(.footnote).foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity)
+                    }
                 }
                 .padding(.bottom, -10)
                 #else
