@@ -487,39 +487,8 @@ struct MacRoot: View {
         @Bindable var fleet = fleet
         @Bindable var nav = nav
         let camera = fullCamera
-        NavigationSplitView(columnVisibility: $columns) {
-            List(selection: Binding<String?>(
-                // Nothing is highlighted while searching, so a click on any item (Home too) always takes you there.
-                get: { query.isEmpty ? (deviceSelection ?? tvSelection.map { "tv:\($0)" } ?? section.rawValue) : nil },
-                set: { v in if let v { go(to: v) } })) {
-                Section {
-                    ForEach(AppSection.mac.filter { $0 != .settings }) { s in
-                        Label(s.title, systemImage: s.symbol)
-                            .tag(s.rawValue)
-                            // A click on the section you're already in goes back to its first page.
-                            .simultaneousGesture(TapGesture().onEnded { go(to: s.rawValue) })
-                    }
-                    // Settings opens out like a folder: its six pages, each opened right beside the sidebar.
-                    DisclosureGroup(isExpanded: $showSettings) {
-                        ForEach(MacSettingsPage.allCases) { p in
-                            Text(p.title)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .contentShape(Rectangle())
-                                .tag("set:\(p.rawValue)")
-                                .simultaneousGesture(TapGesture().onEnded { go(to: "set:\(p.rawValue)") })
-                        }
-                    } label: {
-                        Label(AppSection.settings.title, systemImage: AppSection.settings.symbol)
-                            .tag(AppSection.settings.rawValue)
-                            .simultaneousGesture(TapGesture().onEnded {
-                                go(to: AppSection.settings.rawValue)
-                                withAnimation(.smooth(duration: 0.25)) { showSettings = true }
-                            })
-                    }
-                }
-            }
-            .navigationSplitViewColumnWidth(min: 200, ideal: 220)
-        } detail: {
+        // No sidebar: Home, Watch, Send, Memories and Settings are the glass bar at the top of the page.
+        Group {
             NavigationStack(path: $nav.path) {
                 root
                     .id(visit)
@@ -679,7 +648,16 @@ struct MacRoot: View {
         // Wide enough: the greeting sits in the very middle of the page, between the remote and Edit Home at the far left
         // and the thermostat at the far right. Narrower, it sits between them in the row (centred, it would collide).
         let centred = greeting && width >= 1000
-        return VStack(alignment: .leading, spacing: 8) {
+        return VStack(alignment: .leading, spacing: 10) {
+            // Where to go, in the middle at the very top: one glass bar the size of the pills under it.
+            HStack {
+                Spacer(minLength: 0)
+                MacSectionBar(current: tvSelection == nil && (deviceSelection == nil || deviceSelection?.hasPrefix("set:") == true) ? section : nil) { s in
+                    go(to: s.rawValue)
+                }
+                Spacer(minLength: 0)
+            }
+            .frame(height: 46)
             HStack(spacing: 10) {
                 // The sidebar's own button (in the window's title bar) shows it again when it's hidden: no second one here.
                 // A page opened from another: Back, at the very left of this bar.
@@ -696,7 +674,7 @@ struct MacRoot: View {
                     .keyboardShortcut("[", modifiers: .command)
                     .help("Back to \(open.backTo) (⌘[)")
                     // Clear of the window's close, minimise and zoom buttons when the sidebar is hidden.
-                    .padding(.leading, columns == .detailOnly ? 64 : 0)
+
                 }
                 // Home: the remote and Edit Home at the far left, the greeting in the middle, the thermostat at the right.
                 if onHome {
@@ -952,6 +930,46 @@ enum MacSettingsPage: String, CaseIterable, Identifiable {
         case .accounts: ConnectionsView(hub: HubSettings.shared)
         case .general: GeneralSettingsView(hub: HubSettings.shared)
         }
+    }
+}
+#endif
+
+
+#if os(macOS)
+/// The Mac's way around (in place of a sidebar): Home, Watch, Send, Memories and Settings in one liquid-glass bar the
+/// height of the pills beside it, the page you're on lit, the light sliding to the one you pick.
+struct MacSectionBar: View {
+    var current: AppSection?
+    var go: (AppSection) -> Void
+    @Namespace private var lit
+
+    var body: some View {
+        HStack(spacing: 2) {
+            ForEach(AppSection.mac) { s in
+                let on = current == s
+                Button { go(s) } label: {
+                    Text(s.title)
+                        .font(.system(size: 13.5, weight: on ? .bold : .semibold))
+                        .foregroundStyle(on ? Color.primary : Color.secondary)
+                        .padding(.horizontal, 16)
+                        .frame(height: 36)
+                        .background {
+                            if on {
+                                Capsule().fill(.white.opacity(0.16))
+                                    .overlay(Capsule().strokeBorder(.white.opacity(0.22), lineWidth: 0.5))
+                                    .matchedGeometryEffect(id: "lit", in: lit)
+                            }
+                        }
+                        .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(on ? .isSelected : [])
+            }
+        }
+        .padding(4)
+        .frame(height: 44)
+        .glass(Capsule())
+        .animation(.spring(response: 0.35, dampingFraction: 0.82), value: current)
     }
 }
 #endif
