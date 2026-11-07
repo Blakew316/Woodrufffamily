@@ -172,7 +172,29 @@ def set_notes(key, bundle_id, build, notes, wait_minutes=60):
              {"data": {"type": "betaBuildLocalizations", "attributes": {"whatsNew": notes, "locale": "en-US"},
                        "relationships": {"build": {"data": {"type": "builds", "id": build_id}}}}})
     log("build %s: What to Test set (%d lines)" % (build, notes.count("\n") + 1))
+    log_states(key, app)
     return True
+
+
+def state_line(build, detail):
+    """One build as App Store Connect has it: number, processing, expired, and the testers' state."""
+    a = build.get("attributes") or {}
+    d = (detail or {}).get("attributes") or {}
+    return "build %s: %s, %s, internal %s" % (a.get("version", "?"), a.get("processingState", "?"),
+                                              "expired" if a.get("expired") else "not expired",
+                                              d.get("internalBuildState", "?"))
+
+
+def log_states(key, app, count=3):
+    """The newest builds' states, so a build that stops being installable shows in the log (read only)."""
+    try:
+        builds = call(key, "GET", "/builds?" + urllib.parse.urlencode(
+            {"filter[app]": app, "sort": "-uploadedDate", "limit": count})).get("data") or []
+        for b in builds:
+            detail = call(key, "GET", "/builds/%s/buildBetaDetail" % b["id"]).get("data")
+            log(state_line(b, detail))
+    except Exception as e:  # only a log line: never fails the notes
+        log("couldn't read the builds' states: %s" % e)
 
 
 def main(argv=None):

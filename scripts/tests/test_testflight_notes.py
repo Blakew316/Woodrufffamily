@@ -28,6 +28,17 @@ class NotesTests(unittest.TestCase):
         self.assertTrue(text.endswith("…"))
 
 
+class StateTests(unittest.TestCase):
+    def test_state_line(self):
+        b = {"attributes": {"version": "366", "processingState": "VALID", "expired": False}}
+        d = {"attributes": {"internalBuildState": "IN_BETA_TESTING"}}
+        self.assertEqual(tn.state_line(b, d), "build 366: VALID, not expired, internal IN_BETA_TESTING")
+
+    def test_state_line_expired_without_detail(self):
+        b = {"attributes": {"version": "365", "processingState": "VALID", "expired": True}}
+        self.assertEqual(tn.state_line(b, None), "build 365: VALID, expired, internal ?")
+
+
 class SignatureTests(unittest.TestCase):
     def test_der_to_raw(self):
         r = b"\x00" + b"\x81" * 32          # a leading zero (high bit set)
