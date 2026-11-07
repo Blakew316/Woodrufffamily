@@ -449,6 +449,7 @@ struct MacRoot: View {
     @AppStorage("sidebar.tvs") private var showTVs = true
     @AppStorage("sidebar.speakers") private var showSpeakers = false
     @AppStorage("sidebar.lights") private var showLights = false
+    @AppStorage("sidebar.settings") private var showSettings = true
     @State private var palette = false
     @State private var query = ""
     @State private var columns: NavigationSplitViewVisibility = .all
@@ -492,39 +493,28 @@ struct MacRoot: View {
                 get: { query.isEmpty ? (deviceSelection ?? tvSelection.map { "tv:\($0)" } ?? section.rawValue) : nil },
                 set: { v in if let v { go(to: v) } })) {
                 Section {
-                    ForEach(AppSection.mac) { s in
+                    ForEach(AppSection.mac.filter { $0 != .settings }) { s in
                         Label(s.title, systemImage: s.symbol)
                             .tag(s.rawValue)
                             // A click on the section you're already in goes back to its first page.
                             .simultaneousGesture(TapGesture().onEnded { go(to: s.rawValue) })
                     }
-                }
-                Section("TVs", isExpanded: $showTVs) {
-                    MacSidebarTVs(go: { go(to: $0) })
-                }
-                if !home.speakers.isEmpty {
-                    Section("Speakers", isExpanded: $showSpeakers) {
-                        ForEach(home.speakers) { r in
-                            HStack {
-                                Text(r.name)
-                                Spacer()
-                                if r.isPlaying { Image(systemName: "waveform").font(.caption).foregroundStyle(.secondary).symbolEffect(.variableColor.iterative) }
-                            }
-                            .contentShape(Rectangle())
-                            .tag("spk:\(r.id)")
-                            .simultaneousGesture(TapGesture().onEnded { go(to: "spk:\(r.id)") })
-                        }
-                    }
-                }
-                if !home.lights.isEmpty {
-                    Section("Lights", isExpanded: $showLights) {
-                        ForEach(home.lights) { l in
-                            Text(l.name)
+                    // Settings opens out like a folder: its six pages, each opened right beside the sidebar.
+                    DisclosureGroup(isExpanded: $showSettings) {
+                        ForEach(MacSettingsPage.allCases) { p in
+                            Text(p.title)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .contentShape(Rectangle())
-                                .tag("light:\(l.id)")
-                                .simultaneousGesture(TapGesture().onEnded { go(to: "light:\(l.id)") })
+                                .tag("set:\(p.rawValue)")
+                                .simultaneousGesture(TapGesture().onEnded { go(to: "set:\(p.rawValue)") })
                         }
+                    } label: {
+                        Label(AppSection.settings.title, systemImage: AppSection.settings.symbol)
+                            .tag(AppSection.settings.rawValue)
+                            .simultaneousGesture(TapGesture().onEnded {
+                                go(to: AppSection.settings.rawValue)
+                                withAnimation(.smooth(duration: 0.25)) { showSettings = true }
+                            })
                     }
                 }
             }
@@ -599,6 +589,9 @@ struct MacRoot: View {
         // .id: a new item gets a fresh page (no name or level left over from the last one).
         else if let d = deviceSelection, d.hasPrefix("spk:") { SpeakerDetailView(speakerID: String(d.dropFirst(4))).id(d) }
         else if let d = deviceSelection, d.hasPrefix("light:") { LightDetailView(lightID: String(d.dropFirst(6))).id(d) }
+        else if let d = deviceSelection, d.hasPrefix("set:"), let p = MacSettingsPage(rawValue: String(d.dropFirst(4))) {
+            p.view.id(d).task { await HubSettings.shared.loadIfNeeded(fleet) }
+        }
         else if let id = tvSelection { TVDetailView(tvID: id).id(id) }
         else { section.view.id(section) }
     }
@@ -619,6 +612,7 @@ struct MacRoot: View {
         visit += 1
         if v.hasPrefix("tv:") { deviceSelection = nil; tvSelection = String(v.dropFirst(3)) }
         else if v.hasPrefix("spk:") || v.hasPrefix("light:") { tvSelection = nil; deviceSelection = v }
+        else if v.hasPrefix("set:") { tvSelection = nil; deviceSelection = v; selection = .settings }
         else if let s = AppSection(rawValue: v) { tvSelection = nil; deviceSelection = nil; selection = s }
     }
 
@@ -673,6 +667,7 @@ struct MacRoot: View {
     private var rootTitle: String {
         if let d = deviceSelection, d.hasPrefix("spk:") { return home.speaker(String(d.dropFirst(4)))?.name ?? "Speaker" }
         if let d = deviceSelection, d.hasPrefix("light:") { return home.light(String(d.dropFirst(6)))?.name ?? "Light" }
+        if let d = deviceSelection, d.hasPrefix("set:"), let p = MacSettingsPage(rawValue: String(d.dropFirst(4))) { return p.title }
         if let id = tvSelection { return fleet.tv(id)?.name ?? "TV" }
         return section.title
     }
@@ -929,3 +924,34 @@ func pairingLinkIsLocal(_ url: URL) -> Bool? {
     guard let c = TVConnection.parse(target.absoluteString), let host = c.base.host else { return nil }
     return AndroidTVRemote.isLocal(host)
 }
+
+
+#if os(macOS)
+/// Mac: Settings' pages, listed under Settings in the sidebar and each opened beside it, like System Settings.
+enum MacSettingsPage: String, CaseIterable, Identifiable {
+    case tvs, smartHome, watch, notifications, accounts, general
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .tvs: return "TVs"
+        case .smartHome: return "Smart Home"
+        case .watch: return "Watch"
+        case .notifications: return "Notifications"
+        case .accounts: return "Accounts"
+        case .general: return "General"
+        }
+    }
+
+    @MainActor @ViewBuilder var view: some View {
+        switch self {
+        case .tvs: TVsView()
+        case .smartHome: SmartHomeSettingsView(hub: HubSettings.shared)
+        case .watch: WatchSettingsView()
+        case .notifications: PhoneSettingsView(hub: HubSettings.shared)
+        case .accounts: ConnectionsView(hub: HubSettings.shared)
+        case .general: GeneralSettingsView(hub: HubSettings.shared)
+        }
+    }
+}
+#endif
