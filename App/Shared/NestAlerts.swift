@@ -166,7 +166,7 @@ final class NestAlerts {
         }
         guard let events = upd["events"] as? [String: Any] else { return }
         // When it happened, by Google's clock: how late it reached this device is logged and shown in Settings.
-        let happened = (ev["timestamp"] as? String).flatMap { ISO8601DateFormatter.withFraction.date(from: $0) ?? ISO8601DateFormatter().date(from: $0) }
+        let happened = (ev["timestamp"] as? String).flatMap { ISO8601DateFormatter.withFraction.date(from: $0) ?? ISO8601DateFormatter.plain.date(from: $0) }
         if let happened {
             let late = Int(-happened.timeIntervalSinceNow)
             PushRelay.log.notice("camera event reached this device \(late, privacy: .public) s after it happened")

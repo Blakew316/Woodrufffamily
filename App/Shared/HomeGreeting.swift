@@ -501,12 +501,23 @@ struct WeatherSheet: View {
         .glass(RoundedRectangle(cornerRadius: 22, style: .continuous), interactive: false)
     }
 
-    /// "Today", then "Thu", "Fri", …
-    private static func dayName(_ date: String, first: Bool) -> String {
+    /// Made once (a formatter is slow to make, and these run for every day and row shown).
+    private static let dayParser: DateFormatter = {
         let f = DateFormatter()
         f.locale = Locale(identifier: "en_US_POSIX")
         f.dateFormat = "yyyy-MM-dd"
-        guard let d = f.date(from: date) else { return date }
+        return f
+    }()
+    private static let clockParser: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyy-MM-dd'T'HH:mm"
+        return f
+    }()
+
+    /// "Today", then "Thu", "Fri", …
+    private static func dayName(_ date: String, first: Bool) -> String {
+        guard let d = dayParser.date(from: date) else { return date }
         if Calendar.current.isDateInToday(d) || (first && !Calendar.current.isDateInTomorrow(d)) { return "Today" }
         return d.formatted(.dateTime.weekday(.abbreviated))
     }
@@ -514,10 +525,7 @@ struct WeatherSheet: View {
     /// "6:58 AM" from Open-Meteo's local "2026-11-04T06:58".
     private static func clock(_ text: String?) -> String? {
         guard let text else { return nil }
-        let f = DateFormatter()
-        f.locale = Locale(identifier: "en_US_POSIX")
-        f.dateFormat = "yyyy-MM-dd'T'HH:mm"
-        guard let d = f.date(from: text) else { return nil }
+        guard let d = clockParser.date(from: text) else { return nil }
         return d.formatted(date: .omitted, time: .shortened)
     }
 }

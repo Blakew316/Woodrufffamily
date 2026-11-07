@@ -63,6 +63,9 @@ struct WoodruffApp: App {
                     //    bring pairings back), notifications (the first answers can already be news), and the settings
                     //    sync's starting point (before anything below can write a setting that travels: a sign-in
                     //    renewed as the app opens must count as new, or the family's older copy could replace it).
+                    // Watch's saved library and TMDB's answers, read in the background meanwhile.
+                    DriveLibrary.prewarm()
+                    TMDB.prewarm()
                     #if os(macOS)
                     if !Demo.isOn { MacPairingBackup.attach(fleet) }
                     #endif

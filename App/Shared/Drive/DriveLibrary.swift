@@ -2,6 +2,56 @@ import Foundation
 import SwiftUI
 import WoodruffKit
 
+/// A file saved by the app, read and decoded off the main thread as the app opens, so the first page that needs it
+/// doesn't wait for it. Whoever needs it first takes it if it's ready, else reads it then as before.
+final class EarlyRead<T: Decodable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var done = false
+    private var taken = false
+    private var value: T?
+
+    init(_ url: URL) {
+        Task.detached(priority: .utility) { [self] in
+            let v = try? JSONDecoder().decode(T.self, from: Data(contentsOf: url, options: .mappedIfSafe))
+            lock.lock()
+            if !taken { value = v; done = true }
+            lock.unlock()
+        }
+    }
+
+    /// The decoded file (nil inside: no file, or not readable) once it's ready; nil when it isn't yet.
+    func take() -> T?? {
+        lock.lock()
+        defer { lock.unlock() }
+        taken = true
+        guard done else { return nil }
+        let v = value
+        value = nil
+        return .some(v)
+    }
+}
+
+/// Saved files written off the main thread, one after another in the order asked (so an older copy never lands
+/// after a newer one). `waitForWrites` holds until they're all on disk (the app going to the background).
+enum DiskWriter {
+    private static let queue = DispatchQueue(label: "com.woodruff.family.disk", qos: .utility)
+
+    static func write<T: Encodable>(_ value: T, to url: URL) {
+        queue.async {
+            if let d = try? JSONEncoder().encode(value) { try? d.write(to: url, options: .atomic) }
+        }
+    }
+
+    static func waitForWrites() { queue.sync {} }
+}
+
+/// The Watch folder in Application Support, where the library and TMDB's answers are kept.
+func watchFile(_ name: String) -> URL {
+    let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Watch", isDirectory: true)
+    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    return dir.appendingPathComponent(name)
+}
+
 /// Where Watch's titles come from: the TV (as it always has) or the app's own Google Drive library. Watch asks the
 /// same questions of either and gets the same answers, so it looks and works the same; Settings → Watch picks one.
 @MainActor
@@ -117,17 +167,21 @@ final class DriveLibrary: WatchSource {
     /// Each title's names for searching and sorting, worked out once per title.
     @ObservationIgnored private var named: [String: Names] = [:]
     private struct Names { var title: String; var norm: String; var sort: String }
-    private let file: URL = {
-        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Watch", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir.appendingPathComponent("library.json")
-    }()
+    private let file = watchFile("library.json")
+    /// The library as read off the main thread at launch (`prewarm`).
+    nonisolated private static let early = EarlyRead<Saved>(watchFile("library.json"))
+    /// Starts reading the saved library in the background, ahead of Watch.
+    nonisolated static func prewarm() { _ = early }
 
     var titleCount: Int { saved.movies.count + saved.shows.count }
     var updated: Date? { saved.updated.map { Date(timeIntervalSince1970: $0 / 1000) } }
 
     private init() {
-        saved = (try? JSONDecoder().decode(Saved.self, from: Data(contentsOf: file))) ?? Saved()
+        if let ready = Self.early.take() {
+            saved = ready ?? Saved()
+        } else {
+            saved = (try? JSONDecoder().decode(Saved.self, from: Data(contentsOf: file))) ?? Saved()
+        }
     }
 
     /// Written a couple of seconds after the last change (the player reports every 10 seconds).
@@ -135,7 +189,9 @@ final class DriveLibrary: WatchSource {
         guard storing == nil else { return }
         storing = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 2_000_000_000)
-            self?.flush()
+            guard let self else { return }
+            self.storing = nil
+            DiskWriter.write(self.saved, to: self.file)
         }
     }
 
@@ -143,7 +199,9 @@ final class DriveLibrary: WatchSource {
     func flush() {
         storing?.cancel()
         storing = nil
-        if let d = try? JSONEncoder().encode(saved) { try? d.write(to: file, options: .atomic) }
+        DiskWriter.write(saved, to: file)
+        // Called as the app leaves or a film stops: on disk before this returns, as before.
+        DiskWriter.waitForWrites()
     }
 
     // MARK: Reading Drive

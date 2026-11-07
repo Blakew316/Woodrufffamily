@@ -45,17 +45,21 @@ final class TMDB {
     private var cache: Cache
     private var dirty = false
     private var saving: Task<Void, Never>?
-    private let file: URL = {
-        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Watch", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir.appendingPathComponent("tmdb.json")
-    }()
+    private let file = watchFile("tmdb.json")
+    /// TMDB's kept answers as read off the main thread at launch (`prewarm`).
+    nonisolated private static let early = EarlyRead<Cache>(watchFile("tmdb.json"))
+    /// Starts reading the kept answers in the background, ahead of Watch.
+    nonisolated static func prewarm() { _ = early }
     /// At most six questions to TMDB at a time (the TV's limit).
     private var running = 0
     private var waiting: [CheckedContinuation<Void, Never>] = []
 
     private init() {
-        cache = (try? JSONDecoder().decode(Cache.self, from: Data(contentsOf: file))) ?? Cache()
+        if let ready = Self.early.take() {
+            cache = ready ?? Cache()
+        } else {
+            cache = (try? JSONDecoder().decode(Cache.self, from: Data(contentsOf: file))) ?? Cache()
+        }
     }
 
     private func save() {
@@ -67,7 +71,7 @@ final class TMDB {
             self.saving = nil
             guard self.dirty else { return }
             self.dirty = false
-            if let d = try? JSONEncoder().encode(self.cache) { try? d.write(to: self.file, options: .atomic) }
+            DiskWriter.write(self.cache, to: self.file)
         }
     }
 

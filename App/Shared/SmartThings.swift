@@ -578,7 +578,7 @@ final class SmartThings {
     }
 
     private static func date(_ iso: String) -> Date? {
-        ISO8601DateFormatter.withFraction.date(from: iso) ?? ISO8601DateFormatter().date(from: iso)
+        ISO8601DateFormatter.withFraction.date(from: iso) ?? ISO8601DateFormatter.plain.date(from: iso)
     }
 
     /// "weightSensing" → "Sensing Load", "rinse" → "Rinsing", "someNewState" → "Some New State".
@@ -905,6 +905,8 @@ final class SmartThings {
 }
 
 extension ISO8601DateFormatter {
+    /// Plain (no fraction of a second), made once.
+    static let plain = ISO8601DateFormatter()
     static let withFraction: ISO8601DateFormatter = {
         let f = ISO8601DateFormatter()
         f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
