@@ -44,11 +44,10 @@ struct MoreControls: WidgetBundle {
     }
 }
 
-/// Lock Screen and Control Center: opens Woodruff to Home. A house in the app icon's colours: an ice-blue roof
-/// over cyan walls and door (its own symbol, `woodruff.house`).
+/// Lock Screen and Control Center: opens Woodruff to Home. A house in the app icon's colours: a white roof over cyan
+/// walls and door (its own symbol, `woodruff.house`, in multicolour).
 struct WoodruffHomeControl: ControlWidget {
     private static let cyan = Color(red: 0.227, green: 0.678, blue: 0.875)
-    private static let ice = Color(red: 0.659, green: 0.831, blue: 0.961)
 
     var body: some ControlWidgetConfiguration {
         StaticControlConfiguration(kind: "com.woodruff.family.control.home") {
@@ -56,9 +55,10 @@ struct WoodruffHomeControl: ControlWidget {
                 Label {
                     Text("Woodruff")
                 } icon: {
+                    // Its own colours (the Lock Screen keeps a symbol's multicolour and draws anything else white):
+                    // Apple's cyan walls and door, a white roof.
                     Image("woodruff.house")
-                        .symbolRenderingMode(.palette)
-                        .foregroundStyle(Self.cyan, Self.ice)
+                        .symbolRenderingMode(.multicolor)
                 }
             }
             .tint(Self.cyan)
