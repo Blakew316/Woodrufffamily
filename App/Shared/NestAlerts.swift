@@ -312,6 +312,10 @@ final class NestAlerts {
         Task {
             var thumb: String?
             var still: Data?
+            // The camera's already live (the doorbell and driveway are kept ready): its frame now, no wait for Google.
+            var picture = picture
+            var fromLive = false
+            if picture == nil, !quiet, let jpeg = await CameraStreams.shared.liveFrame(camera) { picture = jpeg; fromLive = true }
             if let picture {
                 still = picture
                 let file = FileManager.default.temporaryDirectory.appendingPathComponent("frame-\(short).jpg")
@@ -323,7 +327,7 @@ final class NestAlerts {
                 still = await CameraEventMedia.still(file)
             }
             // Google has no picture for these cameras (no snapshot, and often no clip): one frame from the live stream.
-            var how = picture != nil ? "the Mac's own frame" : "Google's clip or snapshot"
+            var how = fromLive ? "the live stream, at once" : picture != nil ? "the Mac's own frame" : "Google's clip or snapshot"
             if thumb == nil, !quiet, picture == nil, let cam = NestCameras.shared.cameras.first(where: { $0.id == camera }), cam.webRTC, cam.online {
                 let t0 = Date()
                 if let jpeg = await CameraStreams.shared.grabFrame(cam) {

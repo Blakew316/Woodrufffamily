@@ -561,6 +561,12 @@ final class CameraStreams {
     /// The Mac: a picture of what the camera sees now, for its alert (Google has none for these cameras). Its stream,
     /// already running or started just for this, gives its first good frame, and one started for this is let go
     /// again. Nil if no frame comes within [timeout] seconds.
+    /// A frame of a camera that's already live (kept ready, or on screen): at once, nil when it isn't live.
+    func liveFrame(_ id: String) async -> Data? {
+        guard let p = players[id], p.isLive else { return nil }
+        return await p.frameJPEG()
+    }
+
     func grabFrame(_ cam: NestCameras.Camera, timeout: Double = 20) async -> Data? {
         let p = player(cam)
         let started = !p.isRunning
@@ -1046,6 +1052,8 @@ final class LivePlayer: NSObject, WKNavigationDelegate {
     private var startedAt: Date?
     private static let log = Logger(subsystem: "com.woodruff.family", category: "camera")
     var isRunning: Bool { running }
+    /// Showing the camera's picture right now.
+    var isLive: Bool { running && live }
 
     private func stage(_ what: String) {
         guard let t = startedAt else { return }
