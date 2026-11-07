@@ -6,6 +6,8 @@ import WoodruffKit
 /// and hold) and the tiles jiggle: drag them anywhere, drag a corner to resize. The remote slides out on the right.
 struct HomeView: View {
     @Environment(Fleet.self) private var fleet
+    /// Settings → General → Away From Home Note.
+    @AppStorage("home.awayNote") private var awayNote = true
     @State private var openTV: String?
     /// The room bar's choice: Favorites (first, and where Home opens), All Rooms (""), or a room.
     @AppStorage("home.room2") private var picked = favoritesKey
@@ -95,7 +97,7 @@ struct HomeView: View {
                     // Movie Night, Bedtime and the family's own scenes: one tap each.
                     if !arranging { ScenesStrip() }
                     // Away from home most things can't be reached from here: said once, not on every tile.
-                    if !arranging && fleet.probablyAway {
+                    if !arranging && awayNote && fleet.probablyAway {
                         Text("Away from home. Devices update when you’re back.")
                             .font(.footnote).foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity)

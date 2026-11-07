@@ -145,6 +145,9 @@ struct GeneralSettingsView: View {
     #if os(macOS)
     // Read and written through UserDefaults, so a change synced from another Mac shows here at once.
     @AppStorage("remoteClick") private var remoteClick = true
+    #else
+    /// Home's "Away from home" line (on unless turned off here).
+    @AppStorage("home.awayNote") private var awayNote = true
     #endif
 
     var body: some View {
@@ -157,6 +160,12 @@ struct GeneralSettingsView: View {
             #if os(macOS)
             Section {
                 Toggle("Click Sound on Remote Keys", isOn: $remoteClick)
+            }
+            #else
+            Section {
+                Toggle("Away From Home Note", isOn: $awayNote)
+            } footer: {
+                Text("The line on Home that says you’re away from home.")
             }
             #endif
             SyncSection()
