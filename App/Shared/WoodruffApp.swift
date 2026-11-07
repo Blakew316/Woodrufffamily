@@ -257,7 +257,7 @@ enum AppSection: String, CaseIterable, Identifiable, Hashable {
     /// iPhone tabs (Send is in Settings); the Mac has no Remote tab (the remote slides out on the right).
     // Memories is no longer in the app's navigation (the TVs' slideshow still shows them).
     static let phone: [AppSection] = [.home, .remote, .watch, .settings]
-    static let mac: [AppSection] = [.home, .watch, .send, .settings]
+    static let mac: [AppSection] = [.home, .watch, .settings]   // Send is in Settings (TVs group)
     var title: String {
         switch self {
         case .home: return "Home"
@@ -1015,6 +1015,7 @@ struct MacSettingsView: View {
         }
         out += [
             r("Notes", "TVs") { NotesView() },
+            r("Send", "TVs") { SendView() },
             r("Software Update", "TVs") { SoftwareUpdateView() },
             r("Smart Home", "Smart Home") { SmartHomeSettingsView(hub: HubSettings.shared) },
             r("Speakers", "Smart Home") { SpeakersListView() },
