@@ -63,6 +63,12 @@ final class NativeRTC: NSObject, RTCPeerConnectionDelegate, RTCVideoViewDelegate
 
     private static let constraints = RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)
 
+    /// Makes the factory (and the video decoders' setup) now, off the main thread, so the first camera opened
+    /// doesn't pay for it.
+    static func prewarm() {
+        DispatchQueue.global(qos: .userInitiated).async { _ = factory }
+    }
+
     override init() {
         super.init()
         view.delegate = self
@@ -79,6 +85,9 @@ final class NativeRTC: NSObject, RTCPeerConnectionDelegate, RTCVideoViewDelegate
         config.iceServers = [RTCIceServer(urlStrings: ["stun:stun.l.google.com:19302"])]
         config.sdpSemantics = .unifiedPlan
         config.continualGatheringPolicy = .gatherContinually
+        // Audio, video and data on one connection: fewer to set up before the picture.
+        config.bundlePolicy = .maxBundle
+        config.rtcpMuxPolicy = .require
         guard let pc = Self.factory.peerConnection(with: config, constraints: Self.constraints, delegate: self) else {
             throw NSError(domain: "NativeRTC", code: 1, userInfo: [NSLocalizedDescriptionKey: "No connection"])
         }

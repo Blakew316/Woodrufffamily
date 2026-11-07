@@ -66,6 +66,11 @@ final class Diagnostics: NSObject {
                     detail: String(format: "%.1f s frozen on %@", seconds, screen))])
     }
 
+    /// A timing worth reading from the Macs (the first camera each launch, step by step).
+    func noteTiming(_ detail: String) {
+        add([Report(at: Date().timeIntervalSince1970, kind: "Timing", build: AppBuild.label, detail: detail)])
+    }
+
     private func add(_ new: [Report]) {
         guard !new.isEmpty else { return }
         var list = mine()

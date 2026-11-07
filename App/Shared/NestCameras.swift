@@ -70,6 +70,9 @@ final class NestCameras {
         #if os(iOS)
         CameraEventMedia.prune()
         #endif
+        // Ready before the first camera is opened: the video engine, and a fresh Google sign-in.
+        if LivePlayer.nativeEnabled { NativeRTC.prewarm() }
+        Task { _ = try? await self.token() }
         if poll == nil { startPolling(now: true) } else { Task { await load() } }
     }
 
@@ -287,7 +290,8 @@ final class NestCameras {
             let open = CameraStreams.shared.expanded == cam || CameraStreams.shared.full == cam
             let wait = max(open ? .distantPast : nextAny, nextFor[cam] ?? .distantPast).timeIntervalSinceNow
             if wait > 0 { try await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000)) ; continue }
-            nextAny = Date().addingTimeInterval(2)
+            // Half a second between any two (a refusal is retried in seconds), longer for the same camera.
+            nextAny = Date().addingTimeInterval(0.5)
             nextFor[cam] = Date().addingTimeInterval(8)
             do {
                 let r = try await op()
@@ -1080,9 +1084,30 @@ final class LivePlayer: NSObject, WKNavigationDelegate {
     private static let log = Logger(subsystem: "com.woodruff.family", category: "camera")
     var isRunning: Bool { running }
 
+    /// When each step of the current start happened (for the breakdown of the first camera each launch).
+    private var marks: [String: Date] = [:]
+    private static var reportedBreakdown = false
+
     private func stage(_ what: String) {
+        marks[what] = Date()
         guard let t = startedAt else { return }
         Self.log.notice("\(self.camera.name, privacy: .public): \(what, privacy: .public) after \(String(format: "%.1f", Date().timeIntervalSince(t)), privacy: .public)s")
+    }
+
+    /// The first camera to go live each launch: how long each step took, into this device's diagnostics (which sync
+    /// to the Macs' log), so the iPhone's own timings can be read there.
+    private func reportBreakdown() {
+        guard !Self.reportedBreakdown, let t0 = marks["start"] else { return }
+        Self.reportedBreakdown = true
+        func at(_ k: String) -> Double? { marks[k].map { $0.timeIntervalSince(t0) } }
+        let offer = at("offer ready"), answered = at("Google answered"), live = Date().timeIntervalSince(t0)
+        var parts: [String] = []
+        if let offer { parts.append(String(format: "offer %.1f", offer)) }
+        if let offer, let answered { parts.append(String(format: "Google %.1f", answered - offer)) }
+        if let answered { parts.append(String(format: "connect %.1f", live - answered)) }
+        parts.append(String(format: "total %.1f s", live))
+        let line = "\(camera.name): " + parts.joined(separator: ", ") + (usingNative ? " (native)" : " (web)")
+        Diagnostics.shared.noteTiming(line)
     }
 
     init(camera: NestCameras.Camera) {
@@ -1126,6 +1151,7 @@ final class LivePlayer: NSObject, WKNavigationDelegate {
         running = true
         live = false
         startedAt = Date()
+        marks = [:]
         stage("start")
         onStatus?(offline ? "Offline" : "Starting…")
         if Self.nativeEnabled && !nativeOff { startNative(); return }
@@ -1309,6 +1335,7 @@ final class LivePlayer: NSObject, WKNavigationDelegate {
             if body == "failed" { onStatus?("Reconnecting…"); reconnect(); return }
             if body == "Live" {
                 stage(usingNative ? "live (native)" : "live")
+                reportBreakdown()
                 live = true; failures = 0; offline = false; watchdog?.cancel(); nativeWatch?.cancel(); keepStills()
                 if !usingNative && soundOn { web.evaluateJavaScript("setMuted(false)") }
             }
