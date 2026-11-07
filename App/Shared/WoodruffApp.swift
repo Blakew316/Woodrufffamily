@@ -532,7 +532,8 @@ struct MacRoot: View {
         // A search starts from the page you're on; going to another section (from here, a notification or a widget)
         // starts it at its first page.
         .onChange(of: query) { old, new in if old.isEmpty && !new.isEmpty { nav.reset() } }
-        .onChange(of: selection) { _, _ in nav.reset() }
+        // Leaving Watch leaves its search behind (the field is only there): no other page opens on old results.
+        .onChange(of: selection) { _, new in nav.reset(); if new != .watch && !query.isEmpty { query = "" } }
         .background { FleetSideEffects() }
         .onAppear { SmartHome.shared.onChange = { WidgetSync.update(fleet) } }
         .sheet(isPresented: Binding(get: { !welcomeShown && !Demo.isOn }, set: { if !$0 { welcomeShown = true } })) { MacWelcome().macResizable(width: 520, height: 420) }
