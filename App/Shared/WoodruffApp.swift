@@ -96,6 +96,9 @@ struct WoodruffApp: App {
                     if !Demo.isOn && !fleet.hubs.isEmpty { LocationWeather.shared.start(fleet) }
                     SettingsSync.shared.start(fleet)
                     NestAlerts.shared.start(fleet)
+                    #if os(macOS)
+                    VehicleWatch.shared.start()
+                    #endif
                     DecoWifi.shared.start()
                     // Siri learns the family's light, room, speaker and TV names (and again whenever they change).
                     SiriVocabulary.start()

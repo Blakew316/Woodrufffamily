@@ -890,6 +890,9 @@ struct CameraAlertsView: View {
     var body: some View {
         Form {
             if NestCameras.shared.connected { AlertsSection(title: "On This Device", showsReconnect: false) }
+            #if os(macOS)
+            if NestCameras.shared.connected { VehicleAlertsSection() }
+            #endif
             if hub.s?.nest?.connected == true { TVCameraAlertsSection(hub: hub, header: "On the TVs") }
         }
         .formStyle(.grouped)

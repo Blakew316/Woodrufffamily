@@ -218,7 +218,19 @@ final class NestAlerts {
     }
 
     /// [quiet]: an update of an alert already shown (its clip came later), so no second sound.
-    private func post(title: String, body: String, camera: String, key: String, event: String?, clip: String?, quiet: Bool = false) {
+    #if os(macOS)
+    /// A vehicle the Mac saw itself on a camera's stream (Google sends no vehicle events): the same alert as Google's
+    /// events, with that frame as its picture.
+    func postVehicle(camera: NestCameras.Camera, jpeg: Data) {
+        eventHappened = Date()
+        post(title: "Vehicle seen", body: camera.name, camera: camera.id,
+             key: "vehicle|\(camera.id)|\(Int(Date().timeIntervalSince1970))", event: nil, clip: nil, picture: jpeg)
+    }
+    #endif
+
+    /// [picture]: the Mac's own frame of the moment (a vehicle it saw), used instead of fetching one.
+    private func post(title: String, body: String, camera: String, key: String, event: String?, clip: String?, quiet: Bool = false,
+                      picture: Data? = nil) {
         let short = Self.shortID(key)
         let c = UNMutableNotificationContent()
         c.title = title
@@ -257,13 +269,17 @@ final class NestAlerts {
         let received = Date(), happened = eventHappened
         Task {
             var thumb: String?
-            if let token = try? await NestCameras.shared.accessToken(),
+            if let picture {
+                let file = FileManager.default.temporaryDirectory.appendingPathComponent("frame-\(short).jpg")
+                if (try? picture.write(to: file, options: .atomic)) != nil { thumb = await CameraEventMedia.thumbnail(file) }
+                try? FileManager.default.removeItem(at: file)
+            } else if let token = try? await NestCameras.shared.accessToken(),
                let file = await CameraEventMedia.fetch(camera: camera, eventID: event, clipURL: clip, key: short, timeout: 10, using: token) {
                 thumb = await CameraEventMedia.thumbnail(file)
             }
             // Google has no picture for these cameras (no snapshot, and often no clip): one frame from the live stream.
-            var how = "Google's clip or snapshot"
-            if thumb == nil, !quiet, let cam = NestCameras.shared.cameras.first(where: { $0.id == camera }), cam.webRTC, cam.online {
+            var how = picture != nil ? "the Mac's own frame" : "Google's clip or snapshot"
+            if thumb == nil, !quiet, picture == nil, let cam = NestCameras.shared.cameras.first(where: { $0.id == camera }), cam.webRTC, cam.online {
                 let t0 = Date()
                 if let jpeg = await CameraStreams.shared.grabFrame(cam) {
                     let file = FileManager.default.temporaryDirectory.appendingPathComponent("grab-\(short).jpg")

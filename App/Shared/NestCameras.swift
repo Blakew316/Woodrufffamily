@@ -385,6 +385,8 @@ final class CameraStreams {
     @ObservationIgnored private var watching = 0
     @ObservationIgnored private var idle: Task<Void, Never>?
     @ObservationIgnored private var backgroundAt: Date?
+    /// Mac: cameras whose stream runs all the time (Vehicle Alerts watches them), never let go.
+    @ObservationIgnored private(set) var pinned: Set<String> = []
     /// iPhone: the tiles' streams paused while a camera is open over them.
     @ObservationIgnored private var heldBack: [String] = []
 
@@ -478,7 +480,7 @@ final class CameraStreams {
         defer {
             if borrowed, p.web.superview === grabWindow.contentView { p.web.removeFromSuperview() }
             if grabWindow.contentView?.subviews.isEmpty ?? true { grabWindow.orderOut(nil) }
-            if started, expanded != cam.id, full != cam.id, watching == 0 { p.pause() }
+            if started, !pinned.contains(cam.id), expanded != cam.id, full != cam.id, watching == 0 { p.pause() }
         }
         let end = Date().addingTimeInterval(timeout)
         var firstLive: Date?
@@ -490,6 +492,32 @@ final class CameraStreams {
             if let f = firstLive, Date().timeIntervalSince(f) > 1, let jpeg = await p.frameJPEG() { return jpeg }
         }
         return nil
+    }
+    #endif
+
+    #if os(macOS)
+    /// Mac: keeps a camera's stream playing all the time, in the far-off window when no window shows it (Vehicle
+    /// Alerts). Called again every second or so: it puts the picture back there after the camera was open on screen,
+    /// and starts the stream again if it stopped.
+    @discardableResult
+    func keepPlaying(_ cam: NestCameras.Camera) -> LivePlayer {
+        pinned.insert(cam.id)
+        let p = player(cam)
+        if p.web.window == nil, let host = grabWindow.contentView {
+            p.web.frame = host.bounds
+            host.addSubview(p.web)
+            grabWindow.orderBack(nil)
+        }
+        if cam.online, !p.isRunning { p.start() }
+        return p
+    }
+
+    /// No longer kept playing (its switch went off): let go unless it's on screen.
+    func stopKeeping(_ id: String) {
+        guard pinned.remove(id) != nil, let p = players[id] else { return }
+        if p.web.superview === grabWindow.contentView { p.web.removeFromSuperview() }
+        if grabWindow.contentView?.subviews.isEmpty ?? true { grabWindow.orderOut(nil) }
+        if expanded != id, full != id, watching == 0 { p.pause() }
     }
     #endif
 
@@ -521,8 +549,8 @@ final class CameraStreams {
         idle = Task { [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
             guard !Task.isCancelled, let self else { return }
-            for p in self.players.values { p.pause() }
-            for k in self.status.keys where self.status[k] != "Offline" { self.status[k] = "Paused" }
+            for (k, p) in self.players where !self.pinned.contains(k) { p.pause() }
+            for k in self.status.keys where self.status[k] != "Offline" && !self.pinned.contains(k) { self.status[k] = "Paused" }
         }
     }
 }
