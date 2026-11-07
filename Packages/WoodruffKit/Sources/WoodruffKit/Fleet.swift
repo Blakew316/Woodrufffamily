@@ -310,6 +310,7 @@ public final class Fleet {
         tvs = Self.withLastSeen(hubs.map { FleetTV(id: $0.id, name: $0.name, online: false, onScreen: false, playing: nil, version: nil, seen: nil, link: "ok", health: nil, hubID: $0.id, routeID: "this", platform: extras[$0.id]?.platform) }, hubs: hubs)
         noteTVs()
         migrate()
+        restoreLibrary()
     }
 
     /// Old copies cleared, once.
@@ -926,6 +927,35 @@ public final class Fleet {
         didSet {
             artIndex = nil
             libraryArt = [:]
+            keepLibrary()
+        }
+    }
+
+    /// The library as last read, kept on disk so Watch (and what's-playing pictures) have it the moment the app opens.
+    private static var libraryFile: URL? {
+        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?.appendingPathComponent("watch-home.json")
+    }
+
+    private func keepLibrary() {
+        guard !Demo.isOn, let library, let file = Self.libraryFile else { return }
+        let from = libraryFrom
+        DispatchQueue.global(qos: .utility).async {
+            struct Kept: Encodable { let from: String?; let home: WatchHome }
+            if let d = try? JSONEncoder().encode(Kept(from: from, home: library)) { try? d.write(to: file, options: .atomic) }
+        }
+    }
+
+    /// Read in the background as the app opens; taken only if nothing newer came from the TVs meanwhile.
+    private func restoreLibrary() {
+        guard !Demo.isOn, let file = Self.libraryFile else { return }
+        Task.detached(priority: .utility) {
+            struct Kept: Decodable { let from: String?; let home: WatchHome }
+            guard let d = try? Data(contentsOf: file), let k = try? JSONDecoder().decode(Kept.self, from: d) else { return }
+            await MainActor.run {
+                guard self.library == nil else { return }
+                self.libraryFrom = k.from
+                self.library = k.home
+            }
         }
     }
     /// The library's lists arranged for looking titles up, made the first time they're needed after it changes.

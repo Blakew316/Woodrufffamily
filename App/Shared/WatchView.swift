@@ -169,6 +169,9 @@ struct WatchView: View {
             ShelfRow(row.name, all: LibraryRef(place: place, genre: row.genre, sort: row.name == "Top Rated" ? "rated" : row.name == "Recently Added" ? "recent" : nil)) {
                 ForEach(row.titles) { PosterTile(title: $0, poster: client?.artURL($0.poster)) }
             }
+            // As the row comes into view, the posters further along it are fetched ahead (a few at a time, on disk
+            // only), so scrolling sideways never waits on one.
+            .task(id: row.name + place) { await ShelfWarmer.warm(row.titles.prefix(18).compactMap { client?.artURL($0.poster) }) }
         }
     }
 
@@ -1460,6 +1463,20 @@ enum WatchPrefetch {
             for u in continuing.prefix(6) { _ = await ImageStore.shared.image(u, maxPixel: 512) }
             if let first = top.first { _ = await ImageStore.shared.image(first, maxPixel: 1800) }
             for u in Array(continuing.dropFirst(6)) + Array(top.dropFirst()) + recent { await ImageStore.shared.prefetch(u) }
+        }
+    }
+}
+
+
+/// Fetches a shelf's posters ahead of being scrolled to, a few at a time, onto disk (not into memory).
+enum ShelfWarmer {
+    static func warm(_ urls: [URL]) async {
+        await withTaskGroup(of: Void.self) { g in
+            for (i, u) in urls.enumerated() {
+                if i >= 3 { _ = await g.next() }
+                if Task.isCancelled { break }
+                g.addTask(priority: .utility) { await ImageStore.shared.prefetch(u) }
+            }
         }
     }
 }

@@ -214,7 +214,17 @@ final class HomeGreeting {
     }
 
     private(set) var part: DayPart = .at()
-    private(set) var line: String = ""
+    /// Kept between launches (for the same part of the day), so Home opens with its one-liner already there.
+    private(set) var line: String = {
+        let d = UserDefaults.standard
+        guard d.string(forKey: "greeting.part") == DayPart.at().rawValue else { return "" }
+        return d.string(forKey: "greeting.line") ?? ""
+    }() {
+        didSet {
+            UserDefaults.standard.set(line, forKey: "greeting.line")
+            UserDefaults.standard.set(part.rawValue, forKey: "greeting.part")
+        }
+    }
     var greeting: String { "Good \(part.rawValue), Woodruff Family" }
 
     @ObservationIgnored private var refreshedAt = Date.distantPast

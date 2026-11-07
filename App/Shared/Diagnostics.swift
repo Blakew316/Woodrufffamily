@@ -57,6 +57,16 @@ final class Diagnostics: NSObject {
             for l in p.appLaunchDiagnostics ?? [] { new.append(report(l, "Slow Launch", "\(seconds(l.launchDuration)) to open" + frames(l.callStackTree))) }
             #endif
         }
+        add(new)
+    }
+
+    /// The app's own stall detector: a moment the screen froze (`StallMonitor`), as a report like Apple's.
+    func noteStall(seconds: Double, screen: String) {
+        add([Report(at: Date().timeIntervalSince1970, kind: "Stall", build: AppBuild.label,
+                    detail: String(format: "%.1f s frozen on %@", seconds, screen))])
+    }
+
+    private func add(_ new: [Report]) {
         guard !new.isEmpty else { return }
         var list = mine()
         for r in new where !list.contains(r) { list.append(r) }

@@ -102,8 +102,9 @@ struct SpeedRows: View {
     private static let lines = [Line(id: "Open", title: "Opening"), Line(id: "TVs", title: "TVs Answering"),
                                 Line(id: "Watch", title: "Watch"), Line(id: "Camera", title: "Camera Going Live")]
     var body: some View {
-        let problems = Diagnostics.shared.recent()
+        let problems = Diagnostics.shared.recent().filter { $0.kind != "Stall" }
         LabeledContent("Crashes and Freezes", value: problems.isEmpty ? "None This Week" : "\(problems.count) This Week")
+        LabeledContent("Stutters", value: StallMonitor.summary)
         ForEach(Self.lines) { line in
             if let t = Timings.latest(line.id) {
                 LabeledContent(line.title, value: text(t))
