@@ -71,7 +71,7 @@ final class VehicleWatch {
     /// Starts or stops watching to match the switches.
     private func sync() {
         let on = watched
-        for id in CameraStreams.shared.pinned where !on.contains(id) { CameraStreams.shared.stopKeeping(id) }
+        for id in CameraStreams.shared.pinned where !on.contains(id) && !CameraStreams.shared.warmed.contains(id) { CameraStreams.shared.stopKeeping(id) }
         if on.isEmpty || Demo.isOn {
             loop?.cancel(); loop = nil
             if let a = activity { ProcessInfo.processInfo.endActivity(a); activity = nil }

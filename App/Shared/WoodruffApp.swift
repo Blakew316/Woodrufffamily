@@ -207,6 +207,8 @@ struct WoodruffApp: App {
                 CameraStreams.shared.foreground()
                 #if os(iOS)
                 DoorbellActivitySync.shared.tidy()
+                // Any camera alert in the last quarter hour this iPhone never got (its push was missed): fetched now.
+                Task { await NestAlerts.shared.pullOnce(timeout: 8) }
                 #endif
                 // Back from the background (on the iPhone, not a glance at Control Center or Notification Center, which
                 // only makes the app inactive for a moment): Home's weather if it's been a while, a new one-liner, and
@@ -838,6 +840,7 @@ enum WindowActivity {
             // Nothing can be seen: the camera streams are let go after half a minute (they come back as a window is).
             // Alerts keep listening either way.
             if any { CameraStreams.shared.foreground() } else { CameraStreams.shared.background(after: 30) }
+            CameraStreams.shared.keepWarm(any)
         }
     }
 }

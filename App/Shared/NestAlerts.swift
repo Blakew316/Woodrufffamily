@@ -182,13 +182,19 @@ final class NestAlerts {
         if let happened {
             let late = Int(-happened.timeIntervalSinceNow)
             PushRelay.log.notice("camera event reached this device \(late, privacy: .public) s after it happened")
-            // Old news (the phone was asleep) isn't worth a buzz.
-            if late > 600 {
+            // Older than a quarter of an hour (the phone was asleep a long time): old news, not shown.
+            if late > 900 {
                 PushRelay.log.notice("camera event dropped: \(late, privacy: .public) s old")
                 return
             }
         }
         eventHappened = happened
+        #if os(iOS)
+        // Caught up later (the iPhone was closed or asleep when the Mac's push should have come): shown, quietly.
+        let catchingUp = happened.map { -$0.timeIntervalSinceNow > 60 } ?? false
+        #else
+        let catchingUp = false
+        #endif
         let camera = NestCameras.shared.cameras.first { $0.id == device }
         let name = camera?.name ?? "Camera"
         // The event's short clip, when the camera sends one (newer Nest cameras and doorbells).
@@ -222,7 +228,7 @@ final class NestAlerts {
             }
             if let title {
                 posted[session] = Posted(title: title, body: name, camera: device, key: key, event: eventID, hasClip: clip != nil, at: Date())
-                post(title: title, body: name, camera: device, key: key, event: eventID, clip: clip)
+                post(title: title, body: name, camera: device, key: key, event: eventID, clip: clip, quiet: catchingUp)
             }
         }
         seen = seen.filter { $0.value.timeIntervalSinceNow > -3600 }

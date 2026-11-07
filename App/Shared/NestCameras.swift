@@ -445,6 +445,29 @@ final class CameraStreams {
         }
     }
 
+    /// The cameras kept ready: the doorbell and the driveway.
+    static func isImportant(_ c: NestCameras.Camera) -> Bool {
+        c.doorbell || c.name.localizedCaseInsensitiveContains("door") || c.name.localizedCaseInsensitiveContains("drive")
+    }
+
+    #if os(macOS)
+    /// The Mac: while one of its windows can be seen, the doorbell's and driveway's streams play (off screen when no
+    /// tile shows them), so opening either is instant; once none can be seen they're let go (unless Vehicle Alerts
+    /// watches them).
+    @ObservationIgnored private(set) var warmed: Set<String> = []
+    func keepWarm(_ on: Bool) {
+        if on {
+            for c in NestCameras.shared.cameras where c.webRTC && c.online && Self.isImportant(c) {
+                keepPlaying(c)
+                warmed.insert(c.id)
+            }
+        } else {
+            for id in warmed where !VehicleWatch.shared.watched.contains(id) { stopKeeping(id) }
+            warmed = []
+        }
+    }
+    #endif
+
     /// A live picture from [id]'s stream: kept for its tile, and on disk for next time.
     func keepStill(_ cam: NestCameras.Camera, _ jpeg: Data) {
         let id = cam.id
@@ -487,6 +510,10 @@ final class CameraStreams {
     /// The cameras as Google last described them: an offline one stops trying (and says Offline, not a
     /// spinner); one back online starts again if it's on screen.
     func availability(_ cams: [NestCameras.Camera]) {
+        #if os(macOS)
+        // The list is in (or changed): the doorbell and driveway kept ready while a window can be seen.
+        defer { if Fleet.shared.isActive { keepWarm(true) } }
+        #endif
         for c in cams {
             guard let p = players[c.id] else { continue }
             let was = p.camera.online
@@ -757,7 +784,9 @@ struct LiveCameraTile: View, Equatable {
 
     /// Asks for the stream while the tile shows (on Home's tabs: while it's on screen), and lets it go after.
     private func follow() {
-        let wanted = appeared && ready && camera.webRTC && (!inBoard || visible)
+        // The doorbell and the driveway start as soon as Home lays them out (not only once on screen), so they're live
+        // by the time you look.
+        let wanted = appeared && ready && camera.webRTC && (!inBoard || visible || CameraStreams.isImportant(camera))
         guard wanted != watching else { return }
         watching = wanted
         if wanted { streams.show(camera) } else { streams.hide() }
@@ -1030,8 +1059,15 @@ final class LivePlayer: NSObject, WKNavigationDelegate {
         startedAt = Date()
         stage("start")
         onStatus?(offline ? "Offline" : "Starting…")
-        web.loadHTMLString(Self.page, baseURL: URL(string: "https://localhost/"))
+        // The page stays loaded between streams: starting again is a fresh connection in it, not a new page (quicker).
+        if pageLoaded { web.evaluateJavaScript("start()") } else {
+            web.loadHTMLString(Self.page, baseURL: URL(string: "https://localhost/"))
+            pageLoaded = true
+        }
     }
+
+    /// The player's page has been loaded (it starts its first stream as it loads).
+    private var pageLoaded = false
 
     /// Starts over with a fresh stream.
     func restart() { pause(); start() }
@@ -1051,6 +1087,7 @@ final class LivePlayer: NSObject, WKNavigationDelegate {
     /// For good: no more page or messages.
     func close() {
         pause()
+        pageLoaded = false
         web.configuration.userContentController.removeAllScriptMessageHandlers()
         web.navigationDelegate = nil
     }
@@ -1065,7 +1102,9 @@ final class LivePlayer: NSObject, WKNavigationDelegate {
         work?.cancel(); renew?.cancel(); watchdog?.cancel()
         session = nil
         failures += 1
-        let wait = fixed ?? UInt64(min(60, 5 * (1 << min(failures - 1, 4))))
+        // Quick at first (a passing hiccup), slower if it keeps failing: 1, 3, 6, 12, 24 seconds, then a minute.
+        let quick: [UInt64] = [1, 3, 6, 12, 24]
+        let wait = fixed ?? (failures <= quick.count ? quick[failures - 1] : 60)
         retry?.cancel()
         retry = Task { [weak self] in
             try? await Task.sleep(nanoseconds: wait * 1_000_000_000)
@@ -1077,6 +1116,7 @@ final class LivePlayer: NSObject, WKNavigationDelegate {
     // The web page's process was ended by the system: start again.
     nonisolated func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
         Task { @MainActor in
+            self.pageLoaded = false
             guard self.running else { return }
             self.onStatus?("Reconnecting…")
             self.reconnect()
@@ -1136,11 +1176,11 @@ final class LivePlayer: NSObject, WKNavigationDelegate {
             // While it's known offline, the page's "Starting…" doesn't replace "Offline".
             if offline && body == "Starting…" { return }
             if body == "Reconnecting…", live {
-                // Was live and dropped ("disconnected"): WebRTC may come back by itself; if not in 20 s, start over.
+                // Was live and dropped ("disconnected"): WebRTC may come back by itself; if not in 8 s, start over.
                 live = false
                 watchdog?.cancel()
                 watchdog = Task { [weak self] in
-                    try? await Task.sleep(nanoseconds: 20_000_000_000)
+                    try? await Task.sleep(nanoseconds: 8_000_000_000)
                     guard let self, !Task.isCancelled, self.running, !self.live else { return }
                     self.reconnect()
                 }
@@ -1164,10 +1204,10 @@ final class LivePlayer: NSObject, WKNavigationDelegate {
                 let js = (try? String(data: JSONSerialization.data(withJSONObject: [answer]), encoding: .utf8)) ?? "[\"\"]"
                 _ = try? await self.web.evaluateJavaScript("answer(\(js)[0])")
                 self.keepAlive()
-                // Not live within 30 seconds of Google's answer: start over.
+                // Not live within 15 seconds of Google's answer: start over.
                 self.watchdog?.cancel()
                 self.watchdog = Task { [weak self] in
-                    try? await Task.sleep(nanoseconds: 30_000_000_000)
+                    try? await Task.sleep(nanoseconds: 15_000_000_000)
                     guard let self, !Task.isCancelled, self.running, !self.live else { return }
                     self.onStatus?("Reconnecting…")
                     self.reconnect()
@@ -1206,24 +1246,32 @@ final class LivePlayer: NSObject, WKNavigationDelegate {
     <body><video id="v" autoplay playsinline muted></video><script>
     const v = document.getElementById('v');
     const say = s => window.webkit.messageHandlers.state.postMessage(s);
-    const pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
-    pc.addTransceiver('audio', { direction: 'recvonly' });
-    pc.addTransceiver('video', { direction: 'recvonly' });
-    pc.createDataChannel('data');
-    const stream = new MediaStream();
-    pc.ontrack = e => { stream.addTrack(e.track); v.srcObject = stream; v.play().catch(() => {}); };
-    pc.onconnectionstatechange = () => {
-      const s = pc.connectionState;
-      say(s === 'connected' ? 'Live' : s === 'failed' ? 'failed' : s === 'disconnected' ? 'Reconnecting…' : 'Starting…');
-    };
-    async function start() {
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-      window.webkit.messageHandlers.offer.postMessage(offer.sdp);
+    let pc = null;
+    function connect() {
+      const me = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+      me.addTransceiver('audio', { direction: 'recvonly' });
+      me.addTransceiver('video', { direction: 'recvonly' });
+      me.createDataChannel('data');
+      const stream = new MediaStream();
+      me.ontrack = e => { if (pc !== me) return; stream.addTrack(e.track); v.srcObject = stream; v.play().catch(() => {}); };
+      me.onconnectionstatechange = () => {
+        if (pc !== me) return;
+        const s = me.connectionState;
+        say(s === 'connected' ? 'Live' : s === 'failed' ? 'failed' : s === 'disconnected' ? 'Reconnecting…' : 'Starting…');
+      };
+      pc = me;
     }
-    function answer(sdp) { pc.setRemoteDescription({ type: 'answer', sdp }).catch(() => say('failed')); }
+    async function start() {
+      stop();
+      connect();
+      const me = pc;
+      const offer = await me.createOffer();
+      await me.setLocalDescription(offer);
+      if (pc === me) window.webkit.messageHandlers.offer.postMessage(offer.sdp);
+    }
+    function answer(sdp) { if (pc) pc.setRemoteDescription({ type: 'answer', sdp }).catch(() => say('failed')); }
     function setMuted(m) { v.muted = m; }
-    function stop() { try { pc.close(); } catch (e) {} }
+    function stop() { const old = pc; pc = null; try { if (old) old.close(); } catch (e) {} }
     start();
     </script></body></html>
     """
