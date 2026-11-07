@@ -85,7 +85,10 @@ final class VehicleWatch {
         loop = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.tick()
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                // Every second while anything has moved in the last half minute; every two while the drive is still
+                // (the first change seen brings it back to every second, well before two frames confirm a vehicle).
+                let busy = self?.scenes.values.contains { Date().timeIntervalSince($0.lastMotion) < 30 } ?? true
+                try? await Task.sleep(nanoseconds: busy ? 1_000_000_000 : 2_000_000_000)
             }
         }
     }

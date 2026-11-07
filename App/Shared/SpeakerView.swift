@@ -176,8 +176,8 @@ struct ArtBackdrop: View {
         ZStack {
             Color.black
             if let url {
-                CachedImage(url: url) { Color.clear }
-                    .blur(radius: 60).opacity(0.65).scaleEffect(1.3)
+                BlurredArtwork(url: url, radius: 60, maxPixel: 1800)
+                    .opacity(0.65).scaleEffect(1.3)
             } else {
                 LinearGradient(colors: [Color(red: 0.12, green: 0.14, blue: 0.2), .black], startPoint: .top, endPoint: .bottom)
             }

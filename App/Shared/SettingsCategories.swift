@@ -196,6 +196,7 @@ struct WoodruffFamilySection: View {
         #if os(macOS)
         Section {
             LabeledContent("Version", value: AppBuild.label)
+            SpeedRows()
             updatesRow
             ForEach(updater.iPhones) { IPhoneUpdateRow(phone: $0) }
             if let tf = updater.testFlight {
@@ -212,6 +213,7 @@ struct WoodruffFamilySection: View {
         #else
         Section {
             LabeledContent("Version", value: AppBuild.label)
+            SpeedRows()
         } header: {
             Text("Woodruff Family")
         } footer: {

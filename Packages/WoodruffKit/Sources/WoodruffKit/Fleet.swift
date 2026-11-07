@@ -33,7 +33,7 @@ public struct TVExtras: Codable, Hashable, Sendable {
 }
 
 /// One TV as the dashboard shows it, merged from every hub that knows it.
-public struct FleetTV: Identifiable, Hashable, Sendable {
+public struct FleetTV: Identifiable, Hashable, Sendable, Codable {
     public var id: String
     public var name: String
     public var online: Bool
@@ -88,7 +88,39 @@ public final class Fleet {
     public static let shared = Fleet()
 
     public private(set) var hubs: [Hub] = [] { didSet { updateLibraryHub() } }
-    public private(set) var tvs: [FleetTV] = [] { didSet { noteTVs() } }
+    public private(set) var tvs: [FleetTV] = [] { didSet { noteTVs(); keepLastSeen() } }
+
+    /// What the TVs were doing when last heard (kept between launches): shown as the app opens, until each TV's hub
+    /// answers (or is found out of reach), so Home doesn't start with every TV off. Older than six hours: not used.
+    private struct LastSeen: Codable {
+        var at: Double
+        var tvs: [FleetTV]
+    }
+    @ObservationIgnored private var lastSeenSaved = Date.distantPast
+    @ObservationIgnored private var lastSeenPending: Task<Void, Never>?
+
+    /// Saved at most every ten seconds (the TVs' state changes every few).
+    private func keepLastSeen() {
+        guard !Demo.isOn, lastSeenPending == nil else { return }
+        let wait = max(0, 10 - Date().timeIntervalSince(lastSeenSaved))
+        lastSeenPending = Task { [weak self] in
+            if wait > 0 { try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000)) }
+            guard let self else { return }
+            self.lastSeenPending = nil
+            self.lastSeenSaved = Date()
+            Saved.save("lastSeenTVs", LastSeen(at: Date().timeIntervalSince1970, tvs: self.tvs.filter { !$0.isUnpaired }))
+        }
+    }
+
+    /// [fresh] (every paired TV, as off) with what each was last seen doing, and the linked TVs its hubs passed on.
+    private static func withLastSeen(_ fresh: [FleetTV], hubs: [Hub]) -> [FleetTV] {
+        guard let saved = Saved.load("lastSeenTVs", as: LastSeen.self),
+              Date().timeIntervalSince1970 - saved.at < 6 * 3600 else { return fresh }
+        let hubIDs = Set(hubs.map(\.id))
+        var out = fresh.map { tv in saved.tvs.first { $0.id == tv.id && $0.isHub } ?? tv }
+        for t in saved.tvs where !t.isHub && hubIDs.contains(t.hubID) && !out.contains(where: { $0.id == t.id }) { out.append(t) }
+        return out.sorted(by: FleetMerge.order)
+    }
     /// Saved only when something in it changed (it's set again with what it already holds now and then: a TV's health
     /// report saying the same platform, say). Every save is noticed by the settings sync as a change to look at.
     public var extras: [String: TVExtras] = [:] { didSet { if extras != oldValue { Saved.save("extras", extras); noteBadge() } } }
@@ -275,7 +307,7 @@ public final class Fleet {
         hubs = Fleet.loadPairings()
         extras = Saved.load("extras", as: [String: TVExtras].self) ?? [:]
         selectedID = UserDefaults.standard.string(forKey: "selectedTV")
-        tvs = hubs.map { FleetTV(id: $0.id, name: $0.name, online: false, onScreen: false, playing: nil, version: nil, seen: nil, link: "ok", health: nil, hubID: $0.id, routeID: "this", platform: extras[$0.id]?.platform) }
+        tvs = Self.withLastSeen(hubs.map { FleetTV(id: $0.id, name: $0.name, online: false, onScreen: false, playing: nil, version: nil, seen: nil, link: "ok", health: nil, hubID: $0.id, routeID: "this", platform: extras[$0.id]?.platform) }, hubs: hubs)
         noteTVs()
         migrate()
     }

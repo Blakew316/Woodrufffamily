@@ -374,6 +374,8 @@ final class CameraStreams {
     static let shared = CameraStreams()
 
     private(set) var status: [String: String] = [:]
+    /// Each camera's last live picture, kept between launches: its tile shows it while the stream connects.
+    private(set) var stills: [String: PlatformImage] = [:]
     /// The camera open in the big view (its tile shows a still while it's there).
     var expanded: String?
     /// A camera to open in the big view straight away (a tapped camera or doorbell alert).
@@ -390,6 +392,8 @@ final class CameraStreams {
     @ObservationIgnored private(set) var pinned: Set<String> = []
     /// The Mac: cameras whose picture is being taken for an alert right now.
     @ObservationIgnored private var grabbing: Set<String> = []
+    /// When each camera's stream was first asked for and isn't live yet (for Settings → General → Speed).
+    @ObservationIgnored private var askedAt: [String: Date] = [:]
     /// Every stream was let go (nothing on screen); a picture taken meanwhile lets its stream go too.
     @ObservationIgnored private var letGo = false
     /// iPhone: the tiles' streams paused while a camera is open over them.
@@ -404,16 +408,58 @@ final class CameraStreams {
         expanded = nil
     }
 
+    private static let stillsFolder: URL = {
+        let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("CameraStills", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }()
+
+    private static func stillFile(_ id: String) -> URL {
+        let safe = id.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? "camera"
+        return stillsFolder.appendingPathComponent(String(safe.suffix(120)) + ".jpg")
+    }
+
+    private init() {
+        // Read in the background as the app opens, so the tiles have them by the time Home draws them.
+        Task.detached(priority: .utility) {
+            var found: [String: Data] = [:]
+            let files = (try? FileManager.default.contentsOfDirectory(at: Self.stillsFolder, includingPropertiesForKeys: nil)) ?? []
+            for f in files where f.pathExtension == "jpg" {
+                let id = f.deletingPathExtension().lastPathComponent.removingPercentEncoding ?? ""
+                if !id.isEmpty, let d = try? Data(contentsOf: f) { found[id] = d }
+            }
+            let loaded = found
+            await MainActor.run {
+                for (id, d) in loaded where CameraStreams.shared.stills[id] == nil {
+                    if let img = PlatformImage(data: d) { CameraStreams.shared.stills[id] = img }
+                }
+            }
+        }
+    }
+
+    /// A live picture from [id]'s stream: kept for its tile, and on disk for next time.
+    func keepStill(_ id: String, _ jpeg: Data) {
+        guard let img = PlatformImage(data: jpeg) else { return }
+        stills[id] = img
+        let file = Self.stillFile(id)
+        DispatchQueue.global(qos: .utility).async { try? jpeg.write(to: file, options: .atomic) }
+    }
+
     func player(_ cam: NestCameras.Camera) -> LivePlayer {
         if let p = players[cam.id] { return p }
         let p = LivePlayer(camera: cam)
-        p.onStatus = { [weak self] s in withAnimation(.smooth) { self?.status[cam.id] = s } }
+        p.onStatus = { [weak self] s in
+            withAnimation(.smooth) { self?.status[cam.id] = s }
+            // How long the first camera took to go live (Settings → General → Speed).
+            if s == "Live", let t = self?.askedAt.removeValue(forKey: cam.id) { Timings.note("Camera", since: t) }
+        }
         players[cam.id] = p
         return p
     }
 
     /// A tile or the big view came on screen.
     func show(_ cam: NestCameras.Camera) {
+        if status[cam.id] != "Live", askedAt[cam.id] == nil { askedAt[cam.id] = Date() }
         watching += 1
         idle?.cancel(); idle = nil
         letGo = false
@@ -622,6 +668,11 @@ struct LiveCameraTile: View, Equatable {
             Color.black
             if camera.webRTC && ready && streams.expanded != camera.id {
                 LiveWebView(player: streams.player(camera)).allowsHitTesting(false)
+            }
+            // Its last live picture, dimmed, over the black of a stream still connecting (gone once it's live).
+            if status != "Live", camera.online, let still = streams.stills[camera.id] {
+                Color.black.overlay { Image(platformImage: still).resizable().scaledToFill().opacity(0.55) }.clipped()
+                    .allowsHitTesting(false)
             }
             if status != "Live" || streams.expanded == camera.id {
                 VStack(spacing: 8) {
@@ -1003,14 +1054,11 @@ final class LivePlayer: NSObject, WKNavigationDelegate {
         }
     }
 
-    #if os(iOS)
     private var stills: Task<Void, Never>?
-    #endif
 
-    /// iPhone: while the picture is live, a still of it for the TVs & Cameras widget, a few seconds in and then every
-    /// two minutes.
+    /// While the picture is live, a still of it a few seconds in and then every two minutes: for the camera's tile
+    /// next time it connects, and on the iPhone for the TVs & Cameras widget.
     private func keepStills() {
-        #if os(iOS)
         stills?.cancel()
         stills = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 4_000_000_000)
@@ -1019,7 +1067,6 @@ final class LivePlayer: NSObject, WKNavigationDelegate {
                 try? await Task.sleep(nanoseconds: 120_000_000_000)
             }
         }
-        #endif
     }
 
     var isLive: Bool { live }
@@ -1038,17 +1085,18 @@ final class LivePlayer: NSObject, WKNavigationDelegate {
         return jpeg
     }
 
-    #if os(iOS)
     private func saveStill() {
         let cam = camera
         Task { @MainActor in
             guard let jpeg = await frameJPEG() else { return }
+            CameraStreams.shared.keepStill(cam.id, jpeg)
+            #if os(iOS)
             if PhoneWidgetShare.saveCamera(id: cam.id, name: cam.name, doorbell: cam.doorbell, jpeg: jpeg) {
                 WidgetCenter.shared.reloadTimelines(ofKind: PhoneWidgetShare.tvsCamerasKind)
             }
+            #endif
         }
     }
-    #endif
 
     func received(_ name: String, _ body: String) {
         if name == "state" {

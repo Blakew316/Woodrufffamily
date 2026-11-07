@@ -1,5 +1,6 @@
 import SwiftUI
 import ImageIO
+import CoreImage
 import CryptoKit
 import WoodruffKit
 
@@ -360,5 +361,110 @@ extension CachedImage where Failure == Placeholder {
     init(url: URL?, contentMode: ContentMode = .fill, maxPixel: Int = 1800, storeOnDisk: Bool = true,
          @ViewBuilder placeholder: @escaping () -> Placeholder) {
         self.init(url: url, contentMode: contentMode, maxPixel: maxPixel, storeOnDisk: storeOnDisk, placeholder: placeholder, failure: placeholder)
+    }
+}
+
+// MARK: - Pictures blurred once
+
+/// [url]'s picture filling its space, blurred by [radius] points as `.blur(radius:opaque:)` would, but blurred once
+/// (off the main thread, at a quarter of the size, which a blur this soft can't tell apart) instead of on every frame
+/// drawn over it. Until that's ready it's blurred live as before, so it never shows blank.
+struct BlurredArtwork: View {
+    var url: URL?
+    var radius: CGFloat
+    var opaque = false
+    var maxPixel = 900
+
+    var body: some View {
+        GeometryReader { g in
+            BlurredArtworkFill(key: BlurKey(url: url, w: Int(g.size.width.rounded()), h: Int(g.size.height.rounded()),
+                                            radius: radius, opaque: opaque), maxPixel: maxPixel)
+        }
+    }
+}
+
+struct BlurKey: Hashable, Sendable {
+    var url: URL?
+    var w: Int
+    var h: Int
+    var radius: CGFloat
+    var opaque: Bool
+}
+
+private struct BlurredArtworkFill: View {
+    let key: BlurKey
+    let maxPixel: Int
+    @State private var made: CGImage?
+    @State private var madeFor: BlurKey?
+
+    var body: some View {
+        let ready = madeFor == key ? made : BlurStore.cached(key)
+        Group {
+            if let ready {
+                Image(decorative: ready, scale: 1).resizable()
+            } else {
+                Color.clear.overlay { Artwork(url: key.url, maxPixel: maxPixel) }.clipped()
+                    .blur(radius: key.radius, opaque: key.opaque)
+            }
+        }
+        .frame(width: CGFloat(key.w), height: CGFloat(key.h))
+        .task(id: key) {
+            guard let url = key.url, key.w > 0, key.h > 0, BlurStore.cached(key) == nil else { return }
+            guard let picture = await ImageStore.shared.image(url, maxPixel: maxPixel), !Task.isCancelled else { return }
+            let source = BlurStore.cgImage(picture)
+            let k = key
+            let blurred = await Task.detached(priority: .utility) { source.flatMap { BlurStore.blur($0, k) } }.value
+            guard let blurred, !Task.isCancelled else { return }
+            BlurStore.keep(blurred, k)
+            made = blurred
+            madeFor = k
+        }
+    }
+}
+
+/// The blurred pictures made, by what they were made for (a few; the system frees them under memory pressure).
+enum BlurStore {
+    private static let cache: NSCache<NSString, CGImageBox> = {
+        let c = NSCache<NSString, CGImageBox>()
+        c.countLimit = 12
+        return c
+    }()
+    private static let context = CIContext(options: [.cacheIntermediates: false])
+
+    final class CGImageBox { let image: CGImage; init(_ i: CGImage) { image = i } }
+
+    private static func name(_ k: BlurKey) -> NSString {
+        "\(k.url?.absoluteString ?? "")|\(k.w)x\(k.h)|\(k.radius)|\(k.opaque)" as NSString
+    }
+    static func cached(_ k: BlurKey) -> CGImage? { cache.object(forKey: name(k))?.image }
+    static func keep(_ i: CGImage, _ k: BlurKey) { cache.setObject(CGImageBox(i), forKey: name(k)) }
+
+    static func cgImage(_ p: PlatformImage) -> CGImage? {
+        #if os(macOS)
+        var r = CGRect(origin: .zero, size: p.size)
+        return p.cgImage(forProposedRect: &r, context: nil, hints: nil)
+        #else
+        return p.cgImage
+        #endif
+    }
+
+    /// [image] filling a quarter-size box of [k]'s size (centred, cut to it), then blurred by a quarter of the radius.
+    static func blur(_ image: CGImage, _ k: BlurKey) -> CGImage? {
+        let f: CGFloat = 0.25
+        let w = max(1, Int((CGFloat(k.w) * f).rounded(.up))), h = max(1, Int((CGFloat(k.h) * f).rounded(.up)))
+        guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
+                                  space: CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        ctx.interpolationQuality = .medium
+        let iw = CGFloat(image.width), ih = CGFloat(image.height)
+        let scale = max(CGFloat(w) / iw, CGFloat(h) / ih)
+        let dw = iw * scale, dh = ih * scale
+        ctx.draw(image, in: CGRect(x: (CGFloat(w) - dw) / 2, y: (CGFloat(h) - dh) / 2, width: dw, height: dh))
+        guard let filled = ctx.makeImage() else { return nil }
+        let input = CIImage(cgImage: filled)
+        let extent = input.extent
+        let base = k.opaque ? input.clampedToExtent() : input
+        let out = base.applyingGaussianBlur(sigma: Double(k.radius * f)).cropped(to: extent)
+        return context.createCGImage(out, from: extent)
     }
 }

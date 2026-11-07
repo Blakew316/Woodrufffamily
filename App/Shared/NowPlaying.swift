@@ -421,12 +421,26 @@ struct NowPlayingSheet: View {
         }
     }
 
+    /// The film's own backdrop (else poster) when the TV has one: what `NowPlayingArt` would show for it.
+    private func backdropURL(_ p: NowPlaying) -> URL? {
+        let art = fleet.artwork(for: p)
+        guard let path = art?.backdrop ?? art?.poster else { return nil }
+        return fleet.hubClient()?.art(path)
+    }
+
     /// A deep, dark blur of the picture, held to the screen (just the dark when nothing is playing now).
     private func backdrop(_ p: NowPlaying?) -> some View {
         GeometryReader { g in
             ZStack {
                 Color(white: 0.07)
-                if let p {
+                if let p, let url = backdropURL(p) {
+                    // The film's picture: blurred once, not on every frame drawn over it.
+                    BlurredArtwork(url: url, radius: 80, opaque: true, maxPixel: 1800)
+                        .frame(width: g.size.width, height: g.size.height)
+                        .saturation(1.2)
+                        .opacity(0.55)
+                        .clipped()
+                } else if let p {
                     NowPlayingArt(playing: p, backdrop: true, maxPixel: 1800)
                         .frame(width: g.size.width, height: g.size.height)
                         .blur(radius: 80, opaque: true)

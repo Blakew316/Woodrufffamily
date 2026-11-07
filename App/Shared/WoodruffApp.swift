@@ -31,6 +31,10 @@ struct WoodruffApp: App {
     #endif
 
     init() {
+        // The saved sign-ins and keys the settings sync reads before the TVs are first asked, read now in the
+        // background (each Keychain read is slow), so by then they're at hand instead of holding up the main thread.
+        let keys = SettingsSync.keychainKeys + Fleet.shared.tvs.map { "lg.\($0.id)" }
+        Task.detached(priority: .userInitiated) { for k in keys { _ = Keychain.read(k) } }
         // Before launch finishes, as Apple asks: a tapped doorbell or camera alert that opened the app (Woodruff
         // wasn't running) still arrives here and opens that camera live, instead of being dropped.
         UNUserNotificationCenter.current().delegate = Notifier.handler
@@ -50,6 +54,8 @@ struct WoodruffApp: App {
         WindowGroup(id: "main") {
             RootView()
                 .environment(fleet)
+                // How long from the tap until the window first showed (Settings → General → Speed).
+                .onAppear { Timings.note("Open", since: Timings.processStart) }
                 #if os(macOS)
                 // Remembers the window's size and place, and which window is Woodruff's own.
                 .background(WindowMemory())
@@ -73,6 +79,11 @@ struct WoodruffApp: App {
                     if !Demo.isOn { Notifier.attach(to: fleet) }
                     SettingsSync.shared.prepare(fleet)
                     await fleet.start()
+                    // How long until the TVs first answered (Settings → General → Speed).
+                    Task {
+                        for _ in 0..<600 where fleet.refreshedAt == nil { try? await Task.sleep(nanoseconds: 50_000_000) }
+                        if fleet.refreshedAt != nil { Timings.note("TVs", since: Timings.processStart) }
+                    }
                     #if os(iOS)
                     // Lock Screen Now Playing follows the TVs from launch, also while the app is in the background.
                     LiveActivitySync.shared.sync(fleet)

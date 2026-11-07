@@ -138,6 +138,8 @@ struct WatchView: View {
             }
         }
         .onAppear { if UserDefaults.standard.string(forKey: "route") == "title" { openTitle = "t_backyard_science" } }
+        // How long Watch takes to show its titles (Settings → General → Speed).
+        .background { TimingProbe(name: "Watch", ready: shown != nil) }
     }
 
     @ViewBuilder private func content(_ h: WatchHome, _ client: (any WatchSource)?) -> some View {
@@ -398,7 +400,7 @@ struct Billboard: View {
             let picH = g.size.height - inset * 2
             let picW = min(g.size.width * 0.62, picH * 16 / 9)
             ZStack {
-                Color.clear.overlay { Artwork(url: art, maxPixel: 900) }.clipped().blur(radius: 40).opacity(0.75)
+                BlurredArtwork(url: art, radius: 40, maxPixel: 900).opacity(0.75)
                 Color.black.opacity(0.45)
                 HStack(spacing: 24) {
                     // From the top: the name, its facts, Play and Details, then what it's about.
