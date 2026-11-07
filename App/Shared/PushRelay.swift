@@ -61,11 +61,35 @@ final class PushRelay {
     var isSender: Bool {
         #if os(macOS)
         guard hasKey, sendsFromHere else { return false }
+        // The Mac Studio (the updater's hub) sends; the other Macs (followers) never do. Deciding over the home Wi‑Fi
+        // alone, a Mac away from it (a MacBook on the road) couldn't see the Mac Studio and sent every alert again.
+        switch Self.updaterRole() {
+        case "hub": return true
+        case "follower": return false
+        default: break
+        }
         return otherRelays.allSatisfy { DeviceID.value <= $0 }
         #else
         return false
         #endif
     }
+
+    #if os(macOS)
+    /// This Mac's role in the updater ("hub" or "follower"; nil when it isn't set up), read at most once a minute.
+    private static var roleRead: (String?, Date)?
+    static func updaterRole() -> String? {
+        if let r = roleRead, Date().timeIntervalSince(r.1) < 60 { return r.0 }
+        let url = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/Woodruff Family/Updater/config.json")
+        var role: String?
+        if let data = try? Data(contentsOf: url),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            role = json["role"] as? String
+        }
+        roleRead = (role, Date())
+        return role
+    }
+    #endif
 
     @ObservationIgnored private var jwt: (String, Date)?
     @ObservationIgnored private var listener: NWListener?

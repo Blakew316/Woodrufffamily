@@ -201,7 +201,9 @@ final class NestAlerts {
         let clip = (events["sdm.devices.events.CameraClipPreview.ClipPreview"] as? [String: Any])?["previewUrl"] as? String
         let kinds = events.keys.map { $0.components(separatedBy: ".").last ?? $0 }.sorted().joined(separator: ", ")
         PushRelay.log.notice("camera event from \(name, privacy: .public): \(kinds, privacy: .public)\(clip != nil ? " (with clip)" : "", privacy: .public)")
-        for (type, value) in events {
+        // The ring first, then a person, then motion: one visit is one alert, and the most telling one.
+        func rank(_ t: String) -> Int { t.hasSuffix(".Chime") ? 0 : t.hasSuffix(".Person") ? 1 : t.hasSuffix(".Motion") ? 2 : 3 }
+        for (type, value) in events.sorted(by: { rank($0.key) < rank($1.key) }) {
             // The same event, however often Google sends it, is one key (and one notification, by its id).
             let session = (value as? [String: Any])?["eventSessionId"] as? String ?? ev["eventId"] as? String ?? messageID ?? UUID().uuidString
             // Its snapshot, for the cameras without clips (Google makes it only within 30 seconds of the event).
@@ -225,6 +227,12 @@ final class NestAlerts {
             }
             if title == nil, ["Chime", "Person", "Motion"].contains(where: { type.hasSuffix(".\($0)") }) {
                 PushRelay.log.notice("camera event not alerted: \(type.components(separatedBy: ".").last ?? type, privacy: .public) is off on this device")
+            }
+            // Another event of a visit already alerted for (a person after the ring, motion after a person): not a
+            // second alert. Only a ring after a person or motion alert still goes (it means someone's at the door).
+            if title != nil, let p = posted[session], !(type.hasSuffix(".Chime") && !p.title.localizedCaseInsensitiveContains("door")) {
+                PushRelay.log.notice("camera event not alerted: \(type.components(separatedBy: ".").last ?? type, privacy: .public) is part of a visit already alerted for")
+                continue
             }
             if let title {
                 posted[session] = Posted(title: title, body: name, camera: device, key: key, event: eventID, hasClip: clip != nil, at: Date())
