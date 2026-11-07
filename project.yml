@@ -25,6 +25,9 @@ settings:
 packages:
   WoodruffKit:
     path: Packages/WoodruffKit
+  WebRTC:
+    url: https://github.com/stasel/WebRTC
+    exactVersion: 157.0.0
 
 targets:
   WoodruffFamily:
@@ -37,6 +40,7 @@ targets:
       - App/Resources
     dependencies:
       - package: WoodruffKit
+      - package: WebRTC
       - target: WoodruffWidgets
       - target: WoodruffNotifications
     settings:
@@ -158,6 +162,7 @@ targets:
       - App/Resources
     dependencies:
       - package: WoodruffKit
+      - package: WebRTC
       - target: WoodruffMacWidgets
     settings:
       base:
