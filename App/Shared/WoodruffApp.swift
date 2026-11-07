@@ -490,6 +490,11 @@ struct MacRoot: View {
     }
     @AppStorage("watch.section") private var watchSection = "movies"
 
+    /// Settings' own page: no thermostat row under the bar, so the page sits right under it.
+    private var onSettings: Bool {
+        section == .settings && tvSelection == nil && deviceSelection == nil && query.isEmpty && nav.path.isEmpty
+    }
+
     var body: some View {
         @Bindable var fleet = fleet
         @Bindable var nav = nav
@@ -655,7 +660,7 @@ struct MacRoot: View {
         // Wide enough: the greeting sits in the very middle of the page, between the remote and Edit Home at the far left
         // and the thermostat at the far right. Narrower, it sits between them in the row (centred, it would collide).
         let centred = greeting && width >= 1000
-        return VStack(alignment: .leading, spacing: 10) {
+        return VStack(alignment: .leading, spacing: onSettings ? 0 : 10) {
             // Where to go, in the middle at the very top: one glass bar the size of the pills under it.
             HStack {
                 Spacer(minLength: 0)
@@ -713,20 +718,23 @@ struct MacRoot: View {
                 // The remote's button is on Home only (⌥⌘R and the TVs menu open it anywhere).
                 ThermostatChip(compact: narrow || (greeting && width < 1150), height: 44)
             }
-            // Always the same height, so the pages below never jump as the bar's contents change.
-            .frame(height: 46)
+            // Always the same height, so the pages below never jump as the bar's contents change (Settings has no row
+            // here at all, so its page starts right under the bar at the top).
+            .frame(height: onSettings ? 0 : 46)
+            .opacity(onSettings ? 0 : 1)
+            .allowsHitTesting(!onSettings)
             .overlay {
                 // Large and floating, a little below the row (the bar leaves room for it under the row).
                 if centred {
                     MacGreetingHero()
-                        .offset(y: 38)
+                        .offset(y: 30)
                         .transition(.opacity.combined(with: .scale(scale: 0.96)))
                 }
             }
         }
         .padding(.horizontal, 18)
         .padding(.top, 4)
-        .padding(.bottom, centred ? 66 : 8)
+        .padding(.bottom, centred ? 52 : (onSettings ? 0 : 8))
         .animation(.smooth(duration: 0.3), value: greeting)
         .task(id: onHome) {
             guard onHome else { return }

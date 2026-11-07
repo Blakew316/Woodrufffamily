@@ -610,28 +610,28 @@ struct MacGreetingHero: View {
     private let greeting = HomeGreeting.shared
 
     var body: some View {
-        HStack(alignment: .center, spacing: 20) {
+        HStack(alignment: .center, spacing: 16) {
             if let now = weather.now {
-                HStack(spacing: 10) {
+                HStack(spacing: 8) {
                     Image(systemName: now.sky.symbol)
                         .symbolRenderingMode(.multicolor)
-                        .font(.system(size: 34, weight: .semibold))
+                        .font(.system(size: 27, weight: .semibold))
                     Text(now.tempText)
-                        .font(.system(size: 36, weight: .semibold, design: .rounded))
+                        .font(.system(size: 29, weight: .semibold, design: .rounded))
                         .monospacedDigit()
                         .contentTransition(.numericText())
                 }
                 .help([now.sky.words, now.range].compactMap { $0 }.joined(separator: " · "))
-                Rectangle().fill(.white.opacity(0.28)).frame(width: 1, height: 50)
+                Rectangle().fill(.white.opacity(0.28)).frame(width: 1, height: 40)
             }
             VStack(alignment: .leading, spacing: 3) {
                 Text(greeting.greeting)
-                    .font(.system(size: 30, weight: .bold, design: .rounded))
+                    .font(.system(size: 24, weight: .bold, design: .rounded))
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)
                 if !greeting.line.isEmpty {
                     Text(greeting.line)
-                        .font(.system(size: 18, weight: .medium))
+                        .font(.system(size: 14.5, weight: .medium))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .minimumScaleFactor(0.8)
