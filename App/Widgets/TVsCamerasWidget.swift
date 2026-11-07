@@ -249,7 +249,7 @@ struct DoorbellLiveActivity: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: DoorbellAttributes.self) { context in
             DoorbellRingView(attributes: context.attributes, at: context.state.at)
-                .activityBackgroundTint(Color(red: 0.04, green: 0.10, blue: 0.26).opacity(0.92))   // the widgets' navy
+                .activityBackgroundTint(Color.black.opacity(0.6))
                 .activitySystemActionForegroundColor(.white)
                 .widgetURL(Self.link(context.attributes))
         } dynamicIsland: { context in
