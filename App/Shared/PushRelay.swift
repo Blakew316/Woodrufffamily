@@ -31,6 +31,8 @@ final class PushRelay {
         var topic: String   // the iPhone app's bundle ID
         var name: String
         var at: Double
+        /// iPhone: its address for starting the doorbell's Live Activity (hex), when it has one.
+        var start: String? = nil
     }
 
     private(set) var lastSent: Date?
@@ -153,12 +155,26 @@ final class PushRelay {
             if all != tokens { tokens = all }
             return
         }
-        all[DeviceID.value] = Token(token: hex, env: env, topic: topic, name: name, at: Date().timeIntervalSince1970)
+        all[DeviceID.value] = Token(token: hex, env: env, topic: topic, name: name, at: Date().timeIntervalSince1970,
+                                    start: all[DeviceID.value]?.start ?? pendingStart)
         tokens = all
         Saved.save(Self.tokensKey, all)
     }
 
     func didFail(_ error: Error) { lastError = error.localizedDescription }
+
+    /// iPhone: the address the Macs start the doorbell's Live Activity with (kept until this iPhone has signed up).
+    @ObservationIgnored private var pendingStart: String?
+    func setStartToken(_ hex: String) {
+        guard !hex.isEmpty else { return }
+        pendingStart = hex
+        var all = Saved.load(Self.tokensKey, as: [String: Token].self) ?? [:]
+        guard var mine = all[DeviceID.value], mine.start != hex else { return }
+        mine.start = hex
+        all[DeviceID.value] = mine
+        tokens = all
+        Saved.save(Self.tokensKey, all)
+    }
 
     /// What the setup page shows under it (a key file that couldn't be read).
     func showError(_ message: String) { lastError = message }
@@ -271,22 +287,52 @@ final class PushRelay {
         }
         if anySent { lastSent = Date() }
         lastError = failure
+        // The doorbell rang: its Live Activity on each iPhone that can show one.
+        if userInfo["ring"] == "1", let camera = userInfo["camera"] { await startDoorbell(camera: camera, name: body, auth: auth) }
+    }
+
+    /// Starts the doorbell's Live Activity on every iPhone that gave an address for it (ActivityKit push-to-start).
+    private func startDoorbell(camera: String, name: String, auth: String) async {
+        let now = Date()
+        let aps: [String: Any] = [
+            "timestamp": Int(now.timeIntervalSince1970),
+            "event": "start",
+            "attributes-type": "DoorbellAttributes",
+            "attributes": ["camera": camera, "name": name],
+            // Dates in ActivityKit's state are seconds since 2001 (Codable's default).
+            "content-state": ["at": now.timeIntervalSinceReferenceDate],
+            "stale-date": Int(now.timeIntervalSince1970) + 120,
+            // Shown as the activity itself (not a second banner), quietly: the alert already rang.
+            "alert": ["title": "Someone\u{2019}s at the door", "body": name],
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: ["aps": aps]) else { return }
+        for (_, t) in tokens {
+            guard let start = t.start, !start.isEmpty, start.allSatisfy(\.isHexDigit) else { continue }
+            let (code, reason) = await post(data, token: t, env: t.env == "production" ? "production" : "development",
+                                            id: "doorbell", auth: auth, liveActivity: start)
+            Self.log.notice("doorbell activity to \(t.name, privacy: .public): \(code) \(reason, privacy: .public)")
+        }
     }
 
     /// One push to one iPhone on one of Apple's two services: the status code and Apple's reason ("OK" when sent;
     /// the error itself when it didn't get there, with code 0).
-    private func post(_ data: Data, token t: Token, env: String, id: String, auth: String) async -> (Int, String) {
+    private func post(_ data: Data, token t: Token, env: String, id: String, auth: String, liveActivity: String? = nil) async -> (Int, String) {
         let host = env == "production" ? "api.push.apple.com" : "api.sandbox.push.apple.com"
-        guard let url = URL(string: "https://\(host)/3/device/\(t.token)") else { return (0, "bad address") }
+        guard let url = URL(string: "https://\(host)/3/device/\(liveActivity ?? t.token)") else { return (0, "bad address") }
         var r = URLRequest(url: url, timeoutInterval: 20)
         r.httpMethod = "POST"
         r.httpBody = data
         r.setValue("bearer \(auth)", forHTTPHeaderField: "authorization")
-        r.setValue(t.topic, forHTTPHeaderField: "apns-topic")
-        r.setValue("alert", forHTTPHeaderField: "apns-push-type")
+        if liveActivity != nil {
+            r.setValue(t.topic + ".push-type.liveactivity", forHTTPHeaderField: "apns-topic")
+            r.setValue("liveactivity", forHTTPHeaderField: "apns-push-type")
+        } else {
+            r.setValue(t.topic, forHTTPHeaderField: "apns-topic")
+            r.setValue("alert", forHTTPHeaderField: "apns-push-type")
+        }
         r.setValue("10", forHTTPHeaderField: "apns-priority")
         // Same ID as the alert itself: a repeat (from a second Mac, or the iPhone's own) replaces it.
-        r.setValue(String(id.prefix(64)), forHTTPHeaderField: "apns-collapse-id")
+        if liveActivity == nil { r.setValue(String(id.prefix(64)), forHTTPHeaderField: "apns-collapse-id") }
         r.setValue(String(Int(Date().timeIntervalSince1970) + 3600), forHTTPHeaderField: "apns-expiration")
         do {
             let (d, resp) = try await URLSession.shared.data(for: r)

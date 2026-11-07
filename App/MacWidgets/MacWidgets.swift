@@ -10,6 +10,7 @@ struct WoodruffMacWidgets: WidgetBundle {
         NowPlayingWidget()
         AllTVsWidget()
         HomeDevicesWidget()
+        MacTVsCamerasWidget()
     }
 }
 
@@ -590,5 +591,141 @@ struct HomeDevicesWidgetView: View {
         }
         .padding(.horizontal, 10).padding(.vertical, 8)
         .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(l.isLit ? Color.yellow.opacity(0.22) : Color.primary.opacity(0.07)))
+    }
+}
+
+
+// MARK: - TVs & Cameras
+
+/// The Mac's TVs & Cameras widget (medium), as on the iPhone: Master Bedroom, Living Room and Kyler's Room down the
+/// left with what each is playing, the Doorbell and Front Driveway's latest pictures on the right.
+struct MacTVsCamerasWidget: Widget {
+    var body: some WidgetConfiguration {
+        StaticConfiguration(kind: MacCameraShare.kind, provider: TVsProvider()) { e in
+            MacTVsCamerasView(entry: e, cameras: MacCameraShare.load())
+                .environment(\.colorScheme, .dark)
+                .containerBackground(for: .widget) {
+                    LinearGradient(colors: [Color(red: 0.13, green: 0.14, blue: 0.19), Color(red: 0.06, green: 0.06, blue: 0.09)],
+                                   startPoint: .topLeading, endPoint: .bottomTrailing)
+                }
+        }
+        .configurationDisplayName("TVs & Cameras")
+        .description("What the TVs are playing, with the doorbell and driveway beside them.")
+        .supportedFamilies([.systemMedium])
+        .contentMarginsDisabled()
+    }
+}
+
+struct MacTVsCamerasView: View {
+    var entry: TVsEntry
+    var cameras: [MacCameraShare.Line]
+
+    private var tvs: [WidgetTV] {
+        func key(_ n: String) -> String { n.lowercased().replacingOccurrences(of: "\u{2019}", with: "'") }
+        var out: [WidgetTV] = []
+        for name in ["master bedroom", "living room", "kyler's room"] {
+            if let t = entry.tvs.first(where: { key($0.name) == name }) { out.append(t) }
+        }
+        for t in entry.tvs where out.count < 3 && !out.contains(where: { $0.id == t.id }) { out.append(t) }
+        return out
+    }
+
+    private var cams: [MacCameraShare.Line] {
+        let door = cameras.first { $0.doorbell } ?? cameras.first { $0.name.localizedCaseInsensitiveContains("door") }
+        let drive = cameras.first { $0.name.localizedCaseInsensitiveContains("drive") && $0.id != door?.id }
+        var out = [door, drive].compactMap { $0 }
+        for c in cameras where out.count < 2 && !out.contains(where: { $0.id == c.id }) { out.append(c) }
+        return out
+    }
+
+    var body: some View {
+        HStack(spacing: 9) {
+            VStack(spacing: 4) {
+                if tvs.isEmpty {
+                    Text(entry.paired ? "No TVs answered." : "Open Woodruff to pair your TVs.")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    ForEach(tvs) { tv in row(tv) }
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            VStack(spacing: 6) {
+                ForEach(0..<2, id: \.self) { i in
+                    if i < cams.count { camera(cams[i]) } else {
+                        RoundedRectangle(cornerRadius: 11, style: .continuous).fill(.white.opacity(0.06))
+                            .overlay(Text("Camera").font(.caption2).foregroundStyle(.tertiary))
+                    }
+                }
+            }
+            .frame(width: 140)
+            .frame(maxHeight: .infinity)
+        }
+        .padding(11)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func row(_ tv: WidgetTV) -> some View {
+        let selected = tv.id == entry.selected?.id
+        let playing = tv.online ? tv.playing : nil
+        return HStack(spacing: 8) {
+            RoundedRectangle(cornerRadius: 8, style: .continuous).fill(.white.opacity(0.07))
+                .frame(width: 34, height: 34)
+                .overlay(Image(systemName: "tv").font(.system(size: 14, weight: .medium)).foregroundStyle(.white.opacity(0.45)))
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 5) {
+                    Circle().fill(!tv.online ? Color.white.opacity(0.3) : playing == nil ? Color.white.opacity(0.5) : playing!.isPlaying ? Color.green : Color.yellow)
+                        .frame(width: 6, height: 6)
+                    Text(tv.name).font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary).lineLimit(1)
+                }
+                Text(playing?.title ?? (tv.online ? "On" : "Off"))
+                    .font(.system(size: 12.5, weight: selected ? .bold : .semibold, design: .rounded))
+                    .foregroundStyle(playing != nil ? Color.primary : Color.secondary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 4).padding(.leading, 4).padding(.trailing, 6)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+        .background {
+            if selected {
+                RoundedRectangle(cornerRadius: 12, style: .continuous).fill(.white.opacity(0.1))
+            }
+        }
+    }
+
+    private func camera(_ c: MacCameraShare.Line) -> some View {
+        let fresh = c.eventAt.map { entry.date.timeIntervalSince($0) < 600 } ?? false
+        return Color.white.opacity(0.06)
+            .overlay {
+                if let data = MacCameraShare.picture(c), let image = NSImage(data: data) {
+                    Image(nsImage: image).resizable().scaledToFill()
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .clipped()
+            .overlay(LinearGradient(colors: [.clear, .black.opacity(0.6)], startPoint: .center, endPoint: .bottom))
+            .overlay(alignment: .bottom) {
+                HStack(spacing: 4) {
+                    Text(c.doorbell ? "Doorbell" : c.name.replacingOccurrences(of: " camera", with: "", options: .caseInsensitive)).lineLimit(1)
+                    Spacer(minLength: 2)
+                    if let at = c.at {
+                        Text(at, style: .time).foregroundStyle(.white.opacity(0.78)).lineLimit(1).fixedSize().layoutPriority(1)
+                    }
+                }
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.white)
+                .shadow(color: .black.opacity(0.6), radius: 2)
+                .padding(.horizontal, 6).padding(.bottom, 5)
+            }
+            .overlay(alignment: .topLeading) {
+                if fresh, let e = c.event {
+                    Text(e).font(.system(size: 9.5, weight: .bold)).foregroundStyle(.white)
+                        .padding(.horizontal, 6).padding(.vertical, 2)
+                        .background(Color.red.opacity(0.92), in: Capsule())
+                        .padding(6)
+                }
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
     }
 }

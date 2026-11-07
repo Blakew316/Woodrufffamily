@@ -56,3 +56,59 @@ enum SharedStore {
         return try? JSONDecoder().decode(Snapshot.self, from: data)
     }
 }
+
+/// The Mac's TVs & Cameras widget: each camera's latest picture (from its live stream or an alert) and its latest
+/// event, written by the app into the app group, read by the widget.
+enum MacCameraShare {
+    static let kind = "com.woodruff.family.widget.mactvscameras"
+
+    struct Line: Codable, Identifiable, Equatable {
+        var id: String
+        var name: String
+        var doorbell: Bool
+        var file: String?
+        var at: Date?
+        var event: String?
+        var eventAt: Date?
+    }
+
+    static var container: URL? {
+        SharedStore.groupID.flatMap { FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: $0) }
+    }
+
+    static func load() -> [Line] {
+        guard let d = SharedStore.defaults?.data(forKey: "cameras") else { return [] }
+        return (try? JSONDecoder().decode([Line].self, from: d)) ?? []
+    }
+
+    static func picture(_ line: Line) -> Data? {
+        guard let f = line.file, let url = container?.appendingPathComponent(f) else { return nil }
+        return try? Data(contentsOf: url)
+    }
+
+    /// Keeps [jpeg] as [id]'s latest picture and/or [event] as its latest event. True when something changed.
+    @discardableResult
+    static func save(id: String, name: String, doorbell: Bool, jpeg: Data? = nil, event: String? = nil) -> Bool {
+        guard let defaults = SharedStore.defaults else { return false }
+        var all = load()
+        var line = all.first { $0.id == id } ?? Line(id: id, name: name, doorbell: doorbell)
+        line.name = name
+        line.doorbell = doorbell
+        if let jpeg, let dir = container {
+            let safe = id.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? "camera"
+            let name = "cam-" + String(safe.suffix(80)) + ".jpg"
+            guard (try? jpeg.write(to: dir.appendingPathComponent(name), options: .atomic)) != nil else { return false }
+            line.file = name
+            line.at = Date()
+        }
+        if let event {
+            line.event = event
+            line.eventAt = Date()
+        }
+        all.removeAll { $0.id == id }
+        all.append(line)
+        guard let data = try? JSONEncoder().encode(all) else { return false }
+        defaults.set(data, forKey: "cameras")
+        return true
+    }
+}

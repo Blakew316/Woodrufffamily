@@ -8,6 +8,8 @@ enum PhoneWidgetShare {
     static let nowPlayingKind = "com.woodruff.family.widget.nowplaying"
     static let homeKind = "com.woodruff.family.widget.home"
     static let tvsCamerasKind = "com.woodruff.family.widget.tvscameras"
+    /// The Lock Screen's doorbell: its latest picture and event.
+    static let doorbellKind = "com.woodruff.family.widget.doorbell"
 
     struct Snapshot: Codable, Equatable {
         var tvName: String?

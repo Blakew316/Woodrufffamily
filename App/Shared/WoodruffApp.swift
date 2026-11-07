@@ -87,6 +87,8 @@ struct WoodruffApp: App {
                     #if os(iOS)
                     // Lock Screen Now Playing follows the TVs from launch, also while the app is in the background.
                     LiveActivitySync.shared.sync(fleet)
+                    // The doorbell's Live Activity: its start address for the Macs, and any left over cleared.
+                    DoorbellActivitySync.shared.start()
                     #endif
                     // 2. A moment later, what Home shows besides the TVs: speakers and lights, Samsung, the fans, the
                     //    cameras and Apple Home.
@@ -189,6 +191,9 @@ struct WoodruffApp: App {
             #endif
             if phase == .active {
                 CameraStreams.shared.foreground()
+                #if os(iOS)
+                DoorbellActivitySync.shared.tidy()
+                #endif
                 // Back from the background (on the iPhone, not a glance at Control Center or Notification Center, which
                 // only makes the app inactive for a moment): Home's weather if it's been a while, a new one-liner, and
                 // everything else asked afresh.

@@ -239,6 +239,8 @@ final class NestAlerts {
         c.threadIdentifier = "nest-\(camera)"
         // What the iPhones need to fetch the moment (the Mac's push carries these to them).
         c.userInfo = ["camera": camera, "key": short, "event": event ?? "", "clip": clip ?? ""]
+        // The doorbell itself rang: the iPhones show it as a Live Activity too (started by the Mac's push).
+        if title.localizedCaseInsensitiveContains("at the door") { c.userInfo["ring"] = "1" }
         // The alert goes at once; its picture follows as a quiet update of the same alert (same id), so fetching it
         // never holds the alert up.
         Notifier.deliver(c, id: "nest-" + short)
@@ -248,14 +250,14 @@ final class NestAlerts {
         let tag = title.localizedCaseInsensitiveContains("person") ? "Person"
             : title.localizedCaseInsensitiveContains("motion") ? "Motion" : title.localizedCaseInsensitiveContains("ring") || title.localizedCaseInsensitiveContains("door") ? "Ring" : "Event"
         if PhoneWidgetShare.saveCamera(id: camera, name: body, doorbell: doorbell, event: tag) {
-            WidgetCenter.shared.reloadTimelines(ofKind: PhoneWidgetShare.tvsCamerasKind)
+            WidgetCenter.shared.reloadTimelines(ofKind: PhoneWidgetShare.tvsCamerasKind); WidgetCenter.shared.reloadTimelines(ofKind: PhoneWidgetShare.doorbellKind)
         }
         // Here: the clip or snapshot added to the alert when Google has it.
         Task {
             guard let file = await CameraEventMedia.fetch(camera: camera, eventID: event, clipURL: clip, key: short, timeout: 10) else { return }
             if let jpeg = await CameraEventMedia.still(file) {
                 PhoneWidgetShare.saveCamera(id: camera, name: body, doorbell: doorbell, jpeg: jpeg)
-                WidgetCenter.shared.reloadTimelines(ofKind: PhoneWidgetShare.tvsCamerasKind)
+                WidgetCenter.shared.reloadTimelines(ofKind: PhoneWidgetShare.tvsCamerasKind); WidgetCenter.shared.reloadTimelines(ofKind: PhoneWidgetShare.doorbellKind)
             }
             guard let a = CameraEventMedia.attachment(file),
                   let update = c.mutableCopy() as? UNMutableNotificationContent else { return }
@@ -267,26 +269,40 @@ final class NestAlerts {
         // The Mac fetches the moment itself and sends a small picture of it as a quiet update, so every iPhone shows
         // one, signed in to the cameras or not.
         let received = Date(), happened = eventHappened
+        // The Mac's TVs & Cameras widget: the camera's red tag at once, its picture of the moment when there is one.
+        let macCam = NestCameras.shared.cameras.first { $0.id == camera }
+        let macTag = title.localizedCaseInsensitiveContains("person") ? "Person"
+            : title.localizedCaseInsensitiveContains("motion") ? "Motion" : title.localizedCaseInsensitiveContains("ring") || title.localizedCaseInsensitiveContains("door") ? "Ring" : "Event"
+        if !quiet, MacCameraShare.save(id: camera, name: macCam?.name ?? body, doorbell: macCam?.doorbell ?? false, event: macTag) {
+            WidgetCenter.shared.reloadTimelines(ofKind: MacCameraShare.kind)
+        }
         Task {
             var thumb: String?
+            var still: Data?
             if let picture {
+                still = picture
                 let file = FileManager.default.temporaryDirectory.appendingPathComponent("frame-\(short).jpg")
                 if (try? picture.write(to: file, options: .atomic)) != nil { thumb = await CameraEventMedia.thumbnail(file) }
                 try? FileManager.default.removeItem(at: file)
             } else if let token = try? await NestCameras.shared.accessToken(),
                let file = await CameraEventMedia.fetch(camera: camera, eventID: event, clipURL: clip, key: short, timeout: 10, using: token) {
                 thumb = await CameraEventMedia.thumbnail(file)
+                still = await CameraEventMedia.still(file)
             }
             // Google has no picture for these cameras (no snapshot, and often no clip): one frame from the live stream.
             var how = picture != nil ? "the Mac's own frame" : "Google's clip or snapshot"
             if thumb == nil, !quiet, picture == nil, let cam = NestCameras.shared.cameras.first(where: { $0.id == camera }), cam.webRTC, cam.online {
                 let t0 = Date()
                 if let jpeg = await CameraStreams.shared.grabFrame(cam) {
+                    still = jpeg
                     let file = FileManager.default.temporaryDirectory.appendingPathComponent("grab-\(short).jpg")
                     if (try? jpeg.write(to: file, options: .atomic)) != nil { thumb = await CameraEventMedia.thumbnail(file) }
                     try? FileManager.default.removeItem(at: file)
                 }
                 how = String(format: "the live stream, %.1f s", Date().timeIntervalSince(t0))
+            }
+            if let still, MacCameraShare.save(id: camera, name: macCam?.name ?? body, doorbell: macCam?.doorbell ?? false, jpeg: still) {
+                WidgetCenter.shared.reloadTimelines(ofKind: MacCameraShare.kind)
             }
             // The latest event, for Send Test Camera Alert.
             Saved.save(LastCameraEvent.savedKey, LastCameraEvent(title: title, body: body, camera: camera, key: short, happened: happened,
@@ -294,6 +310,7 @@ final class NestAlerts {
             PushRelay.log.notice("picture for \(body, privacy: .public)\(quiet ? " (clip came later)" : "", privacy: .public): \(thumb.map { "\($0.count) characters, from \(how)" } ?? "none (no clip or snapshot from Google, and no frame from the live stream)", privacy: .public)")
             guard let thumb, let update = c.mutableCopy() as? UNMutableNotificationContent else { return }
             update.userInfo["thumb"] = thumb
+            update.userInfo["ring"] = nil   // the Live Activity started with the alert itself
             update.sound = nil
             Notifier.deliver(update, id: "nest-" + short)
         }

@@ -1,5 +1,6 @@
 import SwiftUI
 import WidgetKit
+import ActivityKit
 
 // The TVs & Cameras widget (medium): Master Bedroom, Living Room and Kyler's Room down the left, with what each is
 // playing and the remote's TV lit; the Doorbell and Front Driveway's latest pictures on the right. A TV opens the
@@ -187,5 +188,138 @@ struct TVsCamerasView: View {
     /// "Front Driveway camera" → "Front Driveway".
     private func shortName(_ n: String) -> String {
         n.replacingOccurrences(of: " camera", with: "", options: .caseInsensitive)
+    }
+}
+
+
+// MARK: - The doorbell on the Lock Screen
+
+/// The doorbell's latest picture with what happened and when, on the Lock Screen. Opens it live.
+struct DoorbellLockWidget: Widget {
+    var body: some WidgetConfiguration {
+        StaticConfiguration(kind: PhoneWidgetShare.doorbellKind, provider: ShareProvider()) { entry in
+            DoorbellLockView(camera: Self.doorbell(PhoneWidgetShare.loadCameras()), date: entry.date)
+                .containerBackground(.clear, for: .widget)
+        }
+        .configurationDisplayName("Doorbell")
+        .description("The doorbell's latest picture and alert.")
+        .supportedFamilies([.accessoryRectangular])
+    }
+
+    static func doorbell(_ cameras: [PhoneWidgetShare.CameraLine]) -> PhoneWidgetShare.CameraLine? {
+        cameras.first { $0.doorbell } ?? cameras.first { $0.name.localizedCaseInsensitiveContains("door") }
+    }
+}
+
+struct DoorbellLockView: View {
+    let camera: PhoneWidgetShare.CameraLine?
+    let date: Date
+
+    var body: some View {
+        if let c = camera {
+            let fresh = c.eventAt.map { date.timeIntervalSince($0) < 3600 } ?? false
+            HStack(spacing: 8) {
+                Group {
+                    if let f = c.file, let url = PhoneWidgetShare.artURL(f), let image = UIImage(contentsOfFile: url.path) {
+                        Image(uiImage: image).resizable().scaledToFill()
+                    } else {
+                        Image(systemName: "video.doorbell.fill").font(.title2)
+                    }
+                }
+                .frame(width: 62, height: 52)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Doorbell").font(.headline).widgetAccentable().lineLimit(1)
+                    Text(fresh ? (c.event ?? "Seen") : "Latest picture").font(.caption).lineLimit(1)
+                    if let at = c.eventAt ?? c.at { Text(at, style: .time).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
+                }
+                Spacer(minLength: 0)
+            }
+            .widgetURL(URL(string: "woodruff://camera?id=\(c.id.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? "")"))
+        } else {
+            Text("Open Woodruff to see the doorbell.").font(.caption)
+        }
+    }
+}
+
+
+// MARK: - The doorbell ringing (Live Activity)
+
+struct DoorbellLiveActivity: Widget {
+    var body: some WidgetConfiguration {
+        ActivityConfiguration(for: DoorbellAttributes.self) { context in
+            DoorbellRingView(attributes: context.attributes, at: context.state.at)
+                .activityBackgroundTint(Color.black.opacity(0.6))
+                .activitySystemActionForegroundColor(.white)
+                .widgetURL(Self.link(context.attributes))
+        } dynamicIsland: { context in
+            let a = context.attributes
+            return DynamicIsland {
+                DynamicIslandExpandedRegion(.leading) {
+                    DoorbellPicture(camera: a.camera).frame(width: 64, height: 48)
+                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                }
+                DynamicIslandExpandedRegion(.center) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Someone\u{2019}s at the door").font(.headline).lineLimit(1)
+                        Text(context.state.at, style: .time).font(.caption).foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                DynamicIslandExpandedRegion(.trailing) {
+                    Link(destination: Self.link(a)) {
+                        Text("Open").font(.subheadline.weight(.semibold)).padding(.horizontal, 10).padding(.vertical, 6)
+                            .background(.white.opacity(0.18), in: Capsule())
+                    }
+                }
+            } compactLeading: {
+                Image(systemName: "video.doorbell.fill").foregroundStyle(.orange)
+            } compactTrailing: {
+                Text(context.state.at, style: .time).font(.caption.weight(.semibold)).frame(maxWidth: 60)
+            } minimal: {
+                Image(systemName: "video.doorbell.fill").foregroundStyle(.orange)
+            }
+            .widgetURL(Self.link(a))
+            .keylineTint(.orange)
+        }
+    }
+
+    static func link(_ a: DoorbellAttributes) -> URL {
+        URL(string: "woodruff://camera?id=\(a.camera.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? "")")!
+    }
+}
+
+/// The doorbell's latest picture (what the alert's extension or the app last kept), or its symbol.
+struct DoorbellPicture: View {
+    let camera: String
+    var body: some View {
+        let line = PhoneWidgetShare.loadCameras().first { $0.id == camera }
+        if let f = line?.file, let url = PhoneWidgetShare.artURL(f), let image = UIImage(contentsOfFile: url.path) {
+            Image(uiImage: image).resizable().scaledToFill()
+        } else {
+            Color.white.opacity(0.08).overlay(Image(systemName: "video.doorbell.fill").font(.title2).foregroundStyle(.white.opacity(0.6)))
+        }
+    }
+}
+
+struct DoorbellRingView: View {
+    let attributes: DoorbellAttributes
+    let at: Date
+    var body: some View {
+        HStack(spacing: 12) {
+            DoorbellPicture(camera: attributes.camera)
+                .frame(width: 112, height: 72)
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Someone\u{2019}s at the door").font(.headline).foregroundStyle(.white).lineLimit(1)
+                Text(attributes.name).font(.subheadline).foregroundStyle(.white.opacity(0.7)).lineLimit(1)
+                Text(at, style: .time).font(.caption).foregroundStyle(.white.opacity(0.6))
+            }
+            Spacer(minLength: 0)
+            Text("Open").font(.subheadline.weight(.semibold)).foregroundStyle(.white)
+                .padding(.horizontal, 12).padding(.vertical, 7)
+                .background(.white.opacity(0.18), in: Capsule())
+        }
+        .padding(14)
     }
 }

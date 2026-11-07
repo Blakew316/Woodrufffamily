@@ -61,7 +61,7 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
         var jpeg: Data?
         if let picture { jpeg = await CameraEventMedia.still(picture) }
         PhoneWidgetShare.saveCamera(id: camera, name: name.isEmpty ? "Camera" : name, doorbell: doorbell, jpeg: jpeg, event: tag)
-        WidgetCenter.shared.reloadTimelines(ofKind: PhoneWidgetShare.tvsCamerasKind)
+        WidgetCenter.shared.reloadTimelines(ofKind: PhoneWidgetShare.tvsCamerasKind); WidgetCenter.shared.reloadTimelines(ofKind: PhoneWidgetShare.doorbellKind)
     }
 
     /// Out of time: shown as it is.

@@ -15,6 +15,8 @@ struct AllDevicesView: View {
     /// The small remote for a TV, from a tap on its tile.
     @State private var miniTV: TitleRef?
     @State private var confirmUnlock: HomeDevice?
+    /// When each tile was last tapped: its device really changing within a few seconds of that is felt (iPhone).
+    @State private var tappedAt: [String: Date] = [:]
     /// Settings → General: devices that have no room, under Other at the end (off unless asked for).
     @AppStorage("allDevices.showOther") private var showOther = false
 
@@ -126,7 +128,11 @@ struct AllDevicesView: View {
         let tvs = itemsByRoom(fleet.tvs.filter { !$0.isUnpaired }.sorted { $0.name < $1.name }) { home.rooms[$0.id] ?? $0.name }
         let speakers = itemsByRoom(home.speakers.sorted { $0.name < $1.name }) { roomOf[$0.id] }
         let lights = itemsByRoom(home.lights.sorted { $0.name < $1.name }) { roomOf[$0.id] }
-        let things = itemsByRoom(devices.sorted { $0.name < $1.name }) { Self.inLaundry($0) ? "Laundry Room" : roomOf[$0.id] }
+        // One gone for more than a day goes to the end of its room, out of the way.
+        let things = itemsByRoom(devices.sorted { a, b in
+            let ga = store.longGone(a), gb = store.longGone(b)
+            return ga != gb ? !ga : a.name < b.name
+        }) { Self.inLaundry($0) ? "Laundry Room" : roomOf[$0.id] }
         var out: [String: [Item]] = [:]
         for r in Set(tvs.keys).union(speakers.keys).union(lights.keys).union(things.keys) {
             out[r] = (tvs[r] ?? []).map { Item.tv($0) } + (speakers[r] ?? []).map { Item.speaker($0) }
@@ -186,6 +192,12 @@ struct AllDevicesView: View {
         // Away from home (the iPhone off the home Wi‑Fi) nothing is dimmed: Home says it once instead.
         .opacity(f.reachable || f.isAppliance || awayFromHome ? 1 : 0.55)
         .animation(.spring(response: 0.35, dampingFraction: 0.75), value: f.on)
+        #if os(iOS)
+        // A second, firmer tap once the device has really changed (not when someone else changed it).
+        .sensoryFeedback(.impact(weight: .medium), trigger: f.on) { _, _ in
+            tappedAt[item.id].map { Date().timeIntervalSince($0) < 8 } ?? false
+        }
+        #endif
         .onTapGesture { tap(item) }
         .onLongPressGesture(minimumDuration: 0.4) { open(item) }
         #if os(macOS)
@@ -235,25 +247,25 @@ struct AllDevicesView: View {
                             : l.isHexPanels ? .hexPanels(level: Double(l.brightness) / 100) : .light,
                          tint: l.shade)
         case .device(let d) where d.product?.hasPrefix("HomePod") == true:
-            return Facts(name: d.name, state: d.reachable ? d.status : "Not Responding", on: false, reachable: d.reachable,
+            return Facts(name: d.name, state: d.reachable ? d.status : store.notResponding(d), on: false, reachable: d.reachable,
                          look: .homePod(mini: d.product == "HomePod mini"), tint: .gray)
         case .device(let d) where d.bespokeLook != nil:
-            return Facts(name: d.name, state: d.reachable ? d.status : "Not Responding", on: lit(d), reachable: d.reachable,
+            return Facts(name: d.name, state: d.reachable ? d.status : store.notResponding(d), on: lit(d), reachable: d.reachable,
                          look: .bespoke(d.bespokeLook!, running: d.isRunning && d.kind != .fridge, alert: d.alert), tint: .orange)
         case .device(let d) where d.isMotionSensor:
-            return Facts(name: d.name, state: d.reachable ? d.status : "Not Responding", on: false, reachable: d.reachable,
+            return Facts(name: d.name, state: d.reachable ? d.status : store.notResponding(d), on: false, reachable: d.reachable,
                          look: .smartSensor(motion: d.sensesMotion), tint: .green)
         case .device(let d) where d.kind == .thermostat:
-            return Facts(name: d.name, state: d.reachable ? d.status : "Not Responding", on: lit(d), reachable: d.reachable,
+            return Facts(name: d.name, state: d.reachable ? d.status : store.notResponding(d), on: lit(d), reachable: d.reachable,
                          look: .thermostat(d), tint: d.action == "heating" ? .orange : .blue)
         case .device(let d) where d.source == "dreo":
             let on = lit(d)
             let pedestal = (d.product ?? "").uppercased().contains("HPF") || d.name.localizedCaseInsensitiveContains("pedestal")
-            return Facts(name: d.name, state: d.reachable ? d.status : "Not Responding", on: on, reachable: d.reachable,
+            return Facts(name: d.name, state: d.reachable ? d.status : store.notResponding(d), on: on, reachable: d.reachable,
                          look: .dreoFan(pedestal: pedestal, speed: Double(d.speed ?? 50) / 100), tint: .cyan)
         case .device(let d):
             let on = lit(d)
-            return Facts(name: d.name, state: d.reachable ? d.status : "Not Responding", on: on, reachable: d.reachable,
+            return Facts(name: d.name, state: d.reachable ? d.status : store.notResponding(d), on: on, reachable: d.reachable,
                          look: .device(d.kind, running: d.isRunning, symbol: deviceSymbol(d)), tint: d.alert ? Palette.attention : .orange)
         }
     }
@@ -283,6 +295,7 @@ struct AllDevicesView: View {
         #if os(iOS)
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
         #endif
+        tappedAt[item.id] = Date()
         switch item {
         case .tv(let tv):
             // A small remote for it (waking it if it's off).

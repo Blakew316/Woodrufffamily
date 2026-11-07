@@ -157,6 +157,10 @@ struct HomeView: View {
         .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { f in scroller.frame = f }
         // A tile being dragged holds the page still (it scrolls by itself at the edges).
         .scrollDisabled(layout.draggingTile != nil)
+        #if os(iOS)
+        // Pull down: every TV, speaker, light and device asked again now.
+        .refreshable { await HomeRefresh.everything(fleet) }
+        #endif
         .environment(scroller)
         .blur(radius: openTV == nil ? 0 : 8)
         .overlay { if openTV != nil { Color.black.opacity(0.25).ignoresSafeArea().onTapGesture { close() } } }
@@ -799,3 +803,22 @@ private struct TileTilt: ViewModifier {
 }
 
 #endif
+
+
+/// Home's pull to refresh: everything asked again at once, back when the slowest has answered (or given up).
+@MainActor
+enum HomeRefresh {
+    static func everything(_ fleet: Fleet) async {
+        let home = SmartHome.shared, st = SmartThings.shared, dreo = Dreo.shared, cync = Cync.shared, nest = NestCameras.shared
+        let stOn = st.connected, dreoOn = dreo.connected, cyncOn = cync.connected, nestOn = nest.connected
+        home.wake()
+        await withTaskGroup(of: Void.self) { g in
+            g.addTask { await fleet.refresh() }
+            g.addTask { await home.refreshSpeakers() }
+            if stOn { g.addTask { await st.refresh(full: false) } }
+            if dreoOn { g.addTask { await dreo.refresh(full: false) } }
+            if cyncOn { g.addTask { await cync.refresh() } }
+            if nestOn { g.addTask { await nest.load() } }
+        }
+    }
+}

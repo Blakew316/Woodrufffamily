@@ -32,6 +32,8 @@ struct SceneControls: WidgetBundle {
         NowPlayingWidget()
         HomeWidget()
         TVsCamerasWidget()
+        DoorbellLockWidget()
+        DoorbellLiveActivity()
     }
 }
 

@@ -102,7 +102,38 @@ final class AccessoryStore {
 
     /// A source changed: the list is made again, the rooms the devices report go to SmartHome, and what the source
     /// said is kept for the next launch.
+    /// When each device last answered (seconds since 1970), kept between launches: one out of reach for more than a
+    /// day says when it was last seen instead of only "Not Responding".
+    @ObservationIgnored private var seenAt: [String: Double] = Saved.load("deviceSeenAt", as: [String: Double].self) ?? [:]
+    @ObservationIgnored private var seenSaved = Date.distantPast
+
+    private func noteSeen(_ list: [HomeDevice]) {
+        let now = Date()
+        for d in list where d.reachable { seenAt[d.id] = now.timeIntervalSince1970 }
+        // Written now and then (a day is what matters, not the minute).
+        if now.timeIntervalSince(seenSaved) > 600 {
+            seenSaved = now
+            Saved.save("deviceSeenAt", seenAt)
+        }
+    }
+
+    /// Out of reach for more than a day (and seen here before then).
+    func longGone(_ d: HomeDevice) -> Bool {
+        // Not the Samsung appliances: they say they're out of reach whenever they're idle.
+        guard !d.reachable, d.bespokeLook == nil, let t = seenAt[d.id] else { return false }
+        return Date().timeIntervalSince1970 - t > 86_400
+    }
+
+    /// What a device out of reach says: "Not Responding", or "Last Seen Tuesday" once it's been more than a day.
+    func notResponding(_ d: HomeDevice) -> String {
+        guard longGone(d), let t = seenAt[d.id] else { return "Not Responding" }
+        let at = Date(timeIntervalSince1970: t)
+        let week = Date().timeIntervalSince(at) < 6 * 86_400
+        return "Last Seen " + (week ? at.formatted(.dateTime.weekday(.wide)) : at.formatted(.dateTime.month(.abbreviated).day()))
+    }
+
     private func changed(_ key: String, _ list: [HomeDevice]) {
+        noteSeen(list)
         make(SmartHome.shared.names)
         zones()
         guard kept[key] != list, !Demo.isOn else { return }
@@ -192,6 +223,8 @@ struct DeviceTile: View, Equatable {
     var device: HomeDevice
     var openControls: () -> Void
     @State private var confirmUnlock = false
+    /// When it was last tapped here (for the haptic once it has really changed).
+    @State private var tappedAt: Date?
 
     /// Drawn again for a change to the device, not each time the grid around it is (the action is always the same).
     nonisolated static func == (a: DeviceTile, b: DeviceTile) -> Bool { a.device == b.device }
@@ -240,7 +273,7 @@ struct DeviceTile: View, Equatable {
             .frame(width: 44, height: 44, alignment: .center)
             VStack(alignment: .leading, spacing: 1) {
                 Text(device.name).font(.footnote.weight(.semibold)).lineLimit(2)
-                Text(device.reachable ? device.status : "Not Responding").font(.caption)
+                Text(device.reachable ? device.status : AccessoryStore.shared.notResponding(device)).font(.caption)
                     .foregroundStyle(device.alert ? Palette.attention : (lit ? Color.black.opacity(0.55) : .secondary)).lineLimit(1)
             }
             Spacer(minLength: 0)
@@ -257,7 +290,13 @@ struct DeviceTile: View, Equatable {
         // from home (Home says so once instead).
         .opacity(device.reachable || device.bespokeLook != nil || device.isMotionSensor || DeviceTile.away ? 1 : 0.6)
         .animation(.smooth(duration: 0.25), value: lit)
-        .onTapGesture { if HomeLayout.shared.tapsAllowed { tap() } }
+        #if os(iOS)
+        // A second, firmer tap once the device has really changed (not when someone else changed it).
+        .sensoryFeedback(.impact(weight: .medium), trigger: lit) { _, _ in
+            tappedAt.map { Date().timeIntervalSince($0) < 8 } ?? false
+        }
+        #endif
+        .onTapGesture { if HomeLayout.shared.tapsAllowed { tappedAt = Date(); tap() } }
         // Press and hold arranges Home's tiles (on the Mac too); the controls are in the menu.
         .contextMenu {
             ArrangeHomeButton()

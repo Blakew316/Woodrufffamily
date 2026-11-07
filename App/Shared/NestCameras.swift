@@ -376,6 +376,8 @@ final class CameraStreams {
     private(set) var status: [String: String] = [:]
     /// Each camera's last live picture, kept between launches: its tile shows it while the stream connects.
     private(set) var stills: [String: PlatformImage] = [:]
+    /// When each of those was taken.
+    @ObservationIgnored private(set) var stillAt: [String: Date] = [:]
     /// The camera open in the big view (its tile shows a still while it's there).
     var expanded: String?
     /// A camera to open in the big view straight away (a tapped camera or doorbell alert).
@@ -422,24 +424,36 @@ final class CameraStreams {
     private init() {
         // Read in the background as the app opens, so the tiles have them by the time Home draws them.
         Task.detached(priority: .utility) {
-            var found: [String: Data] = [:]
-            let files = (try? FileManager.default.contentsOfDirectory(at: Self.stillsFolder, includingPropertiesForKeys: nil)) ?? []
+            var found: [String: (Data, Date)] = [:]
+            let files = (try? FileManager.default.contentsOfDirectory(at: Self.stillsFolder, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
             for f in files where f.pathExtension == "jpg" {
                 let id = f.deletingPathExtension().lastPathComponent.removingPercentEncoding ?? ""
-                if !id.isEmpty, let d = try? Data(contentsOf: f) { found[id] = d }
+                let at = (try? f.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? Date()
+                if !id.isEmpty, let d = try? Data(contentsOf: f) { found[id] = (d, at) }
             }
             let loaded = found
             await MainActor.run {
                 for (id, d) in loaded where CameraStreams.shared.stills[id] == nil {
-                    if let img = PlatformImage(data: d) { CameraStreams.shared.stills[id] = img }
+                    if let img = PlatformImage(data: d.0) {
+                        CameraStreams.shared.stillAt[id] = d.1
+                        CameraStreams.shared.stills[id] = img
+                    }
                 }
             }
         }
     }
 
     /// A live picture from [id]'s stream: kept for its tile, and on disk for next time.
-    func keepStill(_ id: String, _ jpeg: Data) {
+    func keepStill(_ cam: NestCameras.Camera, _ jpeg: Data) {
+        let id = cam.id
         guard let img = PlatformImage(data: jpeg) else { return }
+        #if os(macOS)
+        // The Mac's TVs & Cameras widget shows it too.
+        if MacCameraShare.save(id: id, name: cam.name, doorbell: cam.doorbell, jpeg: jpeg) {
+            WidgetCenter.shared.reloadTimelines(ofKind: MacCameraShare.kind)
+        }
+        #endif
+        stillAt[id] = Date()
         stills[id] = img
         let file = Self.stillFile(id)
         DispatchQueue.global(qos: .utility).async { try? jpeg.write(to: file, options: .atomic) }
@@ -681,6 +695,11 @@ struct LiveCameraTile: View, Equatable {
                     if (camera.webRTC || checking) && status.hasSuffix("…") && streams.expanded != camera.id { ProgressView().tint(.white) }
                     Text(caption(status))
                         .font(.caption).foregroundStyle(.white.opacity(0.75)).multilineTextAlignment(.center).padding(.horizontal)
+                    // The picture behind is the last live one: how old it is, so it's never taken for live.
+                    if camera.online, streams.stills[camera.id] != nil, let at = streams.stillAt[camera.id] {
+                        Text("Last picture " + at.formatted(.relative(presentation: .named)))
+                            .font(.caption2).foregroundStyle(.white.opacity(0.6))
+                    }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
@@ -1091,10 +1110,10 @@ final class LivePlayer: NSObject, WKNavigationDelegate {
         let cam = camera
         Task { @MainActor in
             guard let jpeg = await frameJPEG() else { return }
-            CameraStreams.shared.keepStill(cam.id, jpeg)
+            CameraStreams.shared.keepStill(cam, jpeg)
             #if os(iOS)
             if PhoneWidgetShare.saveCamera(id: cam.id, name: cam.name, doorbell: cam.doorbell, jpeg: jpeg) {
-                WidgetCenter.shared.reloadTimelines(ofKind: PhoneWidgetShare.tvsCamerasKind)
+                WidgetCenter.shared.reloadTimelines(ofKind: PhoneWidgetShare.tvsCamerasKind); WidgetCenter.shared.reloadTimelines(ofKind: PhoneWidgetShare.doorbellKind)
             }
             #endif
         }
