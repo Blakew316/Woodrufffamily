@@ -616,8 +616,11 @@ struct MacRoot: View {
                     // Clear of the window's close, minimise and zoom buttons, which sit here with the sidebar hidden.
                     .padding(.leading, 64)
                 }
-                MacSearchField(text: $query, prompt: narrow || greeting ? "Search" : "Search Movies and TV Shows")
-                    .frame(minWidth: 120, idealWidth: greeting ? 240 : 300, maxWidth: 320)
+                // No search in Settings: its pages are a short list, reached by their rows.
+                if section != .settings {
+                    MacSearchField(text: $query, prompt: narrow || greeting ? "Search" : "Search Movies and TV Shows")
+                        .frame(minWidth: 120, idealWidth: greeting ? 240 : 300, maxWidth: 320)
+                }
                 Spacer(minLength: 8)
                 if greeting {
                     MacGreetingPill(compact: width < 1150)
