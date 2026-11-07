@@ -595,6 +595,36 @@ struct MacRoot: View {
 
     // MARK: The bar
 
+    /// The remote's button (the remote slides out at the right).
+    private var remoteButton: some View {
+        Button { withAnimation(.smooth) { fleet.remotePanel.toggle() } } label: {
+                    Image(systemName: "appletvremote.gen4")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(fleet.remotePanel ? Color.white : .primary)
+                        .frame(width: 44, height: 44)
+                        .contentShape(Circle())
+                        .glass(Circle(), tint: fleet.remotePanel ? .accentColor : nil)
+                }
+                .buttonStyle(PressScale())
+                .help("Remote (⌥⌘R)")
+                .accessibilityLabel("Remote")
+                .keyboardShortcut("r", modifiers: [.command, .option])
+    }
+
+    /// Home's Edit Home / Done, as tall as the greeting.
+    private var editHomeButton: some View {
+        Button { layout.arranging ? layout.stopArranging() : layout.startArranging() } label: {
+                        Text(layout.arranging ? "Done" : "Edit Home")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(layout.arranging ? Color.white : .primary)
+                            .padding(.horizontal, 18)
+                            .frame(height: 44)
+                            .contentShape(Capsule())
+                            .glass(Capsule(), tint: layout.arranging ? .accentColor : nil)
+                    }
+                    .buttonStyle(PressScale())
+    }
+
     /// What every page in the window has, its first page and every page opened on it alike, so nothing jumps from
     /// page to page: Woodruff's bar on top (with an opened page's Back under it), what's playing at the bottom, the
     /// window's toolbar see-through and without a title. Each page needs its own: an opened page is drawn over
@@ -623,9 +653,9 @@ struct MacRoot: View {
     /// and the thermostat on the right, at any window size. (Back sits at the top of each opened page, under this.)
     private var topBar: some View {
         let greeting = onHome && width >= 900
-        // Wide enough: the greeting sits in the very middle of the page, the remote, Edit Home and the thermostat at
-        // the far right. Narrower, it sits between them as before (centred, it would run into them).
-        let centred = greeting && width >= 1320
+        // Wide enough: the greeting sits in the very middle of the page, between the remote and Edit Home at the far left
+        // and the thermostat at the far right. Narrower, it sits between them in the row (centred, it would collide).
+        let centred = greeting && width >= 1000
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 10) {
                 if columns == .detailOnly {
@@ -641,6 +671,11 @@ struct MacRoot: View {
                     .accessibilityLabel("Show the Sidebar")
                     // Clear of the window's close, minimise and zoom buttons, which sit here with the sidebar hidden.
                     .padding(.leading, 64)
+                }
+                // Home: the remote and Edit Home at the far left, the greeting in the middle, the thermostat at the right.
+                if onHome {
+                    remoteButton
+                    editHomeButton
                 }
                 // Search only on Watch, where it finds movies and shows.
                 if section == .watch {
@@ -664,38 +699,14 @@ struct MacRoot: View {
                     Spacer(minLength: 8)
                     TVPicker()
                 }
-                Button { withAnimation(.smooth) { fleet.remotePanel.toggle() } } label: {
-                    Image(systemName: "appletvremote.gen4")
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(fleet.remotePanel ? Color.white : .primary)
-                        .frame(width: 44, height: 44)
-                        .contentShape(Circle())
-                        .glass(Circle(), tint: fleet.remotePanel ? .accentColor : nil)
-                }
-                .buttonStyle(PressScale())
-                .help("Remote (⌥⌘R)")
-                .accessibilityLabel("Remote")
-                .keyboardShortcut("r", modifiers: [.command, .option])
-                if onHome {
-                    // As tall as the greeting beside it.
-                    Button { layout.arranging ? layout.stopArranging() : layout.startArranging() } label: {
-                        Text(layout.arranging ? "Done" : "Edit Home")
-                            .font(.system(size: 14, weight: .semibold))
-                            .foregroundStyle(layout.arranging ? Color.white : .primary)
-                            .padding(.horizontal, 18)
-                            .frame(height: 44)
-                            .contentShape(Capsule())
-                            .glass(Capsule(), tint: layout.arranging ? .accentColor : nil)
-                    }
-                    .buttonStyle(PressScale())
-                }
+                if !onHome { remoteButton }
                 ThermostatChip(compact: narrow || (greeting && width < 1150), height: 44)
             }
             // Always the same height, so the pages below never jump as the bar's contents change.
             .frame(height: 46)
             .overlay {
                 if centred {
-                    MacGreetingPill(compact: width < 1420)
+                    MacGreetingPill(compact: width < 1100)
                         .transition(.opacity.combined(with: .scale(scale: 0.96)))
                 }
             }
