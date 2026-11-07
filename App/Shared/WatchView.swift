@@ -61,7 +61,7 @@ struct WatchView: View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 28) {
                 if !query.isEmpty {
-                    LibrarySearchResults(query: query)
+                    WatchSearchResults(query: query)
                 } else if let h = shown {
                     content(h, client)
                 } else if let error {
@@ -1354,7 +1354,7 @@ struct SearchPage: View {
 
     var body: some View {
         ScrollView {
-            LibrarySearchResults(query: query, again: again).padding(.vertical)
+            WatchSearchResults(query: query, again: again).padding(.vertical)
         }
         .navigationTitle("Search")
         .pageSearch(text: $query, prompt: "Movies and TV Shows")
@@ -1369,7 +1369,7 @@ struct SearchPage: View {
 
 /// What [query] finds in Movies and TV Shows, as shelves (or why nothing came back). Opening a title is the page's
 /// (its `openTitle`). [again]: asked again when it changes.
-struct LibrarySearchResults: View {
+struct WatchSearchResults: View {
     @Environment(Fleet.self) private var fleet
     var query: String
     var again = 0
