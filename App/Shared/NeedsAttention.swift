@@ -8,14 +8,17 @@ struct NeedsAttentionSection: View {
     @Environment(Fleet.self) private var fleet
     let hub: HubSettings
 
-    private struct Issue: Identifiable {
+    struct Issue: Identifiable {
         var id: String
         var title: String
         var detail: String
         var inAccounts = false
     }
 
-    private var issues: [Issue] {
+    private var issues: [Issue] { Self.issues(fleet) }
+
+    /// Everything not working on this device right now (none when all is well).
+    @MainActor static func issues(_ fleet: Fleet) -> [Issue] {
         var out: [Issue] = []
         func add(_ id: String, _ title: String, _ detail: String?, accounts: Bool = true) {
             guard let d = detail?.trimmingCharacters(in: .whitespacesAndNewlines), !d.isEmpty else { return }

@@ -285,7 +285,12 @@ enum AppSection: String, CaseIterable, Identifiable, Hashable {
         case .watch: WatchView()
         case .send: SendView()
         case .memories: MemoriesView()
-        case .settings: SettingsView()
+        case .settings:
+            #if os(macOS)
+            MacSettingsView()
+            #else
+            SettingsView()
+            #endif
         }
     }
 }
@@ -972,6 +977,48 @@ struct MacSectionBar: View {
         .frame(height: 44)
         .glass(Capsule())
         .animation(.spring(response: 0.35, dampingFraction: 0.82), value: current)
+    }
+}
+#endif
+
+
+#if os(macOS)
+/// Mac Settings like System Settings: its pages listed down the left, the one picked open on the right (Needs
+/// Attention first in the list when something isn't working). A page opened from one of them goes on the window's
+/// stack, with Back in the top bar.
+struct MacSettingsView: View {
+    @Environment(Fleet.self) private var fleet
+    @AppStorage("mac.settingsPage") private var picked = MacSettingsPage.tvs.rawValue
+    private static let attention = "attention"
+
+    var body: some View {
+        let issues = NeedsAttentionSection.issues(fleet)
+        HStack(spacing: 0) {
+            List(selection: Binding<String?>(get: { picked }, set: { if let v = $0 { picked = v } })) {
+                if !issues.isEmpty {
+                    Text("Needs Attention").foregroundStyle(Palette.attention).tag(Self.attention)
+                }
+                ForEach(MacSettingsPage.allCases) { p in
+                    Text(p.title).tag(p.rawValue)
+                }
+            }
+            .listStyle(.sidebar)
+            .scrollContentBackground(.hidden)
+            .frame(width: 220)
+            Divider()
+            Group {
+                if picked == Self.attention, !issues.isEmpty {
+                    Form { NeedsAttentionSection(hub: HubSettings.shared) }.formStyle(.grouped)
+                } else {
+                    (MacSettingsPage(rawValue: picked) ?? .tvs).view
+                        .id(picked)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            // Each page's links open on the window's stack with this page's name on Back.
+            .environment(\.macPageTitle, picked == Self.attention ? "Settings" : (MacSettingsPage(rawValue: picked) ?? .tvs).title)
+        }
+        .task { await HubSettings.shared.loadIfNeeded(fleet) }
     }
 }
 #endif
