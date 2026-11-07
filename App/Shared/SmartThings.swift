@@ -115,6 +115,10 @@ final class SmartThings {
     }
 
     @ObservationIgnored private var renewing: Task<String, Error>?
+    /// A renewal key SmartThings turned down: it isn't sent again (asking with a dead key over and over helps no one).
+    /// A newer one, from another of the family's devices or a new sign-in, is tried as soon as it's here.
+    @ObservationIgnored private var rejectedRefresh: String?
+    static let signInAgain = "SmartThings signed this device out. It comes back when your devices at home pass on their sign-in, or sign in again in Settings."
 
     /// The sign-in to use. A renewal runs one at a time (the renewal key works once, so two at once would
     /// sign the loser out); everyone else waits for it.
@@ -134,6 +138,7 @@ final class SmartThings {
         guard let r = Keychain.get("st.refresh"), let id = Keychain.get("st.client"), let sec = Keychain.get("st.secret") else {
             throw OAuthRelay.Failure.refused("Sign in to SmartThings again.")
         }
+        if r == rejectedRefresh { throw OAuthRelay.Failure.refused(Self.signInAgain) }
         do {
             let t = try await formPost(Self.tokenURL, ["grant_type": "refresh_token", "refresh_token": r, "client_id": id], basic: (id, sec))
             store(t)
@@ -146,7 +151,14 @@ final class SmartThings {
                 try? await Task.sleep(nanoseconds: 8_000_000_000)
                 newer = Keychain.get("st.refresh")
             }
-            guard let newer, newer != r else { throw error }
+            guard let newer, newer != r else {
+                // Turned down (not a network hiccup): keep it from being sent again, and say so plainly.
+                if case OAuthRelay.Failure.refused(let m) = error, m.localizedCaseInsensitiveContains("invalid") {
+                    rejectedRefresh = r
+                    throw OAuthRelay.Failure.refused(Self.signInAgain)
+                }
+                throw error
+            }
             if let a = Keychain.get("st.access"), let e = Keychain.get("st.expires").flatMap(Double.init), e > Date().timeIntervalSince1970 {
                 return a
             }

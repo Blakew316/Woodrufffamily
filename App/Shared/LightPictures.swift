@@ -592,7 +592,8 @@ extension HomeDevice {
     /// Named as one (“Living Room Sensor”), and not a leak, smoke or door sensor.
     private var named: Bool {
         let n = name.lowercased()
-        return (n.contains("sensor") || n.contains("ecosense")) && !["leak", "water", "smoke", "door", "window", "contact"].contains { n.contains($0) }
+        // "Eco Sense" too, however it's spaced.
+        return (n.contains("sensor") || n.replacingOccurrences(of: " ", with: "").contains("ecosense")) && !["leak", "water", "smoke", "door", "window", "contact"].contains { n.contains($0) }
     }
     /// Seeing motion (or someone there) right now.
     var sensesMotion: Bool {
