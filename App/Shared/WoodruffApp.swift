@@ -390,6 +390,21 @@ struct FleetSideEffects: View {
 }
 
 #if os(macOS)
+/// See `MacRoot.pageChrome`.
+struct MacPageChrome<Bar: View, Bottom: View>: ViewModifier {
+    var bar: Bar
+    var bottom: Bottom
+
+    func body(content: Content) -> some View {
+        content
+            .safeAreaBar(edge: .top) { bar }
+            .safeAreaInset(edge: .bottom) { bottom }
+            .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
+            .toolbar(removing: .title)
+            .environment(\.macPageStack, true)
+    }
+}
+
 /// Mac: a glass sidebar (Home, Watch, Send, Memories, Settings, and the TVs like rooms), Woodruff's own bar across the
 /// top of the page (search on the left; the remote, Edit Home and the thermostat on the right; Back under the search
 /// when there's somewhere to go back to), and the remote as a sidebar on the right that slides out when it's wanted.
@@ -490,15 +505,11 @@ struct MacRoot: View {
                 root
                     .id(visit)
                     .environment(\.macPageTitle, query.isEmpty ? rootTitle : "Search")
-                    // Woodruff's own bar, under the window's see-through toolbar (which keeps only the window's buttons).
-                    .safeAreaBar(edge: .top) { topBar }
+                    .modifier(pageChrome)
                     .navigationDestination(for: PageRoute.self) { page in
-                        // Every opened page has the very same bar in the very same place (search, remote, thermostat),
-                        // with its Back button under it, and no window title of its own: nothing jumps from page to page.
                         page.view
                             .navigationBarBackButtonHidden(true)
-                            .safeAreaBar(edge: .top) { topBar }
-                            .toolbar(removing: .title)
+                            .modifier(pageChrome)
                     }
             }
             .environment(\.macPageStack, true)
@@ -516,11 +527,6 @@ struct MacRoot: View {
             // every page that has no title of its own), see-through and without a title, so Woodruff's bar shows.
             .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
             .toolbar(removing: .title)
-            .safeAreaInset(edge: .bottom) {
-                if tvSelection == nil && deviceSelection == nil && section != .home && !fleet.remotePanel {
-                    NowPlayingBar().frame(maxWidth: 600).padding(.bottom, 8)
-                }
-            }
             // Never narrower than Home's tiles: the window stops shrinking before anything is clipped.
             .frame(minWidth: 480)
             .onGeometryChange(for: CGFloat.self) { ($0.size.width / 20).rounded() * 20 } action: { width = $0 }
@@ -557,7 +563,7 @@ struct MacRoot: View {
     @ViewBuilder private var root: some View {
         if !query.isEmpty {
             LibrarySearchResults(query: query)
-                .safeAreaInset(edge: .top, spacing: 0) {
+                .safeAreaBar(edge: .top, spacing: 0) {
                     MacBackRow(title: "Search", backTo: rootTitle) { withAnimation(.smooth(duration: 0.25)) { query = "" } }
                 }
         }
@@ -588,6 +594,22 @@ struct MacRoot: View {
     }
 
     // MARK: The bar
+
+    /// What every page in the window has, its first page and every page opened on it alike, so nothing jumps from
+    /// page to page: Woodruff's bar on top (with an opened page's Back under it), what's playing at the bottom, the
+    /// window's toolbar see-through and without a title. Each page needs its own: an opened page is drawn over
+    /// anything put on the stack around it (the bar and what's playing vanished on opened pages), and a page opened
+    /// from an opened page only goes on the window's stack when it says so (`macPageStack`).
+    private var pageChrome: MacPageChrome<some View, some View> {
+        MacPageChrome(bar: topBar, bottom: nowPlaying)
+    }
+
+    /// What's playing, at the bottom of a page (not on Home, a TV's or a device's page, or with the remote open).
+    @ViewBuilder private var nowPlaying: some View {
+        if tvSelection == nil && deviceSelection == nil && section != .home && !fleet.remotePanel {
+            NowPlayingBar().frame(maxWidth: 600).padding(.bottom, 8)
+        }
+    }
 
     /// The name of the page the sidebar picked (for Back).
     private var rootTitle: String {

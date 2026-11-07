@@ -125,7 +125,8 @@ struct MacPage<Content: View>: View {
     // Mac app hung or crashed (an AppKit layout loop) opening Recent Messages, Camera Alerts, Shortcuts or Wi-Fi.
     var body: some View {
         content()
-            .safeAreaInset(edge: .top, spacing: 0) {
+            // A bar (not an inset): the window draws one soft edge under Woodruff's bar and Back together.
+            .safeAreaBar(edge: .top, spacing: 0) {
                 if onStack {
                     MacBackRow(title: title, backTo: backTo) { MacNav.shared.pop() }
                 } else {
@@ -171,14 +172,8 @@ struct MacBackRow: View {
         .padding(.horizontal, 18)
         .padding(.top, 2)
         .padding(.bottom, 10)
-        // A soft frosted edge, so a page scrolling under it never makes it hard to read.
-        .background {
-            Rectangle().fill(.regularMaterial)
-                .mask(LinearGradient(stops: [.init(color: .black, location: 0), .init(color: .black, location: 0.6), .init(color: .clear, location: 1)],
-                                     startPoint: .top, endPoint: .bottom))
-                .ignoresSafeArea(edges: .horizontal)
-                .allowsHitTesting(false)
-        }
+        // No frosted strip of its own: it sits in the page's top bar, whose soft edge keeps a page scrolling under
+        // it readable (a strip of its own showed as a band with a hard top edge under Woodruff's bar).
     }
 }
 #endif
