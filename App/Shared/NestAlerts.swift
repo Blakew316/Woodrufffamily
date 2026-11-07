@@ -72,6 +72,10 @@ final class NestAlerts {
             if !acks.isEmpty { _ = try? await call("POST", "\(sub):acknowledge", ["ackIds": acks]) }
             status = "On"
             return true
+        } catch let e as URLError where e.code == .timedOut || e.code == .networkConnectionLost {
+            // A long listen that ended without news (or a phone's connection changing): normal, and listened again.
+            status = "On"
+            return true
         } catch {
             status = error.localizedDescription
             // The subscription went away (unused a day): make it again next time.
