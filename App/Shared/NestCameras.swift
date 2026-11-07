@@ -1013,11 +1013,12 @@ typealias StageView = NSView
 final class LivePlayer: NSObject, WKNavigationDelegate {
     let web: WKWebView
     /// What's put on screen (a tile, the big view, the Mac's off-screen window): the native picture, or the web page.
-    let surface: StageView
+    let surface: PictureStage
     /// The native player, tried first for each stream; the web page takes over by itself if it doesn't go live.
     private lazy var native: NativeRTC = {
         let n = NativeRTC()
         n.onState = { [weak self] s in self?.received("state", s) }
+        n.onSize = { [weak self] size in self?.surface.videoSize = size }
         return n
     }()
     private var usingNative = false
@@ -1059,7 +1060,7 @@ final class LivePlayer: NSObject, WKNavigationDelegate {
         #endif
         config.mediaTypesRequiringUserActionForPlayback = []
         web = WKWebView(frame: .zero, configuration: config)
-        surface = StageView(frame: .zero)
+        surface = PictureStage(frame: .zero)
         super.init()
         #if os(iOS)
         surface.backgroundColor = .black
@@ -1068,6 +1069,7 @@ final class LivePlayer: NSObject, WKNavigationDelegate {
         #else
         surface.wantsLayer = true
         surface.layer?.backgroundColor = NSColor.black.cgColor
+        surface.layer?.masksToBounds = true
         web.autoresizingMask = [.width, .height]
         #endif
         web.frame = surface.bounds
@@ -1151,10 +1153,11 @@ final class LivePlayer: NSObject, WKNavigationDelegate {
             v.frame = surface.bounds
             #if os(iOS)
             v.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+            surface.insertSubview(v, belowSubview: web)
             #else
-            v.autoresizingMask = [.width, .height]
+            surface.addSubview(v, positioned: .below, relativeTo: web)
             #endif
-            surface.addSubview(v)
+            surface.picture = v
         }
         v.isHidden = !on
         web.isHidden = on

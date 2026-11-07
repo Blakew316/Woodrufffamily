@@ -14,7 +14,7 @@ import AppKit
 /// quicker to start, smoother, lighter on battery. `LivePlayer` uses it first for each camera and falls back to its
 /// web page by itself if the native one doesn't go live (or for sound, which stays with the web page), so the worst
 /// case is the player as it was.
-final class NativeRTC: NSObject, RTCPeerConnectionDelegate {
+final class NativeRTC: NSObject, RTCPeerConnectionDelegate, RTCVideoViewDelegate {
     /// One for the whole app (making one is costly).
     static let factory: RTCPeerConnectionFactory = {
         RTCInitializeSSL()
@@ -39,6 +39,8 @@ final class NativeRTC: NSObject, RTCPeerConnectionDelegate {
     #else
     let view = RTCMTLNSVideoView(frame: .zero)
     #endif
+    /// The picture's size when it changes (the Mac crops it to fill the tile itself), on the main thread.
+    var onSize: ((CGSize) -> Void)?
     private let grabber = FrameGrabber()
     private var pc: RTCPeerConnection?
     private var videoTrack: RTCVideoTrack?
@@ -46,6 +48,15 @@ final class NativeRTC: NSObject, RTCPeerConnectionDelegate {
     var onState: ((String) -> Void)?
 
     private static let constraints = RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)
+
+    override init() {
+        super.init()
+        view.delegate = self
+    }
+
+    func videoView(_ videoView: RTCVideoRenderer, didChangeVideoSize size: CGSize) {
+        DispatchQueue.main.async { [weak self] in self?.onSize?(size) }
+    }
 
     /// A fresh connection and its offer for Google (audio, then video, then a data channel, as Google wants).
     func offer() async throws -> String {
@@ -109,7 +120,7 @@ final class NativeRTC: NSObject, RTCPeerConnectionDelegate {
     func peerConnection(_ peerConnection: RTCPeerConnection, didAdd stream: RTCMediaStream) {
         guard peerConnection === pc else { return }
         for a in stream.audioTracks { a.isEnabled = false }
-        if let v = stream.videoTracks.first { attach(v) }
+        if let v = stream.videoTracks.first { DispatchQueue.main.async { [weak self] in self?.attach(v, from: peerConnection) } }
     }
     func peerConnection(_ peerConnection: RTCPeerConnection, didRemove stream: RTCMediaStream) {}
     func peerConnectionShouldNegotiate(_ peerConnection: RTCPeerConnection) {}
@@ -133,16 +144,45 @@ final class NativeRTC: NSObject, RTCPeerConnectionDelegate {
     func peerConnection(_ peerConnection: RTCPeerConnection, didAdd rtpReceiver: RTCRtpReceiver, streams mediaStreams: [RTCMediaStream]) {
         guard peerConnection === pc else { return }
         if let a = rtpReceiver.track as? RTCAudioTrack { a.isEnabled = false }
-        if let v = rtpReceiver.track as? RTCVideoTrack { attach(v) }
+        if let v = rtpReceiver.track as? RTCVideoTrack { DispatchQueue.main.async { [weak self] in self?.attach(v, from: peerConnection) } }
     }
 
-    private func attach(_ track: RTCVideoTrack) {
-        guard track !== videoTrack else { return }
+    /// On the main thread, and only for the connection still in use.
+    private func attach(_ track: RTCVideoTrack, from connection: RTCPeerConnection) {
+        guard connection === pc, track !== videoTrack else { return }
         videoTrack?.remove(view)
         videoTrack?.remove(grabber)
         videoTrack = track
         track.add(view)
         track.add(grabber)
+    }
+}
+
+/// Where a camera's picture goes on screen. It crops the native picture to fill, as the web page's video does (the
+/// iPhone's video view does that itself; the Mac's would stretch it).
+final class PictureStage: StageView {
+    /// The native picture's view, laid out by the stage.
+    weak var picture: StageView?
+    var videoSize: CGSize = .zero { didSet { if videoSize != oldValue { place() } } }
+
+    #if os(iOS)
+    override func layoutSubviews() { super.layoutSubviews(); place() }
+    #else
+    override func layout() { super.layout(); place() }
+    override func resizeSubviews(withOldSize oldSize: NSSize) { super.resizeSubviews(withOldSize: oldSize); place() }
+    #endif
+
+    private func place() {
+        guard let v = picture else { return }
+        #if os(macOS)
+        let b = bounds
+        guard videoSize.width > 0, videoSize.height > 0, b.width > 0, b.height > 0 else { v.frame = b; return }
+        let k = max(b.width / videoSize.width, b.height / videoSize.height)
+        let w = videoSize.width * k, h = videoSize.height * k
+        v.frame = CGRect(x: b.midX - w / 2, y: b.midY - h / 2, width: w, height: h)
+        #else
+        v.frame = bounds
+        #endif
     }
 }
 
