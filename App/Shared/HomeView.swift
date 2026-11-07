@@ -84,18 +84,10 @@ struct HomeView: View {
                         .shadow(color: .black.opacity(0.35), radius: 8, y: 2)
                     // All three the same height: the thermostat a touch larger than before, the weather and Edit matching it.
                     HStack(alignment: .center, spacing: 10) {
+                        // No Edit button: press and hold a tile to arrange Home.
                         WeatherPill(height: Self.pillHeight)
-                        if !arranging {
-                            Button { layout.startArranging() } label: {
-                                Text("Edit").font(.system(size: 16, weight: .semibold))
-                                    .padding(.horizontal, 16)
-                                    .frame(height: Self.pillHeight)
-                                    .contentShape(Capsule())
-                                    .glass(Capsule())
-                            }
-                            .buttonStyle(PressScale())
-                        }
-                        Spacer()
+                            .fixedSize()
+                        Spacer(minLength: 8)
                         // Wider than before, the same height: − and + beside it, as on the Mac.
                         if !arranging { ThermostatChip(compact: true, steppers: true, height: Self.pillHeight) }
                     }

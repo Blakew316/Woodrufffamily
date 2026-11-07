@@ -364,10 +364,12 @@ struct WeatherPill: View {
                 HStack(spacing: 6) {
                     Image(systemName: now.sky.symbol)
                         .symbolRenderingMode(.multicolor)
-                        .font(.system(size: detailed ? 17 : 15, weight: .semibold))
+                        .font(.system(size: detailed ? 17 : (height == nil ? 15 : 18), weight: .semibold))
                     Text(now.tempText)
-                        .font(.system(size: detailed ? 17 : 15, weight: .semibold, design: .rounded))
+                        .font(.system(size: detailed ? 17 : (height == nil ? 15 : 17), weight: .semibold, design: .rounded))
                         .monospacedDigit()
+                        // One line always ("52°", never 5 over 2).
+                        .lineLimit(1).fixedSize()
                         .contentTransition(.numericText())
                     if detailed, let range = now.range {
                         Text(range).font(.caption.weight(.medium)).foregroundStyle(.secondary).monospacedDigit()
