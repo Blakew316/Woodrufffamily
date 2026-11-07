@@ -97,7 +97,9 @@ struct WoodruffApp: App {
                     SmartThings.shared.start()
                     Dreo.shared.start()
                     Cync.shared.start()
-                    DriveDownloads.shared.start()
+                    #if os(iOS)
+                    DriveDownloads.shared.start()   // the Mac's starts with Watch's pictures, below
+                    #endif
                     NestCameras.shared.start()
                     #if os(iOS)
                     HomeKitLights.shared.start()
@@ -109,9 +111,19 @@ struct WoodruffApp: App {
                     //    doorbell alerts, the Wi‑Fi, Siri's names and the pictures' disk cache.
                     try? await Task.sleep(nanoseconds: 1_000_000_000)
                     if !Demo.isOn { PushRelay.shared.start() }
+                    #if os(macOS)
+                    // The Mac: Watch's pictures and Apple's reports a few seconds later still (the window and the TVs first).
+                    Task {
+                        try? await Task.sleep(nanoseconds: 4_000_000_000)
+                        DriveDownloads.shared.start()
+                        WatchPrefetch.start(fleet)
+                        Diagnostics.shared.start()
+                    }
+                    #else
                     WatchPrefetch.start(fleet)
                     // Crash and freeze reports from Apple, passed to the family's Macs.
                     Diagnostics.shared.start()
+                    #endif
                     if !Demo.isOn && !fleet.hubs.isEmpty { LocationWeather.shared.start(fleet) }
                     SettingsSync.shared.start(fleet)
                     NestAlerts.shared.start(fleet)
@@ -574,7 +586,11 @@ struct MacRoot: View {
             p.view.id(d).task { await HubSettings.shared.loadIfNeeded(fleet) }
         }
         else if let id = tvSelection { TVDetailView(tvID: id).id(id) }
-        else { section.view.id(section) }
+        else {
+            section.view.id(section)
+                // A new page fades and rises into place.
+                .transition(.asymmetric(insertion: .opacity.combined(with: .offset(y: 10)), removal: .opacity))
+        }
     }
 
     /// Where the sidebar takes you, always: that section's (or TV's, speaker's, light's) first page, with the search
@@ -594,7 +610,10 @@ struct MacRoot: View {
         if v.hasPrefix("tv:") { deviceSelection = nil; tvSelection = String(v.dropFirst(3)) }
         else if v.hasPrefix("spk:") || v.hasPrefix("light:") { tvSelection = nil; deviceSelection = v }
         else if v.hasPrefix("set:") { tvSelection = nil; deviceSelection = v; selection = .settings }
-        else if let s = AppSection(rawValue: v) { tvSelection = nil; deviceSelection = nil; selection = s }
+        else if let s = AppSection(rawValue: v) {
+            tvSelection = nil; deviceSelection = nil
+            withAnimation(.smooth(duration: 0.28)) { selection = s }
+        }
     }
 
     // MARK: The bar
@@ -660,6 +679,8 @@ struct MacRoot: View {
         // Wide enough: the greeting sits in the very middle of the page, between the remote and Edit Home at the far left
         // and the thermostat at the far right. Narrower, it sits between them in the row (centred, it would collide).
         let centred = greeting && width >= 1000
+        // Home scrolled down: the greeting goes and the bar closes up over it.
+        let quiet = centred && MacHomeScroll.shared.scrolledDown
         return VStack(alignment: .leading, spacing: onSettings ? 0 : 10) {
             // Where to go, in the middle at the very top: one glass bar the size of the pills under it.
             HStack {
@@ -727,14 +748,16 @@ struct MacRoot: View {
                 // Large and floating, a little below the row (the bar leaves room for it under the row).
                 if centred {
                     MacGreetingHero()
-                        .offset(y: 30)
+                        .offset(y: quiet ? 10 : 30)
+                        .opacity(quiet ? 0 : 1)
+                        .scaleEffect(quiet ? 0.94 : 1)
                         .transition(.opacity.combined(with: .scale(scale: 0.96)))
                 }
             }
         }
         .padding(.horizontal, 18)
         .padding(.top, 4)
-        .padding(.bottom, centred ? 52 : (onSettings ? 0 : 8))
+        .padding(.bottom, centred && !quiet ? 52 : (onSettings ? 0 : 8))
         .animation(.smooth(duration: 0.3), value: greeting)
         .task(id: onHome) {
             guard onHome else { return }
@@ -1074,7 +1097,14 @@ struct MacSettingsView: View {
                 Group {
                     if let shown { shown } else if let current { current.view().id(current.id) }
                 }
+                // One look for every page here: on the glass panel itself, roomier rows, slightly larger type, and
+                // the family's light blue for switches, buttons and links.
                 .scrollContentBackground(.hidden)
+                .environment(\.defaultMinListRowHeight, 40)
+                .font(.system(size: 14))
+                .tint(Color(red: 0.55, green: 0.76, blue: 1.0))
+                .contentMargins(.horizontal, 12, for: .scrollContent)
+                .transition(.opacity)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             .glass(RoundedRectangle(cornerRadius: 22, style: .continuous), interactive: false)

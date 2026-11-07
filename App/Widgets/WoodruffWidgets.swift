@@ -67,7 +67,7 @@ struct NowPlayingLiveActivity: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: NowPlayingAttributes.self) { context in
             LockScreenNowPlaying(state: context.state, idle: context.isStale && !context.state.isPlaying)
-                .activityBackgroundTint(Color.black.opacity(0.55))
+                .activityBackgroundTint(Color(red: 0.04, green: 0.10, blue: 0.26).opacity(0.92))   // the widgets' navy
                 .activitySystemActionForegroundColor(.white)
                 // Tapping it (anywhere but its buttons) opens the remote, as the Dynamic Island does.
                 .widgetURL(URL(string: "woodruff://remote"))
@@ -339,7 +339,7 @@ struct ApplianceLiveActivity: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: ApplianceAttributes.self) { context in
             ApplianceLockScreen(attributes: context.attributes, state: context.state)
-                .activityBackgroundTint(Color.black.opacity(0.55))
+                .activityBackgroundTint(Color(red: 0.04, green: 0.10, blue: 0.26).opacity(0.92))   // the widgets' navy
                 .activitySystemActionForegroundColor(.white)
                 .widgetURL(URL(string: "woodruff://home"))
         } dynamicIsland: { context in

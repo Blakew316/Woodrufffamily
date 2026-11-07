@@ -184,6 +184,12 @@ final class HomeScroller {
     var visibleBottom: CGFloat { frame.maxY - insetBottom }
 
     func take(_ spot: HomeScrollSpot) {
+        #if os(macOS)
+        // Scrolled down a way: the Mac's top bar lets the greeting go (back near the top), so the tiles get the room.
+        let away = MacHomeScroll.shared.scrolledDown
+        if !away && spot.offset > 70 { withAnimation(.smooth(duration: 0.3)) { MacHomeScroll.shared.scrolledDown = true } }
+        if away && spot.offset < 24 { withAnimation(.smooth(duration: 0.3)) { MacHomeScroll.shared.scrolledDown = false } }
+        #endif
         offset = spot.offset
         maxOffset = spot.maxOffset
         insetTop = spot.insetTop
@@ -746,3 +752,13 @@ private struct TVZoom: ViewModifier {
         }
     }
 }
+
+
+#if os(macOS)
+/// Whether Home is scrolled down (only ever set when that changes, so nothing redraws while scrolling).
+@Observable @MainActor
+final class MacHomeScroll {
+    static let shared = MacHomeScroll()
+    var scrolledDown = false
+}
+#endif
