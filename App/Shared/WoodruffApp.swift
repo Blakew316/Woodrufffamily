@@ -983,70 +983,103 @@ struct MacSectionBar: View {
 
 
 #if os(macOS)
-/// Mac Settings like System Settings: its pages listed down the left, the one picked open on the right (Needs
-/// Attention first in the list when something isn't working). A page opened from one of them goes on the window's
-/// stack, with Back in the top bar.
+/// Mac Settings like System Settings: every page listed down the left in groups (TVs, Smart Home, Watch,
+/// Notifications, Accounts, General), the one highlighted open on the right to change. Nothing opens on top of it and
+/// there's no Back: a link inside a page highlights that page in the list instead (one not listed joins its group).
 struct MacSettingsView: View {
     @Environment(Fleet.self) private var fleet
-    @AppStorage("mac.settingsPage") private var picked = MacSettingsPage.tvs.rawValue
-    private static let attention = "attention"
-    private struct Opened { let title: String; let view: AnyView }
-    /// Pages opened from the one picked, on this side.
-    @State private var opened: [Opened] = []
-    private var pageTitle: String { picked == Self.attention ? "Needs Attention" : (MacSettingsPage(rawValue: picked) ?? .tvs).title }
+    @AppStorage("mac.settingsPage") private var picked = "TVs"
+    /// Pages a link opened that aren't in the list: shown under their group until Settings is left.
+    @State private var extra: [Row] = []
+
+    struct Row: Identifiable {
+        let id: String        // its title, as the list shows it
+        let group: String
+        let view: () -> AnyView
+    }
+
+    private var hub: HubSettings { HubSettings.shared }
+
+    private var rows: [Row] {
+        func r<V: View>(_ title: String, _ group: String, @ViewBuilder _ v: @escaping () -> V) -> Row {
+            Row(id: title, group: group) { AnyView(v()) }
+        }
+        var out: [Row] = []
+        if !NeedsAttentionSection.issues(fleet).isEmpty {
+            out.append(r("Needs Attention", "") { Form { NeedsAttentionSection(hub: HubSettings.shared) }.formStyle(.grouped) })
+        }
+        out.append(r("TVs", "TVs") { TVsView() })
+        for tv in fleet.tvs where !tv.isUnpaired {
+            let id = tv.id
+            out.append(r(tv.name, "TVs") { TVDetailView(tvID: id) })
+        }
+        out += [
+            r("Notes", "TVs") { NotesView() },
+            r("Software Update", "TVs") { SoftwareUpdateView() },
+            r("Smart Home", "Smart Home") { SmartHomeSettingsView(hub: HubSettings.shared) },
+            r("Speakers", "Smart Home") { SpeakersListView() },
+            r("Lights", "Smart Home") { LightsListView() },
+            r("Cameras", "Smart Home") { CamerasPhoneView(hub: HubSettings.shared) },
+            r("Devices", "Smart Home") { DevicesListView() },
+            r("Wi‑Fi", "Smart Home") { WifiView() },
+            r("Scenes", "Smart Home") { ScenesSettingsView() },
+            r("Watch", "Watch") { WatchSettingsView() },
+            r("Notifications", "Notifications") { PhoneSettingsView(hub: HubSettings.shared) },
+            r("Camera Alerts", "Notifications") { CameraAlertsView(hub: HubSettings.shared) },
+            r("Instant iPhone Alerts", "Notifications") { Form { PushSettingsSection() }.formStyle(.grouped) },
+            r("Recent Messages", "Notifications") { RecentMessagesView() },
+            r("Accounts", "Accounts") { ConnectionsView(hub: HubSettings.shared) },
+            r("General", "General") { GeneralSettingsView(hub: HubSettings.shared) },
+            r("Shortcuts", "General") { ShortcutsView(hub: HubSettings.shared) },
+            r("Sync Across Devices", "General") { SyncSettingsView() },
+        ]
+        // A page a link opened, after the last of its group.
+        for e in extra where !out.contains(where: { $0.id == e.id }) {
+            let at = out.lastIndex { $0.group == e.group }.map { $0 + 1 } ?? out.count
+            out.insert(e, at: at)
+        }
+        return out
+    }
+
+    private static let groups = ["", "TVs", "Smart Home", "Watch", "Notifications", "Accounts", "General"]
 
     var body: some View {
-        let issues = NeedsAttentionSection.issues(fleet)
+        let all = rows
+        let current = all.first { $0.id == picked } ?? all.first { $0.id == "TVs" }
         HStack(spacing: 0) {
-            List(selection: Binding<String?>(get: { picked }, set: { if let v = $0 { picked = v; opened = [] } })) {
-                if !issues.isEmpty {
-                    Text("Needs Attention").foregroundStyle(Palette.attention).tag(Self.attention)
-                }
-                ForEach(MacSettingsPage.allCases) { p in
-                    Text(p.title).tag(p.rawValue)
+            List(selection: Binding<String?>(get: { current?.id }, set: { if let v = $0 { picked = v } })) {
+                ForEach(Self.groups, id: \.self) { g in
+                    let items = all.filter { $0.group == g }
+                    if !items.isEmpty {
+                        Section {
+                            ForEach(items) { row in
+                                Text(row.id).lineLimit(1)
+                                    .foregroundStyle(row.id == "Needs Attention" ? Palette.attention : Color.primary)
+                                    .tag(row.id)
+                            }
+                        } header: {
+                            if !g.isEmpty { Text(g) }
+                        }
+                    }
                 }
             }
             .listStyle(.sidebar)
             .scrollContentBackground(.hidden)
-            .frame(width: 220)
+            .frame(width: 230)
             Divider()
-            VStack(spacing: 0) {
-                // A page opened from the one picked: Back to it, at the top of this side.
-                if let open = opened.last {
-                    HStack {
-                        Button { withAnimation(.smooth(duration: 0.2)) { _ = opened.popLast() } } label: {
-                            HStack(spacing: 5) {
-                                Image(systemName: "chevron.left").font(.body.weight(.semibold))
-                                Text(opened.count > 1 ? opened[opened.count - 2].title : pageTitle).lineLimit(1)
-                            }
-                            .padding(.horizontal, 4)
-                        }
-                        .buttonStyle(.glass)
-                        .keyboardShortcut("[", modifiers: .command)
-                        Text(open.title).font(.headline).padding(.leading, 6)
-                        Spacer()
-                    }
-                    .padding(.horizontal, 20).padding(.top, 10).padding(.bottom, 4)
-                }
-                Group {
-                    if let open = opened.last {
-                        open.view
-                    } else if picked == Self.attention, !issues.isEmpty {
-                        Form { NeedsAttentionSection(hub: HubSettings.shared) }.formStyle(.grouped)
-                    } else {
-                        (MacSettingsPage(rawValue: picked) ?? .tvs).view
-                    }
-                }
-                .id("\(picked)|\(opened.count)")
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            Group {
+                if let current { current.view().id(current.id) }
             }
-            // Everything opened from here opens on this side, not over the window.
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            // A link inside the page highlights that page in the list (it never opens on top).
             .environment(\.macPanePush, MacPanePush { title, view in
-                withAnimation(.smooth(duration: 0.2)) { opened.append(Opened(title: title, view: view)) }
+                if !all.contains(where: { $0.id == title }) {
+                    extra.append(Row(id: title, group: current?.group ?? "General") { view })
+                }
+                picked = title
             })
-            .environment(\.macPageTitle, pageTitle)
+            .environment(\.macPageTitle, current?.id ?? "Settings")
         }
-        .onChange(of: picked) { _, _ in opened = [] }
         .task { await HubSettings.shared.loadIfNeeded(fleet) }
     }
 }
