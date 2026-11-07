@@ -78,7 +78,7 @@ struct PageLink<Label: View, Destination: View>: View {
 
     #if os(macOS)
     private var page: some View {
-        MacPage(title: title, backTo: here) { destination() }
+        MacPage(title: title, backTo: here, onStack: onStack) { destination() }
             .environment(\.macPageTitle, title)
     }
     #endif
@@ -116,14 +116,33 @@ extension View {
 struct MacPage<Content: View>: View {
     var title: String
     var backTo: String
+    /// On the window's own page stack: Back takes this page off it. Elsewhere (a sheet's stack), Back dismisses it.
+    var onStack = true
     @ViewBuilder var content: () -> Content
-    @Environment(\.dismiss) private var dismiss
 
+    // No `@Environment(\.dismiss)` here. On the window's stack it changes every time a page on the stack redraws, so
+    // every page redrew, the page under this one redrew its links, which redrew this page, and so on without end: the
+    // Mac app hung or crashed (an AppKit layout loop) opening Recent Messages, Camera Alerts, Shortcuts or Wi-Fi.
     var body: some View {
         content()
             .safeAreaInset(edge: .top, spacing: 0) {
-                MacBackRow(title: title, backTo: backTo) { dismiss() }
+                if onStack {
+                    MacBackRow(title: title, backTo: backTo) { MacNav.shared.pop() }
+                } else {
+                    MacDismissBackRow(title: title, backTo: backTo)
+                }
             }
+    }
+}
+
+/// Back for a page opened off the window's stack: only this row reads `dismiss`, so only this row redraws with it.
+private struct MacDismissBackRow: View {
+    var title: String
+    var backTo: String
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        MacBackRow(title: title, backTo: backTo) { dismiss() }
     }
 }
 
