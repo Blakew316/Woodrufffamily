@@ -450,6 +450,49 @@ final class CameraStreams {
         for k in back { if let p = players[k], p.camera.online { p.start() } }
     }
 
+    #if os(macOS)
+    /// Far off screen: a camera's picture plays here while no window shows it (a web view in no window plays no video).
+    @ObservationIgnored private lazy var grabWindow: NSWindow = {
+        let w = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: 640, height: 360), styleMask: .borderless,
+                         backing: .buffered, defer: false)
+        w.isReleasedWhenClosed = false
+        w.ignoresMouseEvents = true
+        w.contentView = NSView(frame: NSRect(x: 0, y: 0, width: 640, height: 360))
+        return w
+    }()
+
+    /// The Mac: a picture of what the camera sees now, for its alert (Google has none for these cameras). Its stream,
+    /// already running or started just for this, gives its first good frame, and one started for this is let go
+    /// again. Nil if no frame comes within [timeout] seconds.
+    func grabFrame(_ cam: NestCameras.Camera, timeout: Double = 20) async -> Data? {
+        let p = player(cam)
+        let started = !p.isRunning
+        var borrowed = false
+        if p.web.window == nil, let host = grabWindow.contentView {
+            p.web.frame = host.bounds
+            host.addSubview(p.web)
+            grabWindow.orderBack(nil)
+            borrowed = true
+        }
+        if started { p.start() }
+        defer {
+            if borrowed, p.web.superview === grabWindow.contentView { p.web.removeFromSuperview() }
+            if grabWindow.contentView?.subviews.isEmpty ?? true { grabWindow.orderOut(nil) }
+            if started, expanded != cam.id, full != cam.id, watching == 0 { p.pause() }
+        }
+        let end = Date().addingTimeInterval(timeout)
+        var firstLive: Date?
+        while Date() < end {
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            guard p.isLive else { continue }
+            if firstLive == nil { firstLive = Date() }
+            // A second in, past the first frames (often grey while the picture settles).
+            if let f = firstLive, Date().timeIntervalSince(f) > 1, let jpeg = await p.frameJPEG() { return jpeg }
+        }
+        return nil
+    }
+    #endif
+
     /// One went off screen; if nothing is watched for two minutes, the streams are let go.
     func hide() {
         watching = max(0, watching - 1)
@@ -937,20 +980,27 @@ final class LivePlayer: NSObject, WKNavigationDelegate {
         #endif
     }
 
-    #if os(iOS)
-    private func saveStill() {
-        let cam = camera
-        // The video's current frame, drawn into a canvas in the page (a snapshot of the web view can miss the video).
+    var isLive: Bool { live }
+
+    /// The video's current frame as a JPEG at most 480 pixels across, drawn into a canvas in the page (a snapshot of
+    /// the web view can miss the video). Nil before the first frame.
+    func frameJPEG() async -> Data? {
         let js = """
         (() => { const v = document.querySelector('video'); if (!v || !v.videoWidth) return null;
           const k = Math.min(1, 480 / Math.max(v.videoWidth, v.videoHeight)); const c = document.createElement('canvas');
           c.width = Math.round(v.videoWidth * k); c.height = Math.round(v.videoHeight * k);
           c.getContext('2d').drawImage(v, 0, 0, c.width, c.height); return c.toDataURL('image/jpeg', 0.75); })()
         """
+        guard let url = try? await web.evaluateJavaScript(js) as? String, let comma = url.firstIndex(of: ","),
+              let jpeg = Data(base64Encoded: String(url[url.index(after: comma)...])), jpeg.count > 1000 else { return nil }
+        return jpeg
+    }
+
+    #if os(iOS)
+    private func saveStill() {
+        let cam = camera
         Task { @MainActor in
-            guard let url = try? await web.evaluateJavaScript(js) as? String,
-                  let comma = url.firstIndex(of: ","),
-                  let jpeg = Data(base64Encoded: String(url[url.index(after: comma)...])), jpeg.count > 1000 else { return }
+            guard let jpeg = await frameJPEG() else { return }
             if PhoneWidgetShare.saveCamera(id: cam.id, name: cam.name, doorbell: cam.doorbell, jpeg: jpeg) {
                 WidgetCenter.shared.reloadTimelines(ofKind: PhoneWidgetShare.tvsCamerasKind)
             }

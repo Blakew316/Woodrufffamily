@@ -238,10 +238,21 @@ final class NestAlerts {
                let file = await CameraEventMedia.fetch(camera: camera, eventID: event, clipURL: clip, key: short, timeout: 10, using: token) {
                 thumb = await CameraEventMedia.thumbnail(file)
             }
+            // Google has no picture for these cameras (no snapshot, and often no clip): one frame from the live stream.
+            var how = "Google's clip or snapshot"
+            if thumb == nil, !quiet, let cam = NestCameras.shared.cameras.first(where: { $0.id == camera }), cam.webRTC, cam.online {
+                let t0 = Date()
+                if let jpeg = await CameraStreams.shared.grabFrame(cam) {
+                    let file = FileManager.default.temporaryDirectory.appendingPathComponent("grab-\(short).jpg")
+                    if (try? jpeg.write(to: file, options: .atomic)) != nil { thumb = await CameraEventMedia.thumbnail(file) }
+                    try? FileManager.default.removeItem(at: file)
+                }
+                how = String(format: "the live stream, %.1f s", Date().timeIntervalSince(t0))
+            }
             // The latest event, for Send Test Camera Alert.
             Saved.save(LastCameraEvent.savedKey, LastCameraEvent(title: title, body: body, camera: camera, key: short, happened: happened,
                                                                  event: event ?? "", clip: clip ?? "", at: received, thumb: thumb))
-            PushRelay.log.notice("picture for \(body, privacy: .public)\(quiet ? " (clip came later)" : "", privacy: .public): \(thumb.map { "\($0.count) characters" } ?? "none (Google gave no clip or snapshot in time)", privacy: .public)")
+            PushRelay.log.notice("picture for \(body, privacy: .public)\(quiet ? " (clip came later)" : "", privacy: .public): \(thumb.map { "\($0.count) characters, from \(how)" } ?? "none (no clip or snapshot from Google, and no frame from the live stream)", privacy: .public)")
             guard let thumb, let update = c.mutableCopy() as? UNMutableNotificationContent else { return }
             update.userInfo["thumb"] = thumb
             update.sound = nil
