@@ -871,6 +871,9 @@ public final class SmartHome {
     init() {
         // What was found last time, so Home, Siri and Control Center work straight away.
         speakers = Saved.load("smartSpeakers2", as: [SonosRoom].self) ?? []
+        // None found here yet (a new or reinstalled iPhone, or one away from home): the rooms the family's other
+        // devices know, synced, until they answer here.
+        if speakers.isEmpty { speakers = Saved.load(Self.sharedRoomsKey, as: [SonosRoom].self) ?? [] }
         lights = Saved.load("smartLights", as: [GoveeLight].self) ?? []
         applyNames()
     }
@@ -917,7 +920,27 @@ public final class SmartHome {
             guard !Task.isCancelled, let self else { return }
             Saved.save("smartSpeakers2", self.speakers)
             Saved.save("smartLights", self.lights)
+            // The rooms themselves (not what's playing) for the other devices, only when they change.
+            let shared = Self.sharedRooms(self.speakers)
+            if !shared.isEmpty, shared != (Saved.load(Self.sharedRoomsKey, as: [SonosRoom].self) ?? []) {
+                Saved.save(Self.sharedRoomsKey, shared)
+            }
         }
+    }
+
+    /// The synced settings item with the family's Sonos rooms.
+    public static let sharedRoomsKey = "sonosRooms"
+
+    /// The rooms that answer, without what's playing, the volume or the grouping: what's worth syncing (it changes
+    /// only when a room is added, renamed or moves to a new address).
+    nonisolated static func sharedRooms(_ rooms: [SonosRoom]) -> [SonosRoom] {
+        rooms.filter { !$0.isOffline }.map { r in
+            var s = r
+            s.state = ""; s.title = nil; s.artist = nil; s.album = nil; s.art = nil
+            s.volume = 0; s.muted = false; s.isTV = false; s.unreachableSince = nil
+            s.coordinatorHost = s.host; s.coordinatorID = s.id; s.groupNames = [s.name]
+            return s
+        }.sorted { $0.id < $1.id }
     }
 
     /// A lamp's name with the words that differ between Govee and Apple Home taken out ("Blake's Govee Floor Lamp" and
@@ -1558,6 +1581,11 @@ public final class SmartHome {
         let sc = Saved.load("smartSceneColors", as: [String: String].self) ?? [:]
         if sc != sceneColors { sceneColors = sc }
         manualIPs = Saved.load("goveeManualIPs", as: [String].self) ?? []
+        // The family's Sonos rooms came in and none are known here: shown at once (they update when they answer).
+        if speakers.isEmpty, let rooms = Saved.load(Self.sharedRoomsKey, as: [SonosRoom].self), !rooms.isEmpty {
+            speakers = rooms
+            onChange?()
+        }
     }
 
     /// Searches the Wi‑Fi for lights again now.
