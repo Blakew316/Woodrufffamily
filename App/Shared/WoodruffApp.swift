@@ -716,15 +716,17 @@ struct MacRoot: View {
             // Always the same height, so the pages below never jump as the bar's contents change.
             .frame(height: 46)
             .overlay {
+                // Large and floating, a little below the row (the bar leaves room for it under the row).
                 if centred {
-                    MacGreetingPill(compact: width < 1100)
+                    MacGreetingHero()
+                        .offset(y: 38)
                         .transition(.opacity.combined(with: .scale(scale: 0.96)))
                 }
             }
         }
         .padding(.horizontal, 18)
         .padding(.top, 4)
-        .padding(.bottom, 8)
+        .padding(.bottom, centred ? 66 : 8)
         .animation(.smooth(duration: 0.3), value: greeting)
         .task(id: onHome) {
             guard onHome else { return }
@@ -983,105 +985,112 @@ struct MacSectionBar: View {
 
 
 #if os(macOS)
-/// Mac Settings like System Settings: every page listed down the left in groups (TVs, Smart Home, Watch,
-/// Notifications, Accounts, General), the one highlighted open on the right to change. Nothing opens on top of it and
-/// there's no Back: a link inside a page highlights that page in the list instead (one not listed joins its group).
+/// Mac Settings like System Settings: a short list down the left in a glass panel, the page highlighted open on
+/// the right to change. Clicking another one in the list is the only way around (no Back). A link inside a page to
+/// one in the list highlights it there; any other shows its page on the right, and the list item brings you back.
 struct MacSettingsView: View {
     @Environment(Fleet.self) private var fleet
     @AppStorage("mac.settingsPage") private var picked = "TVs"
-    /// Pages a link opened that aren't in the list: shown under their group until Settings is left.
-    @State private var extra: [Row] = []
+    /// A page a link inside the right side showed (not one in the list): until something in the list is clicked.
+    @State private var shown: AnyView?
 
-    struct Row: Identifiable {
-        let id: String        // its title, as the list shows it
-        let group: String
+    struct Item: Identifiable {
+        let id: String
         let view: () -> AnyView
     }
 
-    private var hub: HubSettings { HubSettings.shared }
-
-    private var rows: [Row] {
-        func r<V: View>(_ title: String, _ group: String, @ViewBuilder _ v: @escaping () -> V) -> Row {
-            Row(id: title, group: group) { AnyView(v()) }
-        }
-        var out: [Row] = []
-        if !NeedsAttentionSection.issues(fleet).isEmpty {
-            out.append(r("Needs Attention", "") { Form { NeedsAttentionSection(hub: HubSettings.shared) }.formStyle(.grouped) })
-        }
-        out.append(r("TVs", "TVs") { TVsView() })
-        for tv in fleet.tvs where !tv.isUnpaired {
-            let id = tv.id
-            out.append(r(tv.name, "TVs") { TVDetailView(tvID: id) })
-        }
-        out += [
-            r("Notes", "TVs") { NotesView() },
-            r("Send", "TVs") { SendView() },
-            r("Software Update", "TVs") { SoftwareUpdateView() },
-            r("Smart Home", "Smart Home") { SmartHomeSettingsView(hub: HubSettings.shared) },
-            r("Speakers", "Smart Home") { SpeakersListView() },
-            r("Lights", "Smart Home") { LightsListView() },
-            r("Cameras", "Smart Home") { CamerasPhoneView(hub: HubSettings.shared) },
-            r("Devices", "Smart Home") { DevicesListView() },
-            r("Wi‑Fi", "Smart Home") { WifiView() },
-            r("Scenes", "Smart Home") { ScenesSettingsView() },
-            r("Watch", "Watch") { WatchSettingsView() },
-            r("Notifications", "Notifications") { PhoneSettingsView(hub: HubSettings.shared) },
-            r("Camera Alerts", "Notifications") { CameraAlertsView(hub: HubSettings.shared) },
-            r("Instant iPhone Alerts", "Notifications") { Form { PushSettingsSection() }.formStyle(.grouped) },
-            r("Recent Messages", "Notifications") { RecentMessagesView() },
-            r("Accounts", "Accounts") { ConnectionsView(hub: HubSettings.shared) },
-            r("General", "General") { GeneralSettingsView(hub: HubSettings.shared) },
-            r("Shortcuts", "General") { ShortcutsView(hub: HubSettings.shared) },
-            r("Sync Across Devices", "General") { SyncSettingsView() },
-        ]
-        // A page a link opened, after the last of its group.
-        for e in extra where !out.contains(where: { $0.id == e.id }) {
-            let at = out.lastIndex { $0.group == e.group }.map { $0 + 1 } ?? out.count
-            out.insert(e, at: at)
-        }
-        return out
+    private static func item<V: View>(_ title: String, @ViewBuilder _ v: @escaping () -> V) -> Item {
+        Item(id: title) { AnyView(v()) }
     }
 
-    private static let groups = ["", "TVs", "Smart Home", "Watch", "Notifications", "Accounts", "General"]
+    /// The list, in groups with a little space between them.
+    private var groups: [[Item]] {
+        var g: [[Item]] = []
+        if !NeedsAttentionSection.issues(fleet).isEmpty {
+            g.append([Self.item("Needs Attention") { Form { NeedsAttentionSection(hub: HubSettings.shared) }.formStyle(.grouped) }])
+        }
+        g.append([
+            Self.item("TVs") { TVsView() },
+            Self.item("Notes") { NotesView() },
+            Self.item("Software Update") { SoftwareUpdateView() },
+            Self.item("Send") { SendView() },
+        ])
+        g.append([
+            Self.item("Speakers") { SpeakersListView() },
+            Self.item("Lights") { LightsListView() },
+            Self.item("Cameras") { CamerasPhoneView(hub: HubSettings.shared) },
+            Self.item("Devices") { DevicesListView() },
+            Self.item("Wi‑Fi") { WifiView() },
+            Self.item("Scenes") { ScenesSettingsView() },
+        ])
+        g.append([
+            Self.item("Watch") { WatchSettingsView() },
+            Self.item("Notifications") { PhoneSettingsView(hub: HubSettings.shared) },
+            Self.item("Camera Alerts") { CameraAlertsView(hub: HubSettings.shared) },
+            Self.item("Accounts") { ConnectionsView(hub: HubSettings.shared) },
+        ])
+        g.append([
+            Self.item("General") { GeneralSettingsView(hub: HubSettings.shared) },
+            Self.item("Shortcuts") { ShortcutsView(hub: HubSettings.shared) },
+            Self.item("Sync Across Devices") { SyncSettingsView() },
+        ])
+        return g
+    }
 
     var body: some View {
-        let all = rows
+        let groups = self.groups
+        let all = groups.flatMap { $0 }
         let current = all.first { $0.id == picked } ?? all.first { $0.id == "TVs" }
-        HStack(spacing: 0) {
-            List(selection: Binding<String?>(get: { current?.id }, set: { if let v = $0 { picked = v } })) {
-                ForEach(Self.groups, id: \.self) { g in
-                    let items = all.filter { $0.group == g }
-                    if !items.isEmpty {
-                        Section {
-                            ForEach(items) { row in
-                                Text(row.id).lineLimit(1)
-                                    .foregroundStyle(row.id == "Needs Attention" ? Palette.attention : Color.primary)
-                                    .tag(row.id)
-                            }
-                        } header: {
-                            if !g.isEmpty { Text(g) }
+        HStack(alignment: .top, spacing: 18) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    ForEach(Array(groups.enumerated()), id: \.offset) { _, items in
+                        VStack(spacing: 2) {
+                            ForEach(items) { it in row(it, on: it.id == current?.id && shown == nil) }
                         }
                     }
                 }
+                .padding(10)
             }
-            .listStyle(.sidebar)
-            .scrollContentBackground(.hidden)
+            .scrollIndicators(.never)
             .frame(width: 230)
-            Divider()
+            .glass(RoundedRectangle(cornerRadius: 22, style: .continuous), interactive: false)
+            .padding(.leading, 18).padding(.vertical, 6)
+
             Group {
-                if let current { current.view().id(current.id) }
+                if let shown { shown } else if let current { current.view().id(current.id) }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            // A link inside the page highlights that page in the list (it never opens on top).
             .environment(\.macPanePush, MacPanePush { title, view in
-                if !all.contains(where: { $0.id == title }) {
-                    extra.append(Row(id: title, group: current?.group ?? "General") { view })
-                }
-                picked = title
+                if all.contains(where: { $0.id == title }) { shown = nil; picked = title } else { shown = view }
             })
             .environment(\.macPageTitle, current?.id ?? "Settings")
         }
+        .animation(.smooth(duration: 0.2), value: picked)
         .task { await HubSettings.shared.loadIfNeeded(fleet) }
+    }
+
+    private func row(_ it: Item, on: Bool) -> some View {
+        Button {
+            shown = nil
+            picked = it.id
+        } label: {
+            Text(it.id)
+                .font(.system(size: 13.5, weight: on ? .semibold : .regular))
+                .foregroundStyle(it.id == "Needs Attention" ? Palette.attention : (on ? Color.primary : Color.primary.opacity(0.82)))
+                .lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 12)
+                .frame(height: 32)
+                .background {
+                    if on {
+                        RoundedRectangle(cornerRadius: 9, style: .continuous).fill(.white.opacity(0.14))
+                            .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(.white.opacity(0.18), lineWidth: 0.5))
+                    }
+                }
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 }
 #endif

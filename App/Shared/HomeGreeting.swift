@@ -603,6 +603,53 @@ struct GreetingText: View {
 #if os(macOS)
 /// The Mac's Home greeting, in the middle of Woodruff's bar: the weather, then the greeting over its one-liner, in
 /// one Liquid Glass capsule.
+/// The Mac's Home greeting, large and floating (no pill around it): the weather beside "Good evening, Woodruff
+/// Family" and its one-liner, just under the bar at the top. Click it for another one-liner.
+struct MacGreetingHero: View {
+    private let weather = HomeWeather.shared
+    private let greeting = HomeGreeting.shared
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 20) {
+            if let now = weather.now {
+                HStack(spacing: 10) {
+                    Image(systemName: now.sky.symbol)
+                        .symbolRenderingMode(.multicolor)
+                        .font(.system(size: 34, weight: .semibold))
+                    Text(now.tempText)
+                        .font(.system(size: 36, weight: .semibold, design: .rounded))
+                        .monospacedDigit()
+                        .contentTransition(.numericText())
+                }
+                .help([now.sky.words, now.range].compactMap { $0 }.joined(separator: " · "))
+                Rectangle().fill(.white.opacity(0.28)).frame(width: 1, height: 50)
+            }
+            VStack(alignment: .leading, spacing: 3) {
+                Text(greeting.greeting)
+                    .font(.system(size: 30, weight: .bold, design: .rounded))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+                if !greeting.line.isEmpty {
+                    Text(greeting.line)
+                        .font(.system(size: 18, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                        .contentTransition(.opacity)
+                        .id(greeting.line)
+                        .transition(.opacity)
+                }
+            }
+        }
+        .shadow(color: .black.opacity(0.4), radius: 10, y: 2)
+        .fixedSize()
+        .contentShape(Rectangle())
+        .onTapGesture { greeting.refresh(force: true) }
+        .accessibilityElement(children: .combine)
+        .accessibilityHint("Click for another one-liner")
+    }
+}
+
 struct MacGreetingPill: View {
     var compact = false
     private let weather = HomeWeather.shared

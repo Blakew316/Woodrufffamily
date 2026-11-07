@@ -318,7 +318,14 @@ struct TVsView: View {
         Form {
             Section {
                 ForEach(fleet.tvs) { tv in
-                    PageLink(tv.name) { TVDetailView(tvID: tv.id) } label: { TVRow(tv: tv) }
+                    Group {
+                        #if os(macOS)
+                        // The Mac: just the TV and how it is (it doesn't open anything).
+                        TVRow(tv: tv)
+                        #else
+                        PageLink(tv.name) { TVDetailView(tvID: tv.id) } label: { TVRow(tv: tv) }
+                        #endif
+                    }
                         .swipeActions {
                             if tv.needsAttention { Button("Hide Alerts") { withAnimation { fleet.hideAlerts(tv) } }.tint(.gray) }
                             else if tv.alertsHidden { Button("Show Alerts") { withAnimation { fleet.showAlerts(tv) } }.tint(.orange) }
