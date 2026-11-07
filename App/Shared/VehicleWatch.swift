@@ -52,6 +52,11 @@ final class VehicleWatch {
     @ObservationIgnored private var vehicleFrames = 0
     @ObservationIgnored private var detections = 0
     @ObservationIgnored private var beatAt = Date()
+    /// For the heartbeat: how much the picture moves from one frame to the next, and the biggest change seen.
+    @ObservationIgnored private var diffSum: Double = 0
+    @ObservationIgnored private var maxShare: Double = 0
+    @ObservationIgnored private var previous: [String: [Float]] = [:]
+    @ObservationIgnored private var lastFrame: (jpeg: Data, camera: String)?
 
     static var folder: URL? {
         guard let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return nil }
@@ -97,6 +102,11 @@ final class VehicleWatch {
 
     private func look(at image: CGImage, jpeg: Data, camera cam: NestCameras.Camera) async {
         guard let grey = Self.grey(image) else { return }
+        if let prev = previous[cam.id], prev.count == grey.count {
+            diffSum += Double(zip(grey, prev).reduce(Float(0)) { $0 + abs($1.0 - $1.1) }) / Double(grey.count)
+        }
+        previous[cam.id] = grey
+        lastFrame = (jpeg, cam.name)
         var scene = scenes[cam.id] ?? Scene()
         defer { scenes[cam.id] = scene }
         if scene.background.count != grey.count { scene.background = grey; return }
@@ -113,6 +123,7 @@ final class VehicleWatch {
             if n >= 2 { kept.append(y * Self.gw + x) }
         } }
         let share = Double(kept.count) / Double(grey.count)
+        maxShare = max(maxShare, share)
         // The scenery slowly takes in what stays (a car that parks); the whole picture changing resets it at once.
         if share > maxChanged {
             scene.background = grey
@@ -157,8 +168,11 @@ final class VehicleWatch {
         let mins = Date().timeIntervalSince(beatAt) / 60
         guard mins >= 10 else { return }
         framesPerMinute = Int(Double(frames) / mins)
-        Self.log.notice("vehicle watch: \(self.frames) frames, \(self.candidates) changes, \(self.vehicleFrames) with a vehicle, \(self.detections) seen in the last \(Int(mins)) minutes")
-        frames = 0; candidates = 0; vehicleFrames = 0; detections = 0; beatAt = Date()
+        let moved = frames > 1 ? diffSum / Double(frames - 1) : 0
+        Self.log.notice("vehicle watch: \(self.frames) frames, \(self.candidates) changes, \(self.vehicleFrames) with a vehicle, \(self.detections) seen in the last \(Int(mins)) minutes; frame to frame \(String(format: "%.2f", moved), privacy: .public) of 255, biggest change \(String(format: "%.1f", self.maxShare * 100), privacy: .public)% of the picture")
+        // Test Mode: one frame each time, to see what the camera sees (light, night vision).
+        if testMode, let f = lastFrame { _ = Self.keep(f.jpeg, note: "\(f.camera)-sample") }
+        frames = 0; candidates = 0; vehicleFrames = 0; detections = 0; beatAt = Date(); diffSum = 0; maxShare = 0
     }
 
     // MARK: Pictures
