@@ -562,9 +562,9 @@ final class CameraStreams {
             guard !Task.isCancelled, let self else { return }
             self.letGo = true
             // A stream Vehicle Alerts watches, or a picture being taken for an alert, keeps going.
-            func keep(_ k: String) -> Bool { self.pinned.contains(k) || self.grabbing.contains(k) }
-            for (k, p) in self.players where !keep(k) { p.pause() }
-            for k in self.status.keys where self.status[k] != "Offline" && !keep(k) { self.status[k] = "Paused" }
+            let keep = self.pinned.union(self.grabbing)
+            for (k, p) in self.players where !keep.contains(k) { p.pause() }
+            for k in self.status.keys where self.status[k] != "Offline" && !keep.contains(k) { self.status[k] = "Paused" }
         }
     }
 }
