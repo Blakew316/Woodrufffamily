@@ -1,8 +1,6 @@
 import SwiftUI
 import WebKit
-#if os(iOS)
 import WidgetKit
-#endif
 import os
 #if os(macOS)
 import AppKit

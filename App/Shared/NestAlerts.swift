@@ -1,9 +1,7 @@
 import SwiftUI
 import UserNotifications
 import WoodruffKit
-#if os(iOS)
 import WidgetKit
-#endif
 
 /// "Person seen · Front door doorbell", "Someone's at the front door": the cameras' events as notifications
 /// on this iPhone or Mac, like the Google Home app. They come the way the TVs get them: Google posts every
