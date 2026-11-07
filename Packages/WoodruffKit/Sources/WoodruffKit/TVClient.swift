@@ -280,6 +280,15 @@ public struct TVClient: Sendable {
     }
     public func deleteNote(_ id: String) async throws { try await t.post("/api/notes/delete", ["id": id]) }
 
+    /// A Google Photos or Calendar sign-in made in the app, handed to this TV ([at]: when it was made, ms). True when
+    /// the TV kept it (false: it had it already, or signed in itself since).
+    @discardableResult
+    public func giveGrant(_ grant: String, refresh: String, scope: String, at: Int64) async throws -> Bool {
+        let r = try await t.post("/api/grant", ["grant": grant, "refresh": refresh, "scope": scope, "at": at])
+        if case .object(let o) = r, case .bool(let kept)? = o["kept"] { return kept }
+        return false
+    }
+
     public func startSignIn(_ grant: String) async throws -> SignInStart { try await t.post("/api/signin", ["grant": grant]) }
     public func signInStatus(state: String, grant: String) async throws -> SignInStatus {
         try await t.get("/api/signin/status", ["state": state, "grant": grant])

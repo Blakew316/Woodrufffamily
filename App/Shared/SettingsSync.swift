@@ -48,6 +48,8 @@ final class SettingsSync {
         "cync.email", "cync.access", "cync.refresh", "cync.authorize", "cync.user", "cync.expires",
         "gdrive.client", "gdrive.secret", "gdrive.refresh", "gdrive.access", "gdrive.expires", "gdrive.scopes", "gdrive.email", "tmdb.key",
         "apns.key", "apns.keyid", "apns.team",
+        // Google Photos and Calendar, signed in here and handed to the TVs (GoogleGrants).
+        "gphotos.refresh", "gphotos.scopes", "gphotos.at", "gcal.refresh", "gcal.scopes", "gcal.at",
     ]
     /// Saved settings that travel (JSON in UserDefaults).
     static let dataKeys = ["smartNames", "smartRooms", "smartExtraRooms", "goveeManualIPs", "homeLayout", "extras", "hiddenAlerts", "pushTokens", "diagnostics",
@@ -642,6 +644,7 @@ final class SettingsSync {
         if any(["ud:smartNames", "ud:smartRooms", "ud:smartExtraRooms", "ud:goveeManualIPs", "ud:smartSceneColors", "ud:sonosRooms"]) { SmartHome.shared.reloadSaved() }
         if keys.contains("ud:homeLayout") { HomeLayout.shared.reload() }
         if keys.contains("ud:scenes") { SceneStore.shared.reload() }
+        if any(["kc:gphotos.", "kc:gcal."]), let fleet { Task { await GoogleGrants.handOut(fleet) } }
         if keys.contains("ud:nestCameras") { NestCameras.shared.reloadSaved() }
         if keys.contains("ud:familyPairings") { applyPairings() }
         if any(["ud:extras", "ud:hiddenAlerts", "kc:lg."]) { fleet?.reloadSynced() }

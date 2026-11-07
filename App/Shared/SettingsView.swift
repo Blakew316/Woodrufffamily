@@ -1,4 +1,5 @@
 import SwiftUI
+import AuthenticationServices
 import WoodruffKit
 
 /// The hub's settings, loaded once and shared by the Settings pages. One for the whole app (`shared`): Settings opened
@@ -629,10 +630,10 @@ struct ConnectionsView: View {
                 Section {
                     PageLink("Google Drive") { DriveView(hub: hub) } label: { IconRow(symbol: "", color: .clear, title: "Google Drive", value: s.google?.statusText) }
                     PageLink("Google Photos") { GoogleGrantView(grant: "photos", title: "Google Photos", about: "Brings the photos and videos you pick into Memories on the TVs.") } label: {
-                        IconRow(symbol: "", color: .clear, title: "Google Photos", value: hubHealth?.signIns?.photos?.text)
+                        IconRow(symbol: "", color: .clear, title: "Google Photos", value: GoogleGrant.photos.signedIn ? "Signed In" : hubHealth?.signIns?.photos?.text)
                     }
                     PageLink("Google Calendar") { GoogleGrantView(grant: "calendar", title: "Google Calendar", about: "Today’s events on the TVs’ Home.") } label: {
-                        IconRow(symbol: "", color: .clear, title: "Google Calendar", value: hubHealth?.signIns?.calendar?.text)
+                        IconRow(symbol: "", color: .clear, title: "Google Calendar", value: GoogleGrant.calendar.signedIn ? "Signed In" : hubHealth?.signIns?.calendar?.text)
                     }
                     PageLink("Nest Cameras") { CamerasView(hub: hub) } label: { IconRow(symbol: "", color: .clear, title: "Nest Cameras", value: s.nest?.statusText) }
                 } header: { Text("Google") }
@@ -699,31 +700,60 @@ struct DeviceSignIns: Equatable {
     }
 }
 
-/// Accounts → Google Photos / Google Calendar: how the TV's sign-in stands, and signing it in from here (the TV asks
-/// for the same Google sign-in as on its own Settings → Accounts).
+/// Accounts → Google Photos / Google Calendar: signed in here, in the app (kept with the family's keys, synced to every
+/// phone and Mac) and given to every TV (`GoogleGrants`), with how the TVs' sign-in stands.
 struct GoogleGrantView: View {
     @Environment(Fleet.self) private var fleet
+    @Environment(\.webAuthenticationSession) private var webAuth
     var grant: String
     var title: String
     var about: String
     @State private var health: HealthReport?
-    @State private var signIn = false
+    @State private var signedIn = false
+    @State private var busy = false
+    @State private var message: String?
+
+    private var g: GoogleGrant { grant == "photos" ? .photos : .calendar }
 
     var body: some View {
         let row = grant == "photos" ? health?.signIns?.photos : health?.signIns?.calendar
         Form {
             Section {
-                LabeledContent("Status", value: row?.text ?? (health == nil ? "Checking…" : "Not connected"))
-                Button(row?.state == "signedIn" ? "Sign In Again" : "Sign In") { signIn = true }
-            } footer: { Text(about) }
+                LabeledContent("This App", value: signedIn ? "Signed In" : "Not Signed In")
+                LabeledContent("TVs", value: row?.text ?? (health == nil ? "Checking…" : "Not connected"))
+                Button(signedIn ? "Sign In Again" : "Sign In") { Task { await signIn() } }
+                    .disabled(busy || !GoogleDrive.hasKeys)
+                if signedIn {
+                    Button("Sign Out", role: .destructive) { GoogleGrants.signOut(g); signedIn = false }
+                }
+            } footer: {
+                Text(message ?? (GoogleDrive.hasKeys
+                    ? "\(about) Signed in here once, it’s kept with the family’s keys and given to every TV."
+                    : "Add the Google keys in Settings → Watch first."))
+            }
         }
         .formStyle(.grouped)
         .navigationTitle(title).inlineTitle()
-        .task { await load() }
-        .sheet(isPresented: $signIn, onDismiss: { Task { await load() } }) { HubSignIn(grant: grant) }
+        .task { signedIn = g.signedIn; await load() }
     }
 
     private func load() async { health = try? await fleet.hubClient()?.health() }
+
+    private func signIn() async {
+        busy = true; message = nil
+        defer { busy = false }
+        do {
+            try await GoogleGrants.signIn(g, fleet: fleet) { url in
+                try await webAuth.authenticate(using: url, callbackURLScheme: "woodruff")
+            }
+            signedIn = true
+            await load()
+        } catch let e as ASWebAuthenticationSessionError where e.code == .canceledLogin {
+            // Closed without signing in.
+        } catch {
+            message = error.localizedDescription
+        }
+    }
 }
 
 /// The sign-in for [grant] on the TV that holds the settings (or why there's none).

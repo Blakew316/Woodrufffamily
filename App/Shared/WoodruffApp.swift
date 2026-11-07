@@ -129,6 +129,7 @@ struct WoodruffApp: App {
                     if !Demo.isOn && !fleet.hubs.isEmpty { LocationWeather.shared.start(fleet) }
                     SettingsSync.shared.start(fleet)
                     NestAlerts.shared.start(fleet)
+                    GoogleGrants.start(fleet)
                     #if os(macOS)
                     VehicleWatch.shared.start()
                     #endif

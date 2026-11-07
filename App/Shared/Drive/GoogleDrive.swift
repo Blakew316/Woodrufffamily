@@ -64,7 +64,8 @@ enum GoogleDrive {
         let nonce: String
     }
 
-    static func begin() throws -> Attempt {
+    /// [scopes]: Drive's (the default), or another sign-in's (Google Photos, Calendar: `GoogleGrants`).
+    static func begin(scopes: String = scopes) throws -> Attempt {
         guard let id = clientID else { throw Failure("Add the Google sign-in keys first.") }
         let chars = Array("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
         let verifier = String((0..<64).map { _ in chars.randomElement()! })
@@ -84,6 +85,15 @@ enum GoogleDrive {
 
     /// Google's answer, as the relay page handed it back: the code swapped for tokens.
     static func finish(_ attempt: Attempt, callback: URL) async throws {
+        let j = try await exchange(attempt, callback: callback)
+        guard let refresh = j["refresh_token"] as? String else { throw Failure("Google didn’t give a lasting sign-in. Try again.") }
+        Keychain.set(refresh, for: "gdrive.refresh")
+        keep(j)
+        await loadEmail()
+    }
+
+    /// The code in Google's answer swapped for tokens (Google's reply as it came).
+    static func exchange(_ attempt: Attempt, callback: URL) async throws -> [String: Any] {
         let q = URLComponents(url: callback, resolvingAgainstBaseURL: false)?.queryItems ?? []
         func v(_ n: String) -> String? { q.first { $0.name == n }?.value }
         if let e = v("error") { throw Failure(e == "access_denied" ? "Google sign-in was cancelled." : "Google said: \(e)") }
@@ -91,14 +101,10 @@ enum GoogleDrive {
               let data = Data(base64urlEncoded: state),
               let s = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               s["n"] as? String == attempt.nonce else { throw Failure("The sign-in came back damaged. Try again.") }
-        let j = try await tokenRequest([
+        return try await tokenRequest([
             "code": code, "client_id": clientID ?? "", "client_secret": clientSecret ?? "",
             "redirect_uri": redirect, "grant_type": "authorization_code", "code_verifier": attempt.verifier,
         ])
-        guard let refresh = j["refresh_token"] as? String else { throw Failure("Google didn’t give a lasting sign-in. Try again.") }
-        Keychain.set(refresh, for: "gdrive.refresh")
-        keep(j)
-        await loadEmail()
     }
 
     private static func keep(_ j: [String: Any]) {
