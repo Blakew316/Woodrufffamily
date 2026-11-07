@@ -95,8 +95,7 @@ struct TVsCamerasView: View {
             artwork(tv)
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 5) {
-                    dot(tv)
-                    Text(tv.name).font(.system(size: 10, weight: .bold)).foregroundStyle(WidgetPalette.sky).lineLimit(1)
+                    Text(tv.name).font(.system(size: 10, weight: .bold)).foregroundStyle(WidgetPalette.frost).lineLimit(1)
                     Spacer(minLength: 2)
                     if tv.title != nil, let left = tv.left {
                         Text(left).font(.system(size: 10, weight: .medium)).monospacedDigit().foregroundStyle(WidgetPalette.sky)
@@ -104,7 +103,7 @@ struct TVsCamerasView: View {
                 }
                 Text(tv.title ?? (tv.online ? "On" : "Off"))
                     .font(.system(size: 12.5, weight: selected ? .bold : .semibold, design: .rounded))
-                    .foregroundStyle(tv.title != nil ? WidgetPalette.ice : tv.online ? WidgetPalette.ice.opacity(0.9) : WidgetPalette.sky.opacity(0.55))
+                    .foregroundStyle(WidgetPalette.frost)
                     .lineLimit(1)
                 if tv.title != nil, let p = tv.progress {
                     GeometryReader { g in
@@ -121,7 +120,7 @@ struct TVsCamerasView: View {
         .background {
             if selected {
                 RoundedRectangle(cornerRadius: 12, style: .continuous).fill(WidgetPalette.sky.opacity(0.14))
-                    .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(WidgetPalette.sky.opacity(0.35), lineWidth: 0.75))
+                    .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(WidgetPalette.frost.opacity(0.85), lineWidth: 1))
             }
         }
     }
@@ -133,7 +132,7 @@ struct TVsCamerasView: View {
         } else {
             RoundedRectangle(cornerRadius: 8, style: .continuous).fill(WidgetPalette.sky.opacity(0.12))
                 .frame(width: 34, height: 34)
-                .overlay(Image(systemName: "tv").font(.system(size: 14, weight: .semibold)).foregroundStyle(WidgetPalette.sky))
+                .overlay(Image(systemName: "tv").font(.system(size: 14, weight: .semibold)).foregroundStyle(WidgetPalette.frost))
         }
     }
 
@@ -334,4 +333,6 @@ enum WidgetPalette {
     static let sky = Color(red: 0.55, green: 0.76, blue: 1.0)
     /// What's playing: the brightest, near white with a blue cast.
     static let ice = Color(red: 0.88, green: 0.94, blue: 1.0)
+    /// Icy, frosty white: the TVs' names, what they're doing, their emblem and the chosen TV's outline.
+    static let frost = Color(red: 0.93, green: 0.97, blue: 1.0)
 }
