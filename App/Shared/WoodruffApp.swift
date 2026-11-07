@@ -993,6 +993,7 @@ struct MacSettingsView: View {
     @AppStorage("mac.settingsPage") private var picked = "TVs"
     /// A page a link inside the right side showed (not one in the list): until something in the list is clicked.
     @State private var shown: AnyView?
+    @State private var shownTitle: String?
 
     struct Item: Identifiable {
         let id: String
@@ -1057,12 +1058,21 @@ struct MacSettingsView: View {
             .glass(RoundedRectangle(cornerRadius: 22, style: .continuous), interactive: false)
             .padding(.leading, 18).padding(.vertical, 6)
 
-            Group {
-                if let shown { shown } else if let current { current.view().id(current.id) }
+            // The page: its name large at the top, then its settings, all in one glass panel matching the list.
+            VStack(alignment: .leading, spacing: 0) {
+                Text(shownTitle ?? current?.id ?? "Settings")
+                    .font(.system(size: 26, weight: .bold, design: .rounded))
+                    .padding(.horizontal, 28).padding(.top, 22).padding(.bottom, 4)
+                Group {
+                    if let shown { shown } else if let current { current.view().id(current.id) }
+                }
+                .scrollContentBackground(.hidden)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .glass(RoundedRectangle(cornerRadius: 22, style: .continuous), interactive: false)
+            .padding(.trailing, 18).padding(.vertical, 6)
             .environment(\.macPanePush, MacPanePush { title, view in
-                if all.contains(where: { $0.id == title }) { shown = nil; picked = title } else { shown = view }
+                if all.contains(where: { $0.id == title }) { shown = nil; shownTitle = nil; picked = title } else { shown = view; shownTitle = title }
             })
             .environment(\.macPageTitle, current?.id ?? "Settings")
         }
@@ -1073,6 +1083,7 @@ struct MacSettingsView: View {
     private func row(_ it: Item, on: Bool) -> some View {
         Button {
             shown = nil
+            shownTitle = nil
             picked = it.id
         } label: {
             Text(it.id)
