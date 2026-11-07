@@ -153,7 +153,7 @@ enum CameraEventMedia {
     // MARK: The small picture the Mac sends inside the push
 
     /// Most of a push's 4 KB is left for this: a small JPEG of the moment, as base64.
-    static let thumbnailLimit = 2400
+    static let thumbnailLimit = 2200
 
     /// A small picture of the moment, from a snapshot or a clip's frame a second in, as base64 that fits in a push.
     /// The Mac adds it to a camera's push, so every iPhone has a picture for the alert even when it can't fetch one

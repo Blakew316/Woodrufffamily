@@ -223,11 +223,14 @@ final class PushRelay {
         var payload: [String: Any] = ["aps": aps]
         for (k, v) in userInfo { payload[k] = v }
         guard var data = try? JSONSerialization.data(withJSONObject: payload) else { return }
-        // Apple takes at most 4 KB: a camera's small picture goes if it doesn't fit (the iPhone fetches its own).
-        if data.count > 4000, payload["thumb"] != nil {
-            payload["thumb"] = nil
+        // Apple takes at most 4 KB. The picture matters most: the clip's long link goes first (the iPhone can only use
+        // it with its own camera sign-in), then the event id, and only then the picture.
+        for drop in ["clip", "event", "thumb"] where data.count > 4000 {
+            guard payload[drop] != nil else { continue }
+            payload[drop] = nil
             guard let smaller = try? JSONSerialization.data(withJSONObject: payload) else { return }
             data = smaller
+            PushRelay.log.notice("push too big: left out \(drop, privacy: .public), now \(data.count, privacy: .public) bytes")
         }
         var gone: [String] = []
         var anySent = false
