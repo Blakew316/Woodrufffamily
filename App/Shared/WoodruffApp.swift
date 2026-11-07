@@ -490,13 +490,18 @@ struct MacRoot: View {
                 root
                     .id(visit)
                     .environment(\.macPageTitle, query.isEmpty ? rootTitle : "Search")
+                    // Woodruff's own bar, under the window's see-through toolbar (which keeps only the window's buttons).
+                    .safeAreaBar(edge: .top) { topBar }
                     .navigationDestination(for: PageRoute.self) { page in
-                        page.view.navigationBarBackButtonHidden(true)
+                        // Every opened page has the very same bar in the very same place (search, remote, thermostat),
+                        // with its Back button under it, and no window title of its own: nothing jumps from page to page.
+                        page.view
+                            .navigationBarBackButtonHidden(true)
+                            .safeAreaBar(edge: .top) { topBar }
+                            .toolbar(removing: .title)
                     }
             }
             .environment(\.macPageStack, true)
-            // Woodruff's own bar, under the window's see-through toolbar (which keeps only the window's buttons).
-            .safeAreaBar(edge: .top) { topBar }
             // Not under Home's own first page: its backdrop covers the whole page (and draws what's playing itself).
             .background { if !onHome { AmbientArtwork() } }
             // A clicked camera fills everything right of the sidebar (Esc or ✕ to close).
