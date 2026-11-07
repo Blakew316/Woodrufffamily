@@ -727,6 +727,8 @@ final class ThermostatUI {
 struct ThermostatChip: View {
     /// iPhone: just the icon, the temperature and what it's doing.
     var compact = false
+    /// iPhone: − and + beside it as on the Mac, a little tighter (it's wider, the same height).
+    var steppers = false
     /// Mac: the pill's height, to match the bar it sits in (nil: as tall as its contents).
     var height: CGFloat? = nil
     private let store = AccessoryStore.shared
@@ -763,17 +765,17 @@ struct ThermostatChip: View {
             // − and + are buttons of their own beside it (they change the temperature; they don't open anything).
             if let t, let n {
                 Divider().frame(height: 22)
-                HStack(spacing: 6) {
+                HStack(spacing: compact ? 4 : 6) {
                     stepButton("minus", "Cooler") { nudge(t, n.mode, thermostatStep(n.value, -1)) }
                     Text(temperatureText(n.value))
                         .font(.system(size: 15, weight: .semibold, design: .rounded)).monospacedDigit()
                         .foregroundStyle(tint(t))
                         .contentTransition(.numericText())
-                        .frame(minWidth: 34)
+                        .frame(minWidth: compact ? 30 : 34)
                         .animation(.snappy, value: n.value)
                     stepButton("plus", "Warmer") { nudge(t, n.mode, thermostatStep(n.value, 1)) }
                 }
-                .padding(.leading, 8).padding(.trailing, 10)
+                .padding(.leading, compact ? 6 : 8).padding(.trailing, compact ? 8 : 10)
             }
         }
         .fixedSize()
@@ -790,7 +792,7 @@ struct ThermostatChip: View {
 
     /// The set temperature − and + work on: the Mac's full pill, a thermostat that's responding, in Heat or Cool.
     private func nudgeable(_ t: HomeDevice?) -> Nudge? {
-        guard !compact, let t, t.reachable else { return nil }
+        guard !compact || steppers, let t, t.reachable else { return nil }
         // No mode reported (only set temperatures): the one it has.
         let mode = t.thermostatMode ?? (t.heatTo == nil && t.coolTo != nil ? "cool" : "heat")
         guard mode == "heat" || mode == "cool",

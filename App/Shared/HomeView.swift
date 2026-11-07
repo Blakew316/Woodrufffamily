@@ -88,7 +88,7 @@ struct HomeView: View {
                         if !arranging {
                             Button { layout.startArranging() } label: {
                                 Text("Edit").font(.system(size: 16, weight: .semibold))
-                                    .padding(.horizontal, 18)
+                                    .padding(.horizontal, 16)
                                     .frame(height: Self.pillHeight)
                                     .contentShape(Capsule())
                                     .glass(Capsule())
@@ -96,7 +96,8 @@ struct HomeView: View {
                             .buttonStyle(PressScale())
                         }
                         Spacer()
-                        if !arranging { ThermostatChip(compact: true, height: Self.pillHeight) }
+                        // Wider than before, the same height: − and + beside it, as on the Mac.
+                        if !arranging { ThermostatChip(compact: true, steppers: true, height: Self.pillHeight) }
                     }
                     .frame(minHeight: Self.pillHeight)
                     // Movie Night, Bedtime and the family's own scenes: one tap each.
