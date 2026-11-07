@@ -183,7 +183,10 @@ struct AllDevicesView: View {
         .padding(12)
         .frame(maxWidth: .infinity, minHeight: 150, alignment: .top)
         .background {
-            if f.on { RoundedRectangle(cornerRadius: 22, style: .continuous).fill(.white.opacity(0.94)) }
+            if f.on {
+                RoundedRectangle(cornerRadius: 22, style: .continuous).fill(IconPalette.onTile)
+                    .shadow(color: IconPalette.cyan.opacity(0.35), radius: 10)
+            }
         }
         .modifier(TileGlass(on: f.on))
         .contentShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
@@ -344,7 +347,10 @@ struct AllDevicesView: View {
 private struct TileGlass: ViewModifier {
     var on: Bool
     func body(content: Content) -> some View {
-        if on { content } else { content.glass(RoundedRectangle(cornerRadius: 22, style: .continuous)) }
+        if on { content } else {
+            content.glass(RoundedRectangle(cornerRadius: 22, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).strokeBorder(IconPalette.cyan.opacity(0.22), lineWidth: 1))
+        }
     }
 }
 

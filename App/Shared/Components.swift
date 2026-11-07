@@ -500,3 +500,30 @@ struct CornerCurve: Shape {
         return p
     }
 }
+
+
+/// The app's colours, taken from its icon: the background's steel blue fading to deep navy, its glowing cyan, its ice
+/// blue and its white core. Home, its tiles, the Mac's bar and Settings follow it (as the widgets do).
+enum IconPalette {
+    static let steel = Color(red: 0.220, green: 0.325, blue: 0.443)
+    static let mid = Color(red: 0.114, green: 0.200, blue: 0.314)
+    static let deep = Color(red: 0.031, green: 0.067, blue: 0.122)
+    static let cyan = Color(red: 0.227, green: 0.678, blue: 0.875)
+    static let ice = Color(red: 0.659, green: 0.831, blue: 0.961)
+    static let white = Color(red: 0.976, green: 0.992, blue: 0.992)
+    /// A tile that's on: ice-white, a touch bluer at the bottom.
+    static let onTile = LinearGradient(colors: [Color(red: 0.914, green: 0.965, blue: 1.0), Color(red: 0.749, green: 0.890, blue: 0.980)],
+                                       startPoint: .top, endPoint: .bottom)
+}
+
+/// The icon's background, for a page: steel blue at the top fading to deep navy, a soft cyan glow in the middle.
+struct IconBackdrop: View {
+    var body: some View {
+        ZStack {
+            LinearGradient(colors: [IconPalette.steel, IconPalette.mid, IconPalette.deep], startPoint: .top, endPoint: .bottom)
+            RadialGradient(colors: [IconPalette.cyan.opacity(0.14), .clear], center: UnitPoint(x: 0.5, y: 0.4), startRadius: 0, endRadius: 700)
+        }
+        .ignoresSafeArea()
+        .allowsHitTesting(false)
+    }
+}

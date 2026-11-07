@@ -622,17 +622,18 @@ struct MacGreetingHero: View {
                         .contentTransition(.numericText())
                 }
                 .help([now.sky.words, now.range].compactMap { $0 }.joined(separator: " · "))
-                Rectangle().fill(.white.opacity(0.28)).frame(width: 1, height: 40)
+                Rectangle().fill(IconPalette.cyan).frame(width: 1.5, height: 40).shadow(color: IconPalette.cyan.opacity(0.6), radius: 4)
             }
             VStack(alignment: .leading, spacing: 3) {
                 Text(greeting.greeting)
                     .font(.system(size: 24, weight: .bold, design: .rounded))
+                    .foregroundStyle(IconPalette.white)
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)
                 if !greeting.line.isEmpty {
                     Text(greeting.line)
                         .font(.system(size: 14.5, weight: .medium))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(IconPalette.ice)
                         .lineLimit(1)
                         .minimumScaleFactor(0.8)
                         .contentTransition(.opacity)

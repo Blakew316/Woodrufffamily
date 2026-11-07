@@ -299,7 +299,7 @@ struct NowPlayingWidgetView: View {
             Spacer(minLength: 0)
             Text(p?.title ?? idleWords(tv)).font(family == .systemSmall ? .headline : .title3.bold()).lineLimit(2)
             if let a = p?.app { Text(a).font(.caption).foregroundStyle(WidgetPalette.sky).lineLimit(1) }
-            if let p { WidgetProgress(playing: p, at: entry.date, tint: WidgetPalette.sky).padding(.top, 4) }
+            if let p { WidgetProgress(playing: p, at: entry.date, tint: WidgetPalette.cyan).padding(.top, 4) }
             if let problem = entry.problem {
                 Text(problem).font(.caption2).foregroundStyle(.yellow).lineLimit(2)
             }
@@ -308,7 +308,7 @@ struct NowPlayingWidgetView: View {
         .containerBackground(for: .widget) {
             ZStack {
                 // The family's navy, with what's playing softly behind it.
-                LinearGradient(colors: [WidgetPalette.navyTop, WidgetPalette.navyBottom], startPoint: .topLeading, endPoint: .bottomTrailing)
+                WidgetBackdrop()
                 if let data = entry.art, let img = NSImage(data: data) {
                     Image(nsImage: img).resizable().aspectRatio(contentMode: .fill)
                         .opacity(0.45)
@@ -353,7 +353,7 @@ struct AllTVsWidgetView: View {
             MacTVsCamerasView(entry: entry, cameras: MacCameraShare.load())
                 .environment(\.colorScheme, .dark)
                 .containerBackground(for: .widget) {
-                    LinearGradient(colors: [WidgetPalette.navyTop, WidgetPalette.navyBottom], startPoint: .topLeading, endPoint: .bottomTrailing)
+                    WidgetBackdrop()
                 }
         } else {
             list
@@ -388,9 +388,9 @@ struct AllTVsWidgetView: View {
         .padding(16)   // the widget's own margins are off (the medium size fills to its edges)
         .environment(\.colorScheme, .dark)
         .foregroundStyle(WidgetPalette.frost)
-        .tint(WidgetPalette.sky)
+        .tint(WidgetPalette.cyan)
         .containerBackground(for: .widget) {
-            LinearGradient(colors: [WidgetPalette.navyTop, WidgetPalette.navyBottom], startPoint: .topLeading, endPoint: .bottomTrailing)
+            WidgetBackdrop()
         }
     }
 
@@ -401,7 +401,7 @@ struct AllTVsWidgetView: View {
                 Text(tv.name).font(compact ? Font.caption.weight(.semibold) : Font.subheadline.weight(.semibold)).lineLimit(1)
                 Text(status(tv)).font(compact ? Font.caption2 : Font.caption).foregroundStyle(.secondary).lineLimit(1)
                 if !compact, let p = tv.playing {
-                    WidgetProgress(playing: p, at: entry.date, tint: WidgetPalette.sky).padding(.top, 2)
+                    WidgetProgress(playing: p, at: entry.date, tint: WidgetPalette.cyan).padding(.top, 2)
                 }
             }
             Spacer(minLength: 0)
@@ -601,9 +601,9 @@ struct HomeDevicesWidgetView: View {
         }
         .environment(\.colorScheme, .dark)
         .foregroundStyle(WidgetPalette.frost)
-        .tint(WidgetPalette.sky)
+        .tint(WidgetPalette.cyan)
         .containerBackground(for: .widget) {
-            LinearGradient(colors: [WidgetPalette.navyTop, WidgetPalette.navyBottom], startPoint: .topLeading, endPoint: .bottomTrailing)
+            WidgetBackdrop()
         }
     }
 
@@ -629,7 +629,7 @@ struct MacTVsCamerasWidget: Widget {
             MacTVsCamerasView(entry: e, cameras: MacCameraShare.load())
                 .environment(\.colorScheme, .dark)
                 .containerBackground(for: .widget) {
-                    LinearGradient(colors: [WidgetPalette.navyTop, WidgetPalette.navyBottom], startPoint: .topLeading, endPoint: .bottomTrailing)
+                    WidgetBackdrop()
                 }
         }
         .configurationDisplayName("TVs & Cameras")
@@ -676,7 +676,7 @@ struct MacTVsCamerasView: View {
             VStack(spacing: 6) {
                 ForEach(0..<2, id: \.self) { i in
                     if i < cams.count { camera(cams[i]) } else {
-                        RoundedRectangle(cornerRadius: 11, style: .continuous).fill(WidgetPalette.sky.opacity(0.1))
+                        RoundedRectangle(cornerRadius: 11, style: .continuous).fill(WidgetPalette.cyan.opacity(0.1))
                             .overlay(Text("Camera").font(.caption2).foregroundStyle(WidgetPalette.sky.opacity(0.6)))
                     }
                 }
@@ -696,20 +696,21 @@ struct MacTVsCamerasView: View {
                 if selected, playing != nil, let data = entry.art, let img = NSImage(data: data) {
                     Image(nsImage: img).resizable().scaledToFill()
                 } else {
-                    RoundedRectangle(cornerRadius: 8, style: .continuous).fill(WidgetPalette.sky.opacity(0.12))
-                        .overlay(Image(systemName: "tv").font(.system(size: 14, weight: .semibold)).foregroundStyle(WidgetPalette.frost))
+                    RoundedRectangle(cornerRadius: 8, style: .continuous).fill(WidgetPalette.cyan.opacity(0.14))
+                        .overlay(Image(systemName: "tv").font(.system(size: 14, weight: .semibold)).foregroundStyle(WidgetPalette.cyan))
+                .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(WidgetPalette.cyan.opacity(0.45), lineWidth: 0.75))
                 }
             }
             .frame(width: 34, height: 34)
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             VStack(alignment: .leading, spacing: 1) {
-                Text(tv.name).font(.system(size: 10, weight: .bold)).foregroundStyle(WidgetPalette.frost).lineLimit(1)
+                Text(tv.name).font(.system(size: 10, weight: .bold)).foregroundStyle(WidgetPalette.ice).lineLimit(1)
                 Text(playing?.title ?? (tv.online ? "On" : "Off"))
                     .font(.system(size: 12.5, weight: selected ? .bold : .semibold, design: .rounded))
                     .foregroundStyle(WidgetPalette.frost)
                     .lineLimit(1)
                 if let p = playing {
-                    WidgetProgress(playing: p, at: entry.date, tint: WidgetPalette.sky).padding(.top, 3)
+                    WidgetProgress(playing: p, at: entry.date, tint: WidgetPalette.cyan).padding(.top, 3)
                 }
             }
             Spacer(minLength: 0)
@@ -718,15 +719,16 @@ struct MacTVsCamerasView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
         .background {
             if selected {
-                RoundedRectangle(cornerRadius: 12, style: .continuous).fill(WidgetPalette.sky.opacity(0.14))
-                    .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(WidgetPalette.frost.opacity(0.85), lineWidth: 1))
+                RoundedRectangle(cornerRadius: 12, style: .continuous).fill(WidgetPalette.cyan.opacity(0.13))
+                    .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(WidgetPalette.cyan.opacity(0.9), lineWidth: 1))
+                    .shadow(color: WidgetPalette.cyan.opacity(0.35), radius: 6)
             }
         }
     }
 
     private func camera(_ c: MacCameraShare.Line) -> some View {
         let fresh = c.eventAt.map { entry.date.timeIntervalSince($0) < 600 } ?? false
-        return WidgetPalette.sky.opacity(0.1)
+        return WidgetPalette.cyan.opacity(0.1)
             .overlay {
                 if let data = MacCameraShare.picture(c), let image = NSImage(data: data) {
                     Image(nsImage: image).resizable().scaledToFill()
@@ -761,10 +763,26 @@ struct MacTVsCamerasView: View {
 }
 
 
-/// The widgets' colours, the same as the iPhone's: deep navy behind, light blue accents, frosty white lettering.
+/// The widgets' colours, taken from the app icon: its steel-blue to deep-navy background with a soft cyan glow,
+/// its glowing cyan for outlines and accents, its ice blue for labels and its white for what matters most.
 enum WidgetPalette {
-    static let navyTop = Color(red: 0.07, green: 0.15, blue: 0.36)
-    static let navyBottom = Color(red: 0.02, green: 0.06, blue: 0.17)
-    static let sky = Color(red: 0.55, green: 0.76, blue: 1.0)
-    static let frost = Color(red: 0.93, green: 0.97, blue: 1.0)
+    static let navyTop = Color(red: 0.220, green: 0.325, blue: 0.443)      // steel
+    static let navyMid = Color(red: 0.114, green: 0.200, blue: 0.314)
+    static let navyBottom = Color(red: 0.031, green: 0.067, blue: 0.122)   // deep navy
+    static let cyan = Color(red: 0.227, green: 0.678, blue: 0.875)         // the icon's glow
+    /// Labels.
+    static let sky = Color(red: 0.659, green: 0.831, blue: 0.961)          // ice
+    static let ice = sky
+    /// What's on, the main words.
+    static let frost = Color(red: 0.976, green: 0.992, blue: 0.992)        // white core
+}
+
+/// Behind every widget: the icon's fade from steel blue to deep navy, with its cyan glow in the middle.
+struct WidgetBackdrop: View {
+    var body: some View {
+        ZStack {
+            LinearGradient(colors: [WidgetPalette.navyTop, WidgetPalette.navyMid, WidgetPalette.navyBottom], startPoint: .top, endPoint: .bottom)
+            RadialGradient(colors: [WidgetPalette.cyan.opacity(0.16), .clear], center: .center, startRadius: 0, endRadius: 220)
+        }
+    }
 }

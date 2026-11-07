@@ -46,7 +46,7 @@ struct NowPlayingWidget: Widget {
             TVsWidgetView(s: entry.s, stale: entry.s?.tvsStale(at: entry.date) ?? false)
                 .environment(\.colorScheme, .dark)
                 .foregroundStyle(WidgetPalette.frost)
-                .tint(WidgetPalette.sky)
+                .tint(WidgetPalette.cyan)
                 .widgetURL(URL(string: "woodruff://remote"))
         }
         .configurationDisplayName("TVs")
@@ -164,7 +164,7 @@ struct TVsBackground: View {
     var body: some View {
         ZStack {
             // The family's navy, with what's playing softly behind it.
-            LinearGradient(colors: [WidgetPalette.navyTop, WidgetPalette.navyBottom], startPoint: .topLeading, endPoint: .bottomTrailing)
+            WidgetBackdrop()
             if let art, let url = PhoneWidgetShare.artURL(art), let image = UIImage(contentsOfFile: url.path) {
                 Image(uiImage: image).resizable().scaledToFill().blur(radius: 24).opacity(0.3)
                 WidgetPalette.navyBottom.opacity(0.45)
@@ -181,7 +181,7 @@ struct HomeWidget: Widget {
             HomeWidgetView(s: entry.s)
                 .environment(\.colorScheme, .dark)   // light text on its dark blue
                 .foregroundStyle(WidgetPalette.frost)
-                .tint(WidgetPalette.sky)
+                .tint(WidgetPalette.cyan)
                 .widgetURL(URL(string: "woodruff://home"))
         }
         .configurationDisplayName("Home")
@@ -277,6 +277,6 @@ struct SceneButton: View {
 
 struct HomeBackground: View {
     var body: some View {
-        LinearGradient(colors: [WidgetPalette.navyTop, WidgetPalette.navyBottom], startPoint: .topLeading, endPoint: .bottomTrailing)
+        WidgetBackdrop()
     }
 }

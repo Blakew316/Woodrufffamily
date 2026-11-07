@@ -13,8 +13,7 @@ struct TVsCamerasWidget: Widget {
                 .environment(\.colorScheme, .dark)
                 .containerBackground(for: .widget) {
                     // Deep navy, a touch brighter at the top left.
-                    LinearGradient(colors: [WidgetPalette.navyTop, WidgetPalette.navyBottom],
-                                   startPoint: .topLeading, endPoint: .bottomTrailing)
+                    WidgetBackdrop()
                 }
         }
         .configurationDisplayName("TVs & Cameras")
@@ -74,7 +73,7 @@ struct TVsCamerasView: View {
                             camera(c)
                         }
                     } else {
-                        RoundedRectangle(cornerRadius: 11, style: .continuous).fill(WidgetPalette.sky.opacity(0.1))
+                        RoundedRectangle(cornerRadius: 11, style: .continuous).fill(WidgetPalette.cyan.opacity(0.1))
                             .overlay(Text("Camera").font(.caption2).foregroundStyle(WidgetPalette.sky.opacity(0.6)))
                     }
                 }
@@ -95,7 +94,7 @@ struct TVsCamerasView: View {
             artwork(tv)
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 5) {
-                    Text(tv.name).font(.system(size: 10, weight: .bold)).foregroundStyle(WidgetPalette.frost).lineLimit(1)
+                    Text(tv.name).font(.system(size: 10, weight: .bold)).foregroundStyle(WidgetPalette.ice).lineLimit(1)
                     Spacer(minLength: 2)
                     if tv.title != nil, let left = tv.left {
                         Text(left).font(.system(size: 10, weight: .medium)).monospacedDigit().foregroundStyle(WidgetPalette.sky)
@@ -107,8 +106,8 @@ struct TVsCamerasView: View {
                     .lineLimit(1)
                 if tv.title != nil, let p = tv.progress {
                     GeometryReader { g in
-                        Capsule().fill(WidgetPalette.sky.opacity(0.22))
-                            .overlay(alignment: .leading) { Capsule().fill(WidgetPalette.sky).frame(width: g.size.width * p) }
+                        Capsule().fill(WidgetPalette.cyan.opacity(0.25))
+                            .overlay(alignment: .leading) { Capsule().fill(WidgetPalette.cyan).frame(width: g.size.width * p) }
                     }
                     .frame(height: 3)
                     .padding(.top, 3)
@@ -119,8 +118,9 @@ struct TVsCamerasView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
         .background {
             if selected {
-                RoundedRectangle(cornerRadius: 12, style: .continuous).fill(WidgetPalette.sky.opacity(0.14))
-                    .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(WidgetPalette.frost.opacity(0.85), lineWidth: 1))
+                RoundedRectangle(cornerRadius: 12, style: .continuous).fill(WidgetPalette.cyan.opacity(0.13))
+                    .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(WidgetPalette.cyan.opacity(0.9), lineWidth: 1))
+                    .shadow(color: WidgetPalette.cyan.opacity(0.35), radius: 6)
             }
         }
     }
@@ -130,9 +130,10 @@ struct TVsCamerasView: View {
             Image(uiImage: image).resizable().scaledToFill()
                 .frame(width: 34, height: 34).clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         } else {
-            RoundedRectangle(cornerRadius: 8, style: .continuous).fill(WidgetPalette.sky.opacity(0.12))
+            RoundedRectangle(cornerRadius: 8, style: .continuous).fill(WidgetPalette.cyan.opacity(0.14))
                 .frame(width: 34, height: 34)
-                .overlay(Image(systemName: "tv").font(.system(size: 14, weight: .semibold)).foregroundStyle(WidgetPalette.frost))
+                .overlay(Image(systemName: "tv").font(.system(size: 14, weight: .semibold)).foregroundStyle(WidgetPalette.cyan))
+                .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(WidgetPalette.cyan.opacity(0.45), lineWidth: 0.75))
         }
     }
 
@@ -150,7 +151,7 @@ struct TVsCamerasView: View {
         let fresh = c.eventAt.map { date.timeIntervalSince($0) < 600 } ?? false
         // The picture fills its box and is cut to it: a filling image alone sizes itself to the picture, which made the
         // whole widget larger than its space (everything looked zoomed in and the bottom was cut off).
-        return WidgetPalette.sky.opacity(0.1)
+        return WidgetPalette.cyan.opacity(0.1)
             .overlay {
                 if let f = c.file, let url = PhoneWidgetShare.artURL(f), let image = UIImage(contentsOfFile: url.path) {
                     Image(uiImage: image).resizable().scaledToFill()
@@ -249,7 +250,8 @@ struct DoorbellLiveActivity: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: DoorbellAttributes.self) { context in
             DoorbellRingView(attributes: context.attributes, at: context.state.at)
-                .activityBackgroundTint(Color.black.opacity(0.6))
+                .background(WidgetBackdrop())   // the app icon's colours
+                .activityBackgroundTint(WidgetPalette.navyBottom)
                 .activitySystemActionForegroundColor(.white)
                 .widgetURL(Self.link(context.attributes))
         } dynamicIsland: { context in
@@ -312,27 +314,40 @@ struct DoorbellRingView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             VStack(alignment: .leading, spacing: 3) {
                 Text("Someone\u{2019}s at the door").font(.headline).foregroundStyle(.white).lineLimit(1)
-                Text(attributes.name).font(.subheadline).foregroundStyle(.white.opacity(0.7)).lineLimit(1)
-                Text(at, style: .time).font(.caption).foregroundStyle(.white.opacity(0.6))
+                Text(attributes.name).font(.subheadline).foregroundStyle(WidgetPalette.ice).lineLimit(1)
+                Text(at, style: .time).font(.caption).foregroundStyle(WidgetPalette.ice.opacity(0.8))
             }
             Spacer(minLength: 0)
-            Text("Open").font(.subheadline.weight(.semibold)).foregroundStyle(.white)
+            Text("Open").font(.subheadline.weight(.semibold)).foregroundStyle(WidgetPalette.frost)
                 .padding(.horizontal, 12).padding(.vertical, 7)
-                .background(.white.opacity(0.18), in: Capsule())
+                .background(WidgetPalette.cyan.opacity(0.25), in: Capsule())
+                .overlay(Capsule().strokeBorder(WidgetPalette.cyan, lineWidth: 1))
         }
         .padding(14)
     }
 }
 
 
-/// The TVs & Cameras widget's colours: deep navy behind, light blue lettering.
+/// The widgets' colours, taken from the app icon: its steel-blue to deep-navy background with a soft cyan glow,
+/// its glowing cyan for outlines and accents, its ice blue for labels and its white for what matters most.
 enum WidgetPalette {
-    static let navyTop = Color(red: 0.07, green: 0.15, blue: 0.36)
-    static let navyBottom = Color(red: 0.02, green: 0.06, blue: 0.17)
-    /// Labels, icons and accents.
-    static let sky = Color(red: 0.55, green: 0.76, blue: 1.0)
-    /// What's playing: the brightest, near white with a blue cast.
-    static let ice = Color(red: 0.88, green: 0.94, blue: 1.0)
-    /// Icy, frosty white: the TVs' names, what they're doing, their emblem and the chosen TV's outline.
-    static let frost = Color(red: 0.93, green: 0.97, blue: 1.0)
+    static let navyTop = Color(red: 0.220, green: 0.325, blue: 0.443)      // steel
+    static let navyMid = Color(red: 0.114, green: 0.200, blue: 0.314)
+    static let navyBottom = Color(red: 0.031, green: 0.067, blue: 0.122)   // deep navy
+    static let cyan = Color(red: 0.227, green: 0.678, blue: 0.875)         // the icon's glow
+    /// Labels.
+    static let sky = Color(red: 0.659, green: 0.831, blue: 0.961)          // ice
+    static let ice = sky
+    /// What's on, the main words.
+    static let frost = Color(red: 0.976, green: 0.992, blue: 0.992)        // white core
+}
+
+/// Behind every widget: the icon's fade from steel blue to deep navy, with its cyan glow in the middle.
+struct WidgetBackdrop: View {
+    var body: some View {
+        ZStack {
+            LinearGradient(colors: [WidgetPalette.navyTop, WidgetPalette.navyMid, WidgetPalette.navyBottom], startPoint: .top, endPoint: .bottom)
+            RadialGradient(colors: [WidgetPalette.cyan.opacity(0.16), .clear], center: .center, startRadius: 0, endRadius: 220)
+        }
+    }
 }

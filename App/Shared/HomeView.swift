@@ -736,7 +736,8 @@ struct HomeBackdrop: View {
         // Also resting while the window can't be seen (hidden, minimised, covered) or the app is in the background.
         let resting = reduceMotion || lowPower || (scroller?.scrolling ?? false) || !fleet.isActive
         ZStack {
-            Color(red: 0.03, green: 0.05, blue: 0.09)
+            // The app icon's colours: steel blue at the top fading to deep navy, its cyan glowing softly in the middle.
+            IconPalette.deep
             // Twice a second is plenty for a drift this slow (each step moves it a fraction of a point), and none
             // while the page scrolls, under Reduce Motion, or in Low Power Mode.
             TimelineView(.animation(minimumInterval: 0.5, paused: resting)) { ctx in
@@ -748,13 +749,12 @@ struct HomeBackdrop: View {
                     [0, 0.5 + v], [0.5 - v, 0.5 + w], [1, 0.5 - w],
                     [0, 1], [0.5 + v, 1], [1, 1],
                 ], colors: [
-                    Color(red: 0.05, green: 0.09, blue: 0.17), Color(red: 0.08, green: 0.18, blue: 0.30), Color(red: 0.04, green: 0.08, blue: 0.14),
-                    Color(red: 0.06, green: 0.20, blue: 0.26), Color(red: 0.10, green: 0.24, blue: 0.40), Color(red: 0.05, green: 0.12, blue: 0.22),
-                    Color(red: 0.03, green: 0.06, blue: 0.11), Color(red: 0.07, green: 0.14, blue: 0.24), Color(red: 0.04, green: 0.10, blue: 0.16),
+                    Color(red: 0.20, green: 0.30, blue: 0.42), IconPalette.steel, Color(red: 0.19, green: 0.29, blue: 0.41),
+                    Color(red: 0.10, green: 0.19, blue: 0.30), Color(red: 0.13, green: 0.30, blue: 0.45), Color(red: 0.10, green: 0.18, blue: 0.29),
+                    IconPalette.deep, Color(red: 0.05, green: 0.10, blue: 0.17), IconPalette.deep,
                 ])
-                .opacity(0.9)
             }
-            LinearGradient(colors: [.clear, .black.opacity(0.35)], startPoint: .top, endPoint: .bottom)
+            LinearGradient(colors: [.clear, .black.opacity(0.15)], startPoint: .top, endPoint: .bottom)
         }
         .ignoresSafeArea()
         .allowsHitTesting(false)

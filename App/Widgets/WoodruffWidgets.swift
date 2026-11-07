@@ -67,7 +67,9 @@ struct NowPlayingLiveActivity: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: NowPlayingAttributes.self) { context in
             LockScreenNowPlaying(state: context.state, idle: context.isStale && !context.state.isPlaying)
-                .activityBackgroundTint(Color.black.opacity(0.55))
+                .background(WidgetBackdrop())   // the app icon's colours
+                .tint(WidgetPalette.cyan)
+                .activityBackgroundTint(WidgetPalette.navyBottom)
                 .activitySystemActionForegroundColor(.white)
                 // Tapping it (anywhere but its buttons) opens the remote, as the Dynamic Island does.
                 .widgetURL(URL(string: "woodruff://remote"))
@@ -142,17 +144,17 @@ struct LockScreenNowPlaying: View {
                     .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
                 VStack(alignment: .leading, spacing: 2) {
                     Text(headline).font(.headline).lineLimit(1)
-                    Text(subline).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                    Text(subline).font(.subheadline).foregroundStyle(WidgetPalette.ice).lineLimit(1)
                 }
                 Spacer(minLength: 0)
             }
             if !idle {
-                ActivityProgress(state: state).tint(.white)
+                ActivityProgress(state: state).tint(WidgetPalette.cyan)
                 ActivityTransport(state: state)
             }
         }
         .padding(16)
-        .foregroundStyle(.white)
+        .foregroundStyle(WidgetPalette.frost)
     }
 
     private var headline: String { idle ? state.tvName : state.title }
@@ -339,7 +341,9 @@ struct ApplianceLiveActivity: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: ApplianceAttributes.self) { context in
             ApplianceLockScreen(attributes: context.attributes, state: context.state)
-                .activityBackgroundTint(Color.black.opacity(0.55))
+                .background(WidgetBackdrop())   // the app icon's colours
+                .tint(WidgetPalette.cyan)
+                .activityBackgroundTint(WidgetPalette.navyBottom)
                 .activitySystemActionForegroundColor(.white)
                 .widgetURL(URL(string: "woodruff://home"))
         } dynamicIsland: { context in

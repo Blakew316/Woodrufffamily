@@ -526,7 +526,7 @@ struct MacRoot: View {
             }
             .environment(\.macPageStack, true)
             // Not under Home's own first page: its backdrop covers the whole page (and draws what's playing itself).
-            .background { if !onHome { AmbientArtwork() } }
+            .background { if onSettings { IconBackdrop() } else if !onHome { AmbientArtwork() } }
             // A clicked camera fills everything right of the sidebar (Esc or ✕ to close).
             .overlay {
                 if let cam = camera {
@@ -990,13 +990,14 @@ struct MacSectionBar: View {
                 Button { go(s) } label: {
                     Text(s.title)
                         .font(.system(size: 13.5, weight: on ? .bold : .semibold))
-                        .foregroundStyle(on ? Color.primary : Color.secondary)
+                        .foregroundStyle(on ? IconPalette.white : IconPalette.ice)
                         .padding(.horizontal, 16)
                         .frame(height: 36)
                         .background {
                             if on {
-                                Capsule().fill(.white.opacity(0.16))
-                                    .overlay(Capsule().strokeBorder(.white.opacity(0.22), lineWidth: 0.5))
+                                Capsule().fill(IconPalette.cyan.opacity(0.25))
+                                    .overlay(Capsule().strokeBorder(IconPalette.cyan.opacity(0.6), lineWidth: 0.75))
+                                    .shadow(color: IconPalette.cyan.opacity(0.4), radius: 8)
                                     .matchedGeometryEffect(id: "lit", in: lit)
                             }
                         }
@@ -1008,7 +1009,8 @@ struct MacSectionBar: View {
         }
         .padding(4)
         .frame(height: 44)
-        .glass(Capsule())
+        .glass(Capsule(), tint: IconPalette.cyan.opacity(0.08))
+        .overlay(Capsule().strokeBorder(IconPalette.cyan.opacity(0.35), lineWidth: 0.75))
         .animation(.spring(response: 0.35, dampingFraction: 0.82), value: current)
     }
 }
@@ -1086,7 +1088,8 @@ struct MacSettingsView: View {
             }
             .scrollIndicators(.never)
             .frame(width: 230)
-            .glass(RoundedRectangle(cornerRadius: 22, style: .continuous), interactive: false)
+            .glass(RoundedRectangle(cornerRadius: 22, style: .continuous), tint: IconPalette.cyan.opacity(0.06), interactive: false)
+            .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).strokeBorder(IconPalette.cyan.opacity(0.25), lineWidth: 0.75))
             .padding(.leading, 18).padding(.vertical, 6)
 
             // The page: its name large at the top, then its settings, all in one glass panel matching the list.
@@ -1102,12 +1105,13 @@ struct MacSettingsView: View {
                 .scrollContentBackground(.hidden)
                 .environment(\.defaultMinListRowHeight, 40)
                 .font(.system(size: 14))
-                .tint(Color(red: 0.55, green: 0.76, blue: 1.0))
+                .tint(IconPalette.cyan)
                 .contentMargins(.horizontal, 12, for: .scrollContent)
                 .transition(.opacity)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .glass(RoundedRectangle(cornerRadius: 22, style: .continuous), interactive: false)
+            .glass(RoundedRectangle(cornerRadius: 22, style: .continuous), tint: IconPalette.cyan.opacity(0.06), interactive: false)
+            .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).strokeBorder(IconPalette.cyan.opacity(0.25), lineWidth: 0.75))
             .padding(.trailing, 18).padding(.vertical, 6)
             .environment(\.macPanePush, MacPanePush { title, view in
                 if all.contains(where: { $0.id == title }) { shown = nil; shownTitle = nil; picked = title } else { shown = view; shownTitle = title }
@@ -1126,15 +1130,15 @@ struct MacSettingsView: View {
         } label: {
             Text(it.id)
                 .font(.system(size: 13.5, weight: on ? .semibold : .regular))
-                .foregroundStyle(it.id == "Needs Attention" ? Palette.attention : (on ? Color.primary : Color.primary.opacity(0.82)))
+                .foregroundStyle(it.id == "Needs Attention" ? Palette.attention : (on ? IconPalette.white : IconPalette.ice))
                 .lineLimit(1)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 12)
                 .frame(height: 32)
                 .background {
                     if on {
-                        RoundedRectangle(cornerRadius: 9, style: .continuous).fill(.white.opacity(0.14))
-                            .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(.white.opacity(0.18), lineWidth: 0.5))
+                        RoundedRectangle(cornerRadius: 9, style: .continuous).fill(IconPalette.cyan.opacity(0.22))
+                            .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(IconPalette.cyan.opacity(0.6), lineWidth: 0.75))
                     }
                 }
                 .contentShape(Rectangle())

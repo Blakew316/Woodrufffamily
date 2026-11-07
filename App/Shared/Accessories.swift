@@ -282,7 +282,10 @@ struct DeviceTile: View, Equatable {
         .padding(.horizontal, 12).padding(.vertical, 10)
         .frame(maxWidth: .infinity, minHeight: 64, maxHeight: .infinity, alignment: .leading)
         .background {
-            if lit { RoundedRectangle(cornerRadius: 20, style: .continuous).fill(.white.opacity(0.94)) }
+            if lit {
+                RoundedRectangle(cornerRadius: 20, style: .continuous).fill(IconPalette.onTile)
+                    .shadow(color: IconPalette.cyan.opacity(0.35), radius: 10)
+            }
         }
         .contentShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         .modifier(DeviceGlass(on: lit))
@@ -370,7 +373,10 @@ func deviceSymbol(_ d: HomeDevice) -> String {
 private struct DeviceGlass: ViewModifier {
     var on: Bool
     func body(content: Content) -> some View {
-        if on { content } else { content.glass(RoundedRectangle(cornerRadius: 20, style: .continuous)) }
+        if on { content } else {
+            content.glass(RoundedRectangle(cornerRadius: 20, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).strokeBorder(IconPalette.cyan.opacity(0.22), lineWidth: 1))
+        }
     }
 }
 
@@ -931,11 +937,11 @@ struct ThermostatChip: View {
         guard let t, t.reachable else { return .gray }
         switch t.action {
         case "heating": return .orange
-        case "cooling": return .cyan
+        case "cooling": return IconPalette.cyan
         default:
             switch t.thermostatMode {
             case "heat": return .orange.opacity(0.8)
-            case "cool": return .blue
+            case "cool": return IconPalette.cyan
             case "auto": return .teal
             default: return .gray
             }
