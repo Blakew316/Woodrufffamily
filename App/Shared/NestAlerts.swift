@@ -17,7 +17,12 @@ final class NestAlerts {
     var person: Bool { get { flag("nest.alert.person", true) } set { UserDefaults.standard.set(newValue, forKey: "nest.alert.person") } }
     var motion: Bool { get { flag("nest.alert.motion", false) } set { UserDefaults.standard.set(newValue, forKey: "nest.alert.motion") } }
     var doorbell: Bool { get { flag("nest.alert.doorbell", true) } set { UserDefaults.standard.set(newValue, forKey: "nest.alert.doorbell") } }
-    private(set) var status = "Off"
+    private(set) var status = "Off" {
+        // Each change in the log, so a Mac that stopped listening says why (Console: com.woodruff.family, alerts).
+        didSet { if status != oldValue { PushRelay.log.notice("camera listener: \(self.status, privacy: .public)") } }
+    }
+    /// For the log's line every ten minutes: listens and messages since the last one.
+    private var listens = 0, messages = 0, lastBeat = Date()
 
     private var loop: Task<Void, Never>?
     private var own: String?
@@ -63,6 +68,7 @@ final class NestAlerts {
         do {
             let sub = try await subscription()
             let r = try await call("POST", "\(sub):pull", ["maxMessages": 10], timeout: timeout)
+            beat(received: (r["receivedMessages"] as? [Any])?.count ?? 0)
             var acks: [String] = []
             for m in r["receivedMessages"] as? [[String: Any]] ?? [] {
                 if let a = m["ackId"] as? String { acks.append(a) }
@@ -74,6 +80,7 @@ final class NestAlerts {
             return true
         } catch let e as URLError where e.code == .timedOut || e.code == .networkConnectionLost {
             // A long listen that ended without news (or a phone's connection changing): normal, and listened again.
+            beat(received: 0)
             status = "On"
             return true
         } catch {
@@ -82,6 +89,15 @@ final class NestAlerts {
             if error.localizedDescription.contains("NOT_FOUND") { own = nil }
             return false
         }
+    }
+
+    /// Counts a listen; every ten minutes the log says how many there were and how many messages came.
+    private func beat(received: Int) {
+        listens += 1
+        messages += received
+        guard Date().timeIntervalSince(lastBeat) > 600 else { return }
+        PushRelay.log.notice("camera listener: \(self.listens) listens, \(self.messages) messages in the last \(Int(Date().timeIntervalSince(self.lastBeat) / 60)) minutes")
+        listens = 0; messages = 0; lastBeat = Date()
     }
 
     // MARK: The subscription
@@ -188,6 +204,9 @@ final class NestAlerts {
                     post(title: p.title, body: p.body, camera: p.camera, key: p.key, event: p.event, clip: url, quiet: true)
                 }
             default: break
+            }
+            if title == nil, ["Chime", "Person", "Motion"].contains(where: { type.hasSuffix(".\($0)") }) {
+                PushRelay.log.notice("camera event not alerted: \(type.components(separatedBy: ".").last ?? type, privacy: .public) is off on this device")
             }
             if let title {
                 posted[session] = Posted(title: title, body: name, camera: device, key: key, event: eventID, hasClip: clip != nil, at: Date())
