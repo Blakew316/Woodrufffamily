@@ -255,8 +255,9 @@ enum AppSection: String, CaseIterable, Identifiable, Hashable {
     case home, remote, watch, send, memories, settings
     var id: String { rawValue }
     /// iPhone tabs (Send is in Settings); the Mac has no Remote tab (the remote slides out on the right).
-    static let phone: [AppSection] = [.home, .remote, .watch, .memories, .settings]
-    static let mac: [AppSection] = [.home, .watch, .send, .memories, .settings]
+    // Memories is no longer in the app's navigation (the TVs' slideshow still shows them).
+    static let phone: [AppSection] = [.home, .remote, .watch, .settings]
+    static let mac: [AppSection] = [.home, .watch, .send, .settings]
     var title: String {
         switch self {
         case .home: return "Home"
@@ -299,7 +300,8 @@ struct RootView: View {
             #if os(iOS)
             return AppSection.phone.contains(s) ? s : .home
             #else
-            return s
+            // The remote (a panel) or a page that's left the bar (Memories) opens Home instead.
+            return AppSection.mac.contains(s) || s == .remote ? s : .home
             #endif
         }, set: { stored = $0.rawValue })
     }

@@ -22,6 +22,93 @@ struct SendView: View {
     @FocusState private var focused: Bool
 
     var body: some View {
+        #if os(macOS)
+        macBody
+        #else
+        phoneBody
+        #endif
+    }
+
+    #if os(macOS)
+    /// The Mac: a composer card in the middle of the page (who it goes to inside it, Send beside the words), then the
+    /// other things to send as three cards under it.
+    private var macBody: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 28) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Send a Message").font(.system(size: 30, weight: .bold, design: .rounded))
+                    Text("It shows on the TVs and the family’s phones.").font(.title3).foregroundStyle(.secondary)
+                }
+                VStack(alignment: .leading, spacing: 0) {
+                    PageLink("To") { SendToView(to: to) } label: {
+                        HStack(spacing: 8) {
+                            Text("To").foregroundStyle(.secondary)
+                            Text(toSummary).fontWeight(.semibold)
+                            Image(systemName: "chevron.right").font(.caption.weight(.bold)).foregroundStyle(.tertiary)
+                            Spacer(minLength: 0)
+                        }
+                        .font(.body)
+                        .padding(.horizontal, 20).padding(.vertical, 14)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    Divider().padding(.horizontal, 20)
+                    TextField("Write a message…", text: $message, axis: .vertical)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 19, weight: .regular, design: .rounded))
+                        .lineLimit(4...10)
+                        .focused($focused)
+                        .padding(.horizontal, 20).padding(.top, 16).padding(.bottom, 8)
+                    HStack {
+                        Text("A short first line becomes its title.").font(.footnote).foregroundStyle(.tertiary)
+                        Spacer()
+                        Button { send() } label: {
+                            HStack(spacing: 8) {
+                                if sending { ProgressView().controlSize(.small) }
+                                Text("Send").fontWeight(.semibold)
+                            }
+                            .padding(.horizontal, 14)
+                        }
+                        .buttonStyle(.glassProminent)
+                        .controlSize(.large)
+                        .disabled(!canSend || sending)
+                        .keyboardShortcut(.return, modifiers: .command)
+                        .help("Send (⌘↩)")
+                    }
+                    .padding(.horizontal, 20).padding(.bottom, 16)
+                }
+                .glass(RoundedRectangle(cornerRadius: 24, style: .continuous))
+
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Also Send").font(.headline).foregroundStyle(.secondary)
+                    HStack(spacing: 14) {
+                        PageLink("Photos & Files") { FilesView() } label: {
+                            SendCard(symbol: "folder.fill", tint: .blue, title: "Photos & Files", detail: "Put them on a TV")
+                        }
+                        .buttonStyle(.plain)
+                        PageLink("Open a Link") { OpenLinkView() } label: {
+                            SendCard(symbol: "link", tint: .indigo, title: "Open a Link", detail: "A page or video on a TV")
+                        }
+                        .buttonStyle(.plain)
+                        Button { startSlideshow() } label: {
+                            SendCard(symbol: "photo.on.rectangle.angled", tint: .orange, title: "Photo Slideshow",
+                                     detail: startingSlideshow ? "Starting…" : (slideshowTV.map { "On \($0.hub.name)" } ?? "On the TV"))
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(startingSlideshow)
+                    }
+                }
+            }
+            .frame(maxWidth: 720, alignment: .leading)
+            .padding(.horizontal, 28).padding(.vertical, 24)
+            .frame(maxWidth: .infinity)
+        }
+        .task { await loadPhones() }
+        .onAppear { focused = true }
+    }
+    #endif
+
+    private var phoneBody: some View {
         Form {
             Section {
                 // Like Messages: the send arrow sits in the message itself, and the box grows as you write.
@@ -899,3 +986,36 @@ struct PageShape: Shape {
         return p
     }
 }
+
+
+#if os(macOS)
+/// One of Send's other things to send: a glass card with its picture, name and what it does.
+private struct SendCard: View {
+    var symbol: String
+    var tint: Color
+    var title: String
+    var detail: String
+    @State private var hover = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Image(systemName: symbol)
+                .font(.system(size: 20, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 40, height: 40)
+                .background(tint.gradient, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title).font(.headline)
+                Text(detail).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(18)
+        .glass(RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .scaleEffect(hover ? 1.02 : 1)
+        .animation(.smooth(duration: 0.2), value: hover)
+        .onHover { hover = $0 }
+        .contentShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+    }
+}
+#endif
