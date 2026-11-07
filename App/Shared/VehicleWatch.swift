@@ -57,6 +57,7 @@ final class VehicleWatch {
     @ObservationIgnored private var maxShare: Double = 0
     @ObservationIgnored private var previous: [String: [Float]] = [:]
     @ObservationIgnored private var lastFrame: (jpeg: Data, camera: String)?
+    @ObservationIgnored private var lastCandidateSaved = Date.distantPast
 
     static var folder: URL? {
         guard let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return nil }
@@ -146,7 +147,12 @@ final class VehicleWatch {
         box = box.insetBy(dx: -max(24, box.width * 0.3), dy: -max(24, box.height * 0.3))
             .intersection(CGRect(x: 0, y: 0, width: image.width, height: image.height))
         guard let crop = image.cropping(to: box.integral) else { return }
-        let (label, confidence) = await Self.vehicle(in: crop)
+        let (label, confidence, top) = await Self.vehicle(in: crop)
+        // Test Mode: what changed and what Vision made of it, to count right and wrong calls (one every 15 s at most).
+        if testMode, Date().timeIntervalSince(lastCandidateSaved) > 15, let jpegCrop = Self.jpeg(crop) {
+            lastCandidateSaved = Date()
+            _ = Self.keep(jpegCrop, note: "\(cam.name)-\(top)", in: "Candidates")
+        }
         guard let label, confidence >= minConfidence else { scene.hits = 0; return }
         vehicleFrames += 1
         scene.hits += 1
@@ -200,21 +206,33 @@ final class VehicleWatch {
                                                      "police_car", "semi_truck", "suv", "truck", "van", "vehicle"]
 
     /// Vision's best vehicle label for the patch, and how sure it is.
-    private nonisolated static func vehicle(in crop: CGImage) async -> (String?, Float) {
+    /// Vision's best vehicle label for the patch and how sure it is, and its top three labels of any kind.
+    private nonisolated static func vehicle(in crop: CGImage) async -> (String?, Float, String) {
         await Task.detached(priority: .utility) {
             let request = VNClassifyImageRequest()
             try? VNImageRequestHandler(cgImage: crop).perform([request])
+            let results = (request.results ?? []).sorted { $0.confidence > $1.confidence }
             var best: (String?, Float) = (nil, 0)
-            for o in request.results ?? [] where o.confidence > best.1 && vehicleLabels.contains(o.identifier) {
-                best = (o.identifier, o.confidence)
-            }
-            return best
+            for o in results where o.confidence > best.1 && vehicleLabels.contains(o.identifier) { best = (o.identifier, o.confidence) }
+            let top = results.prefix(3).map { "\($0.identifier)\(Int($0.confidence * 100))" }.joined(separator: "-")
+            return (best.0, best.1, top)
         }.value
     }
 
+    private nonisolated static func jpeg(_ image: CGImage) -> Data? {
+        let d = NSMutableData()
+        guard let dest = CGImageDestinationCreateWithData(d, "public.jpeg" as CFString, 1, nil) else { return nil }
+        CGImageDestinationAddImage(dest, image, [kCGImageDestinationLossyCompressionQuality: 0.8] as CFDictionary)
+        return CGImageDestinationFinalize(dest) ? d as Data : nil
+    }
+
     /// The frame saved for looking at later (the newest 200 are kept).
-    private static func keep(_ jpeg: Data, note: String) -> URL? {
-        guard let f = folder else { return nil }
+    private static func keep(_ jpeg: Data, note: String, in sub: String? = nil) -> URL? {
+        guard var f = folder else { return nil }
+        if let sub {
+            f = f.appendingPathComponent(sub, isDirectory: true)
+            try? FileManager.default.createDirectory(at: f, withIntermediateDirectories: true)
+        }
         let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "")
         let safe = note.replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: " ", with: "_")
         let file = f.appendingPathComponent("\(stamp)-\(safe).jpg")
