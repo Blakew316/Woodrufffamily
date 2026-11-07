@@ -682,7 +682,7 @@ struct MacRoot: View {
         let greeting = onHome && width >= 900
         // Wide enough: the greeting sits in the very middle of the page, between the remote and Edit Home at the far left
         // and the thermostat at the far right. Narrower, it sits between them in the row (centred, it would collide).
-        let centred = greeting && width >= 1000
+        let centred = greeting && width >= 1150
         // Home scrolled down: the greeting goes and the bar closes up over it.
         let quiet = centred && MacHomeScroll.shared.scrolledDown
         return VStack(alignment: .leading, spacing: onSettings ? 0 : 10) {
@@ -749,10 +749,10 @@ struct MacRoot: View {
             .opacity(onSettings ? 0 : 1)
             .allowsHitTesting(!onSettings)
             .overlay {
-                // Large and floating, a little below the row (the bar leaves room for it under the row).
+                // In the middle of the row, between Edit Home and the thermostat (no extra room under the row for it).
                 if centred {
                     MacGreetingHero()
-                        .offset(y: quiet ? 10 : 30)
+                        .offset(y: quiet ? -8 : 0)
                         .opacity(quiet ? 0 : 1)
                         .scaleEffect(quiet ? 0.94 : 1)
                         .transition(.opacity.combined(with: .scale(scale: 0.96)))
@@ -761,7 +761,7 @@ struct MacRoot: View {
         }
         .padding(.horizontal, 18)
         .padding(.top, 4)
-        .padding(.bottom, centred && !quiet ? 52 : (onSettings ? 0 : 8))
+        .padding(.bottom, centred && !quiet ? 14 : (onSettings ? 0 : 8))
         .animation(.smooth(duration: 0.3), value: greeting)
         .task(id: onHome) {
             guard onHome else { return }
