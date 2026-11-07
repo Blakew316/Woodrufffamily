@@ -50,6 +50,7 @@ jobs:
       - name: Generate project
         run: |
           brew install xcodegen
+          scripts/fetch_webrtc.sh
           xcodegen generate
       - name: Build iOS app (simulator)
         run: |

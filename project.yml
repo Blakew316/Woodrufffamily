@@ -25,9 +25,9 @@ settings:
 packages:
   WoodruffKit:
     path: Packages/WoodruffKit
+  # Google's WebRTC library, downloaded into Packages/WebRTC by scripts/fetch_webrtc.sh before each build.
   WebRTC:
-    url: https://github.com/stasel/WebRTC
-    exactVersion: 157.0.0
+    path: Packages/WebRTC
 
 targets:
   WoodruffFamily:

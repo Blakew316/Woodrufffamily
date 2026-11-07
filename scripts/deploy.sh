@@ -394,6 +394,13 @@ generate_project() {
     problem "xcodegen isn't installed (brew install xcodegen), so nothing was built"
     return 1
   fi
+  # Google's WebRTC library, fetched by the script (Xcode's own download of it could hang without an error).
+  if ! "$ROOT/scripts/fetch_webrtc.sh" </dev/null >"$LOGDIR/webrtc.log" 2>&1; then
+    problem "the cameras' WebRTC library couldn't be downloaded, so nothing was built:"
+    tail -n 4 "$LOGDIR/webrtc.log" | indent
+    return 1
+  fi
+  say "    $(tail -n 1 "$LOGDIR/webrtc.log")"
   if ! xcodegen generate </dev/null >"$log" 2>&1; then
     problem "xcodegen generate failed, so nothing was built:"
     tail -n 8 "$log" | indent
