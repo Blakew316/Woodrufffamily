@@ -453,11 +453,14 @@ final class CameraStreams {
     #if os(macOS)
     /// The Mac: while one of its windows can be seen, the doorbell's and driveway's streams play (off screen when no
     /// tile shows them), so opening either is instant; once none can be seen they're let go (unless Vehicle Alerts
-    /// watches them).
+    /// watches them). The Mac that sends the family's alerts keeps every camera live all the time, seen or not, so
+    /// each alert's picture is taken from the stream at once (the cameras are all wired).
     @ObservationIgnored private(set) var warmed: Set<String> = []
     func keepWarm(_ on: Bool) {
-        if on {
-            for c in NestCameras.shared.cameras where c.webRTC && c.online && Self.isImportant(c) {
+        let always = PushRelay.shared.isSender
+        if on || always {
+            for c in NestCameras.shared.cameras where c.webRTC && c.online && (always || Self.isImportant(c)) {
+                if warmed.contains(c.id), players[c.id]?.isRunning == true { continue }
                 keepPlaying(c)
                 warmed.insert(c.id)
             }
@@ -512,7 +515,7 @@ final class CameraStreams {
     func availability(_ cams: [NestCameras.Camera]) {
         #if os(macOS)
         // The list is in (or changed): the doorbell and driveway kept ready while a window can be seen.
-        defer { if Fleet.shared.isActive { keepWarm(true) } }
+        defer { if Fleet.shared.isActive || PushRelay.shared.isSender { keepWarm(true) } }
         #endif
         for c in cams {
             guard let p = players[c.id] else { continue }

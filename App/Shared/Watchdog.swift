@@ -22,6 +22,8 @@ final class AlertWatchdog {
                 guard let self else { return }
                 self.check()
                 WeeklyNote.sendIfDue()
+                // The sending Mac's cameras all kept live (one that dropped, or this Mac becoming the sender).
+                if PushRelay.shared.isSender { CameraStreams.shared.keepWarm(true) }
             }
         }
     }
