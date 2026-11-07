@@ -77,7 +77,8 @@ struct TVsCamerasView: View {
                     }
                 }
             }
-            .frame(width: 118)
+            // Wider than it was (118): the gap beside the TV rows had room for it.
+            .frame(width: 140)
             .frame(maxHeight: .infinity)
         }
         .padding(11)
@@ -161,7 +162,11 @@ struct TVsCamerasView: View {
             HStack(spacing: 4) {
                 Text(c.doorbell ? "Doorbell" : shortName(c.name)).lineLimit(1)
                 Spacer(minLength: 2)
-                if let at = c.at { Text(at, style: .time).foregroundStyle(.white.opacity(0.78)) }
+                // Always on one line ("10:25 PM" was breaking onto a second): the name gives way instead.
+                if let at = c.at {
+                    Text(at, style: .time).foregroundStyle(.white.opacity(0.78))
+                        .lineLimit(1).fixedSize().layoutPriority(1)
+                }
             }
             .font(.system(size: 10, weight: .semibold))
             .foregroundStyle(.white)
