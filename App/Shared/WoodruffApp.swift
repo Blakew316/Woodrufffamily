@@ -637,7 +637,6 @@ struct MacRoot: View {
                 .buttonStyle(PressScale())
                 .help("Remote (⌥⌘R)")
                 .accessibilityLabel("Remote")
-                .keyboardShortcut("r", modifiers: [.command, .option])
     }
 
     /// Home's Edit Home / Done, as tall as the greeting.
@@ -687,20 +686,22 @@ struct MacRoot: View {
         let centred = greeting && width >= 1000
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 10) {
-                if columns == .detailOnly {
-                    Button { withAnimation(.smooth) { columns = .all } } label: {
-                        Image(systemName: "sidebar.left")
-                            .font(.system(size: 14, weight: .semibold))
-                            .frame(width: 34, height: 34)
-                            .contentShape(Circle())
-                            .glass(Circle())
+                // The sidebar's own button (in the window's title bar) shows it again when it's hidden: no second one here.
+                // A page opened from another: Back, at the very left of this bar.
+                if let open = nav.path.last {
+                    Button { MacNav.shared.pop() } label: {
+                        HStack(spacing: 5) {
+                            Image(systemName: "chevron.left").font(.body.weight(.semibold))
+                            Text(open.backTo).lineLimit(1)
+                        }
+                        .padding(.horizontal, 4)
                     }
-                    .buttonStyle(PressScale())
-                    .help("Show the Sidebar")
-                    .accessibilityLabel("Show the Sidebar")
-                    .accessibilityLabel("Show the Sidebar")
-                    // Clear of the window's close, minimise and zoom buttons, which sit here with the sidebar hidden.
-                    .padding(.leading, 64)
+                    .buttonStyle(.glass)
+                    .controlSize(.large)
+                    .keyboardShortcut("[", modifiers: .command)
+                    .help("Back to \(open.backTo) (⌘[)")
+                    // Clear of the window's close, minimise and zoom buttons when the sidebar is hidden.
+                    .padding(.leading, columns == .detailOnly ? 64 : 0)
                 }
                 // Home: the remote and Edit Home at the far left, the greeting in the middle, the thermostat at the right.
                 if onHome {
@@ -729,7 +730,7 @@ struct MacRoot: View {
                     Spacer(minLength: 8)
                     TVPicker()
                 }
-                if !onHome { remoteButton }
+                // The remote's button is on Home only (⌥⌘R and the TVs menu open it anywhere).
                 ThermostatChip(compact: narrow || (greeting && width < 1150), height: 44)
             }
             // Always the same height, so the pages below never jump as the bar's contents change.

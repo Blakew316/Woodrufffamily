@@ -4,6 +4,8 @@ import SwiftUI
 struct PageRoute: Hashable {
     let id = UUID()
     let title: String
+    /// Mac: what Back in Woodruff's top bar says for this page ("Settings").
+    var backTo: String = "Back"
     let view: AnyView
 
     static func == (a: PageRoute, b: PageRoute) -> Bool { a.id == b.id }
@@ -20,7 +22,7 @@ final class MacNav {
     var path: [PageRoute] = []
 
     func push(_ title: String, backTo: String = "Back", _ view: some View) {
-        path.append(PageRoute(title: title, view: AnyView(MacPage(title: title, backTo: backTo) { view }.environment(\.macPageTitle, title))))
+        path.append(PageRoute(title: title, backTo: backTo, view: AnyView(MacPage(title: title, backTo: backTo) { view }.environment(\.macPageTitle, title))))
     }
 
     func pop() {
@@ -67,7 +69,7 @@ struct PageLink<Label: View, Destination: View>: View {
         #if os(macOS)
         // The page opened carries its own Back button (under the search field), however it was opened.
         if onStack {
-            NavigationLink(value: PageRoute(title: title, view: AnyView(page))) { label() }
+            NavigationLink(value: PageRoute(title: title, backTo: here, view: AnyView(page))) { label() }
         } else {
             NavigationLink { page } label: { label() }
         }
@@ -126,10 +128,9 @@ struct MacPage<Content: View>: View {
     var body: some View {
         content()
             // A bar (not an inset): the window draws one soft edge under Woodruff's bar and Back together.
+            // On the window's stack, Back is in Woodruff's own top bar (at its left); a sheet's pages keep their own row.
             .safeAreaBar(edge: .top, spacing: 0) {
-                if onStack {
-                    MacBackRow(title: title, backTo: backTo) { MacNav.shared.pop() }
-                } else {
+                if !onStack {
                     MacDismissBackRow(title: title, backTo: backTo)
                 }
             }

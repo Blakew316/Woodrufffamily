@@ -22,7 +22,8 @@ struct MemoriesView: View {
     #if os(iOS)
     private let columns = Array(repeating: GridItem(.flexible(), spacing: 2), count: 3)
     #else
-    private let columns = [GridItem(.adaptive(minimum: 150, maximum: 220), spacing: 2)]
+    // Like Photos on the Mac: rounded pictures with room between them.
+    private let columns = [GridItem(.adaptive(minimum: 150, maximum: 220), spacing: 10)]
     #endif
     private var client: TVClient? { fleet.hubClient() }
     @Namespace private var zoom
@@ -76,7 +77,7 @@ struct MemoriesView: View {
                         .padding(.horizontal, 20).padding(.bottom, 10)
                 }
                 // Like Photos: one continuous grid; the month floats in a glass capsule while scrolling.
-                LazyVGrid(columns: gridColumns, spacing: 2) {
+                LazyVGrid(columns: gridColumns, spacing: Self.gridGap) {
                     ForEach(m.items) { item in
                         Button { viewing = item } label: { tile(item, client).zoomSource(item.path, zoom) }
                             .buttonStyle(.plain)
@@ -84,6 +85,9 @@ struct MemoriesView: View {
                     }
                 }
                 .scrollTargetLayout()
+                #if os(macOS)
+                .padding(.horizontal, 20).padding(.top, 6)
+                #endif
                 #if os(iOS)
                 // Pinch to see more or fewer photos across, like Photos.
                 .simultaneousGesture(MagnifyGesture()
@@ -112,9 +116,12 @@ struct MemoriesView: View {
                 .frame(maxWidth: .infinity)
                 .padding(.top, 60)
             } else {
-                LazyVGrid(columns: gridColumns, spacing: 2) {
-                    ForEach(0..<18, id: \.self) { _ in Placeholder(corner: 0).aspectRatio(1, contentMode: .fit) }
+                LazyVGrid(columns: gridColumns, spacing: Self.gridGap) {
+                    ForEach(0..<18, id: \.self) { _ in Placeholder(corner: Self.tileCorner).aspectRatio(1, contentMode: .fit) }
                 }
+                #if os(macOS)
+                .padding(.horizontal, 20).padding(.top, 6)
+                #endif
                 .shimmer()
             }
         }
@@ -160,11 +167,35 @@ struct MemoriesView: View {
         #endif
     }
 
+    #if os(macOS)
+    static let gridGap: CGFloat = 10
+    static let tileCorner: CGFloat = 8
+    #else
+    static let gridGap: CGFloat = 2
+    static let tileCorner: CGFloat = 0
+    #endif
+
     private func tile(_ item: MemoryItem, _ client: TVClient?) -> some View {
         Color.clear
             .aspectRatio(1, contentMode: .fit)
-            .overlay { TVImage(url: client?.thumbURL(item), maxPixel: 512) }
-            .clipped()
+            .overlay {
+                #if os(macOS)
+                // While it loads, a soft shimmer; a picture the TV can't give, a quiet card saying what it is (never a
+                // flat grey square).
+                CachedImage(url: client?.thumbURL(item), maxPixel: 512) {
+                    Rectangle().fill(.quinary).shimmer()
+                } failure: {
+                    ZStack {
+                        Rectangle().fill(.regularMaterial)
+                        Image(systemName: item.video ? "video" : "photo")
+                            .font(.system(size: 26, weight: .light)).foregroundStyle(.tertiary)
+                    }
+                }
+                #else
+                TVImage(url: client?.thumbURL(item), maxPixel: 512)
+                #endif
+            }
+            .clipShape(RoundedRectangle(cornerRadius: Self.tileCorner, style: .continuous))
             .overlay(alignment: .bottomTrailing) {
                 if item.video { Image(systemName: "video.fill").font(.caption).foregroundStyle(.white).shadow(radius: 2).padding(5) }
             }

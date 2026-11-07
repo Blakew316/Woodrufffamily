@@ -105,6 +105,9 @@ struct WoodruffCommands: Commands {
             Button("Refresh All") { Task { await fleet.refresh(); await fleet.loadAllHealth() } }
                 .keyboardShortcut("r", modifiers: [.command, .shift])
             Button("Update Every Android TV") { MacActions.updateAll(fleet) }
+            // The remote from any page (its button is on Home only).
+            Button("Remote") { withAnimation(.smooth) { fleet.remotePanel.toggle() } }
+                .keyboardShortcut("r", modifiers: [.command, .option])
             Divider()
             Button(tvName(0)) { pick(0) }.keyboardShortcut("1", modifiers: .command)
             Button(tvName(1)) { pick(1) }.keyboardShortcut("2", modifiers: .command)
