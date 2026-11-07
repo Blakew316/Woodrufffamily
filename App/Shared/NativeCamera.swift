@@ -12,20 +12,21 @@ import AppKit
 
 /// A camera's live picture played natively (Google's WebRTC library, drawn with Metal) instead of in a web page:
 /// quicker to start, smoother, lighter on battery. `LivePlayer` uses it first for each camera and falls back to its
-/// web page by itself if the native one doesn't go live (or for sound, which stays with the web page), so the worst
+/// web page by itself if the native one doesn't go live, so the worst
 /// case is the player as it was.
 final class NativeRTC: NSObject, RTCPeerConnectionDelegate, RTCVideoViewDelegate {
     /// One for the whole app (making one is costly).
     static let factory: RTCPeerConnectionFactory = {
         RTCInitializeSSL()
         #if os(iOS)
-        // No microphone and no audio session taken on the iPhone: the picture only (sound uses the web player).
-        let session = RTCAudioSession.sharedInstance()
-        session.useManualAudio = true
-        session.isAudioEnabled = false
-        #endif
+        // The iPhone's sound is the app's own speaker-only player: WebRTC's would open the microphone.
+        return RTCPeerConnectionFactory(encoderFactory: RTCDefaultVideoEncoderFactory(),
+                                        decoderFactory: RTCDefaultVideoDecoderFactory(),
+                                        audioDevice: CameraSound.shared)
+        #else
         return RTCPeerConnectionFactory(encoderFactory: RTCDefaultVideoEncoderFactory(),
                                         decoderFactory: RTCDefaultVideoDecoderFactory())
+        #endif
     }()
 
     #if os(iOS)
@@ -45,10 +46,15 @@ final class NativeRTC: NSObject, RTCPeerConnectionDelegate, RTCVideoViewDelegate
     private var pc: RTCPeerConnection?
     private var videoTrack: RTCVideoTrack?
     private var audioTracks: [RTCAudioTrack] = []
-    /// The Mac plays the camera's sound itself; the iPhone's sound stays with the web player (WebRTC's iPhone audio
-    /// would also open the microphone).
+    /// This camera's sound (off by default). On the iPhone it's played by `CameraSound`, speaker only.
     var sound = false {
-        didSet { for a in audioTracks { a.isEnabled = sound } }
+        didSet {
+            guard sound != oldValue else { return }
+            for a in audioTracks { a.isEnabled = sound }
+            #if os(iOS)
+            CameraSound.shared.want(sound)
+            #endif
+        }
     }
     /// "Live", "Starting…", "Reconnecting…" or "failed", on the main thread.
     var onState: ((String) -> Void)?
@@ -160,11 +166,7 @@ final class NativeRTC: NSObject, RTCPeerConnectionDelegate, RTCVideoViewDelegate
 
     private func attachAudio(_ track: RTCAudioTrack, from connection: RTCPeerConnection) {
         guard connection === pc else { return }
-        #if os(macOS)
         track.isEnabled = sound
-        #else
-        track.isEnabled = false
-        #endif
         if !audioTracks.contains(where: { $0 === track }) { audioTracks.append(track) }
     }
 
