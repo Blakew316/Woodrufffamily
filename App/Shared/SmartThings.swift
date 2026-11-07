@@ -118,6 +118,7 @@ final class SmartThings {
     /// A renewal key SmartThings turned down: it isn't sent again (asking with a dead key over and over helps no one).
     /// A newer one, from another of the family's devices or a new sign-in, is tried as soon as it's here.
     @ObservationIgnored private var rejectedRefresh: String?
+    static let waitingForMac = "SmartThings is waiting for a Mac at home to renew its sign-in."
     static let signInAgain = "SmartThings signed this device out. It comes back when your devices at home pass on their sign-in, or sign in again in Settings."
 
     /// The sign-in to use. A renewal runs one at a time (the renewal key works once, so two at once would
@@ -127,6 +128,19 @@ final class SmartThings {
         // An old pasted token alongside the Samsung sign-in: drop it everywhere (the removal syncs).
         if Keychain.get("st.token") != nil { Keychain.set(nil, for: "st.token") }
         if !force, let a = Keychain.get("st.access"), let e = Keychain.get("st.expires").flatMap(Double.init), e > Date().timeIntervalSince1970 { return a }
+        #if os(iOS)
+        // The Macs (always at home) renew the family's sign-in and pass it on; an iPhone renewing too would leave
+        // them holding a key SmartThings no longer takes. So for an hour after it runs out, the iPhone waits for
+        // theirs, and renews by itself only after that (no Mac about).
+        if let e = Keychain.get("st.expires").flatMap(Double.init), Date().timeIntervalSince1970 >= e,
+           Date().timeIntervalSince1970 < e + 3600 {
+            let before = Keychain.get("st.access")
+            try? await Task.sleep(nanoseconds: 8_000_000_000)
+            if let a = Keychain.get("st.access"), a != before, let e2 = Keychain.get("st.expires").flatMap(Double.init),
+               e2 > Date().timeIntervalSince1970 { return a }
+            throw OAuthRelay.Failure.refused(Self.waitingForMac)
+        }
+        #endif
         if let running = renewing { return try await running.value }
         let t = Task { try await self.renew() }
         renewing = t
