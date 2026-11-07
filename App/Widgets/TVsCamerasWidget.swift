@@ -78,8 +78,10 @@ struct TVsCamerasView: View {
                 }
             }
             .frame(width: 118)
+            .frame(maxHeight: .infinity)
         }
         .padding(11)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     // MARK: A TV
@@ -91,14 +93,14 @@ struct TVsCamerasView: View {
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 5) {
                     dot(tv)
-                    Text(tv.name).font(.system(size: 10.5, weight: .semibold)).foregroundStyle(.secondary).lineLimit(1)
+                    Text(tv.name).font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary).lineLimit(1)
                     Spacer(minLength: 2)
                     if tv.title != nil, let left = tv.left {
                         Text(left).font(.system(size: 10, weight: .medium)).monospacedDigit().foregroundStyle(.secondary)
                     }
                 }
                 Text(tv.title ?? (tv.online ? "On" : "Off"))
-                    .font(.system(size: 13, weight: selected ? .bold : .semibold, design: .rounded))
+                    .font(.system(size: 12.5, weight: selected ? .bold : .semibold, design: .rounded))
                     .foregroundStyle(tv.title != nil ? Color.primary : tv.online ? Color.secondary : Color.secondary.opacity(0.6))
                     .lineLimit(1)
                 if tv.title != nil, let p = tv.progress {
@@ -144,15 +146,16 @@ struct TVsCamerasView: View {
 
     private func camera(_ c: PhoneWidgetShare.CameraLine) -> some View {
         let fresh = c.eventAt.map { date.timeIntervalSince($0) < 600 } ?? false
-        return ZStack {
-            if let f = c.file, let url = PhoneWidgetShare.artURL(f), let image = UIImage(contentsOfFile: url.path) {
-                Image(uiImage: image).resizable().scaledToFill()
-            } else {
-                Color.white.opacity(0.06)
+        // The picture fills its box and is cut to it: a filling image alone sizes itself to the picture, which made the
+        // whole widget larger than its space (everything looked zoomed in and the bottom was cut off).
+        return Color.white.opacity(0.06)
+            .overlay {
+                if let f = c.file, let url = PhoneWidgetShare.artURL(f), let image = UIImage(contentsOfFile: url.path) {
+                    Image(uiImage: image).resizable().scaledToFill()
+                }
             }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .clipped()
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .clipped()
         .overlay(LinearGradient(colors: [.clear, .black.opacity(0.6)], startPoint: .center, endPoint: .bottom))
         .overlay(alignment: .bottom) {
             HStack(spacing: 4) {
