@@ -287,6 +287,9 @@ final class NestCameras {
                 backoff[cam] = nil
                 return r
             } catch is RateLimited {
+                let who = cameras.first(where: { $0.id == cam })?.name ?? cam
+                let secs = Int(min(300, (backoff[cam] ?? 20) * 2))
+                Logger(subsystem: "com.woodruff.family", category: "camera").notice("Google refused a camera command (too many): \(who, privacy: .public) waits \(secs, privacy: .public) s")
                 let b = min(300, (backoff[cam] ?? 20) * 2)
                 backoff[cam] = b
                 nextFor[cam] = Date().addingTimeInterval(b)
@@ -453,13 +456,15 @@ final class CameraStreams {
     #if os(macOS)
     /// The Mac: while one of its windows can be seen, the doorbell's and driveway's streams play (off screen when no
     /// tile shows them), so opening either is instant; once none can be seen they're let go (unless Vehicle Alerts
-    /// watches them). The Mac that sends the family's alerts keeps every camera live all the time, seen or not, so
-    /// each alert's picture is taken from the stream at once (the cameras are all wired).
+    /// watches them). The Mac that sends the family's alerts keeps those two live all the time, seen or not, so their
+    /// alerts' pictures are taken from the stream at once. Only those two: every stream kept open spends the family's
+    /// share of Google's camera commands (renewals, restarts), and with all of them open the iPhones' own requests
+    /// were refused and waited 40 seconds.
     @ObservationIgnored private(set) var warmed: Set<String> = []
     func keepWarm(_ on: Bool) {
         let always = PushRelay.shared.isSender
         if on || always {
-            for c in NestCameras.shared.cameras where c.webRTC && c.online && (always || Self.isImportant(c)) {
+            for c in NestCameras.shared.cameras where c.webRTC && c.online && Self.isImportant(c) {
                 if warmed.contains(c.id), players[c.id]?.isRunning == true { continue }
                 keepPlaying(c)
                 warmed.insert(c.id)
