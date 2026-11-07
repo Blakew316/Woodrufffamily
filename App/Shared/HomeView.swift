@@ -53,6 +53,9 @@ struct HomeView: View {
     private let columns = [GridItem(.adaptive(minimum: 320), spacing: 18)]
     #endif
 
+    /// iPhone: the height of the weather, Edit and thermostat pills under the greeting.
+    static let pillHeight: CGFloat = 52
+
     var body: some View {
         // Read here, so Home redraws the moment any of these changes (Rooms & Sections, a tapped TV, Edit).
         let editing = layout.editing
@@ -79,15 +82,23 @@ struct HomeView: View {
                         .frame(maxWidth: .infinity)
                         .padding(.top, 6).padding(.horizontal, 8)
                         .shadow(color: .black.opacity(0.35), radius: 8, y: 2)
+                    // All three the same height: the thermostat a touch larger than before, the weather and Edit matching it.
                     HStack(alignment: .center, spacing: 10) {
-                        WeatherPill()
+                        WeatherPill(height: Self.pillHeight)
                         if !arranging {
-                            Button("Edit") { layout.startArranging() }.buttonStyle(.glass).controlSize(.small)
+                            Button { layout.startArranging() } label: {
+                                Text("Edit").font(.system(size: 16, weight: .semibold))
+                                    .padding(.horizontal, 18)
+                                    .frame(height: Self.pillHeight)
+                                    .contentShape(Capsule())
+                                    .glass(Capsule())
+                            }
+                            .buttonStyle(PressScale())
                         }
                         Spacer()
-                        if !arranging { ThermostatChip(compact: true) }
+                        if !arranging { ThermostatChip(compact: true, height: Self.pillHeight) }
                     }
-                    .frame(minHeight: 40)
+                    .frame(minHeight: Self.pillHeight)
                     // Movie Night, Bedtime and the family's own scenes: one tap each.
                     if !arranging { ScenesStrip() }
                 }

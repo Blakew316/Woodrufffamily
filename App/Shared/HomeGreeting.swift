@@ -353,6 +353,8 @@ final class HomeGreeting {
 /// The weather as a small glass pill: its symbol in colour and the temperature (and the high and low, when wide).
 struct WeatherPill: View {
     var detailed = false
+    /// The pill's height, to match the pills beside it (nil: as tall as its contents).
+    var height: CGFloat? = nil
     private let weather = HomeWeather.shared
     @State private var showing = false
 
@@ -371,7 +373,8 @@ struct WeatherPill: View {
                         Text(range).font(.caption.weight(.medium)).foregroundStyle(.secondary).monospacedDigit()
                     }
                 }
-                .padding(.horizontal, 12).padding(.vertical, 7)
+                .padding(.horizontal, height == nil ? 12 : 16).padding(.vertical, height == nil ? 7 : 0)
+                .frame(height: height)
                 .glass(Capsule(), interactive: true)
             }
             .buttonStyle(.plain)
