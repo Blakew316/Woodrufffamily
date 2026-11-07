@@ -175,6 +175,14 @@ struct MemoriesView: View {
     static let tileCorner: CGFloat = 0
     #endif
 
+    /// A photo's own picture, made small here (not the TV's thumbnail, which it doesn't always have), and kept: the
+    /// full view then opens at once too. A video still uses the TV's frame of it (the whole video isn't fetched
+    /// just for a tile).
+    private func gridURL(_ item: MemoryItem, _ client: TVClient?) -> URL? {
+        guard let client else { return nil }
+        return item.video ? client.thumbURL(item) : client.photoURL(item)
+    }
+
     private func tile(_ item: MemoryItem, _ client: TVClient?) -> some View {
         Color.clear
             .aspectRatio(1, contentMode: .fit)
@@ -182,7 +190,7 @@ struct MemoriesView: View {
                 #if os(macOS)
                 // While it loads, a soft shimmer; a picture the TV can't give, a quiet card saying what it is (never a
                 // flat grey square).
-                CachedImage(url: client?.thumbURL(item), maxPixel: 512) {
+                CachedImage(url: gridURL(item, client), maxPixel: 512) {
                     Rectangle().fill(.quinary).shimmer()
                 } failure: {
                     ZStack {
@@ -192,7 +200,7 @@ struct MemoriesView: View {
                     }
                 }
                 #else
-                TVImage(url: client?.thumbURL(item), maxPixel: 512)
+                TVImage(url: gridURL(item, client), maxPixel: 512)
                 #endif
             }
             .clipShape(RoundedRectangle(cornerRadius: Self.tileCorner, style: .continuous))
