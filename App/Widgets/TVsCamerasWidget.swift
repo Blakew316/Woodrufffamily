@@ -12,7 +12,8 @@ struct TVsCamerasWidget: Widget {
             TVsCamerasView(s: entry.s, cameras: PhoneWidgetShare.loadCameras(), date: entry.date)
                 .environment(\.colorScheme, .dark)
                 .containerBackground(for: .widget) {
-                    LinearGradient(colors: [Color(red: 0.13, green: 0.14, blue: 0.19), Color(red: 0.06, green: 0.06, blue: 0.09)],
+                    // Deep navy, a touch brighter at the top left.
+                    LinearGradient(colors: [WidgetPalette.navyTop, WidgetPalette.navyBottom],
                                    startPoint: .topLeading, endPoint: .bottomTrailing)
                 }
         }
@@ -54,7 +55,7 @@ struct TVsCamerasView: View {
         HStack(spacing: 9) {
             VStack(spacing: 4) {
                 if tvs.isEmpty {
-                    Text(PhoneWidgetShare.emptyText).font(.caption).foregroundStyle(.secondary)
+                    Text(PhoneWidgetShare.emptyText).font(.caption).foregroundStyle(WidgetPalette.sky)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     ForEach(tvs) { tv in
@@ -73,8 +74,8 @@ struct TVsCamerasView: View {
                             camera(c)
                         }
                     } else {
-                        RoundedRectangle(cornerRadius: 11, style: .continuous).fill(.white.opacity(0.06))
-                            .overlay(Text("Camera").font(.caption2).foregroundStyle(.tertiary))
+                        RoundedRectangle(cornerRadius: 11, style: .continuous).fill(WidgetPalette.sky.opacity(0.1))
+                            .overlay(Text("Camera").font(.caption2).foregroundStyle(WidgetPalette.sky.opacity(0.6)))
                     }
                 }
             }
@@ -95,20 +96,20 @@ struct TVsCamerasView: View {
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 5) {
                     dot(tv)
-                    Text(tv.name).font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary).lineLimit(1)
+                    Text(tv.name).font(.system(size: 10, weight: .bold)).foregroundStyle(WidgetPalette.sky).lineLimit(1)
                     Spacer(minLength: 2)
                     if tv.title != nil, let left = tv.left {
-                        Text(left).font(.system(size: 10, weight: .medium)).monospacedDigit().foregroundStyle(.secondary)
+                        Text(left).font(.system(size: 10, weight: .medium)).monospacedDigit().foregroundStyle(WidgetPalette.sky)
                     }
                 }
                 Text(tv.title ?? (tv.online ? "On" : "Off"))
                     .font(.system(size: 12.5, weight: selected ? .bold : .semibold, design: .rounded))
-                    .foregroundStyle(tv.title != nil ? Color.primary : tv.online ? Color.secondary : Color.secondary.opacity(0.6))
+                    .foregroundStyle(tv.title != nil ? WidgetPalette.ice : tv.online ? WidgetPalette.ice.opacity(0.9) : WidgetPalette.sky.opacity(0.55))
                     .lineLimit(1)
                 if tv.title != nil, let p = tv.progress {
                     GeometryReader { g in
-                        Capsule().fill(.white.opacity(0.18))
-                            .overlay(alignment: .leading) { Capsule().fill(.white).frame(width: g.size.width * p) }
+                        Capsule().fill(WidgetPalette.sky.opacity(0.22))
+                            .overlay(alignment: .leading) { Capsule().fill(WidgetPalette.sky).frame(width: g.size.width * p) }
                     }
                     .frame(height: 3)
                     .padding(.top, 3)
@@ -119,8 +120,8 @@ struct TVsCamerasView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
         .background {
             if selected {
-                RoundedRectangle(cornerRadius: 12, style: .continuous).fill(.white.opacity(0.1))
-                    .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(.white.opacity(0.14), lineWidth: 0.5))
+                RoundedRectangle(cornerRadius: 12, style: .continuous).fill(WidgetPalette.sky.opacity(0.14))
+                    .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(WidgetPalette.sky.opacity(0.35), lineWidth: 0.75))
             }
         }
     }
@@ -130,17 +131,17 @@ struct TVsCamerasView: View {
             Image(uiImage: image).resizable().scaledToFill()
                 .frame(width: 34, height: 34).clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         } else {
-            RoundedRectangle(cornerRadius: 8, style: .continuous).fill(.white.opacity(0.07))
+            RoundedRectangle(cornerRadius: 8, style: .continuous).fill(WidgetPalette.sky.opacity(0.12))
                 .frame(width: 34, height: 34)
-                .overlay(Image(systemName: "tv").font(.system(size: 14, weight: .medium)).foregroundStyle(.white.opacity(0.45)))
+                .overlay(Image(systemName: "tv").font(.system(size: 14, weight: .semibold)).foregroundStyle(WidgetPalette.sky))
         }
     }
 
     @ViewBuilder private func dot(_ tv: PhoneWidgetShare.TVLine) -> some View {
         if !tv.online {
-            Circle().strokeBorder(.white.opacity(0.4), lineWidth: 1.2).frame(width: 6, height: 6)
+            Circle().strokeBorder(WidgetPalette.sky.opacity(0.5), lineWidth: 1.2).frame(width: 6, height: 6)
         } else {
-            Circle().fill(tv.title == nil ? Color.white.opacity(0.5) : tv.isPlaying ? Color.green : Color.yellow).frame(width: 6, height: 6)
+            Circle().fill(tv.title == nil ? WidgetPalette.sky : tv.isPlaying ? Color.green : Color.yellow).frame(width: 6, height: 6)
         }
     }
 
@@ -150,7 +151,7 @@ struct TVsCamerasView: View {
         let fresh = c.eventAt.map { date.timeIntervalSince($0) < 600 } ?? false
         // The picture fills its box and is cut to it: a filling image alone sizes itself to the picture, which made the
         // whole widget larger than its space (everything looked zoomed in and the bottom was cut off).
-        return Color.white.opacity(0.06)
+        return WidgetPalette.sky.opacity(0.1)
             .overlay {
                 if let f = c.file, let url = PhoneWidgetShare.artURL(f), let image = UIImage(contentsOfFile: url.path) {
                     Image(uiImage: image).resizable().scaledToFill()
@@ -322,4 +323,15 @@ struct DoorbellRingView: View {
         }
         .padding(14)
     }
+}
+
+
+/// The TVs & Cameras widget's colours: deep navy behind, light blue lettering.
+enum WidgetPalette {
+    static let navyTop = Color(red: 0.07, green: 0.15, blue: 0.36)
+    static let navyBottom = Color(red: 0.02, green: 0.06, blue: 0.17)
+    /// Labels, icons and accents.
+    static let sky = Color(red: 0.55, green: 0.76, blue: 1.0)
+    /// What's playing: the brightest, near white with a blue cast.
+    static let ice = Color(red: 0.88, green: 0.94, blue: 1.0)
 }
