@@ -1055,8 +1055,6 @@ final class LivePlayer: NSObject, WKNavigationDelegate {
     private var startedAt: Date?
     private static let log = Logger(subsystem: "com.woodruff.family", category: "camera")
     var isRunning: Bool { running }
-    /// Showing the camera's picture right now.
-    var isLive: Bool { running && live }
 
     private func stage(_ what: String) {
         guard let t = startedAt else { return }
