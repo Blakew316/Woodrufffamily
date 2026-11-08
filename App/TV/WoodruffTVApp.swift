@@ -23,7 +23,9 @@ struct TVRoot: View {
     var body: some View {
         TabView {
             TVsTab().tabItem { Text("TVs") }
+            WatchTab().tabItem { Text("Watch") }
             HomeTab().tabItem { Text("Home") }
+            SettingsTab().tabItem { Text("Settings") }
         }
     }
 }
@@ -40,7 +42,7 @@ struct TVsTab: View {
             if tvs.isEmpty {
                 VStack(spacing: 16) {
                     Text("No TVs Yet").font(.title2.bold())
-                    Text("The family’s TVs appear here once this Apple TV has the family’s settings.")
+                    Text("Pair one of the family’s TVs in Settings. The TVs linked to it come with it.")
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
                         .frame(maxWidth: 900)

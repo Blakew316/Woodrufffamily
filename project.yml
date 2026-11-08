@@ -165,6 +165,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.blakew316.woodruff.tv
         PRODUCT_NAME: Woodruff Family
         TARGETED_DEVICE_FAMILY: "3"
+        ASSETCATALOG_COMPILER_APPICON_NAME: App Icon & Top Shelf Image
     info:
       path: App/TV/Info.plist
       properties:
