@@ -360,7 +360,7 @@ struct HomeBoard: View, Equatable {
     }
     #endif
 
-    private var grid: some View {
+    @ViewBuilder private var grid: some View {
         let m = BoardMetrics(width: width)
         let byID = Dictionary(tiles.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         let order = currentOrder()
