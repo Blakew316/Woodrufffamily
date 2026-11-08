@@ -613,7 +613,6 @@ struct Billboard: View {
 
     private func meta(_ t: Title) -> String {
         var m: [String] = []
-        if let y = t.year { m.append(String(y)) }
         if let g = t.genres, !g.isEmpty { m.append(g.prefix(2).joined(separator: ", ")) }
         if let r = t.rating { m.append(String(format: "★ %.1f", r)) }
         return m.joined(separator: " · ")
@@ -722,8 +721,9 @@ struct PosterTile: View {
                     .shadow(color: .black.opacity(0.25), radius: 8, y: 4)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(title.title).font(.footnote.weight(.semibold)).lineLimit(1)
-                    Text(title.caption ?? title.year.map(String.init) ?? " ")
-                        .font(.caption).foregroundStyle(title.caption != nil ? Color.accentColor : .secondary).lineLimit(1)
+                    if let caption = title.caption {
+                        Text(caption).font(.caption).foregroundStyle(Color.accentColor).lineLimit(1)
+                    }
                 }
                 .frame(width: width, alignment: .leading)
             }
@@ -1160,7 +1160,7 @@ struct TitleSheet: View {
 
     /// The top as the tile it was opened from knew it (its year: the rest of the line comes with the details).
     private func top(_ t: Title, _ c: (any WatchSource)?) -> SheetTop {
-        SheetTop(title: t.title, art: c?.artURL(t.backdrop ?? t.poster), facts: t.year.map(String.init) ?? "", play: t.play, restart: nil)
+        SheetTop(title: t.title, art: c?.artURL(t.backdrop ?? t.poster), facts: "", play: t.play, restart: nil)
     }
 
     private func header(_ top: SheetTop) -> some View {
@@ -1194,7 +1194,6 @@ struct TitleSheet: View {
     private func facts(_ d: TitleDetails) -> String {
         var f: [String] = []
         if let name = d.playName, let code = d.play?.title { f.append("\(code) · \(name)") }
-        else if let y = d.year { f.append(String(y)) }
         if let m = d.playMinutes ?? d.runtime {
             if d.playName == nil { f.append("\(Int(m)) min") }
             f.append("Ends at " + Date().addingTimeInterval(m * 60 - (d.play?.position ?? 0) / 1000).formatted(date: .omitted, time: .shortened))

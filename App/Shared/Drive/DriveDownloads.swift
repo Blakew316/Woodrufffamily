@@ -325,7 +325,7 @@ private struct DownloadPicker: View {
                 Section("Movies") {
                     ForEach(movies) { t in
                         if let p = t.play {
-                            DownloadRow(file: String(p.key.dropFirst(6)), title: p.title, name: t.title, detail: t.year.map(String.init), poster: t.poster)
+                            DownloadRow(file: String(p.key.dropFirst(6)), title: p.title, name: t.title, detail: nil, poster: t.poster)
                         }
                     }
                 }
