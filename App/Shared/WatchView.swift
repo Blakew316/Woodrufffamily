@@ -101,7 +101,9 @@ struct WatchView: View {
                     if sizeClass == .regular { sectionPicker.frame(width: 260) }
                 }
             }
+            #if !os(tvOS)
             .sharedBackgroundVisibility(.hidden)
+            #endif
         }
         #else
         // The window's own bar has the search; the TV that plays is picked at the top of the page.
