@@ -97,6 +97,7 @@ final class TopShelfAlbum {
         }
         TVTopShelfContentProvider.topShelfContentDidChange()
         version += 1
+        if saved > 0 { HomeSlideshow.shared.restart() }
         note = chosen.isEmpty ? "That album has no photos." : saved == 0 ? "Couldn’t get the photos from iCloud" + (lastError.map { ": \($0)" } ?? ".") + " Check that iCloud Photos is on in this Apple TV’s Settings → Users and Accounts." : "\(saved) photos are on the Top Shelf and Home."
     }
 }
@@ -129,16 +130,14 @@ struct TopShelfSettings: View {
 /// screensaver does, dimmed (most at the top) so the greeting, weather and thermostat stay easy to read. Landscape
 /// photographs until an album is picked.
 struct TVPhotoBackdrop: View {
-    private let shelf = TopShelfAlbum.shared
-    @State private var image: UIImage?
-    @State private var shown = 0
+    private let show = HomeSlideshow.shared
 
     var body: some View {
         ZStack {
             HomeBackdrop()
-            if let image {
+            if let image = show.image {
                 KenBurns(image: image)
-                    .id(shown)
+                    .id(show.shown)
                     .transition(.opacity)
                 LinearGradient(stops: [.init(color: .black.opacity(0.72), location: 0),
                                        .init(color: .black.opacity(0.45), location: 0.45),
@@ -147,47 +146,90 @@ struct TVPhotoBackdrop: View {
             }
         }
         .ignoresSafeArea()
-        .task(id: shelf.version) { await run() }
+    }
+}
+
+/// The slideshow itself, running from launch: a photo is already showing the moment Home opens (the last one kept on
+/// disk), and the rest are fetched behind it.
+@Observable @MainActor
+final class HomeSlideshow {
+    static let shared = HomeSlideshow()
+    private(set) var image: UIImage?
+    private(set) var shown = 0
+    @ObservationIgnored private var task: Task<Void, Never>?
+
+    private init() {
+        // At once, from disk: one of the album's photos, else a nature photograph kept from before.
+        let first = TopShelfAlbum.files().randomElement() ?? TVPhotoBackdrop.keptStock().randomElement()
+        if let first { image = UIImage(contentsOfFile: first.path) }
+    }
+
+    func start() {
+        guard task == nil else { return }
+        task = Task { await run() }
+        // Every nature photograph on disk ahead of time, so none has to wait for the network later.
+        Task.detached(priority: .background) {
+            for n in 0..<TVPhotoBackdrop.nature.count { _ = await TVPhotoBackdrop.stock(n, decode: false) }
+        }
+    }
+
+    /// The album's photos changed.
+    func restart() {
+        task?.cancel()
+        task = nil
+        start()
     }
 
     private func run() async {
-        let files = TopShelfAlbum.files()
-        // The album's photos, else a set of landscape photographs (4K) until an album is picked.
-        let count = files.isEmpty ? Self.nature.count : files.count
-        var i = Int.random(in: 0..<count)
         while !Task.isCancelled {
+            try? await Task.sleep(nanoseconds: image == nil ? 0 : 20_000_000_000)
+            if Task.isCancelled { return }
+            let files = TopShelfAlbum.files()
             let next: UIImage?
-            if files.isEmpty {
-                next = await Self.stock(i % count)
+            if let f = files.randomElement() {
+                next = await Task.detached(priority: .utility) { UIImage(contentsOfFile: f.path)?.preparingForDisplay() }.value
             } else {
-                let url = files[i % count]
-                next = await Task.detached(priority: .utility) { UIImage(contentsOfFile: url.path)?.preparingForDisplay() }.value
+                // A kept one if there is one (no waiting), else the next to come from the network.
+                let kept = TVPhotoBackdrop.keptStock()
+                if let f = kept.randomElement(), kept.count > 3 {
+                    next = await Task.detached(priority: .utility) { UIImage(contentsOfFile: f.path)?.preparingForDisplay() }.value
+                } else {
+                    next = await TVPhotoBackdrop.stock(Int.random(in: 0..<TVPhotoBackdrop.nature.count))
+                }
             }
-            if let next {
-                withAnimation(.easeInOut(duration: 4)) { image = next; shown += 1 }
-            }
-            try? await Task.sleep(nanoseconds: 20_000_000_000)
-            i += 1
+            if let next { withAnimation(.easeInOut(duration: 4)) { image = next; shown += 1 } }
+            else { try? await Task.sleep(nanoseconds: 5_000_000_000) }
         }
     }
 }
 
 extension TVPhotoBackdrop {
     /// Nature only (mountains, coasts, lakes, forests, fields, deserts), as the Apple TV screensaver shows.
-    static let nature = [10, 11, 13, 14, 15, 16, 17, 18, 28, 29, 54, 110, 112, 116, 124, 127, 128, 174, 184, 190, 191, 218, 247,
+    nonisolated static let nature = [10, 11, 13, 14, 15, 16, 17, 18, 28, 29, 54, 110, 112, 116, 124, 127, 128, 174, 184, 190, 191, 218, 247,
                          256, 289, 327, 337, 353, 368, 377, 381, 386, 406, 416, 421, 432, 440, 450, 456, 459, 461]
 
+    nonisolated static var stockDir: URL {
+        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("Backdrops", isDirectory: true)
+    }
+
+    /// The nature photographs already on disk.
+    nonisolated static func keptStock() -> [URL] {
+        ((try? FileManager.default.contentsOfDirectory(at: stockDir, includingPropertiesForKeys: nil)) ?? []).filter { $0.pathExtension == "jpg" }
+    }
+
     /// One of the stock photographs, kept on disk after the first time.
-    static func stock(_ n: Int) async -> UIImage? {
-        let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("Backdrops", isDirectory: true)
+    nonisolated static func stock(_ n: Int, decode: Bool = true) async -> UIImage? {
+        let dir = stockDir
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let file = dir.appendingPathComponent("n\(nature[n % nature.count]).jpg")
-        if let d = try? Data(contentsOf: file), let img = UIImage(data: d) { return img.preparingForDisplay() }
+        if FileManager.default.fileExists(atPath: file.path) {
+            return decode ? UIImage(contentsOfFile: file.path)?.preparingForDisplay() : nil
+        }
         guard let url = URL(string: "https://picsum.photos/id/\(nature[n % nature.count])/3840/2160"),
               let (d, r) = try? await URLSession.shared.data(from: url),
-              (r as? HTTPURLResponse)?.statusCode == 200, let img = UIImage(data: d) else { return nil }
+              (r as? HTTPURLResponse)?.statusCode == 200 else { return nil }
         try? d.write(to: file, options: .atomic)
-        return img.preparingForDisplay()
+        return decode ? UIImage(data: d)?.preparingForDisplay() : nil
     }
 }
 

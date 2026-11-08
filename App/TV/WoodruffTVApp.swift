@@ -26,6 +26,8 @@ struct WoodruffTVApp: App {
                 // How long from launch until the screen first showed (Settings → General → Speed), as on the Mac.
                 .onAppear { Timings.note("Open", since: Timings.processStart) }
                 .task {
+                    // Home's slideshow from the first moment, so a photo is there when Home opens.
+                    HomeSlideshow.shared.start()
                     // Announced on the Wi‑Fi from the start, so the iPhone app can find and connect it.
                     TVJoin.shared.start()
                     StallMonitor.start()
