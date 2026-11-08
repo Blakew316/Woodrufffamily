@@ -387,7 +387,11 @@ struct HomeView: View {
                     Button { withAnimation(.smooth) { picked = r } } label: {
                         chip(r == favoritesKey ? "Favorites" : r == allDevicesKey ? "All Devices" : r, selected: room == r)
                     }
+                    #if os(tvOS)
+                    .buttonStyle(TVBarButtonStyle())
+                    #else
                     .buttonStyle(.plain)
+                    #endif
                     .glass(Capsule())
                 }
                 Menu {
@@ -410,7 +414,11 @@ struct HomeView: View {
                     chip(inMore ? (room.isEmpty ? "All Rooms" : room) + " ▾" : "More ▾", selected: inMore)
                 }
                 .menuStyle(.button)
+                #if os(tvOS)
+                .buttonStyle(TVBarButtonStyle())
+                #else
                 .buttonStyle(.plain)
+                #endif
                 .glass(Capsule())
                 .fixedSize()
             }
@@ -423,6 +431,9 @@ struct HomeView: View {
             #if os(macOS)
             .font(.title3.weight(.semibold))
             .padding(.horizontal, 20).padding(.vertical, 10)
+            #elseif os(tvOS)
+            .font(.system(size: 26, weight: .semibold))
+            .padding(.horizontal, 30).padding(.vertical, 14)
             #else
             .font(.subheadline.weight(.semibold))
             .padding(.horizontal, 14).padding(.vertical, 8)
