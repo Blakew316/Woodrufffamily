@@ -116,7 +116,7 @@ struct WatchView: View {
         .navigationTitle("Watch")
         #endif
         .navigationDestination(for: LibraryRef.self) { LibraryGrid(place: $0.place, genre: $0.genre, sort: $0.sort ?? "az") }
-        .sheet(item: Binding(get: { openTitle.map { TitleRef(id: $0) } }, set: { openTitle = $0?.id })) { (ref: TitleRef) in
+        .titleSheet(Binding(get: { openTitle.map { TitleRef(id: $0) } }, set: { openTitle = $0?.id })) { (ref: TitleRef) in
             #if os(tvOS)
             TitleSheet(id: ref.id)
             #else
@@ -317,6 +317,17 @@ private struct PlayingWatcher: View {
 }
 
 struct TitleRef: Hashable, Identifiable { var id: String }
+
+extension View {
+    /// A title's sheet: on Apple TV a card over the dimmed screen, elsewhere a sheet.
+    @ViewBuilder func titleSheet<C: View>(_ item: Binding<TitleRef?>, @ViewBuilder content: @escaping (TitleRef) -> C) -> some View {
+        #if os(tvOS)
+        fullScreenCover(item: item) { content($0).presentationBackground(.clear) }
+        #else
+        sheet(item: item, content: content)
+        #endif
+    }
+}
 struct LibraryRef: Hashable {
     var place: String
     /// Opened from a genre's row: the list filtered to it.
@@ -936,7 +947,101 @@ struct TitleSheet: View {
     /// The season shown: the one picked, else the one the TV suggests.
     private func season(of d: TitleDetails?) -> Int { picked ?? d?.season ?? 0 }
 
+    #if os(tvOS)
+    @FocusState private var tvFocus: String?
+    #endif
+
     var body: some View {
+        #if os(tvOS)
+        tvCard
+        #else
+        sheetBody
+        #endif
+    }
+
+    #if os(tvOS)
+    /// On Apple TV: one card sized to what it shows (a strip of the banner, the details, Play), with the X in its corner.
+    private var tvCard: some View {
+        let c = client
+        let shown = details(c)
+        let season = self.season(of: shown)
+        let t: SheetTop? = shown.map { top($0, c) } ?? TitleCache.shared.tile(id).map { top($0, c) }
+        return ZStack {
+            Color.black.opacity(0.6).ignoresSafeArea()
+            VStack(alignment: .leading, spacing: 0) {
+                ZStack(alignment: .bottomLeading) {
+                    Color.clear.frame(height: 400)
+                        .overlay { Artwork(url: t?.art, maxPixel: 1800) }
+                        .clipped()
+                    LinearGradient(stops: [.init(color: .clear, location: 0.35), .init(color: .black.opacity(0.92), location: 1)], startPoint: .top, endPoint: .bottom)
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text(t?.title ?? "").font(.system(size: 62, weight: .bold)).foregroundStyle(.white).lineLimit(1).minimumScaleFactor(0.6)
+                        if let f = t?.facts, !f.isEmpty { Text(f).font(.headline.weight(.medium)).foregroundStyle(.white.opacity(0.8)) }
+                    }
+                    .padding(.horizontal, 50).padding(.bottom, 26)
+                }
+                VStack(alignment: .leading, spacing: 26) {
+                    if let o = shown?.overview { Text(o).font(.callout).foregroundStyle(.white.opacity(0.85)).lineLimit(3) }
+                    if let failed, shown == nil {
+                        Text(failed).font(.callout).foregroundStyle(.secondary)
+                    }
+                    HStack(spacing: 24) {
+                        if let p = t?.play {
+                            Button { if PlayRouter.start(p, fleet: fleet) { dismiss() } } label: { Label(p.label ?? "Play", systemImage: "play.fill") }
+                                .focused($tvFocus, equals: "play")
+                        } else if failed != nil {
+                            ActionButton(action: { await load() }) { Text("Try Again") }
+                        } else {
+                            ProgressView()
+                        }
+                        if let r = t?.restart {
+                            Button { if PlayRouter.start(r, fleet: fleet, fromStart: true) { dismiss() } } label: { Text(r.label ?? "Start Over") }
+                        }
+                        if let d = shown, let key = d.watchKey, d.kind != "show" {
+                            Button { mark(key, watched: !(d.watched ?? false)) } label: { Text(d.watched == true ? "Mark as Unwatched" : "Mark as Watched") }
+                                .disabled(marking)
+                        }
+                    }
+                    if let d = shown, let seasons = d.seasons, !seasons.isEmpty {
+                        Picker("Season", selection: Binding(get: { season }, set: { picked = $0 })) {
+                            ForEach(Array(seasons.enumerated()), id: \.offset) { i, s in Text(s.name).tag(i) }
+                        }
+                        .pickerStyle(.menu)
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            LazyHStack(alignment: .top, spacing: 30) {
+                                ForEach(episodes) { e in
+                                    EpisodeRow(episode: e, still: c?.artURL(e.still, small: true), changed: { watchChanged(); Task { await loadEpisodes() } }, played: { dismiss() })
+                                        .frame(width: 440)
+                                }
+                            }
+                            .padding(.vertical, 10)
+                        }
+                        .scrollClipDisabled()
+                        .frame(height: 200)
+                    }
+                }
+                .padding(.horizontal, 50).padding(.top, 24).padding(.bottom, 44)
+            }
+            .frame(width: 1240)
+            .background(Color(white: 0.11))
+            .clipShape(RoundedRectangle(cornerRadius: 44, style: .continuous))
+            .overlay(alignment: .topTrailing) {
+                Button { dismiss() } label: { Image(systemName: "xmark").font(.title3.weight(.bold)) }
+                    .buttonBorderShape(.circle)
+                    .padding(26)
+                    .accessibilityLabel("Close")
+            }
+            .shadow(color: .black.opacity(0.5), radius: 40, y: 20)
+            .focusSection()
+            .defaultFocus($tvFocus, "play")
+        }
+        .task { await load() }
+        .task(id: "\(shown?.id ?? "")|\(season)") { await loadEpisodes() }
+        .sheetBanner()
+    }
+    #endif
+
+    @ViewBuilder private var sheetBody: some View {
         // Worked out once for the sheet (the episodes' pictures are handed their addresses).
         let c = client
         let shown = details(c)
@@ -1342,7 +1447,7 @@ struct LibraryGrid: View {
             watchChanged(removed: key)
             Task { await reloadShown() }
         })
-        .sheet(item: Binding(get: { openTitle.map { TitleRef(id: $0) } }, set: { openTitle = $0?.id })) { TitleSheet(id: $0.id).macResizable(width: 760, height: 820, minWidth: 520, minHeight: 500) }
+        .titleSheet(Binding(get: { openTitle.map { TitleRef(id: $0) } }, set: { openTitle = $0?.id })) { TitleSheet(id: $0.id).macResizable(width: 760, height: 820, minWidth: 520, minHeight: 500) }
         #if os(iOS) || os(tvOS)
         .toolbar { filterMenu }
         #endif
@@ -1457,7 +1562,7 @@ struct SearchPage: View {
             watchChanged(removed: key)
             again += 1
         })
-        .sheet(item: Binding(get: { openTitle.map { TitleRef(id: $0) } }, set: { openTitle = $0?.id })) { TitleSheet(id: $0.id).macResizable(width: 760, height: 820, minWidth: 520, minHeight: 500) }
+        .titleSheet(Binding(get: { openTitle.map { TitleRef(id: $0) } }, set: { openTitle = $0?.id })) { TitleSheet(id: $0.id).macResizable(width: 760, height: 820, minWidth: 520, minHeight: 500) }
     }
 }
 
