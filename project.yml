@@ -200,7 +200,7 @@ targets:
 
   # Apple TV's Top Shelf: the picked iCloud album as a slideshow above Woodruff's icon on the Home Screen.
   WoodruffFamilyTVTopShelf:
-    type: tv-app-extension
+    type: app-extension
     platform: tvOS
     sources:
       - App/TVTopShelf
@@ -213,6 +213,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.blakew316.woodruff.tv.topshelf
         PRODUCT_NAME: WoodruffTopShelf
         TARGETED_DEVICE_FAMILY: "3"
+        APPLICATION_EXTENSION_API_ONLY: YES
     info:
       path: App/TVTopShelf/Info.plist
       properties:
