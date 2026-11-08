@@ -1,7 +1,7 @@
 import SwiftUI
 import UserNotifications
 import WoodruffKit
-#if os(iOS)
+#if os(iOS) || os(tvOS)
 import BackgroundTasks
 
 /// The next background check for camera alerts.
@@ -22,11 +22,12 @@ enum AppWake {
     static var wentAway = false
 }
 
+#if !os(tvOS)
 @main
 struct WoodruffApp: App {
     @State private var fleet = Fleet.shared
     @Environment(\.scenePhase) private var scenePhase
-    #if os(iOS)
+    #if os(iOS) || os(tvOS)
     @UIApplicationDelegateAdaptor(PushAppDelegate.self) private var pushDelegate
     #endif
 
@@ -86,7 +87,7 @@ struct WoodruffApp: App {
                         for _ in 0..<600 where fleet.refreshedAt == nil { try? await Task.sleep(nanoseconds: 50_000_000) }
                         if fleet.refreshedAt != nil { Timings.note("TVs", since: Timings.processStart) }
                     }
-                    #if os(iOS)
+                    #if os(iOS) || os(tvOS)
                     // Lock Screen Now Playing follows the TVs from launch, also while the app is in the background.
                     LiveActivitySync.shared.sync(fleet)
                     // The doorbell's Live Activity: its start address for the Macs, and any left over cleared.
@@ -99,11 +100,11 @@ struct WoodruffApp: App {
                     SmartThings.shared.start()
                     Dreo.shared.start()
                     Cync.shared.start()
-                    #if os(iOS)
+                    #if os(iOS) || os(tvOS)
                     DriveDownloads.shared.start()   // the Mac's starts with Watch's pictures, below
                     #endif
                     NestCameras.shared.start()
-                    #if os(iOS)
+                    #if os(iOS) || os(tvOS)
                     HomeKitLights.shared.start()
                     #else
                     // Apple Home on the Mac, through Woodruff Home Helper.
@@ -187,7 +188,7 @@ struct WoodruffApp: App {
         .onChange(of: scenePhase) { _, phase in
             // Only really leaving pauses things (not a glance at Notification Center or the app switcher). On the Mac,
             // `WindowActivity` says whether the app is in use (its windows shown or hidden).
-            #if os(iOS)
+            #if os(iOS) || os(tvOS)
             if phase == .active { fleet.setActive(true) } else if phase == .background { fleet.setActive(false) }
             #endif
             if phase == .background {
@@ -195,7 +196,7 @@ struct WoodruffApp: App {
                 CameraStreams.shared.background()
                 // Where things were left off, written before the system can end the app.
                 DriveLibrary.shared.flush()
-                #if os(iOS)
+                #if os(iOS) || os(tvOS)
                 AlertsRefresh.schedule()
                 // A smaller app in the background is less likely to be closed by iOS (so it opens at once): pictures
                 // not on screen are let go (they're on disk; the ones shown are kept by their views).
@@ -210,7 +211,7 @@ struct WoodruffApp: App {
             #endif
             if phase == .active {
                 CameraStreams.shared.foreground()
-                #if os(iOS)
+                #if os(iOS) || os(tvOS)
                 DoorbellActivitySync.shared.tidy()
                 // Any camera alert in the last quarter hour this iPhone never got (its push was missed): fetched now.
                 Task { await NestAlerts.shared.pullOnce(timeout: 8) }
@@ -225,14 +226,14 @@ struct WoodruffApp: App {
                     SmartHome.shared.wake()
                     SettingsSync.shared.wake()
                     PushRelay.shared.wake()
-                    #if os(iOS)
+                    #if os(iOS) || os(tvOS)
                     HomeKitLights.shared.refresh()
                     #endif
                     if !Demo.isOn && !fleet.hubs.isEmpty { LocationWeather.shared.start(fleet) }
                 }
             }
         }
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         // Closed a while: iOS wakes the app now and then to check for doorbell and camera alerts.
         .backgroundTask(.appRefresh(AlertsRefresh.id)) {
             await NestAlerts.shared.pullOnce(timeout: 15)
@@ -270,6 +271,8 @@ struct WoodruffApp: App {
         #endif
     }
 }
+
+#endif
 
 /// The phone page's five sections.
 enum AppSection: String, CaseIterable, Identifiable, Hashable {
@@ -323,7 +326,7 @@ struct RootView: View {
     private var selection: Binding<AppSection> {
         Binding(get: {
             let s = AppSection(rawValue: stored) ?? .home
-            #if os(iOS)
+            #if os(iOS) || os(tvOS)
             return AppSection.phone.contains(s) ? s : .home
             #else
             // The remote (a panel) or a page that's left the bar (Memories) opens Home instead.
@@ -362,7 +365,7 @@ struct RootView: View {
         // window's root, so the screen redrawing (it does every second or two while the TVs report) can't close it.
         .sheet(isPresented: Binding(get: { thermostatOpen }, set: { ThermostatUI.shared.open = $0 })) {
             ThermostatPanel()
-                #if os(iOS)
+                #if os(iOS) || os(tvOS)
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
                 #endif
@@ -373,7 +376,7 @@ struct RootView: View {
         ))
     }
 
-    #if os(iOS)
+    #if os(iOS) || os(tvOS)
     /// The Liquid Glass tab bar (it tucks away while scrolling), with what's playing riding above it.
     /// (The Lock Screen's Live Activity follows the remote's TV by itself: `LiveActivitySync.watch`.)
     private var tabs: some View {
@@ -396,7 +399,7 @@ struct RootView: View {
     #endif
 }
 
-#if os(iOS)
+#if os(iOS) || os(tvOS)
 /// One tab's page, with what's playing above the tabs. Apart from the window's root, so what's playing redraws only this.
 private struct PhoneTabPage: View {
     @Environment(Fleet.self) private var fleet
@@ -420,7 +423,7 @@ private struct PhoneTabPage: View {
 struct FleetSideEffects: View {
     @Environment(Fleet.self) private var fleet
 
-    #if os(iOS)
+    #if os(iOS) || os(tvOS)
     var body: some View {
         Color.clear
             .frame(width: 0, height: 0)

@@ -6,7 +6,7 @@ import UserNotifications
 import os
 import WoodruffKit
 import UniformTypeIdentifiers
-#if os(iOS)
+#if os(iOS) || os(tvOS)
 import UIKit
 #elseif os(macOS)
 import AppKit
@@ -113,7 +113,7 @@ final class PushRelay {
     // MARK: iPhone: registering
 
     func start() {
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         UIApplication.shared.registerForRemoteNotifications()
         #else
         if watching == nil {
@@ -168,7 +168,7 @@ final class PushRelay {
         #else
         let env = Self.appEnvironment() ?? "development"
         #endif
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         let name = UIDevice.current.name
         #else
         let name = Host.current().localizedName ?? "Mac"
@@ -546,7 +546,7 @@ final class PushRelay {
     #endif
 }
 
-#if os(iOS)
+#if os(iOS) || os(tvOS)
 /// Receives the iPhone's push address from iOS.
 final class PushAppDelegate: NSObject, UIApplicationDelegate {
     func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
@@ -573,7 +573,7 @@ struct PushSettingsSection: View {
 
     var body: some View {
         Section {
-            #if os(iOS)
+            #if os(iOS) || os(tvOS)
             LabeledContent("This iPhone", value: push.registered || push.tokens[DeviceID.value] != nil ? "Signed Up" : "Not Yet")
             LabeledContent("Sent From", value: push.hasKey ? "Your Macs" : "Not Set Up")
             if let e = push.lastError { Text(e).font(.caption).foregroundStyle(Palette.attention) }

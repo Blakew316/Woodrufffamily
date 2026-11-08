@@ -96,7 +96,7 @@ struct BoardMetrics: Equatable {
         #endif
         let w = max(width, 160)
         var n = max(2, Int((w + gap) / (smallest + gap)))
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         // iPad: a multiple of three, so three cameras fill a row.
         if UIDevice.current.userInterfaceIdiom == .pad, n >= 6 { n = n / 3 * 3 }
         #endif
@@ -455,7 +455,7 @@ struct HomeBoard: View, Equatable {
         guard let tile else { return TileSpan(w: 2, h: 1) }
         if let r = resize, r.id == id { return r.span }
         let kind = tile.kind
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         // iPad: three cameras to a row and two TVs, whatever size they were given on a phone or the Mac.
         if UIDevice.current.userInterfaceIdiom == .pad, m.columns >= 6 {
             switch kind {
@@ -485,7 +485,7 @@ struct HomeBoard: View, Equatable {
     // MARK: Moving a tile
 
     private func moveGesture(_ id: String) -> some Gesture {
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         // A short hold, then drag: a quick swipe still scrolls the page.
         return LongPressGesture(minimumDuration: 0.15, maximumDistance: 10)
             .sequenced(before: DragGesture(minimumDistance: 0, coordinateSpace: .global))
@@ -509,7 +509,7 @@ struct HomeBoard: View, Equatable {
     private func lift(_ id: String) {
         guard drag == nil, lifted != id else { return }
         withAnimation(.spring(response: 0.25, dampingFraction: 0.7)) { lifted = id }
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         #endif
     }
@@ -524,7 +524,7 @@ struct HomeBoard: View, Equatable {
             let board = place.origin
             let start = CGPoint(x: v.startLocation.x - board.x, y: v.startLocation.y - board.y)
             if lifted != id {
-                #if os(iOS)
+                #if os(iOS) || os(tvOS)
                 UIImpactFeedbackGenerator(style: .medium).impactOccurred()
                 #else
                 MacFeedback.snap()
@@ -576,7 +576,7 @@ struct HomeBoard: View, Equatable {
         order.remove(at: from)
         order.insert(d.id, at: min(to, order.count))
         withAnimation(.spring(response: 0.32, dampingFraction: 0.82)) { liveOrder = order }
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         UISelectionFeedbackGenerator().selectionChanged()
         #endif
     }
@@ -648,7 +648,7 @@ struct HomeBoard: View, Equatable {
                 resize?.ghost = ghost
                 if span != resize?.span {
                     withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) { resize?.span = span }
-                    #if os(iOS)
+                    #if os(iOS) || os(tvOS)
                     UISelectionFeedbackGenerator().selectionChanged()
                     #else
                     MacFeedback.snap()
@@ -668,7 +668,7 @@ struct HomeBoard: View, Equatable {
     // MARK: Other
 
     private func remove(_ id: String) {
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
         #endif
         layout.removeFromBoard(page, id)
@@ -677,7 +677,7 @@ struct HomeBoard: View, Equatable {
     private func beginArranging() {
         guard !layout.arranging else { return }
         layout.startArranging()
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         #else
         MacFeedback.snap()

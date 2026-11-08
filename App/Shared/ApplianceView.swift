@@ -501,7 +501,7 @@ struct SetpointRow: View {
     }
 
     private func set(_ v: Double) {
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
         #endif
         let n = Int(v.rounded())

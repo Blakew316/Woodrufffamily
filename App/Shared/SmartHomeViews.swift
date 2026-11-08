@@ -317,7 +317,7 @@ struct LightTile: View {
         .onTapGesture {
             guard HomeLayout.shared.tapsAllowed else { return }
             guard !light.isOffline else { openControls(); return }
-            #if os(iOS)
+            #if os(iOS) || os(tvOS)
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
             #endif
             SmartHome.shared.setOn(light, !light.on)
@@ -378,7 +378,7 @@ struct LightSheet: View {
     static func offlineHint(_ l: GoveeLight) -> String {
         if l.isCync { return "Not answering in Cync. Check it’s switched on at the wall; it comes back here by itself." }
         if l.isHome {
-            #if os(iOS)
+            #if os(iOS) || os(tvOS)
             return "Not responding in Apple Home. Check it’s switched on at the wall."
             #else
             return "An Apple Home light: change it from Woodruff on iPhone."
@@ -605,7 +605,7 @@ struct LightsListView: View {
             }
             Section("Govee Account") {
                 TextField("Paste your Govee API key", text: $key)
-                    #if os(iOS)
+                    #if os(iOS) || os(tvOS)
                     .textInputAutocapitalization(.never)
                     #endif
                     .autocorrectionDisabled()
@@ -617,7 +617,7 @@ struct LightsListView: View {
                     .font(.footnote).foregroundStyle(.secondary)
             }
             Section("Cync and Apple Home") {
-                #if os(iOS)
+                #if os(iOS) || os(tvOS)
                 Text("Cync lights with the Matter logo show up here once they’re in Apple Home. In the Cync app, open the light’s settings and choose to connect it to Apple Home (Matter) to get its setup code; then in the Home app tap +, Add Accessory, and scan or enter that code. Any light in Apple Home appears here.")
                     .font(.footnote).foregroundStyle(.secondary)
                 #else
@@ -632,7 +632,7 @@ struct LightsListView: View {
         .refreshable { home.searchLights(); await home.refreshCloud() }
         .alert("Add a Light", isPresented: $adding) {
             TextField("192.168.1.42", text: $address)
-                #if os(iOS)
+                #if os(iOS) || os(tvOS)
                 .keyboardType(.decimalPad)
                 #endif
             Button("Add") { home.addLight(ip: address); address = "" }

@@ -19,7 +19,7 @@ struct MemoriesView: View {
     /// Waiting for "Delete" to be confirmed (a family photo is gone for good once it's deleted on the TV).
     @State private var deleting: MemoryItem?
 
-    #if os(iOS)
+    #if os(iOS) || os(tvOS)
     private let columns = Array(repeating: GridItem(.flexible(), spacing: 2), count: 3)
     #else
     // Like Photos on the Mac: rounded pictures with room between them.
@@ -35,7 +35,7 @@ struct MemoriesView: View {
     @State private var pinchBase: Int?
 
     private var gridColumns: [GridItem] {
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         Array(repeating: GridItem(.flexible(), spacing: 2), count: max(2, min(6, columnCount)))
         #else
         columns
@@ -88,7 +88,7 @@ struct MemoriesView: View {
                 #if os(macOS)
                 .padding(.horizontal, 20).padding(.top, 6)
                 #endif
-                #if os(iOS)
+                #if os(iOS) || os(tvOS)
                 // Pinch to see more or fewer photos across, like Photos.
                 .simultaneousGesture(MagnifyGesture()
                     .onChanged { v in
@@ -135,7 +135,7 @@ struct MemoriesView: View {
         .dropDestination(for: URL.self) { urls, _ in Task { await addFiles(urls) }; return true }
         #endif
         .refreshable { await load() }
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         .toolbar { ToolbarItemGroup(placement: .primaryAction) { if error == nil { pageButtons } } }
         #else
         // The window draws its own bar on the Mac: these sit at the top of the page.
@@ -158,7 +158,7 @@ struct MemoriesView: View {
         } message: { _ in
             Text("It’s removed from Family Memories on the TVs. This can’t be undone.")
         }
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         .fullScreenCover(item: $viewing) { item in
             MemoryViewer(items: memories?.items ?? [], start: item, folder: memories?.folder, onChange: { take($0) }).zoomDestination(item.path, zoom)
         }
@@ -492,7 +492,7 @@ struct MemoryViewer: View {
         }
         // Errors from here show over the viewer, not hidden behind it until it closes.
         .sheetBanner()
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         .sheet(item: Binding(get: { shareURL.map { ShareItem(url: $0) } }, set: { shareURL = $0?.url })) { ShareSheet(items: [$0.url]) }
         #else
         // ← and → go through them, as in Photos.
@@ -505,7 +505,7 @@ struct MemoryViewer: View {
         #endif
     }
 
-    #if os(iOS)
+    #if os(iOS) || os(tvOS)
     private func photos(_ client: TVClient?) -> some View {
         TabView(selection: $current) {
             ForEach(items) { m in

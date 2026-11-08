@@ -398,7 +398,7 @@ struct EditHomeView: View {
                         }
                 }
             }
-            #if os(iOS)
+            #if os(iOS) || os(tvOS)
             .environment(\.editMode, .constant(.active))
             #endif
             .navigationTitle("Rooms & Sections")

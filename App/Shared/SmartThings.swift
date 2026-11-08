@@ -128,7 +128,7 @@ final class SmartThings {
         // An old pasted token alongside the Samsung sign-in: drop it everywhere (the removal syncs).
         if Keychain.get("st.token") != nil { Keychain.set(nil, for: "st.token") }
         if !force, let a = Keychain.get("st.access"), let e = Keychain.get("st.expires").flatMap(Double.init), e > Date().timeIntervalSince1970 { return a }
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         // The Macs (always at home) renew the family's sign-in and pass it on; an iPhone renewing too would leave
         // them holding a key SmartThings no longer takes. So for an hour after it runs out, the iPhone waits for
         // theirs, and renews by itself only after that (no Mac about).
@@ -732,7 +732,7 @@ final class SmartThings {
 
     /// "The washer is done" when a cycle ends while the app is open.
     private func notifyIfFinished(_ d: HomeDevice) {
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         ApplianceActivitySync.shared.update(d)
         #endif
         guard let now = d.machineState else { return }   // not known this time (or offline): nothing has finished

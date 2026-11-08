@@ -52,7 +52,7 @@ final class AppleTVFinder {
     }
 
     private static var deviceName: String {
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         return UIDevice.current.userInterfaceIdiom == .pad ? "Your iPad" : "Your iPhone"
         #else
         return Host.current().localizedName ?? "Your Mac"

@@ -157,7 +157,7 @@ struct SpeakerDetailView: View {
     }
 
     private func tap() {
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
         #endif
     }

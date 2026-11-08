@@ -207,12 +207,12 @@ struct ConnectPhoneCard: View {
                 Text("Your TVs, keys and settings come over by themselves.")
                     .font(.headline.weight(.regular))
                     .foregroundStyle(.white.opacity(0.75))
-                if let m = join.message { Text(m).font(.headline).foregroundStyle(TVPalette.ice) }
+                if let m = join.message { Text(m).font(.headline).foregroundStyle(IconPalette.ice) }
             }
             .frame(maxWidth: 900, alignment: .leading)
         }
         .padding(50)
-        .tvGlass(36)
+        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 36, style: .continuous))
     }
 
     static func qr(_ text: String) -> CGImage? {

@@ -152,7 +152,7 @@ struct LiveProgress: View {
 struct NowPlayingBar: View {
     @Environment(Fleet.self) private var fleet
     @State private var open = false
-    #if os(iOS)
+    #if os(iOS) || os(tvOS)
     @Environment(\.horizontalSizeClass) private var sizeClass
     private var widest: CGFloat { sizeClass == .regular ? 620 : .infinity }
     #else
@@ -395,7 +395,7 @@ struct NowPlayingSheet: View {
 
     /// Starts [now] on [other] where it is right now, pauses it here, and follows it there.
     private func move(_ now: NowPlaying, key: String, from tv: FleetTV, to other: FleetTV) {
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         #endif
         let action = PlayAction(key: key, title: now.title, position: now.estimatedPosition(at: Date()), label: nil,

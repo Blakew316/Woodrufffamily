@@ -1,0 +1,57 @@
+name: Apple TV preview
+
+# Builds the Apple TV app for the simulator, opens each screen with the sample family (-demo YES) and takes a
+# screenshot of it, so the screens are looked at before anything goes to the family's Apple TVs.
+on:
+  push:
+    branches: [claude/tv-work]
+  workflow_dispatch:
+
+jobs:
+  preview:
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Xcode
+        run: |
+          sudo xcode-select -s "$(ls -d /Applications/Xcode_*.app | grep -v -i beta | sort -V | tail -1)"
+          xcodebuild -version
+      - name: Generate project
+        run: |
+          brew install xcodegen
+          scripts/fetch_webrtc.sh
+          xcodegen generate
+      - name: Apple TV simulator
+        run: |
+          RT=$(xcrun simctl list runtimes -j | python3 -c 'import json,sys; r=[x for x in json.load(sys.stdin)["runtimes"] if x.get("platform")=="tvOS" and x["isAvailable"]]; print(r[-1]["identifier"] if r else "")')
+          if [ -z "$RT" ]; then xcodebuild -downloadPlatform tvOS; RT=$(xcrun simctl list runtimes -j | python3 -c 'import json,sys; r=[x for x in json.load(sys.stdin)["runtimes"] if x.get("platform")=="tvOS" and x["isAvailable"]]; print(r[-1]["identifier"])'); fi
+          DT=$(xcrun simctl list devicetypes -j | python3 -c 'import json,sys; d=[x for x in json.load(sys.stdin)["devicetypes"] if x["name"].startswith("Apple TV 4K")]; print(d[-1]["identifier"])')
+          UDID=$(xcrun simctl create woodruff-tv "$DT" "$RT")
+          echo "UDID=$UDID" >> "$GITHUB_ENV"
+          xcrun simctl boot "$UDID"
+      - name: Build
+        run: |
+          set -o pipefail
+          xcodebuild -project WoodruffFamily.xcodeproj -scheme WoodruffFamilyTV \
+            -destination "id=$UDID" -configuration Debug \
+            -derivedDataPath build-tv CODE_SIGNING_ALLOWED=NO build 2>&1 | tee build.log | xcbeautify
+      - name: Screens
+        run: |
+          APP=$(ls -d build-tv/Build/Products/Debug-appletvsimulator/*.app | head -1)
+          xcrun simctl install "$UDID" "$APP"
+          mkdir -p shots
+          for tab in home watch tvs settings; do
+            xcrun simctl launch "$UDID" com.blakew316.woodruff.tv -demo YES -tvTab "$tab"
+            sleep 15
+            xcrun simctl io "$UDID" screenshot "shots/$tab.png"
+            xcrun simctl terminate "$UDID" com.blakew316.woodruff.tv || true
+          done
+      - name: Errors
+        if: failure()
+        run: grep -E "error:" build.log | sort -u | head -80 > shots-errors.txt || true; mkdir -p shots; cp shots-errors.txt shots/ || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tv-shots
+          path: shots

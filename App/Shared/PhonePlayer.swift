@@ -24,7 +24,7 @@ final class PhonePlayback {
 
     /// "iPhone", "iPad" or "This Mac", for the button.
     static var deviceName: String {
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         return UIDevice.current.userInterfaceIdiom == .pad ? "iPad" : "iPhone"
         #else
         return "This Mac"
@@ -91,7 +91,7 @@ final class PhonePlayback {
     }
 }
 
-#if os(iOS)
+#if os(iOS) || os(tvOS)
 /// Apple's player (AVPlayerViewController), presented full screen as the TV app's is: its controls come and go, its
 /// close button with them; picture in picture (also by itself when leaving the app while it plays), AirPlay, speed,
 /// and the Lock Screen's controls. Where it got to is kept for Continue Watching.

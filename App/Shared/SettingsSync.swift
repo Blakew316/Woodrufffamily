@@ -3,7 +3,7 @@ import Network
 import CryptoKit
 import Observation
 import WoodruffKit
-#if os(iOS)
+#if os(iOS) || os(tvOS)
 import UIKit
 #elseif os(macOS)
 import AppKit
@@ -153,7 +153,7 @@ final class SettingsSync {
     @ObservationIgnored private var browser: NWBrowser?
     @ObservationIgnored private var browseTry = 0
     @ObservationIgnored private var peers: [String: NWEndpoint] = [:]
-    #if os(iOS)
+    #if os(iOS) || os(tvOS)
     @ObservationIgnored private var backgroundTasks: [UIBackgroundTaskIdentifier] = []
     #endif
 
@@ -238,7 +238,7 @@ final class SettingsSync {
             if let d = note.object as? UserDefaults, d !== UserDefaults.standard { return }
             MainActor.assumeIsolated { self?.dirty = true }
         })
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         observers.append(center.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.leaving() }
         })
@@ -249,7 +249,7 @@ final class SettingsSync {
         #endif
     }
 
-    #if os(iOS)
+    #if os(iOS) || os(tvOS)
     /// Into the background: whatever was just changed goes onto the TVs now, with a little time asked for to finish.
     private func leaving() {
         wasAway = true
@@ -841,7 +841,7 @@ final class SettingsSync {
 
     private func syncTVsOnce() async {
         guard let fleet, !fleet.hubs.isEmpty else { return }
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         // Time to finish is asked for only away from the front (going there, `leaving` asks for its own).
         let bg = UIApplication.shared.applicationState == .active ? nil : holdBackground()
         defer { if let bg { endBackground(bg) } }

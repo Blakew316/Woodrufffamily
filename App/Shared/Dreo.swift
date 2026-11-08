@@ -449,7 +449,7 @@ struct DreoSection: View {
             } else {
                 TextField("Dreo Email", text: $email)
                     .autocorrectionDisabled()
-                    #if os(iOS)
+                    #if os(iOS) || os(tvOS)
                     .textInputAutocapitalization(.never)
                     .keyboardType(.emailAddress)
                     #endif

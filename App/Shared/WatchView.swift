@@ -26,7 +26,7 @@ struct WatchView: View {
     /// The banner's five and the rows, worked out once per list (not at every redraw: the banner turning every 12
     /// seconds redraws the page).
     @State private var shelves = ShelfCache()
-    #if os(iOS)
+    #if os(iOS) || os(tvOS)
     @Environment(\.horizontalSizeClass) private var sizeClass
     #endif
     /// iPhone: what's typed in Watch's own search field (its results take the shelves' place while there's any).
@@ -35,7 +35,7 @@ struct WatchView: View {
     /// Posters sized so each row fills the page: on the Mac and iPad about 150 points each, as many as fit; 112 on
     /// iPhone.
     private func fitPosters(_ w: CGFloat) {
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         guard sizeClass == .regular else { if posterWidth != 112 { posterWidth = 112 }; return }
         let target: CGFloat = 160
         #else
@@ -60,7 +60,7 @@ struct WatchView: View {
         let shown = home ?? (error == nil ? kept : nil)
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 28) {
-                #if os(iOS)
+                #if os(iOS) || os(tvOS)
                 // Movies | TV Shows, then search right under it (on iPad the switch is in the bar at the top).
                 VStack(spacing: 12) {
                     if sizeClass != .regular { sectionPicker }
@@ -92,7 +92,7 @@ struct WatchView: View {
         .scrollDismissesKeyboard(.immediately)
         .onGeometryChange(for: CGFloat.self, of: { $0.size.width }) { w in fitPosters(w) }
         .environment(\.posterWidth, posterWidth)
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         .toolbar {
             ToolbarItem(placement: .principal) {
                 // iPad: Movies | TV Shows on the same row as the TV.
@@ -345,7 +345,7 @@ struct Billboard: View {
     var client: (any WatchSource)?
     /// What each featured title is about (the wide banner shows it), read once each.
     @State private var overviews: [String: String] = [:]
-    #if os(iOS)
+    #if os(iOS) || os(tvOS)
     @Environment(\.horizontalSizeClass) private var sizeClass
     @State private var width: CGFloat = 0
     #endif
@@ -358,7 +358,7 @@ struct Billboard: View {
             .onChange(of: titles.count) { _, n in if page >= n { page = 0 } }
     }
 
-    #if os(iOS)
+    #if os(iOS) || os(tvOS)
     private var pages: some View {
         // iPad: the wide banner, as on the Mac (the words and buttons on the left, the picture on the right), short
         // enough that Continue Watching shows under it. iPhone: the picture's own shape, across the screen.
@@ -765,7 +765,7 @@ enum PlayRouter {
         // Settings → Watch: Play plays on this device (Play On… still picks a TV).
         if tv == nil, PhonePlayback.playsHere, PhonePlayback.canPlay(a) {
             guard let p = PhonePlayback.play(a, fleet: fleet, fromStart: fromStart) else { return false }
-            #if os(iOS)
+            #if os(iOS) || os(tvOS)
             // Once the title page that asked has closed (Apple's player shows over the topmost screen).
             Task { @MainActor in
                 try? await Task.sleep(nanoseconds: 300_000_000)
@@ -1252,7 +1252,7 @@ struct LibraryGrid: View {
             Task { await reloadShown() }
         })
         .sheet(item: Binding(get: { openTitle.map { TitleRef(id: $0) } }, set: { openTitle = $0?.id })) { TitleSheet(id: $0.id).macResizable(width: 760, height: 820, minWidth: 520, minHeight: 500) }
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         .toolbar { filterMenu }
         #endif
         .task(id: "\(sort)|\(unwatched)|\(genre ?? "")|\(query)") {
@@ -1370,7 +1370,7 @@ struct SearchPage: View {
     }
 }
 
-#if os(iOS)
+#if os(iOS) || os(tvOS)
 /// iPhone Watch's search, under Movies | TV Shows: what's typed shows its results in place of the shelves.
 private struct WatchSearchField: View {
     @Binding var text: String

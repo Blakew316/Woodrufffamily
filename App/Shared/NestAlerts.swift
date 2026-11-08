@@ -1,7 +1,9 @@
 import SwiftUI
 import UserNotifications
 import WoodruffKit
+#if canImport(WidgetKit)
 import WidgetKit
+#endif
 
 /// "Person seen · Front door doorbell", "Someone's at the front door": the cameras' events as notifications
 /// on this iPhone or Mac, like the Google Home app. They come the way the TVs get them: Google posts every
@@ -189,7 +191,7 @@ final class NestAlerts {
             }
         }
         eventHappened = happened
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         // Caught up later (the iPhone was closed or asleep when the Mac's push should have come): shown, quietly.
         let catchingUp = happened.map { -$0.timeIntervalSinceNow > 60 } ?? false
         #else
@@ -272,7 +274,7 @@ final class NestAlerts {
         #if os(macOS)
         if !quiet { WeeklyNote.countAlert(camera: body) }
         #endif
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         // The TVs & Cameras widget: the camera's red tag at once, its picture of the moment when it comes.
         let doorbell = NestCameras.shared.cameras.first { $0.id == camera }?.doorbell ?? false
         let tag = title.localizedCaseInsensitiveContains("person") ? "Person"
@@ -364,7 +366,7 @@ final class NestAlerts {
         #endif
     }
 
-    #if os(iOS)
+    #if os(iOS) || os(tvOS)
     /// Whether this event's alert is already on the iPhone (the Mac's push), by its id or its event key.
     static func alreadyShown(id: String, key: String) async -> Bool {
         if NotificationHandler.presentedKeys.contains(key) { return true }
@@ -433,7 +435,7 @@ struct AlertsSection: View {
                 }
             }
         } header: { Text(title) } footer: {
-            #if os(iOS)
+            #if os(iOS) || os(tvOS)
             // One block of text: a footer shows only its first view, which hid the line about the last alert.
             VStack(alignment: .leading, spacing: 6) {
                 if let last = CameraEventMedia.lastPush {

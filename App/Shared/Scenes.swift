@@ -106,7 +106,7 @@ enum SceneRunner {
 
         // The lights and speakers (and Apple Home's lights on iPhone), in case this started Woodruff just now.
         home.start()
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         if home.homeControl == nil { HomeKitLights.shared.start() }
         #endif
         let usesTVs = !s.tvsOn.isEmpty || !s.tvsOff.isEmpty || s.allTVsOff
@@ -239,7 +239,7 @@ struct ScenesStrip: View {
     }
 
     private func run(_ s: HomeScene) {
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         #endif
         withAnimation(.smooth(duration: 0.25)) { running = s.id; done = nil }

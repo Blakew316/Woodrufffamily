@@ -296,7 +296,7 @@ extension EnvironmentValues {
 extension View {
     /// Marks this tile as where a zoom transition starts (iOS 18+), when a namespace is set.
     @ViewBuilder func zoomSource(_ id: String, _ ns: Namespace.ID?) -> some View {
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         if let ns { self.matchedTransitionSource(id: id, in: ns) } else { self }
         #else
         self
@@ -305,7 +305,7 @@ extension View {
 
     /// Opens with a zoom out of the tile marked [id].
     @ViewBuilder func zoomDestination(_ id: String, _ ns: Namespace.ID?) -> some View {
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         if let ns { self.navigationTransition(.zoom(sourceID: id, in: ns)) } else { self }
         #else
         self
@@ -367,7 +367,7 @@ struct EmptyState: View {
 
 extension View {
     func screenTitle(_ t: String) -> some View {
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         return self.navigationTitle(t).navigationBarTitleDisplayMode(.large)
         #else
         return self.navigationTitle(t)
@@ -375,7 +375,7 @@ extension View {
     }
 
     func inlineTitle() -> some View {
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         return self.navigationBarTitleDisplayMode(.inline)
         #else
         return self
@@ -383,7 +383,7 @@ extension View {
     }
 
     @ViewBuilder func haptic<T: Equatable>(_ trigger: T) -> some View {
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         self.sensoryFeedback(.impact(weight: .light, intensity: 0.7), trigger: trigger)
         #else
         self
@@ -402,7 +402,7 @@ func copyToClipboard(_ s: String) {
 
 struct ShareItem: Identifiable { var url: URL; var id: URL { url } }
 
-#if os(iOS)
+#if os(iOS) || os(tvOS)
 struct ShareSheet: UIViewControllerRepresentable {
     var items: [Any]
     func makeUIViewController(context: Context) -> UIActivityViewController { UIActivityViewController(activityItems: items, applicationActivities: nil) }
@@ -422,7 +422,7 @@ extension View {
     /// The same, with a page's own buttons beside the field on the Mac (they were in the window's toolbar; on iPhone
     /// they stay in the toolbar, so [trailing] isn't shown there).
     @ViewBuilder func pageSearch<Trailing: View>(text: Binding<String>, prompt: String, @ViewBuilder trailing: () -> Trailing) -> some View {
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         // Under the page's title, not at the bottom (iOS 26's default), where the app's tab bar covers it.
         self.searchable(text: text, placement: .navigationBarDrawer, prompt: prompt)
         #else
@@ -472,7 +472,7 @@ struct ResizeGrip: View {
             .stroke(.white.opacity(hovering || active ? 1 : (shown ? 0.8 : 0)), style: StrokeStyle(lineWidth: hovering || active ? 5 : 4, lineCap: .round))
             .shadow(color: .black.opacity(0.45), radius: 2)
             .frame(width: 22, height: 22)
-            #if os(iOS)
+            #if os(iOS) || os(tvOS)
             // A finger-sized target.
             .padding(11)
             #else

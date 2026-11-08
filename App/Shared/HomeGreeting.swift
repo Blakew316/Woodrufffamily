@@ -394,7 +394,7 @@ struct WeatherPill: View {
             .accessibilityLabel("\(now.sky.words) \(now.tempText)")
             .accessibilityHint("Shows the forecast")
             .animation(.smooth, value: now)
-            #if os(iOS)
+            #if os(iOS) || os(tvOS)
             .sheet(isPresented: $showing) {
                 WeatherSheet()
                     .presentationDetents([.medium, .large])
@@ -600,7 +600,7 @@ struct GreetingText: View {
         }
         .contentShape(Rectangle())
         .onTapGesture {
-            #if os(iOS)
+            #if os(iOS) || os(tvOS)
             UISelectionFeedbackGenerator().selectionChanged()
             #endif
             greeting.refresh(force: true)

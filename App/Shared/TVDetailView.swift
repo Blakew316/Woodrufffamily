@@ -469,7 +469,7 @@ struct DiagnosticsView: View {
                 .frame(maxWidth: .infinity, alignment: .leading).padding()
         }
         .navigationTitle("Smoothness Report").inlineTitle()
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         .toolbar { ToolbarItemGroup(placement: .primaryAction) { reportButtons } }
         #else
         .macPageBar { reportButtons.buttonStyle(.glass) }
@@ -637,7 +637,7 @@ struct AndroidRemoteSection: View {
                 } else if askingCode {
                     TextField("Enter the code on the TV", text: $code)
                         .autocorrectionDisabled()
-                        #if os(iOS)
+                        #if os(iOS) || os(tvOS)
                         .textInputAutocapitalization(.characters)
                         #endif
                         .onSubmit { finish(host) }
@@ -764,11 +764,11 @@ struct PairFoundTVView: View {
                 .padding(.vertical, 4)
             }
             Section {
-                #if os(iOS)
+                #if os(iOS) || os(tvOS)
                 Button("Scan Its QR Code") { scanning = true }
                 #endif
                 TextField("Pairing key", text: $key).autocorrectionDisabled()
-                    #if os(iOS)
+                    #if os(iOS) || os(tvOS)
                     .textInputAutocapitalization(.never)
                     #endif
                     .onSubmit { pair(key) }
@@ -781,7 +781,7 @@ struct PairFoundTVView: View {
         .formStyle(.grouped)
         .navigationTitle(tv.name)
         .inlineTitle()
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         .sheet(isPresented: $scanning) {
             QRScannerView { code in
                 scanning = false

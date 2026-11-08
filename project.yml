@@ -158,14 +158,12 @@ targets:
     platform: tvOS
     sources:
       - App/TV
-      # The family's settings sync, the same file the iPhone and Mac run (some of its services are stand-ins here).
-      - path: App/Shared/SettingsSync.swift
-      # The house's devices (SmartThings and Dreo, with the family's sign-ins), as on the iPhone and Mac.
-      - path: App/Shared/HomeDeviceModel.swift
-      - path: App/Shared/AccessoryStore.swift
-      - path: App/Shared/BespokeAppliances.swift
-      - path: App/Shared/SmartThings.swift
-      - path: App/Shared/Dreo.swift
+      # The iPhone app's own screens and everything behind them, laid out for the TV (App/TV/TVCompat.swift has the
+      # Apple TV versions of the few iPhone-only pieces). Not the WebRTC camera player: there's no WebRTC for tvOS.
+      - path: App/Shared
+        excludes: [NativeCamera.swift, CameraSound.swift]
+      # The sample family's pictures (-demo YES), for the screenshot run.
+      - path: App/Resources/Demo
     dependencies:
       - package: WoodruffKit
     settings:
@@ -182,6 +180,7 @@ targets:
         WoodruffCommit: $(WOODRUFF_COMMIT)
         UILaunchScreen: {}
         NSLocalNetworkUsageDescription: Woodruff finds and controls the family’s TVs, Sonos speakers and lights on your network.
+        NSLocationWhenInUseUsageDescription: Woodruff shows the weather where you are on Home.
         NSBonjourServices: [_woodruff._tcp, _sonos._tcp, _woodruffsync._tcp, _woodruffatv._tcp]
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true

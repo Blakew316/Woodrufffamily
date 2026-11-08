@@ -327,11 +327,11 @@ struct OpenLinkView: View {
                 TextField("https://", text: $link)
                     .focused($focused)
                     .autocorrectionDisabled()
-                    #if os(iOS)
+                    #if os(iOS) || os(tvOS)
                     .textInputAutocapitalization(.never).keyboardType(.URL)
                     #endif
                     .onSubmit { open() }
-                #if os(iOS)
+                #if os(iOS) || os(tvOS)
                 PasteButton(payloadType: String.self) { s in link = s.first ?? "" }
                 #endif
             } footer: {
@@ -341,7 +341,7 @@ struct OpenLinkView: View {
         .formStyle(.grouped)
         .navigationTitle("Open a Link")
         .inlineTitle()
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         .toolbar { ToolbarItem(placement: .primaryAction) { openButton } }
         #else
         .macPageBar { openButton }
@@ -484,7 +484,7 @@ struct FilesView: View {
         #endif
         .navigationTitle(listing.map { $0.path == root?.path ? (root?.name ?? "Photos & Files") : ($0.path as NSString).lastPathComponent } ?? "Photos & Files")
         .screenTitle(listing.map { $0.path == root?.path ? (root?.name ?? "Photos & Files") : ($0.path as NSString).lastPathComponent } ?? "Photos & Files")
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         .toolbar {
             ToolbarItem(placement: .primaryAction) { optionsMenu }
             ToolbarItem(placement: .primaryAction) { addMenu }
@@ -531,7 +531,7 @@ struct FilesView: View {
         .onChange(of: show) { _, _ in refreshShown() }
         .onChange(of: sort) { _, _ in refreshShown() }
         .onChange(of: showHidden) { _, _ in refreshShown() }
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         .sheet(item: Binding(get: { saving.map { ShareItem(url: $0) } }, set: { saving = $0?.url })) { ShareSheet(items: [$0.url]) }
         #endif
     }

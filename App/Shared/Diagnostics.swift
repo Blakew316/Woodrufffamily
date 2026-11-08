@@ -52,7 +52,7 @@ final class Diagnostics: NSObject {
             }
             for c in p.cpuExceptionDiagnostics ?? [] { new.append(report(c, "CPU", "\(seconds(c.totalCPUTime)) of CPU" + frames(c.callStackTree))) }
             for d in p.diskWriteExceptionDiagnostics ?? [] { new.append(report(d, "Disk Writes", "\(d.totalWritesCaused)" + frames(d.callStackTree))) }
-            #if os(iOS)
+            #if os(iOS) || os(tvOS)
             // Slow launches: reported on the iPhone only (Apple has none for the Mac).
             for l in p.appLaunchDiagnostics ?? [] { new.append(report(l, "Slow Launch", "\(seconds(l.launchDuration)) to open" + frames(l.callStackTree))) }
             #endif

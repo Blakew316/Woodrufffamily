@@ -1,7 +1,7 @@
 import Foundation
 import Network
 import AuthenticationServices
-#if os(iOS)
+#if os(iOS) || os(tvOS)
 import UIKit
 #else
 import AppKit
@@ -128,7 +128,7 @@ final class OAuthRelay: NSObject, ASWebAuthenticationPresentationContextProvidin
 
     nonisolated func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
         MainActor.assumeIsolated {
-            #if os(iOS)
+            #if os(iOS) || os(tvOS)
             let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
             return scenes.flatMap(\.windows).first(where: \.isKeyWindow) ?? ASPresentationAnchor()
             #else

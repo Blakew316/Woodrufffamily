@@ -75,7 +75,7 @@ struct HomeView: View {
         @Bindable var scroller = scroller
         ScrollView {
             VStack(alignment: .leading, spacing: 30) {
-                #if os(iOS)
+                #if os(iOS) || os(tvOS)
                 // The greeting with its one-liner floating at the top, then the weather and Edit on the left and the thermostat
                 // on the right under it. (While arranging, Done stays pinned at the top right instead.)
                 VStack(spacing: 14) {
@@ -133,7 +133,7 @@ struct HomeView: View {
                     }
                 }
             }
-            #if os(iOS)
+            #if os(iOS) || os(tvOS)
             .padding(.horizontal, 16).padding(.vertical, 12)
             #else
             .padding(28)
@@ -159,7 +159,7 @@ struct HomeView: View {
         .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { f in scroller.frame = f }
         // A tile being dragged holds the page still (it scrolls by itself at the edges).
         .scrollDisabled(layout.draggingTile != nil)
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         // Pull down: every TV, speaker, light and device asked again now.
         .refreshable { await HomeRefresh.everything(fleet) }
         #endif
@@ -192,7 +192,7 @@ struct HomeView: View {
                     .transition(.asymmetric(insertion: .identity, removal: .opacity))
             }
         }
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         .overlay(alignment: .topTrailing) {
             if arranging {
                 Button("Done") { layout.stopArranging() }
@@ -206,7 +206,7 @@ struct HomeView: View {
         // Home is always the dark, cinematic room: its glass and text read over the backdrop.
         .environment(\.colorScheme, .dark)
         .navigationTitle(openTV.flatMap { fleet.tv($0)?.name } ?? "Home")
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         // The title sits in the page itself, right under the status bar.
         .toolbar(.hidden, for: .navigationBar)
         #else
@@ -260,7 +260,7 @@ struct HomeView: View {
     private func refreshEverything() async {
         SmartHome.shared.searchLights()
         SmartHome.shared.wake()
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         HomeKitLights.shared.refresh()
         #endif
         async let tvs: Void = fleet.refresh()
@@ -453,7 +453,7 @@ struct HomeView: View {
     private func startArranging() {
         guard !layout.arranging else { return }
         layout.startArranging()
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         #else
         MacFeedback.snap()
