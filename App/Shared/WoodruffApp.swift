@@ -390,7 +390,9 @@ struct RootView: View {
                 Tab(s.title, systemImage: s.symbol, value: s) {
                     PhoneTabPage(section: s)
                 }
+                #if os(iOS)
                 .badge(s == .settings ? fleet.settingsBadge : 0)
+                #endif
             }
         }
         // On iPad the tabs float at the top and turn into a sidebar, like the Mac's; on iPhone, the usual tab bar.
