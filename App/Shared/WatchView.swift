@@ -60,7 +60,7 @@ struct WatchView: View {
         let shown = home ?? (error == nil ? kept : nil)
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 28) {
-                #if os(iOS) || os(tvOS)
+                #if os(iOS)
                 // Movies | TV Shows, then search right under it (on iPad the switch is in the bar at the top).
                 VStack(spacing: 12) {
                     #if !os(tvOS)
