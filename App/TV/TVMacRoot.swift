@@ -20,8 +20,11 @@ struct TVMacRoot: View {
                 }
             }
             Tab("Home", systemImage: "house", value: "home") {
-                NavigationStack { HomeView() }
-                    .background { HomeBackdrop() }
+                NavigationStack {
+                    HomeView()
+                        .toolbar(.hidden, for: .navigationBar)
+                }
+                .background { HomeBackdrop() }
             }
             Tab("Watch", systemImage: "play.tv", value: "watch") {
                 NavigationStack {
@@ -37,6 +40,8 @@ struct TVMacRoot: View {
                             .fixedSize()
                             .padding(.top, 30)
                         }
+                        .toolbar(.hidden, for: .navigationBar)
+                        .ignoresSafeArea(edges: .top)
                 }
                 .background { HomeBackdrop() }
             }
