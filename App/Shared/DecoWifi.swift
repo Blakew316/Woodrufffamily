@@ -548,7 +548,7 @@ struct WifiView: View {
             } else {
                 Section {
                     TextField("Main Deco address", text: $host).autocorrectionDisabled()
-                        #if os(iOS)
+                        #if os(iOS) || os(tvOS)
                         .keyboardType(.numbersAndPunctuation)
                         #endif
                     SecureField("Deco password", text: $password)

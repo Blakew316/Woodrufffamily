@@ -36,7 +36,7 @@ final class MacNav {
 #endif
 
 private struct MacPageStackKey: EnvironmentKey { static let defaultValue = false }
-#if os(macOS)
+#if os(macOS) || os(tvOS)
 /// Mac Settings' right-hand side: a page opened from it opens right there (not over the whole window).
 struct MacPanePush {
     let push: (String, AnyView) -> Void
@@ -71,7 +71,7 @@ struct PageLink<Label: View, Destination: View>: View {
     var label: () -> Label
     @Environment(\.macPageStack) private var onStack
     @Environment(\.macPageTitle) private var here
-    #if os(macOS)
+    #if os(macOS) || os(tvOS)
     @Environment(\.macPanePush) private var panePush
     #endif
 
@@ -99,6 +99,18 @@ struct PageLink<Label: View, Destination: View>: View {
             NavigationLink(value: PageRoute(title: title, backTo: here, view: AnyView(page))) { label() }
         } else {
             NavigationLink { page } label: { label() }
+        }
+        #elseif os(tvOS)
+        // In Settings' right-hand side (the Mac's layout): opened right there.
+        if let panePush {
+            Button { panePush.push(title, AnyView(destination().environment(\.macPageTitle, title))) } label: {
+                HStack(spacing: 8) {
+                    label().frame(maxWidth: .infinity, alignment: .leading)
+                    Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary)
+                }
+            }
+        } else {
+            NavigationLink { destination() } label: { label() }
         }
         #else
         NavigationLink { destination() } label: { label() }

@@ -1,7 +1,7 @@
 import SwiftUI
 import UserNotifications
 import WoodruffKit
-#if os(iOS)
+#if os(iOS) || os(tvOS)
 import BackgroundTasks
 
 /// The next background check for camera alerts.
@@ -22,11 +22,12 @@ enum AppWake {
     static var wentAway = false
 }
 
+#if !os(tvOS)
 @main
 struct WoodruffApp: App {
     @State private var fleet = Fleet.shared
     @Environment(\.scenePhase) private var scenePhase
-    #if os(iOS)
+    #if os(iOS) || os(tvOS)
     @UIApplicationDelegateAdaptor(PushAppDelegate.self) private var pushDelegate
     #endif
 
@@ -86,7 +87,7 @@ struct WoodruffApp: App {
                         for _ in 0..<600 where fleet.refreshedAt == nil { try? await Task.sleep(nanoseconds: 50_000_000) }
                         if fleet.refreshedAt != nil { Timings.note("TVs", since: Timings.processStart) }
                     }
-                    #if os(iOS)
+                    #if os(iOS) || os(tvOS)
                     // Lock Screen Now Playing follows the TVs from launch, also while the app is in the background.
                     LiveActivitySync.shared.sync(fleet)
                     // The doorbell's Live Activity: its start address for the Macs, and any left over cleared.
@@ -99,11 +100,11 @@ struct WoodruffApp: App {
                     SmartThings.shared.start()
                     Dreo.shared.start()
                     Cync.shared.start()
-                    #if os(iOS)
+                    #if os(iOS) || os(tvOS)
                     DriveDownloads.shared.start()   // the Mac's starts with Watch's pictures, below
                     #endif
                     NestCameras.shared.start()
-                    #if os(iOS)
+                    #if os(iOS) || os(tvOS)
                     HomeKitLights.shared.start()
                     #else
                     // Apple Home on the Mac, through Woodruff Home Helper.
@@ -187,7 +188,7 @@ struct WoodruffApp: App {
         .onChange(of: scenePhase) { _, phase in
             // Only really leaving pauses things (not a glance at Notification Center or the app switcher). On the Mac,
             // `WindowActivity` says whether the app is in use (its windows shown or hidden).
-            #if os(iOS)
+            #if os(iOS) || os(tvOS)
             if phase == .active { fleet.setActive(true) } else if phase == .background { fleet.setActive(false) }
             #endif
             if phase == .background {
@@ -195,7 +196,7 @@ struct WoodruffApp: App {
                 CameraStreams.shared.background()
                 // Where things were left off, written before the system can end the app.
                 DriveLibrary.shared.flush()
-                #if os(iOS)
+                #if os(iOS) || os(tvOS)
                 AlertsRefresh.schedule()
                 // A smaller app in the background is less likely to be closed by iOS (so it opens at once): pictures
                 // not on screen are let go (they're on disk; the ones shown are kept by their views).
@@ -210,7 +211,7 @@ struct WoodruffApp: App {
             #endif
             if phase == .active {
                 CameraStreams.shared.foreground()
-                #if os(iOS)
+                #if os(iOS) || os(tvOS)
                 DoorbellActivitySync.shared.tidy()
                 // Any camera alert in the last quarter hour this iPhone never got (its push was missed): fetched now.
                 Task { await NestAlerts.shared.pullOnce(timeout: 8) }
@@ -225,14 +226,14 @@ struct WoodruffApp: App {
                     SmartHome.shared.wake()
                     SettingsSync.shared.wake()
                     PushRelay.shared.wake()
-                    #if os(iOS)
+                    #if os(iOS) || os(tvOS)
                     HomeKitLights.shared.refresh()
                     #endif
                     if !Demo.isOn && !fleet.hubs.isEmpty { LocationWeather.shared.start(fleet) }
                 }
             }
         }
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         // Closed a while: iOS wakes the app now and then to check for doorbell and camera alerts.
         .backgroundTask(.appRefresh(AlertsRefresh.id)) {
             await NestAlerts.shared.pullOnce(timeout: 15)
@@ -271,13 +272,19 @@ struct WoodruffApp: App {
     }
 }
 
+#endif
+
 /// The phone page's five sections.
 enum AppSection: String, CaseIterable, Identifiable, Hashable {
     case home, remote, watch, send, memories, settings
     var id: String { rawValue }
     /// iPhone tabs (Send is in Settings); the Mac has no Remote tab (the remote slides out on the right).
     // Memories is no longer in the app's navigation (the TVs' slideshow still shows them).
+    #if os(tvOS)
+    static let phone: [AppSection] = [.home, .watch, .settings]
+    #else
     static let phone: [AppSection] = [.home, .remote, .watch, .settings]
+    #endif
     static let mac: [AppSection] = [.home, .watch, .settings]   // Send is in Settings (TVs group)
     var title: String {
         switch self {
@@ -323,7 +330,7 @@ struct RootView: View {
     private var selection: Binding<AppSection> {
         Binding(get: {
             let s = AppSection(rawValue: stored) ?? .home
-            #if os(iOS)
+            #if os(iOS) || os(tvOS)
             return AppSection.phone.contains(s) ? s : .home
             #else
             // The remote (a panel) or a page that's left the bar (Memories) opens Home instead.
@@ -362,7 +369,7 @@ struct RootView: View {
         // window's root, so the screen redrawing (it does every second or two while the TVs report) can't close it.
         .sheet(isPresented: Binding(get: { thermostatOpen }, set: { ThermostatUI.shared.open = $0 })) {
             ThermostatPanel()
-                #if os(iOS)
+                #if os(iOS) || os(tvOS)
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
                 #endif
@@ -373,7 +380,7 @@ struct RootView: View {
         ))
     }
 
-    #if os(iOS)
+    #if os(iOS) || os(tvOS)
     /// The Liquid Glass tab bar (it tucks away while scrolling), with what's playing riding above it.
     /// (The Lock Screen's Live Activity follows the remote's TV by itself: `LiveActivitySync.watch`.)
     private var tabs: some View {
@@ -387,7 +394,9 @@ struct RootView: View {
                 Tab(s.title, systemImage: s.symbol, value: s) {
                     PhoneTabPage(section: s)
                 }
+                #if os(iOS)
                 .badge(s == .settings ? fleet.settingsBadge : 0)
+                #endif
             }
         }
         // On iPad the tabs float at the top and turn into a sidebar, like the Mac's; on iPhone, the usual tab bar.
@@ -396,7 +405,7 @@ struct RootView: View {
     #endif
 }
 
-#if os(iOS)
+#if os(iOS) || os(tvOS)
 /// One tab's page, with what's playing above the tabs. Apart from the window's root, so what's playing redraws only this.
 private struct PhoneTabPage: View {
     @Environment(Fleet.self) private var fleet
@@ -420,7 +429,7 @@ private struct PhoneTabPage: View {
 struct FleetSideEffects: View {
     @Environment(Fleet.self) private var fleet
 
-    #if os(iOS)
+    #if os(iOS) || os(tvOS)
     var body: some View {
         Color.clear
             .frame(width: 0, height: 0)
@@ -985,7 +994,7 @@ enum MacSettingsPage: String, CaseIterable, Identifiable {
 #endif
 
 
-#if os(macOS)
+#if os(macOS) || os(tvOS)
 /// The Mac's way around (in place of a sidebar): Home, Watch, Send, Memories and Settings in one liquid-glass bar the
 /// height of the pills beside it, the page you're on lit, the light sliding to the one you pick.
 struct MacSectionBar: View {
@@ -999,10 +1008,10 @@ struct MacSectionBar: View {
                 let on = current == s
                 Button { go(s) } label: {
                     Text(s.title)
-                        .font(.system(size: 13.5, weight: on ? .bold : .semibold))
+                        .font(.system(size: 13.5 * macScale, weight: on ? .bold : .semibold))
                         .foregroundStyle(on ? IconPalette.white : IconPalette.ice)
-                        .padding(.horizontal, 16)
-                        .frame(height: 36)
+                        .padding(.horizontal, 16 * macScale)
+                        .frame(height: 36 * macScale)
                         .background {
                             if on {
                                 Capsule().fill(IconPalette.cyan.opacity(0.25))
@@ -1013,12 +1022,16 @@ struct MacSectionBar: View {
                         }
                         .contentShape(Capsule())
                 }
+                #if os(tvOS)
+                .buttonStyle(TVBarButtonStyle())
+                #else
                 .buttonStyle(.plain)
+                #endif
                 .accessibilityAddTraits(on ? .isSelected : [])
             }
         }
-        .padding(4)
-        .frame(height: 44)
+        .padding(4 * macScale)
+        .frame(height: 44 * macScale)
         .glass(Capsule(), tint: IconPalette.cyan.opacity(0.08))
         .overlay(Capsule().strokeBorder(IconPalette.cyan.opacity(0.35), lineWidth: 0.75))
         .animation(.spring(response: 0.35, dampingFraction: 0.82), value: current)
@@ -1027,7 +1040,7 @@ struct MacSectionBar: View {
 #endif
 
 
-#if os(macOS)
+#if os(macOS) || os(tvOS)
 /// Mac Settings like System Settings: a short list down the left in a glass panel, the page highlighted open on
 /// the right to change. Clicking another one in the list is the only way around (no Back). A link inside a page to
 /// one in the list highlights it there; any other shows its page on the right, and the list item brings you back.
@@ -1097,7 +1110,7 @@ struct MacSettingsView: View {
                 .padding(10)
             }
             .scrollIndicators(.never)
-            .frame(width: 230)
+            .frame(width: 230 * macScale)
             .glass(RoundedRectangle(cornerRadius: 22, style: .continuous), tint: IconPalette.cyan.opacity(0.06), interactive: false)
             .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).strokeBorder(IconPalette.cyan.opacity(0.25), lineWidth: 0.75))
             .padding(.leading, 18).padding(.vertical, 6)
@@ -1105,16 +1118,20 @@ struct MacSettingsView: View {
             // The page: its name large at the top, then its settings, all in one glass panel matching the list.
             VStack(alignment: .leading, spacing: 0) {
                 Text(shownTitle ?? current?.id ?? "Settings")
-                    .font(.system(size: 26, weight: .bold, design: .rounded))
+                    .font(.system(size: 26 * macScale, weight: .bold, design: .rounded))
                     .padding(.horizontal, 28).padding(.top, 22).padding(.bottom, 4)
                 Group {
                     if let shown { shown } else if let current { current.view().id(current.id) }
                 }
                 // One look for every page here: on the glass panel itself, roomier rows, slightly larger type, and
                 // the family's light blue for switches, buttons and links.
+                #if !os(tvOS)
                 .scrollContentBackground(.hidden)
+                #endif
                 .environment(\.defaultMinListRowHeight, 40)
+                #if !os(tvOS)
                 .font(.system(size: 14))
+                #endif
                 .tint(IconPalette.cyan)
                 .contentMargins(.horizontal, 12, for: .scrollContent)
                 .transition(.opacity)
@@ -1139,12 +1156,12 @@ struct MacSettingsView: View {
             picked = it.id
         } label: {
             Text(it.id)
-                .font(.system(size: 13.5, weight: on ? .semibold : .regular))
+                .font(.system(size: 13.5 * macScale, weight: on ? .semibold : .regular))
                 .foregroundStyle(it.id == "Needs Attention" ? Palette.attention : (on ? IconPalette.white : IconPalette.ice))
                 .lineLimit(1)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 12)
-                .frame(height: 32)
+                .padding(.horizontal, 12 * macScale)
+                .frame(height: 32 * macScale)
                 .background {
                     if on {
                         RoundedRectangle(cornerRadius: 9, style: .continuous).fill(IconPalette.cyan.opacity(0.22))
@@ -1153,7 +1170,11 @@ struct MacSettingsView: View {
                 }
                 .contentShape(Rectangle())
         }
+        #if os(tvOS)
+        .buttonStyle(TVBarButtonStyle())
+        #else
         .buttonStyle(.plain)
+        #endif
     }
 }
 #endif

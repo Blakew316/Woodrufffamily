@@ -109,7 +109,7 @@ struct AllDevicesView: View {
         .sheet(item: $openTV) { t in NavigationStack { TVDetailView(tvID: t.id) }.macResizable() }
         .sheet(item: $miniTV) { t in
             MiniRemote(tvID: t.id)
-                #if os(iOS)
+                #if os(iOS) || os(tvOS)
                 .presentationDetents([.height(300)])
                 .presentationBackground(.clear)
                 .presentationDragIndicator(.visible)
@@ -152,7 +152,7 @@ struct AllDevicesView: View {
 
     /// The iPhone away from home (the Mac is always home): nothing dimmed for being out of reach.
     private var awayFromHome: Bool {
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         return fleet.probablyAway
         #else
         return false
@@ -195,11 +195,14 @@ struct AllDevicesView: View {
         // Away from home (the iPhone off the home Wi‑Fi) nothing is dimmed: Home says it once instead.
         .opacity(f.reachable || f.isAppliance || awayFromHome ? 1 : 0.55)
         .animation(.spring(response: 0.35, dampingFraction: 0.75), value: f.on)
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         // A second, firmer tap once the device has really changed (not when someone else changed it).
         .sensoryFeedback(.impact(weight: .medium), trigger: f.on) { _, _ in
             tappedAt[item.id].map { Date().timeIntervalSince($0) < 8 } ?? false
         }
+        #endif
+        #if os(tvOS)
+        .modifier(TVFocusTile())
         #endif
         .onTapGesture { tap(item) }
         .onLongPressGesture(minimumDuration: 0.4) { open(item) }
@@ -295,7 +298,7 @@ struct AllDevicesView: View {
     // MARK: Tap and hold
 
     private func tap(_ item: Item) {
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
         #endif
         tappedAt[item.id] = Date()
@@ -332,7 +335,7 @@ struct AllDevicesView: View {
     }
 
     private func open(_ item: Item) {
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         #endif
         switch item {
@@ -992,7 +995,7 @@ struct MiniRemote: View {
 
     private func key(_ symbol: String, _ label: String, big: Bool = false, _ action: @escaping () async -> Void) -> some View {
         Button {
-            #if os(iOS)
+            #if os(iOS) || os(tvOS)
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
             #endif
             Task { await action() }

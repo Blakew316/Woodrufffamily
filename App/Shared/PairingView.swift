@@ -53,9 +53,11 @@ struct PairPanel: View {
 
             HStack {
                 TextField("http://192.168.1.20:8090/?k=…", text: $link)
+                    #if !os(tvOS)
                     .textFieldStyle(.roundedBorder)
+                    #endif
                     .autocorrectionDisabled()
-                    #if os(iOS)
+                    #if os(iOS) || os(tvOS)
                     .textInputAutocapitalization(.never).keyboardType(.URL)
                     #endif
                     .onSubmit { pair(link) }

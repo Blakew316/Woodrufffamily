@@ -129,7 +129,7 @@ enum ColorChoice: String, AppEnum {
 @MainActor private func startHome() -> Bool {
     SmartHome.shared.start()
     SiriVocabulary.start()
-    #if os(iOS)
+    #if os(iOS) || os(tvOS)
     if SmartHome.shared.homeControl == nil {
         HomeKitLights.shared.start()
         return SmartHome.shared.homeControl != nil

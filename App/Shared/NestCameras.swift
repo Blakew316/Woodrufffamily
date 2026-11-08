@@ -1,12 +1,16 @@
 import SwiftUI
+#if canImport(WebKit)
 import WebKit
+#endif
+#if canImport(WidgetKit)
 import WidgetKit
+#endif
 import os
 #if os(macOS)
 import AppKit
 #endif
 import WoodruffKit
-#if os(iOS)
+#if os(iOS) || os(tvOS)
 import AVFoundation
 #endif
 
@@ -67,18 +71,20 @@ final class NestCameras {
         if canAlert != alerts { canAlert = alerts }
         guard connected, !Demo.isOn else { return }
         shareSignIn()
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         CameraEventMedia.prune()
         #endif
         // Ready before the first camera is opened: the video engine, and a fresh Google sign-in.
+        #if !os(tvOS)
         if LivePlayer.nativeEnabled { NativeRTC.prewarm() }
+        #endif
         Task { _ = try? await self.token() }
         if poll == nil { startPolling(now: true) } else { Task { await load() } }
     }
 
     /// The sign-in, where the notification extension can use it to fetch an alert's clip (iPhone and iPad only).
     private func shareSignIn() {
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         CameraEventMedia.keepCredentials(clientID: Keychain.get("nest.client"), secret: Keychain.get("nest.secret"),
                                          refresh: Keychain.get("nest.refresh"), access: Keychain.get("nest.access"),
                                          expires: Keychain.get("nest.expires").flatMap(Double.init))
@@ -146,7 +152,7 @@ final class NestCameras {
 
     func signOut() {
         for k in ["nest.refresh", "nest.access", "nest.expires"] { Keychain.set(nil, for: k) }
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         CameraEventMedia.forgetCredentials()
         #endif
         connected = false
@@ -561,7 +567,7 @@ final class CameraStreams {
     /// iPhone: a camera opened over Home. The other streams pause meanwhile (their tiles are behind it), so this
     /// one has the phone's bandwidth and Google's camera commands to itself.
     func focus(_ id: String) {
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         for (k, p) in players where k != id && p.isRunning {
             p.pause()
             heldBack.append(k)
@@ -669,7 +675,7 @@ final class CameraStreams {
     func background(after seconds: Double = 60) { backgroundAt = Date(); letGoSoon(after: seconds) }
 
     func foreground() {
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         // Replays older than ten minutes go each time the app comes back.
         CameraEventMedia.prune()
         #endif
@@ -788,6 +794,9 @@ struct LiveCameraTile: View, Equatable {
             }
         }
         .contentShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+        #if os(tvOS)
+        .modifier(TVFocusTile())
+        #endif
         .onTapGesture {
             guard HomeLayout.shared.tapsAllowed else { return }
             if camera.webRTC && camera.online { streams.expanded = camera.id; open() }
@@ -925,7 +934,7 @@ struct CameraLiveView: View {
     }
 
     private func close() {
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         // The card settles away before the cover closes.
         withAnimation(.easeOut(duration: 0.18)) { appeared = false }
         Task {
@@ -937,7 +946,7 @@ struct CameraLiveView: View {
         #endif
     }
 
-    #if os(iOS)
+    #if os(iOS) || os(tvOS)
     /// The alert this camera was opened from, if any.
     private var replay: CameraReplay? { streams.replay.flatMap { $0.camera == camera.id ? $0 : nil } }
 
@@ -1038,12 +1047,13 @@ struct CameraLiveView: View {
     #endif
 }
 
-#if os(iOS)
+#if os(iOS) || os(tvOS)
 typealias StageView = UIView
 #else
 typealias StageView = NSView
 #endif
 
+#if !os(tvOS)
 /// One camera's WebRTC session: the web view makes the offer, Google answers through Device Access, and
 /// it's renewed every four minutes (Google ends it after five). If it drops, it reconnects by itself.
 @MainActor
@@ -1113,14 +1123,14 @@ final class LivePlayer: NSObject, WKNavigationDelegate {
     init(camera: NestCameras.Camera) {
         self.camera = camera
         let config = WKWebViewConfiguration()
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         config.allowsInlineMediaPlayback = true
         #endif
         config.mediaTypesRequiringUserActionForPlayback = []
         web = WKWebView(frame: .zero, configuration: config)
         surface = PictureStage(frame: .zero)
         super.init()
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         surface.backgroundColor = .black
         surface.clipsToBounds = true
         web.autoresizingMask = [.flexibleWidth, .flexibleHeight]
@@ -1137,7 +1147,7 @@ final class LivePlayer: NSObject, WKNavigationDelegate {
         config.userContentController.add(proxy, name: "offer")
         config.userContentController.add(proxy, name: "state")
         web.navigationDelegate = self
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         web.isOpaque = false
         web.backgroundColor = .black
         web.scrollView.isScrollEnabled = false
@@ -1206,7 +1216,7 @@ final class LivePlayer: NSObject, WKNavigationDelegate {
         let v = native.view
         if on && v.superview !== surface {
             v.frame = surface.bounds
-            #if os(iOS)
+            #if os(iOS) || os(tvOS)
             v.autoresizingMask = [.flexibleWidth, .flexibleHeight]
             surface.insertSubview(v, belowSubview: web)
             #else
@@ -1317,7 +1327,7 @@ final class LivePlayer: NSObject, WKNavigationDelegate {
         Task { @MainActor in
             guard let jpeg = await frameJPEG() else { return }
             CameraStreams.shared.keepStill(cam, jpeg)
-            #if os(iOS)
+            #if os(iOS) || os(tvOS)
             if PhoneWidgetShare.saveCamera(id: cam.id, name: cam.name, doorbell: cam.doorbell, jpeg: jpeg) {
                 WidgetCenter.shared.reloadTimelines(ofKind: PhoneWidgetShare.tvsCamerasKind); WidgetCenter.shared.reloadTimelines(ofKind: PhoneWidgetShare.doorbellKind)
             }
@@ -1466,7 +1476,9 @@ final class ScriptProxy: NSObject, WKScriptMessageHandler {
     }
 }
 
-#if os(iOS)
+#endif
+
+#if os(iOS) || os(tvOS)
 struct LiveWebView: UIViewRepresentable {
     var player: LivePlayer
     /// The stream's one web view, held in a frame of its own: it can move to full screen and come back.
@@ -1654,7 +1666,7 @@ struct CameraReplay: Equatable {
     var thumb: String? = nil
 }
 
-#if os(iOS)
+#if os(iOS) || os(tvOS)
 /// The alert's moment filling the camera's picture box: its clip looping (muted) or its picture. Tries what the alert
 /// itself showed, then Google, then the Mac's small picture; with none of them it hands over to live ([none]).
 struct EventReplayView: View {

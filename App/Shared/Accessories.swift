@@ -42,7 +42,7 @@ struct DevicesSection: View {
 struct DeviceTile: View, Equatable {
     /// The iPhone away from home (the Mac is always home).
     @MainActor static var away: Bool {
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         return Fleet.shared.probablyAway
         #else
         return false
@@ -121,11 +121,14 @@ struct DeviceTile: View, Equatable {
         // from home (Home says so once instead).
         .opacity(device.reachable || device.bespokeLook != nil || device.isMotionSensor || DeviceTile.away ? 1 : 0.6)
         .animation(.smooth(duration: 0.25), value: lit)
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         // A second, firmer tap once the device has really changed (not when someone else changed it).
         .sensoryFeedback(.impact(weight: .medium), trigger: lit) { _, _ in
             tappedAt.map { Date().timeIntervalSince($0) < 8 } ?? false
         }
+        #endif
+        #if os(tvOS)
+        .modifier(TVFocusTile())
         #endif
         .onTapGesture { if HomeLayout.shared.tapsAllowed { tappedAt = Date(); tap() } }
         // Press and hold arranges Home's tiles (on the Mac too); the controls are in the menu.
@@ -157,7 +160,7 @@ struct DeviceTile: View, Equatable {
 
     /// One tap does the obvious thing; anything without one opens the controls.
     private func tap() {
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
         #endif
         // Not responding: nothing would happen, so show its page (which says why) instead.
@@ -278,7 +281,7 @@ struct DeviceDetailView: View {
 
     /// Pull down on a device's page: it's asked again.
     private func reread(_ d: HomeDevice) async {
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         if d.source == "home" { HomeKitLights.shared.refresh(device: d.id) }
         #endif
         if d.source == "smartthings" { await SmartThings.shared.refresh(device: d.id) }
@@ -361,7 +364,7 @@ struct DevicesListView: View {
                     }
                 }
             } footer: {
-                #if os(iOS)
+                #if os(iOS) || os(tvOS)
                 Text("Everything in Apple Home (plugs, locks, thermostats, sensors, blinds, HomePod temperature) shows here, plus Samsung appliances once SmartThings is connected. Tap one to rename it or choose its room.")
                 #else
                 VStack(alignment: .leading, spacing: 6) {
@@ -379,7 +382,7 @@ struct DevicesListView: View {
         .navigationTitle("Devices")
         .inlineTitle()
         .refreshable {
-            #if os(iOS)
+            #if os(iOS) || os(tvOS)
             HomeKitLights.shared.reload()
             #endif
             // Everything listed here, the fans too.
@@ -499,7 +502,7 @@ struct ThermostatControls: View {
         .task(id: device.id) {
             let id = device.id
             let source = device.source
-            #if os(iOS)
+            #if os(iOS) || os(tvOS)
             if source == "home" { HomeKitLights.shared.refresh(device: id) }
             #endif
             guard source == "smartthings" else { return }
@@ -532,7 +535,7 @@ struct ThermostatControls: View {
     /// A new mode: sent now, and shown at once (the thermostat's answer then confirms it).
     private func pick(_ m: String) {
         guard m != device.thermostatMode else { return }
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
         #endif
         store.send(device, .thermostatMode(m))
@@ -540,7 +543,7 @@ struct ThermostatControls: View {
 
     /// Shows the new temperature at once; sends it a moment after the last tap (so five taps are one change).
     private func change(heating: Bool, to v: Double) {
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
         #endif
         let d = device
@@ -631,7 +634,7 @@ struct ThermostatChip: View {
             // The pill is a real button: a tap gesture inside a Mac toolbar is taken by the window (dragging it),
             // so a click on it never arrived before.
             Button {
-                #if os(iOS)
+                #if os(iOS) || os(tvOS)
                 UIImpactFeedbackGenerator(style: .light).impactOccurred()
                 #endif
                 ui.open = true
@@ -840,7 +843,7 @@ private struct ThermostatSetup: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("No Thermostat Yet").font(.title3.bold())
-            #if os(iOS)
+            #if os(iOS) || os(tvOS)
             if let problem = AccessoryStore.shared.homeProblem {
                 Text(problem)
                     .font(.callout).foregroundStyle(.secondary)
@@ -876,7 +879,7 @@ private struct ThermostatSetup: View {
         Button {
             looking = true
             Task {
-                #if os(iOS)
+                #if os(iOS) || os(tvOS)
                 HomeKitLights.shared.reload()
                 #endif
                 await SmartThings.shared.refresh(full: true)

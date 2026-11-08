@@ -433,7 +433,6 @@ final class Dreo {
     }
 }
 
-#if !os(tvOS)
 /// The Dreo part of Settings → Smart Home → Devices.
 struct DreoSection: View {
     private let dreo = Dreo.shared
@@ -449,7 +448,7 @@ struct DreoSection: View {
             } else {
                 TextField("Dreo Email", text: $email)
                     .autocorrectionDisabled()
-                    #if os(iOS)
+                    #if os(iOS) || os(tvOS)
                     .textInputAutocapitalization(.never)
                     .keyboardType(.emailAddress)
                     #endif
@@ -467,4 +466,3 @@ struct DreoSection: View {
         }
     }
 }
-#endif

@@ -608,7 +608,7 @@ struct CyncSection: View {
             } else if cync.needsCode {
                 Text("Cync emailed a code to \(email).")
                 TextField("Code", text: $code)
-                    #if os(iOS)
+                    #if os(iOS) || os(tvOS)
                     .keyboardType(.numberPad)
                     #endif
                 Button {
@@ -621,7 +621,7 @@ struct CyncSection: View {
             } else {
                 TextField("Cync Email", text: $email)
                     .autocorrectionDisabled()
-                    #if os(iOS)
+                    #if os(iOS) || os(tvOS)
                     .textInputAutocapitalization(.never)
                     .keyboardType(.emailAddress)
                     #endif

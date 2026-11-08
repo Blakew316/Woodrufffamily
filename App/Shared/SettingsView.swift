@@ -151,7 +151,7 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .screenTitle("Settings")
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         .navigationDestination(item: $route) { r in
             switch r {
             case "tv": TVDetailView(tvID: "tv-den")
@@ -227,7 +227,7 @@ struct PhoneSettingsView: View {
     var body: some View {
         Form {
             Section {
-                #if os(iOS)
+                #if os(iOS) || os(tvOS)
                 Toggle("Now Playing on Lock Screen", isOn: $liveActivity)
                 Toggle("Appliances on Lock Screen", isOn: $applianceActivity)
                 #endif
@@ -271,7 +271,7 @@ struct PhoneSettingsView: View {
         .formStyle(.grouped)
         .navigationTitle("Notifications")
         .inlineTitle()
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         // Takes effect at once: the Lock Screen's Now Playing ends (or starts) right away.
         .onChange(of: liveActivity) { _, _ in LiveActivitySync.shared.sync(fleet) }
         .onChange(of: applianceActivity) { _, on in if !on { ApplianceActivitySync.shared.endAll() } }
@@ -344,7 +344,7 @@ struct TVsView: View {
             Section {
                 // The notes kept on the TVs (Command Center → Notes there).
                 PageLink("Notes") { NotesView() } label: { IconRow(symbol: "", color: .clear, title: "Notes") }
-                #if os(iOS)
+                #if os(iOS) || os(tvOS)
                 // Messages, links and files to the TVs and phones (the Mac has Send in its sidebar).
                 PageLink("Send") { SendView() } label: {
                     IconRow(symbol: "", color: .clear, title: "Send", subtitle: "A message, photos, files or a link")
@@ -706,7 +706,11 @@ struct DeviceSignIns: Equatable {
 /// phone and Mac) and given to every TV (`GoogleGrants`), with how the TVs' sign-in stands.
 struct GoogleGrantView: View {
     @Environment(Fleet.self) private var fleet
+    #if os(tvOS)
+    private let webAuth = TVWebAuth()
+    #else
     @Environment(\.webAuthenticationSession) private var webAuth
+    #endif
     var grant: String
     var title: String
     var about: String
@@ -1035,7 +1039,7 @@ struct AddMailSheet: View {
             Form {
                 Picker("Provider", selection: $provider) { ForEach(providers) { Text($0.label).tag($0.id) } }
                 TextField("Email", text: $email).autocorrectionDisabled()
-                    #if os(iOS)
+                    #if os(iOS) || os(tvOS)
                     .textInputAutocapitalization(.never).keyboardType(.emailAddress)
                     #endif
                 SecureField("App-specific password", text: $password)
@@ -1220,7 +1224,7 @@ struct SyncSettingsView: View {
                     TextField("Enter Family Code", text: $codeText)
                         .font(.body.monospaced())
                         .autocorrectionDisabled()
-                        #if os(iOS)
+                        #if os(iOS) || os(tvOS)
                         .textInputAutocapitalization(.characters)
                         #endif
                         .onSubmit(useCode)

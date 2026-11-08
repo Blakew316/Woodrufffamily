@@ -1,5 +1,7 @@
 import SwiftUI
+#if canImport(QuickLook)
 import QuickLook
+#endif
 import UniformTypeIdentifiers
 import WoodruffKit
 
@@ -327,7 +329,7 @@ struct OpenLinkView: View {
                 TextField("https://", text: $link)
                     .focused($focused)
                     .autocorrectionDisabled()
-                    #if os(iOS)
+                    #if os(iOS) || os(tvOS)
                     .textInputAutocapitalization(.never).keyboardType(.URL)
                     #endif
                     .onSubmit { open() }
@@ -341,7 +343,7 @@ struct OpenLinkView: View {
         .formStyle(.grouped)
         .navigationTitle("Open a Link")
         .inlineTitle()
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         .toolbar { ToolbarItem(placement: .primaryAction) { openButton } }
         #else
         .macPageBar { openButton }
@@ -484,7 +486,7 @@ struct FilesView: View {
         #endif
         .navigationTitle(listing.map { $0.path == root?.path ? (root?.name ?? "Photos & Files") : ($0.path as NSString).lastPathComponent } ?? "Photos & Files")
         .screenTitle(listing.map { $0.path == root?.path ? (root?.name ?? "Photos & Files") : ($0.path as NSString).lastPathComponent } ?? "Photos & Files")
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         .toolbar {
             ToolbarItem(placement: .primaryAction) { optionsMenu }
             ToolbarItem(placement: .primaryAction) { addMenu }
@@ -520,8 +522,12 @@ struct FilesView: View {
             Text(f.dir ? "Everything in it is deleted from the TV too. This can’t be undone." : "It’s deleted from the TV. This can’t be undone.")
         }
         .task { await loadRoots() }
+        #if canImport(QuickLook)
         .quickLookPreview($previewing)
+        #endif
+        #if !os(tvOS)
         .dropDestination(for: URL.self) { urls, _ in upload(urls); return true }
+        #endif
         #if os(macOS)
         .focusable()
         .focusEffectDisabled()
@@ -531,7 +537,7 @@ struct FilesView: View {
         .onChange(of: show) { _, _ in refreshShown() }
         .onChange(of: sort) { _, _ in refreshShown() }
         .onChange(of: showHidden) { _, _ in refreshShown() }
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         .sheet(item: Binding(get: { saving.map { ShareItem(url: $0) } }, set: { saving = $0?.url })) { ShareSheet(items: [$0.url]) }
         #endif
     }

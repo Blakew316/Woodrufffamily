@@ -1,7 +1,9 @@
 import SwiftUI
 import UserNotifications
 import WoodruffKit
+#if canImport(WidgetKit)
 import WidgetKit
+#endif
 
 /// "Person seen · Front door doorbell", "Someone's at the front door": the cameras' events as notifications
 /// on this iPhone or Mac, like the Google Home app. They come the way the TVs get them: Google posts every
@@ -189,7 +191,7 @@ final class NestAlerts {
             }
         }
         eventHappened = happened
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         // Caught up later (the iPhone was closed or asleep when the Mac's push should have come): shown, quietly.
         let catchingUp = happened.map { -$0.timeIntervalSinceNow > 60 } ?? false
         #else
@@ -297,7 +299,7 @@ final class NestAlerts {
             if let file, let a = CameraEventMedia.attachment(file) { c.attachments = [a] }
             Notifier.deliver(c, id: id)
         }
-        #else
+        #elseif os(macOS)
         // One alert per event, with its picture: it waits for the picture (a few seconds at most, less for the
         // doorbell), then goes once, here and to every iPhone. A picture that comes later doesn't send it again.
         let once = SentOnce()
@@ -433,7 +435,7 @@ struct AlertsSection: View {
                 }
             }
         } header: { Text(title) } footer: {
-            #if os(iOS)
+            #if os(iOS) || os(tvOS)
             // One block of text: a footer shows only its first view, which hid the line about the last alert.
             VStack(alignment: .leading, spacing: 6) {
                 if let last = CameraEventMedia.lastPush {

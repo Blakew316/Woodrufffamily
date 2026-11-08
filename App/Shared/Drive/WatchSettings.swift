@@ -7,7 +7,11 @@ import WoodruffKit
 /// same either way.
 struct WatchSettingsView: View {
     @Environment(Fleet.self) private var fleet
+    #if os(tvOS)
+    private let webAuth = TVWebAuth()
+    #else
     @Environment(\.webAuthenticationSession) private var webAuth
+    #endif
     @AppStorage("watch.source") private var source = "tv"
     @AppStorage("watch.playOn") private var playOn = "tv"
     private let library = DriveLibrary.shared

@@ -10,7 +10,11 @@ struct HomeView: View {
     @AppStorage("home.awayNote") private var awayNote = true
     @State private var openTV: String?
     /// The room bar's choice: Favorites (first, and where Home opens), All Rooms (""), or a room.
+    #if os(tvOS)
+    @AppStorage("home.room2") private var picked = allDevicesKey
+    #else
     @AppStorage("home.room2") private var picked = favoritesKey
+    #endif
     /// The TV whose player is open (iPhone: tapping a TV opens straight into what it's playing).
     @State private var playerTV: String?
     /// The page's scrolling, so a tile dragged to an edge scrolls the page under it.
@@ -75,7 +79,10 @@ struct HomeView: View {
         @Bindable var scroller = scroller
         ScrollView {
             VStack(alignment: .leading, spacing: 30) {
-                #if os(iOS)
+                #if os(tvOS)
+                // As on the Mac: the greeting and thermostat are in the bar at the top (TVMacRoot); the scenes here.
+                if !arranging { ScenesStrip() }
+                #elseif os(iOS)
                 // The greeting with its one-liner floating at the top, then the weather and Edit on the left and the thermostat
                 // on the right under it. (While arranging, Done stays pinned at the top right instead.)
                 VStack(spacing: 14) {
@@ -133,7 +140,7 @@ struct HomeView: View {
                     }
                 }
             }
-            #if os(iOS)
+            #if os(iOS) || os(tvOS)
             .padding(.horizontal, 16).padding(.vertical, 12)
             #else
             .padding(28)
@@ -159,7 +166,7 @@ struct HomeView: View {
         .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { f in scroller.frame = f }
         // A tile being dragged holds the page still (it scrolls by itself at the edges).
         .scrollDisabled(layout.draggingTile != nil)
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         // Pull down: every TV, speaker, light and device asked again now.
         .refreshable { await HomeRefresh.everything(fleet) }
         #endif
@@ -192,7 +199,7 @@ struct HomeView: View {
                     .transition(.asymmetric(insertion: .identity, removal: .opacity))
             }
         }
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         .overlay(alignment: .topTrailing) {
             if arranging {
                 Button("Done") { layout.stopArranging() }
@@ -206,7 +213,7 @@ struct HomeView: View {
         // Home is always the dark, cinematic room: its glass and text read over the backdrop.
         .environment(\.colorScheme, .dark)
         .navigationTitle(openTV.flatMap { fleet.tv($0)?.name } ?? "Home")
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         // The title sits in the page itself, right under the status bar.
         .toolbar(.hidden, for: .navigationBar)
         #else
@@ -260,7 +267,7 @@ struct HomeView: View {
     private func refreshEverything() async {
         SmartHome.shared.searchLights()
         SmartHome.shared.wake()
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         HomeKitLights.shared.refresh()
         #endif
         async let tvs: Void = fleet.refresh()
@@ -384,7 +391,11 @@ struct HomeView: View {
                     Button { withAnimation(.smooth) { picked = r } } label: {
                         chip(r == favoritesKey ? "Favorites" : r == allDevicesKey ? "All Devices" : r, selected: room == r)
                     }
+                    #if os(tvOS)
+                    .buttonStyle(TVBarButtonStyle())
+                    #else
                     .buttonStyle(.plain)
+                    #endif
                     .glass(Capsule())
                 }
                 Menu {
@@ -407,12 +418,19 @@ struct HomeView: View {
                     chip(inMore ? (room.isEmpty ? "All Rooms" : room) + " ▾" : "More ▾", selected: inMore)
                 }
                 .menuStyle(.button)
+                #if os(tvOS)
+                .buttonStyle(TVBarButtonStyle())
+                #else
                 .buttonStyle(.plain)
+                #endif
                 .glass(Capsule())
                 .fixedSize()
             }
         }
         .scrollIndicators(.hidden)
+        #if os(tvOS)
+        .scrollClipDisabled()
+        #endif
     }
 
     private func chip(_ title: String, selected: Bool) -> some View {
@@ -420,6 +438,9 @@ struct HomeView: View {
             #if os(macOS)
             .font(.title3.weight(.semibold))
             .padding(.horizontal, 20).padding(.vertical, 10)
+            #elseif os(tvOS)
+            .font(.system(size: 26, weight: .semibold))
+            .padding(.horizontal, 30).padding(.vertical, 14)
             #else
             .font(.subheadline.weight(.semibold))
             .padding(.horizontal, 14).padding(.vertical, 8)
@@ -453,7 +474,7 @@ struct HomeView: View {
     private func startArranging() {
         guard !layout.arranging else { return }
         layout.startArranging()
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         #else
         MacFeedback.snap()
@@ -607,6 +628,9 @@ struct HomeTVTile: View, Equatable {
                     .overlay(Text("Show on \(tv.name)").font(.headline).padding(10).glass(Capsule(), interactive: false))
             }
         }
+        #endif
+        #if os(tvOS)
+        .modifier(TVFocusTile())
         #endif
         .onTapGesture { if HomeLayout.shared.tapsAllowed { open() } }
         .onHover { hovering = $0 }

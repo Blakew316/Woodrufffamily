@@ -18,7 +18,7 @@ struct RemoteView: View {
 
     private var tv: FleetTV? { fleet.selected }
     private var all: Bool { fleet.remoteAll }
-    #if os(iOS)
+    #if os(iOS) || os(tvOS)
     @Environment(\.horizontalSizeClass) private var sizeClass
     /// iPad (a wide window): what's playing beside the remote, its name next to the TV's at the top.
     private var padLayout: Bool { sizeClass == .regular }
@@ -118,7 +118,7 @@ struct RemoteView: View {
             }
             #endif
         }
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         // Like the Siri Remote: a tick for each arrow, a firmer click for OK, a light tap for the other keys.
         .sensoryFeedback(.selection, trigger: arrowTicks)
         .sensoryFeedback(.impact(weight: .medium, intensity: 0.9), trigger: okTicks)
@@ -146,7 +146,9 @@ struct RemoteView: View {
                     }
                 }
             }
+                #if !os(tvOS)
                 .sharedBackgroundVisibility(.hidden)
+                #endif
             if let tv, !all, fleet.lg(for: tv) != nil {
                 ToolbarItem(placement: .primaryAction) { LGMenu(tv: tv) }
             }
@@ -379,7 +381,7 @@ struct Clickpad: View {
         }
         .frame(width: size, height: size)
         .animation(.spring(response: 0.22, dampingFraction: 0.65), value: pressed)
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         .sensoryFeedback(.impact(flexibility: .soft, intensity: 0.5), trigger: bumps)
         #endif
         .contentShape(Circle())
@@ -861,7 +863,7 @@ struct KeyboardSheet: View {
     }
 }
 
-#if os(iOS)
+#if os(iOS) || os(tvOS)
 /// iPad, beside the remote: what's playing on the remote's TV, its picture large, the time, and what it's about (as
 /// the Watch banner shows it).
 private struct RemotePlayingPanel: View {

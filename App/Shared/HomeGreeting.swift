@@ -1,7 +1,7 @@
 import SwiftUI
 import CoreLocation
 import WoodruffKit
-#if canImport(FoundationModels)
+#if canImport(FoundationModels) && !os(tvOS)
 import FoundationModels
 #endif
 
@@ -246,7 +246,7 @@ final class HomeGreeting {
     /// Apple Intelligence's own line, when it's available on this device; it replaces the picked one.
     private func write(_ p: DayPart) {
         writing?.cancel()
-        #if canImport(FoundationModels)
+        #if canImport(FoundationModels) && !os(tvOS)
         let weather = HomeWeather.shared.now
         let sky = weather.map { "\($0.sky.words.lowercased()) and \(Int($0.temp.rounded()))°F" } ?? "unknown weather"
         // Just opened: the model waits a moment, so Woodruff's first seconds (Home drawn, its pictures, the TVs
@@ -394,7 +394,7 @@ struct WeatherPill: View {
             .accessibilityLabel("\(now.sky.words) \(now.tempText)")
             .accessibilityHint("Shows the forecast")
             .animation(.smooth, value: now)
-            #if os(iOS)
+            #if os(iOS) || os(tvOS)
             .sheet(isPresented: $showing) {
                 WeatherSheet()
                     .presentationDetents([.medium, .large])
@@ -600,7 +600,7 @@ struct GreetingText: View {
         }
         .contentShape(Rectangle())
         .onTapGesture {
-            #if os(iOS)
+            #if os(iOS) || os(tvOS)
             UISelectionFeedbackGenerator().selectionChanged()
             #endif
             greeting.refresh(force: true)
@@ -610,7 +610,7 @@ struct GreetingText: View {
     }
 }
 
-#if os(macOS)
+#if os(macOS) || os(tvOS)
 /// The Mac's Home greeting, in the middle of Woodruff's bar: the weather, then the greeting over its one-liner, in
 /// one Liquid Glass capsule.
 /// The Mac's Home greeting, large and floating (no pill around it): the weather beside "Good evening, Woodruff
@@ -625,27 +625,35 @@ struct MacGreetingHero: View {
                 HStack(spacing: 8) {
                     Image(systemName: now.sky.symbol)
                         .symbolRenderingMode(.multicolor)
-                        .font(.system(size: 27, weight: .semibold))
+                        .font(.system(size: 27 * macScale, weight: .semibold))
                     Text(now.tempText)
-                        .font(.system(size: 29, weight: .semibold, design: .rounded))
+                        .font(.system(size: 29 * macScale, weight: .semibold, design: .rounded))
                         .monospacedDigit()
                         .contentTransition(.numericText())
                 }
+                #if os(macOS)
                 .help([now.sky.words, now.range].compactMap { $0 }.joined(separator: " · "))
-                Rectangle().fill(IconPalette.cyan).frame(width: 1.5, height: 40).shadow(color: IconPalette.cyan.opacity(0.6), radius: 4)
+                #endif
+                Rectangle().fill(IconPalette.cyan).frame(width: 1.5, height: 40 * macScale).shadow(color: IconPalette.cyan.opacity(0.6), radius: 4)
             }
-            VStack(alignment: .leading, spacing: 3) {
+            #if os(tvOS)
+            let along: HorizontalAlignment = .center
+            #else
+            let along: HorizontalAlignment = .leading
+            #endif
+            VStack(alignment: along, spacing: 3) {
                 Text(greeting.greeting)
-                    .font(.system(size: 24, weight: .bold, design: .rounded))
+                    .font(.system(size: 24 * macScale, weight: .bold, design: .rounded))
                     .foregroundStyle(IconPalette.white)
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)
                 if !greeting.line.isEmpty {
                     Text(greeting.line)
-                        .font(.system(size: 14.5, weight: .medium))
+                        .font(.system(size: 14.5 * macScale, weight: .medium))
                         .foregroundStyle(IconPalette.ice)
                         .lineLimit(1)
                         .minimumScaleFactor(0.8)
+                        .multilineTextAlignment(.center)
                         .contentTransition(.opacity)
                         .id(greeting.line)
                         .transition(.opacity)
@@ -677,7 +685,9 @@ struct MacGreetingPill: View {
                         .monospacedDigit()
                         .contentTransition(.numericText())
                 }
+                #if os(macOS)
                 .help([now.sky.words, now.range].compactMap { $0 }.joined(separator: " · "))
+                #endif
                 Divider().frame(height: 26)
             }
             GreetingText(alignment: .leading, compact: true)

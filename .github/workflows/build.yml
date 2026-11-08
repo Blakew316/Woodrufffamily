@@ -3,7 +3,7 @@ name: Build apps
 on:
   push:
     # Not release: it only ever points at a commit this workflow has built already.
-    branches-ignore: [screenshots, release]
+    branches-ignore: [screenshots, release, claude/tv-work]
   pull_request:
   workflow_dispatch:
     inputs:
