@@ -133,6 +133,8 @@ struct WoodruffApp: App {
                     GoogleGrants.start(fleet)
                     #if os(macOS)
                     VehicleWatch.shared.start()
+                    // The cameras' pictures for the family's Apple TVs (the Mac Studio only).
+                    CameraShare.shared.start()
                     #endif
                     DecoWifi.shared.start()
                     // Siri learns the family's light, room, speaker and TV names (and again whenever they change).

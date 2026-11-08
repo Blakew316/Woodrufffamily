@@ -78,21 +78,34 @@ final class WidgetCenter {
 
 // MARK: Cameras: the latest picture, not live video
 
-/// The camera picture's box (the iPhone's is Google's WebRTC video).
+/// The camera picture's box: the Mac Studio's latest picture of the camera, filling it.
 final class PictureStage: UIView {
     var videoSize: CGSize = .zero
+    let image = UIImageView()
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        image.contentMode = .scaleAspectFill
+        image.clipsToBounds = true
+        image.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        addSubview(image)
+    }
+    required init?(coder: NSCoder) { fatalError() }
+    override func layoutSubviews() { super.layoutSubviews(); image.frame = bounds }
 }
 
-/// The iPhone's live player, as Apple TV can have it: no stream (no web view or WebRTC here), so the tile and the
-/// big view show the camera's latest picture and say so.
+/// The iPhone's live player, as Apple TV can have it: the Mac Studio (which keeps every camera live) hands over each
+/// camera's current picture about once a second, at home or through Tailscale.
 @MainActor
 final class LivePlayer: NSObject {
     let surface = PictureStage(frame: .zero)
     static var nativeEnabled: Bool { false }
     var camera: NestCameras.Camera
     var onStatus: ((String) -> Void)?
-    var isRunning: Bool { false }
-    var isLive: Bool { false }
+    private var feed: Task<Void, Never>?
+    private var live = false
+    private var lastJPEG: Data?
+    var isRunning: Bool { feed != nil }
+    var isLive: Bool { live }
 
     init(camera: NestCameras.Camera) {
         self.camera = camera
@@ -100,13 +113,56 @@ final class LivePlayer: NSObject {
         surface.backgroundColor = .black
     }
 
-    func start() { onStatus?("Latest picture") }
-    func restart() { start() }
-    func pause() {}
-    func close() {}
+    func start() {
+        guard feed == nil else { return }
+        onStatus?("Starting…")
+        feed = Task { [weak self] in
+            var misses = 0
+            while !Task.isCancelled {
+                guard let self else { return }
+                if let jpeg = await Self.fetch(self.camera.id), let img = UIImage(data: jpeg) {
+                    misses = 0
+                    self.lastJPEG = jpeg
+                    self.surface.image.image = img
+                    self.surface.videoSize = img.size
+                    if !self.live { self.live = true; self.onStatus?("Live") }
+                } else {
+                    misses += 1
+                    if misses == 3 { self.live = false; self.onStatus?("The Mac Studio isn’t sharing this camera right now") }
+                }
+                try? await Task.sleep(nanoseconds: misses == 0 ? 1_000_000_000 : 4_000_000_000)
+            }
+        }
+    }
+
+    func restart() { close(); start() }
+    func pause() { close() }
+    func close() { feed?.cancel(); feed = nil; live = false }
     func setMuted(_ m: Bool) {}
-    func frameJPEG() async -> Data? { nil }
+    func frameJPEG(maxSide: Int = 480) async -> Data? { lastJPEG }
     func received(_ name: String, _ body: String) {}
+
+    /// The address that answered last, tried first next time.
+    private static var good: String?
+
+    private static func fetch(_ id: String) async -> Data? {
+        guard let token = CameraShareKey.token() else { return nil }
+        let hosts = (UserDefaults.standard.string(forKey: CameraShareKey.hostsKey) ?? "").split(separator: ",").map(String.init)
+        let order = (good.map { [$0] } ?? []) + hosts.filter { $0 != good }
+        for h in order {
+            var c = URLComponents()
+            c.scheme = "http"; c.host = h; c.port = Int(CameraShareKey.port); c.path = "/still"
+            c.queryItems = [URLQueryItem(name: "id", value: id), URLQueryItem(name: "k", value: token)]
+            guard let url = c.url else { continue }
+            var r = URLRequest(url: url)
+            r.timeoutInterval = 3
+            if let (d, resp) = try? await URLSession.shared.data(for: r), (resp as? HTTPURLResponse)?.statusCode == 200, d.count > 500 {
+                good = h
+                return d
+            }
+        }
+        return nil
+    }
 }
 
 // MARK: Sign-ins (they come to the Apple TV from the family)

@@ -59,7 +59,7 @@ final class SettingsSync {
     /// Now Playing on the Lock Screen. (Home's tile sizes travel with the Home layout.)
     static let valueKeys = ["watch.source", "nest.alert.person", "nest.alert.motion", "nest.alert.doorbell", "notifyFleet", "liveActivity", "remoteClick", "sonosSeed",
                             "scenes.filled", "vehicle.cameras", "vehicle.test", "vehicle.minConfidence", "vehicle.minChanged",
-                            "vehicle.maxChanged", "watch.cellularDownloads", "camera.native"]
+                            "vehicle.maxChanged", "watch.cellularDownloads", "camera.native", "cameraShare.hosts"]
 
     /// Saved settings kept entry by entry (one TV's name, one light's room, one paired TV, one tile's size; the Home
     /// layout part by part), so two devices changing different entries at the same time both keep their change.

@@ -91,6 +91,8 @@ struct BoardMetrics: Equatable {
     init(width: CGFloat) {
         #if os(macOS)
         let smallest: CGFloat = 104, gap: CGFloat = 14, tall: CGFloat = 0.72
+        #elseif os(tvOS)
+        let smallest: CGFloat = 200, gap: CGFloat = 30, tall: CGFloat = 0.78
         #else
         let smallest: CGFloat = 76, gap: CGFloat = 10, tall: CGFloat = 0.92
         #endif

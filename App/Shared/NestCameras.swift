@@ -599,9 +599,9 @@ final class CameraStreams {
     /// already running or started just for this, gives its first good frame, and one started for this is let go
     /// again. Nil if no frame comes within [timeout] seconds.
     /// A frame of a camera that's already live (kept ready, or on screen): at once, nil when it isn't live.
-    func liveFrame(_ id: String) async -> Data? {
+    func liveFrame(_ id: String, maxSide: Int = 480) async -> Data? {
         guard let p = players[id], p.isLive else { return nil }
-        return await p.frameJPEG()
+        return await p.frameJPEG(maxSide: maxSide)
     }
 
     func grabFrame(_ cam: NestCameras.Camera, timeout: Double = 20) async -> Data? {
@@ -1309,11 +1309,11 @@ final class LivePlayer: NSObject, WKNavigationDelegate {
 
     /// The video's current frame as a JPEG at most 480 pixels across, drawn into a canvas in the page (a snapshot of
     /// the web view can miss the video). Nil before the first frame.
-    func frameJPEG() async -> Data? {
-        if usingNative { return native.frameJPEG() }
+    func frameJPEG(maxSide: Int = 480) async -> Data? {
+        if usingNative { return native.frameJPEG(maxSide: maxSide) }
         let js = """
         (() => { const v = document.querySelector('video'); if (!v || !v.videoWidth) return null;
-          const k = Math.min(1, 480 / Math.max(v.videoWidth, v.videoHeight)); const c = document.createElement('canvas');
+          const k = Math.min(1, \(maxSide) / Math.max(v.videoWidth, v.videoHeight)); const c = document.createElement('canvas');
           c.width = Math.round(v.videoWidth * k); c.height = Math.round(v.videoHeight * k);
           c.getContext('2d').drawImage(v, 0, 0, c.width, c.height); return c.toDataURL('image/jpeg', 0.75); })()
         """
