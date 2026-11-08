@@ -172,12 +172,19 @@ struct WatchView: View {
         let worked = shelves.get(place: place, titles: titles, shown: watchingIDs)
         // Until the whole list is read, the library's own featured titles, so the banner shows at once.
         let featured = worked.featured.isEmpty ? (h.featured ?? []).filter { ($0.kind == "show") == (place == "shows") } : worked.featured
+        #if os(tvOS)
+        // Still loading the banner: Movies | TV Shows on its own at the top.
+        if featured.isEmpty { tvSectionPicker.padding(.top, 30) }
+        #endif
         if !featured.isEmpty {
             #if os(tvOS)
             // The whole screen; the first row (Continue Watching) rises up over its bottom, as the TV app does.
             Billboard(titles: featured, page: $page, client: client).id(place)
-                // A section across the screen: Down from Movies | TV Shows lands on its buttons.
-                .focusSection()
+                // Movies | TV Shows at its top, in the page itself: Up from the banner's buttons reaches it, Down
+                // from it reaches them.
+                .overlay(alignment: .top) { tvSectionPicker.padding(.top, 30) }
+                // Fading out as the page moves down to the rows (and back in on the way up), as the TV app's does.
+                .visualEffect { c, p in c.opacity(max(0, min(1, 1 + p.frame(in: .scrollView).minY / 650))) }
                 .padding(.bottom, -330)
             #else
             Billboard(titles: featured, page: $page, client: client).id(place)
@@ -196,6 +203,21 @@ struct WatchView: View {
             .task(id: row.name + place) { await ShelfWarmer.warm(row.titles.prefix(18).compactMap { client?.artURL($0.poster) }) }
         }
     }
+
+    #if os(tvOS)
+    /// Apple TV: Movies | TV Shows, a section across the whole width so Up from anywhere under it lands there.
+    private var tvSectionPicker: some View {
+        Picker("Library", selection: $section) {
+            Text("Movies").tag("movies")
+            Text("TV Shows").tag("shows")
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .fixedSize()
+        .frame(maxWidth: .infinity)
+        .focusSection()
+    }
+    #endif
 
     /// Movies | TV Shows above the banner.
     private var sectionPicker: some View {
@@ -482,6 +504,9 @@ struct Billboard: View {
                         .focused($focusedButton, equals: "details")
                 }
                 .padding(.top, 8)
+                // A section across the screen: Down from Movies | TV Shows always lands on Play.
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .focusSection()
             }
             // Above the row that rises over the banner's bottom.
             .padding(.leading, 90).padding(.bottom, 400).padding(.trailing, 90)

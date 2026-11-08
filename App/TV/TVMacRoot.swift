@@ -31,20 +31,6 @@ struct TVMacRoot: View {
             Tab("Watch", systemImage: "play.tv", value: "watch") {
                 NavigationStack {
                     WatchView()
-                        // Movies | TV Shows, floating at the top of the banner.
-                        .overlay(alignment: .top) {
-                            Picker("Library", selection: $watchSection) {
-                                Text("Movies").tag("movies")
-                                Text("TV Shows").tag("shows")
-                            }
-                            .pickerStyle(.segmented)
-                            .labelsHidden()
-                            .fixedSize()
-                            .padding(.top, 30)
-                            // A section across the whole width: Up from anywhere on the banner lands here first.
-                            .frame(maxWidth: .infinity)
-                            .focusSection()
-                        }
                         .toolbar(.hidden, for: .navigationBar)
                         .ignoresSafeArea(edges: .top)
                 }
