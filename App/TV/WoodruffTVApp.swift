@@ -141,7 +141,7 @@ struct HomeTab: View {
 }
 
 /// A device on Home: on, off, lock or unlock with a click; the rest show how they are.
-private func toggle(_ d: HomeDevice) {
+@MainActor private func toggle(_ d: HomeDevice) {
     guard d.reachable else { return }
     if d.kind == .lock, let locked = d.locked {
         AccessoryStore.shared.send(d, .lock(!locked))
