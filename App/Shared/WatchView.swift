@@ -176,6 +176,8 @@ struct WatchView: View {
             #if os(tvOS)
             // The whole screen; the first row (Continue Watching) rises up over its bottom, as the TV app does.
             Billboard(titles: featured, page: $page, client: client).id(place)
+                // A section across the screen: Down from Movies | TV Shows lands on its buttons.
+                .focusSection()
                 .padding(.bottom, -330)
             #else
             Billboard(titles: featured, page: $page, client: client).id(place)
