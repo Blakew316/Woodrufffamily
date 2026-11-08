@@ -76,24 +76,8 @@ struct HomeView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 30) {
                 #if os(tvOS)
-                // The Mac's bar: the weather and greeting in the middle, the thermostat on the right, all on one line;
-                // the scenes under it.
-                VStack(spacing: 22) {
-                    ZStack {
-                        HStack(alignment: .center) {
-                            Spacer()
-                            if !arranging { ThermostatChip(compact: false, steppers: true, height: 60) }
-                        }
-                        MacGreetingHero().scaleEffect(1.35)
-                    }
-                    .frame(height: 80)
-                    if !arranging { ScenesStrip() }
-                    if !arranging && awayNote && fleet.probablyAway {
-                        Text("Away from home. Devices update when you’re back.")
-                            .font(.footnote).foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity)
-                    }
-                }
+                // As on the Mac: the greeting and thermostat are in the bar at the top (TVMacRoot); the scenes here.
+                if !arranging { ScenesStrip() }
                 #elseif os(iOS)
                 // The greeting with its one-liner floating at the top, then the weather and Edit on the left and the thermostat
                 // on the right under it. (While arranging, Done stays pinned at the top right instead.)

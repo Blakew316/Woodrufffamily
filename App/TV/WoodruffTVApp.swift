@@ -80,7 +80,7 @@ struct TVRoot: View {
                     ConnectPhoneCard().padding(80)
                 }
             } else {
-                RootView()
+                TVMacRoot()
             }
         }
         .alert("Connect to the Family?", isPresented: Binding(get: { join.asking != nil }, set: { if !$0 { join.answer(false) } })) {

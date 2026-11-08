@@ -994,7 +994,7 @@ enum MacSettingsPage: String, CaseIterable, Identifiable {
 #endif
 
 
-#if os(macOS)
+#if os(macOS) || os(tvOS)
 /// The Mac's way around (in place of a sidebar): Home, Watch, Send, Memories and Settings in one liquid-glass bar the
 /// height of the pills beside it, the page you're on lit, the light sliding to the one you pick.
 struct MacSectionBar: View {
@@ -1036,7 +1036,7 @@ struct MacSectionBar: View {
 #endif
 
 
-#if os(macOS)
+#if os(macOS) || os(tvOS)
 /// Mac Settings like System Settings: a short list down the left in a glass panel, the page highlighted open on
 /// the right to change. Clicking another one in the list is the only way around (no Back). A link inside a page to
 /// one in the list highlights it there; any other shows its page on the right, and the list item brings you back.
@@ -1121,7 +1121,9 @@ struct MacSettingsView: View {
                 }
                 // One look for every page here: on the glass panel itself, roomier rows, slightly larger type, and
                 // the family's light blue for switches, buttons and links.
+                #if !os(tvOS)
                 .scrollContentBackground(.hidden)
+                #endif
                 .environment(\.defaultMinListRowHeight, 40)
                 .font(.system(size: 14))
                 .tint(IconPalette.cyan)
