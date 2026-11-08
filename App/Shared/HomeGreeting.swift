@@ -636,7 +636,12 @@ struct MacGreetingHero: View {
                 #endif
                 Rectangle().fill(IconPalette.cyan).frame(width: 1.5, height: 40 * macScale).shadow(color: IconPalette.cyan.opacity(0.6), radius: 4)
             }
-            VStack(alignment: .leading, spacing: 3) {
+            #if os(tvOS)
+            let along: HorizontalAlignment = .center
+            #else
+            let along: HorizontalAlignment = .leading
+            #endif
+            VStack(alignment: along, spacing: 3) {
                 Text(greeting.greeting)
                     .font(.system(size: 24 * macScale, weight: .bold, design: .rounded))
                     .foregroundStyle(IconPalette.white)
@@ -648,6 +653,7 @@ struct MacGreetingHero: View {
                         .foregroundStyle(IconPalette.ice)
                         .lineLimit(1)
                         .minimumScaleFactor(0.8)
+                        .multilineTextAlignment(.center)
                         .contentTransition(.opacity)
                         .id(greeting.line)
                         .transition(.opacity)
