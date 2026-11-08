@@ -281,7 +281,7 @@ struct ScenesSettingsView: View {
                 Text("Scenes run from Control Center, Shortcuts, or Siri: “Movie Night with Woodruff”. Turn on Add to Home in a scene to show it on Home.")
             }
         }
-        .formStyle(.grouped)
+        .familyFormStyle()
         .navigationTitle("Scenes")
         .inlineTitle()
         .sheet(item: $adding) { s in
@@ -366,7 +366,7 @@ struct SceneEditor: View {
                 }
             }
         }
-        .formStyle(.grouped)
+        .familyFormStyle()
         .navigationTitle(isNew ? "New Scene" : (scene.name.isEmpty ? "Scene" : scene.name))
         .inlineTitle()
         .toolbar {

@@ -225,6 +225,12 @@ final class HomeGreeting {
             UserDefaults.standard.set(part.rawValue, forKey: "greeting.part")
         }
     }
+    /// A one-liner without dashes (a comma reads better).
+    static func plain(_ s: String) -> String {
+        s.replacingOccurrences(of: " — ", with: ", ").replacingOccurrences(of: "—", with: ", ")
+            .replacingOccurrences(of: " – ", with: ", ").replacingOccurrences(of: "–", with: "-")
+    }
+
     var greeting: String { "Good \(part.rawValue), Woodruff Family" }
 
     @ObservationIgnored private var refreshedAt = Date.distantPast
@@ -239,7 +245,7 @@ final class HomeGreeting {
         part = p
         refreshedAt = Date()
         let picked = Self.pick(p, weather: HomeWeather.shared.now)
-        withAnimation(.smooth(duration: 0.35)) { line = picked }
+        withAnimation(.smooth(duration: 0.35)) { line = Self.plain(picked) }
         write(p)
     }
 
@@ -269,7 +275,7 @@ final class HomeGreeting {
                 guard !Task.isCancelled, self.part == p else { return }
                 let text = Self.tidy(answer.content)
                 guard !text.isEmpty else { return }
-                withAnimation(.smooth(duration: 0.45)) { self.line = text }
+                withAnimation(.smooth(duration: 0.45)) { self.line = Self.plain(text) }
             } catch {}
         }
         #endif
@@ -302,7 +308,7 @@ final class HomeGreeting {
 
     private static let morning = [
         "Coffee first. Decisions later.",
-        "Rise and shine — or at least rise.",
+        "Rise and shine, or at least rise.",
         "Forecast: 100% chance of snacks.",
         "The couch misses you already.",
         "Pajamas count as an outfit until noon.",

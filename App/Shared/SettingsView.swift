@@ -156,7 +156,7 @@ struct SettingsView: View {
                     .listRowBackground(Color.clear)
             }
         }
-        .formStyle(.grouped)
+        .familyFormStyle()
         .screenTitle("Settings")
         #if os(iOS) || os(tvOS)
         .navigationDestination(item: $route) { r in
@@ -255,7 +255,7 @@ struct PhoneSettingsView: View {
             Section {
                 PageLink("Instant iPhone Alerts") {
                     Form { PushSettingsSection() }
-                        .formStyle(.grouped)
+                        .familyFormStyle()
                         .navigationTitle("Instant iPhone Alerts")
                         .inlineTitle()
                 } label: {
@@ -275,7 +275,7 @@ struct PhoneSettingsView: View {
                 }
             }
         }
-        .formStyle(.grouped)
+        .familyFormStyle()
         .navigationTitle("Notifications")
         .inlineTitle()
         #if os(iOS) || os(tvOS)
@@ -375,7 +375,7 @@ struct TVsView: View {
                 Text("Pairing one TV brings every TV linked to it. Pair a second so the others stay reachable when one is off.")
             }
         }
-        .formStyle(.grouped)
+        .familyFormStyle()
         .navigationTitle("TVs")
         .inlineTitle()
         .refreshable { await fleet.refresh(); await fleet.loadAllHealth() }
@@ -497,7 +497,7 @@ struct SoftwareUpdateView: View {
                 Section("Activity") { ForEach(Array(log.enumerated()), id: \.offset) { Text($0.element).font(.caption.monospaced()) } }
             }
         }
-        .formStyle(.grouped)
+        .familyFormStyle()
         .navigationTitle("Software Update")
         .inlineTitle()
         .task { if fleet.latest.isEmpty { await fleet.checkReleases() }; await fleet.loadAllHealth() }
@@ -680,7 +680,7 @@ struct ConnectionsView: View {
                 }
             } header: { Text("This Device") }
         }
-        .formStyle(.grouped)
+        .familyFormStyle()
         .navigationTitle("Accounts")
         .inlineTitle()
         .onAppear {
@@ -749,7 +749,7 @@ struct GoogleGrantView: View {
                     : "Add the Google keys in Settings → Watch first."))
             }
         }
-        .formStyle(.grouped)
+        .familyFormStyle()
         .navigationTitle(title).inlineTitle()
         .task { signedIn = g.signedIn; await load() }
     }
@@ -813,7 +813,7 @@ struct DriveView: View {
                 Section { Button("Copy Redirect URI") { copyToClipboard(r) } }
             }
         }
-        .formStyle(.grouped)
+        .familyFormStyle()
         .navigationTitle("Google Drive").inlineTitle()
         .task { await hub.follow(fleet) }
         .onAppear { fill() }
@@ -853,7 +853,7 @@ struct PostersView: View {
                 .disabled(key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             } footer: { Text("A free key from themoviedb.org adds official posters, genres and ratings. Your own poster.jpg files always win.") }
         }
-        .formStyle(.grouped)
+        .familyFormStyle()
         .navigationTitle("Movie Posters").inlineTitle()
         .task { await hub.follow(fleet) }
     }
@@ -885,7 +885,7 @@ struct CamerasView: View {
                     .disabled(hub.s == nil)
             }
         }
-        .formStyle(.grouped)
+        .familyFormStyle()
         .navigationTitle("Nest Cameras").inlineTitle()
         // Opened before the settings were read (the read the page it came from started stops as this one opens).
         .task { await hub.loadIfNeeded(fleet) }
@@ -951,7 +951,7 @@ struct CameraAlertsView: View {
             #endif
             if hub.s?.nest?.connected == true { TVCameraAlertsSection(hub: hub, header: "On the TVs") }
         }
-        .formStyle(.grouped)
+        .familyFormStyle()
         .navigationTitle("Camera Alerts").inlineTitle()
         .task { await hub.loadIfNeeded(fleet) }
         .task { await hub.follow(fleet) }
@@ -973,7 +973,7 @@ struct MailView: View {
                 Button("Add Account") { adding = true }
             } footer: { Text("New mail shows up on the TVs. Use an app-specific password.") }
         }
-        .formStyle(.grouped)
+        .familyFormStyle()
         .navigationTitle("Mail").inlineTitle()
         .task { await hub.follow(fleet) }
         .sheet(isPresented: $adding) { AddMailSheet(providers: hub.s?.providers ?? []) { if let s = $0 { hub.s = s } }.macResizable() }
@@ -1002,7 +1002,7 @@ struct ShortcutsView: View {
                 Text("In the Shortcuts app, add “Get Contents of URL” with Method POST and one of these links: share what you send to the TV, or announce on every TV (great for “When I get home”).")
             }
         }
-        .formStyle(.grouped)
+        .familyFormStyle()
         .navigationTitle("Shortcuts").inlineTitle()
         // Opened before the settings were read (the read General started stops as this page opens).
         .task { await hub.loadIfNeeded(fleet) }
@@ -1027,7 +1027,7 @@ struct CrashView: View {
                 }) { Text("Clear") }
             }
         }
-        .formStyle(.grouped)
+        .familyFormStyle()
         .navigationTitle("Last Crash").inlineTitle()
     }
 }
@@ -1058,7 +1058,7 @@ struct AddMailSheet: View {
                 if let help = providers.first(where: { $0.id == provider })?.help, !help.isEmpty { Text(help).font(.footnote).foregroundStyle(.secondary) }
                 if let problem { Text(problem).font(.footnote).foregroundStyle(Palette.attention) }
             }
-            .formStyle(.grouped)
+            .familyFormStyle()
             .navigationTitle("Add Account").inlineTitle()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button(role: .close) { dismiss() } }
@@ -1245,7 +1245,7 @@ struct SyncSettingsView: View {
                 }
             }
         }
-        .formStyle(.grouped)
+        .familyFormStyle()
         .navigationTitle("Sync Across Devices")
         .inlineTitle()
         .onDisappear { showCode = false }

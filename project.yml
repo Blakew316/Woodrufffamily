@@ -166,6 +166,13 @@ targets:
       - path: App/Resources/Demo
     dependencies:
       - package: WoodruffKit
+      # The Top Shelf slideshow (the iCloud album picked in Settings).
+      - target: WoodruffFamilyTVTopShelf
+        embed: true
+    entitlements:
+      path: App/TV/WoodruffFamilyTV.entitlements
+      properties:
+        com.apple.security.application-groups: [group.com.blakew316.woodruff.tv]
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.blakew316.woodruff.tv
@@ -181,10 +188,35 @@ targets:
         UILaunchScreen: {}
         NSLocalNetworkUsageDescription: Woodruff finds and controls the family’s TVs, Sonos speakers and lights on your network.
         NSLocationWhenInUseUsageDescription: Woodruff shows the weather where you are on Home.
+        NSPhotoLibraryUsageDescription: Woodruff shows the album you pick as a slideshow on the Top Shelf.
         NSBonjourServices: [_woodruff._tcp, _sonos._tcp, _woodruffsync._tcp, _woodruffatv._tcp]
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
           NSAllowsLocalNetworking: true
+
+  # Apple TV's Top Shelf: the picked iCloud album as a slideshow above Woodruff's icon on the Home Screen.
+  WoodruffFamilyTVTopShelf:
+    type: tv-app-extension
+    platform: tvOS
+    sources:
+      - App/TVTopShelf
+    entitlements:
+      path: App/TVTopShelf/WoodruffFamilyTVTopShelf.entitlements
+      properties:
+        com.apple.security.application-groups: [group.com.blakew316.woodruff.tv]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.blakew316.woodruff.tv.topshelf
+        PRODUCT_NAME: WoodruffTopShelf
+        TARGETED_DEVICE_FAMILY: "3"
+    info:
+      path: App/TVTopShelf/Info.plist
+      properties:
+        CFBundleDisplayName: Woodruff Top Shelf
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.tv-top-shelf
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ContentProvider
 
   WoodruffFamilyMac:
     type: application

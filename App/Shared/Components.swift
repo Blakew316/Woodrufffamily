@@ -438,6 +438,20 @@ struct ShareSheet: View {
 }
 #endif
 
+// MARK: - Forms
+
+extension View {
+    /// Settings pages: grouped on iPhone and Mac; on Apple TV plain rows as its own Settings app has them (no frosted
+    /// platters behind each row).
+    @ViewBuilder func familyFormStyle() -> some View {
+        #if os(tvOS)
+        self.formStyle(.automatic)
+        #else
+        self.formStyle(.grouped)
+        #endif
+    }
+}
+
 // MARK: - Search that's safe on the Mac
 
 extension View {

@@ -539,7 +539,7 @@ struct SpeakersListView: View {
                 Text("Sonos speakers are found on your Wi‑Fi by themselves, no account needed. Tap one to rename it or choose its room.")
             }
         }
-        .formStyle(.grouped)
+        .familyFormStyle()
         .navigationTitle("Speakers")
         .inlineTitle()
         .refreshable { await home.findSonos(); await home.refreshSpeakers() }
@@ -632,7 +632,7 @@ struct LightsListView: View {
                 #endif
             }
         }
-        .formStyle(.grouped)
+        .familyFormStyle()
         .navigationTitle("Lights")
         .inlineTitle()
         .refreshable { home.searchLights(); await home.refreshCloud() }
@@ -758,7 +758,7 @@ struct LightDetailView: View {
                     }
                 }
             }
-            .formStyle(.grouped)
+            .familyFormStyle()
             .navigationTitle(l.name)
             .inlineTitle()
             .onAppear { level = Double(l.brightness) }

@@ -27,7 +27,7 @@ struct NotesView: View {
             }
             notesSection
         }
-        .formStyle(.grouped)
+        .familyFormStyle()
         .navigationTitle("Notes")
         .inlineTitle()
         .task { await load() }
@@ -139,7 +139,7 @@ struct NoteEditor: View {
                 Section { Text(failed).foregroundStyle(Palette.attention) }
             }
         }
-        .formStyle(.grouped)
+        .familyFormStyle()
         .navigationTitle(note.id.isEmpty ? "New Note" : "Note")
         .inlineTitle()
         .onAppear { title = note.title; text = note.body }

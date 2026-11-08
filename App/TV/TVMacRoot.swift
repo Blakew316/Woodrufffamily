@@ -10,6 +10,8 @@ struct TVMacRoot: View {
     @AppStorage("tv.tab") private var tab = "home"
     @AppStorage("watch.section") private var watchSection = "movies"
     @State private var query = ""
+    /// Settings' open pages: closed whenever another part of the app is picked, so coming back starts at its list.
+    @State private var settingsPath = NavigationPath()
 
     var body: some View {
         TabView(selection: $tab) {
@@ -48,12 +50,13 @@ struct TVMacRoot: View {
             // Set apart lower in the sidebar, as Apple TV keeps Library.
             TabSection("") {
                 Tab("Settings", systemImage: "gearshape", value: "settings") {
-                    NavigationStack { TVSettingsView() }
+                    NavigationStack(path: $settingsPath) { TVSettingsView() }
                         .background { IconBackdrop() }
                 }
             }
         }
         .tabViewStyle(.sidebarAdaptable)
+        .onChange(of: tab) { _, now in if now != "settings" { settingsPath = NavigationPath() } }
         .onAppear {
             // The screenshot run (-tvTab watch) opens a given page.
             if let t = UserDefaults.standard.string(forKey: "tvTab") { tab = t == "tvs" ? "home" : t }

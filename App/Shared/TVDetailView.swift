@@ -52,7 +52,7 @@ struct TVDetailView: View {
                 #endif
                 actions(tv)
             }
-            .formStyle(.grouped)
+            .familyFormStyle()
             .navigationTitle(tv.name)
             .inlineTitle()
             .task(id: "\(tvID)|\(fleet.isActive)") { await healthLoop() }
@@ -778,7 +778,7 @@ struct PairFoundTVView: View {
                 Text("On \(tv.name), open Woodruff → Settings → Phone connection. Scan the QR code, or type the key after “k=” in the link it shows.")
             }
         }
-        .formStyle(.grouped)
+        .familyFormStyle()
         .navigationTitle(tv.name)
         .inlineTitle()
         #if os(iOS) || os(tvOS)

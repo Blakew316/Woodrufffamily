@@ -1608,7 +1608,7 @@ struct CamerasPhoneView: View {
                 }
             }
         }
-        .formStyle(.grouped)
+        .familyFormStyle()
         .navigationTitle("Cameras")
         .inlineTitle()
         // Settings hadn't read the TVs' settings yet (or this page was opened from somewhere else): read them once.

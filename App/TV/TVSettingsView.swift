@@ -30,6 +30,7 @@ struct TVSettingsView: View {
             Self.row("Scenes") { ScenesSettingsView() },
         ]))
         g.append(("", [
+            Self.row("Top Shelf") { TopShelfSettings() },
             Self.row("Watch") { WatchSettingsView() },
             Self.row("Accounts") { ConnectionsView(hub: HubSettings.shared) },
             Self.row("Sync Across Devices") { SyncSettingsView() },
@@ -59,11 +60,7 @@ struct TVSettingsView: View {
                     let (title, rows) = group
                     Section {
                         ForEach(rows) { r in
-                            NavigationLink {
-                                TVSettingsPage(title: r.id) { r.page() }
-                                    .onAppear { TVNav.shared.depth += 1 }
-                                    .onDisappear { TVNav.shared.depth = max(0, TVNav.shared.depth - 1) }
-                            } label: {
+                            NavigationLink(value: r.id) {
                                 Text(r.id).foregroundStyle(r.id == "Needs Attention" ? Palette.attention : .primary)
                             }
                         }
@@ -73,6 +70,11 @@ struct TVSettingsView: View {
                 }
             }
             .frame(maxWidth: .infinity)
+        }
+        .navigationDestination(for: String.self) { id in
+            if let r = groups.flatMap(\.1).first(where: { $0.id == id }) {
+                TVSettingsPage(title: r.id) { r.page() }
+            }
         }
         .task { await HubSettings.shared.loadIfNeeded(fleet) }
     }

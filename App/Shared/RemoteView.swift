@@ -775,7 +775,7 @@ struct KeyboardSheet: View {
                     } footer: { Text("For other apps on this TV, while their keyboard is on screen.") }
                 }
             }
-            .formStyle(.grouped)
+            .familyFormStyle()
             .navigationTitle("Keyboard")
             #if os(iOS)
             .navigationSubtitle(tv.name)

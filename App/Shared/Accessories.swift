@@ -378,7 +378,7 @@ struct DevicesListView: View {
             DreoSection()
             CyncSection()
         }
-        .formStyle(.grouped)
+        .familyFormStyle()
         .navigationTitle("Devices")
         .inlineTitle()
         .refreshable {

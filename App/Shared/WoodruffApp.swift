@@ -1066,7 +1066,7 @@ struct MacSettingsView: View {
     private var groups: [[Item]] {
         var g: [[Item]] = []
         if !NeedsAttentionSection.issues(fleet).isEmpty {
-            g.append([Self.item("Needs Attention") { Form { NeedsAttentionSection(hub: HubSettings.shared) }.formStyle(.grouped) }])
+            g.append([Self.item("Needs Attention") { Form { NeedsAttentionSection(hub: HubSettings.shared) }.familyFormStyle() }])
         }
         g.append([
             Self.item("TVs") { TVsView() },

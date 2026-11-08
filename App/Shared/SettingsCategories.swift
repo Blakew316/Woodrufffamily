@@ -119,7 +119,7 @@ struct SmartHomeSettingsView: View {
                 Toggle("Show Devices Without a Room", isOn: $showOtherDevices)
             }
         }
-        .formStyle(.grouped)
+        .familyFormStyle()
         .navigationTitle("Smart Home")
         .inlineTitle()
         .onAppear {
@@ -178,7 +178,7 @@ struct GeneralSettingsView: View {
             }
             WoodruffFamilySection()
         }
-        .formStyle(.grouped)
+        .familyFormStyle()
         .navigationTitle("General")
         .inlineTitle()
         .refreshable { await hub.load(fleet.hubClient()) }
@@ -288,7 +288,7 @@ struct RecentMessagesView: View {
                 }
             }
         }
-        .formStyle(.grouped)
+        .familyFormStyle()
         .navigationTitle("Recent Messages")
         .inlineTitle()
     }

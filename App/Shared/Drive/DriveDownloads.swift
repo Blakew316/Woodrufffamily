@@ -299,7 +299,7 @@ struct DownloadsView: View {
                 }
             }
         }
-        .formStyle(.grouped)
+        .familyFormStyle()
         .navigationTitle("Downloads")
         .inlineTitle()
     }
@@ -338,7 +338,7 @@ private struct DownloadPicker: View {
                 }
             }
         }
-        .formStyle(.grouped)
+        .familyFormStyle()
         .navigationTitle("Add Downloads")
         .inlineTitle()
         .task {
@@ -396,7 +396,7 @@ private struct ShowDownloads: View {
                 }
             }
         }
-        .formStyle(.grouped)
+        .familyFormStyle()
         .navigationTitle(show.title)
         .inlineTitle()
         .task {

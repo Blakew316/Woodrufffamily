@@ -564,7 +564,7 @@ struct WifiView: View {
                 }
             }
         }
-        .formStyle(.grouped)
+        .familyFormStyle()
         .navigationTitle("Wi‑Fi")
         .inlineTitle()
         .pageSearch(text: $search, prompt: "Find a device")

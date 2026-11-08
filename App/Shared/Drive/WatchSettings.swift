@@ -107,7 +107,7 @@ struct WatchSettingsView: View {
                 Text("The same keys the TVs use: copied from the TV on the home Wi‑Fi, or typed in. TMDB gives the posters, stories and episode names.")
             }
         }
-        .formStyle(.grouped)
+        .familyFormStyle()
         .navigationTitle("Watch")
         .inlineTitle()
         .onAppear { refreshState() }

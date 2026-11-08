@@ -152,7 +152,7 @@ struct SendView: View {
                 .disabled(startingSlideshow)
             }
         }
-        .formStyle(.grouped)
+        .familyFormStyle()
         .scrollDismissesKeyboard(.interactively)
         .screenTitle("Send")
         .task { await loadPhones() }
@@ -290,7 +290,7 @@ struct SendToView: View {
                 Text("It stays on every TV’s Home until someone dismisses it there, also on TVs that are off right now.")
             }
         }
-        .formStyle(.grouped)
+        .familyFormStyle()
         .navigationTitle("Send To")
         .inlineTitle()
     }
@@ -340,7 +340,7 @@ struct OpenLinkView: View {
                 Text("YouTube links open in YouTube, Apple Music in Apple Music, videos in Woodruff’s player. It opens on \(target?.hub.name ?? "the TV").")
             }
         }
-        .formStyle(.grouped)
+        .familyFormStyle()
         .navigationTitle("Open a Link")
         .inlineTitle()
         #if os(iOS) || os(tvOS)

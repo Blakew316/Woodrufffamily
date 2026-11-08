@@ -86,11 +86,22 @@ enum WatchSources {
 
     /// The one Watch uses now: the Drive library when it's chosen and signed in, else the TV.
     static func current(_ fleet: Fleet) -> (any WatchSource)? {
+        #if os(tvOS)
+        // Apple TV plays everything itself: the Drive library (kept here, so Watch opens at once) whenever it's
+        // signed in, not a TV that may be asleep.
+        if GoogleDrive.signedIn { return DriveLibrary.shared }
+        #endif
         if choice == "drive", GoogleDrive.signedIn { return DriveLibrary.shared }
         return fleet.hubClient()
     }
 
-    static var usesDrive: Bool { choice == "drive" && GoogleDrive.signedIn }
+    static var usesDrive: Bool {
+        #if os(tvOS)
+        return GoogleDrive.signedIn
+        #else
+        return choice == "drive" && GoogleDrive.signedIn
+        #endif
+    }
 }
 
 /// The family's films and shows read straight from Google Drive (the "Movies" and "TV Shows" folders, as the TVs
