@@ -396,9 +396,16 @@ struct Billboard: View {
                 wideCard(t).id(t.id).transition(.opacity)
             }
         }
+        #if os(tvOS)
+        // Apple TV: the whole screen, edge to edge, as the TV app's own banner (the rows rise up under it).
+        .frame(height: 860)
+        .frame(maxWidth: .infinity)
+        .ignoresSafeArea(edges: [.top, .horizontal])
+        #else
         // The window's whole width, a third as tall: it grows and shrinks with the window, and the rows show under it.
         .aspectRatio(3.0, contentMode: .fit)
         .padding(.horizontal, 20)
+        #endif
         .task(id: page) {
             try? await Task.sleep(nanoseconds: 12_000_000_000)
             guard !Task.isCancelled, titles.count > 1 else { return }
@@ -410,45 +417,42 @@ struct Billboard: View {
     /// The Mac's and iPad's banner, as on the TV: the words on the left, the whole 16:9 picture on the right in a
     /// rounded frame, over a blurred copy of it filling the banner.
     #if os(tvOS)
-    /// Apple TV: the picture across the whole banner, the name large at the top left, and at the bottom what it is,
-    /// Play and Details, then what it's about, as the streaming apps lay it out.
+    /// Apple TV: the picture filling the screen; over its lower left, as the TV app does, the name large, what it
+    /// is, what it's about, then Play and Details.
     private func wideCard(_ t: Title) -> some View {
         let art = client?.artURL(t.backdrop ?? t.poster)
-        return ZStack(alignment: .topLeading) {
+        return ZStack(alignment: .bottomLeading) {
             Color.clear.overlay { Artwork(url: art, maxPixel: 2400) }.clipped()
-            LinearGradient(stops: [.init(color: .black.opacity(0.75), location: 0), .init(color: .black.opacity(0.35), location: 0.45),
-                                   .init(color: .clear, location: 0.75)], startPoint: .leading, endPoint: .trailing)
-            LinearGradient(stops: [.init(color: .clear, location: 0.45), .init(color: .black.opacity(0.7), location: 1)],
+            LinearGradient(stops: [.init(color: .black.opacity(0.7), location: 0), .init(color: .black.opacity(0.25), location: 0.5),
+                                   .init(color: .clear, location: 0.8)], startPoint: .leading, endPoint: .trailing)
+            LinearGradient(stops: [.init(color: .clear, location: 0.4), .init(color: .black.opacity(0.75), location: 1)],
                            startPoint: .top, endPoint: .bottom)
-            VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 14) {
                 Text(t.title)
-                    .font(.system(size: 64, weight: .heavy))
+                    .font(.system(size: 76, weight: .heavy))
                     .foregroundStyle(.white)
                     .lineLimit(2)
-                    .minimumScaleFactor(0.7)
+                    .minimumScaleFactor(0.6)
                     .shadow(color: .black.opacity(0.5), radius: 12)
-                Spacer(minLength: 20)
-                Text(meta(t)).font(.system(size: 26, weight: .semibold)).foregroundStyle(.white.opacity(0.85))
+                Text(meta(t)).font(.system(size: 26, weight: .semibold)).foregroundStyle(.white.opacity(0.9))
+                if let o = overviews[t.id], !o.isEmpty {
+                    Text(o)
+                        .font(.system(size: 25, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.9))
+                        .lineLimit(3)
+                        .frame(maxWidth: 820, alignment: .leading)
+                        .transition(.opacity)
+                }
                 HStack(spacing: 22) {
                     if let p = t.play {
                         CapsuleButton(title: p.label ?? "Play", symbol: "play.fill") { PlayRouter.start(p, fleet: fleet) }
                     }
                     CapsuleButton(title: "Details", symbol: nil, prominent: false) { open(t) }
                 }
-                .padding(.top, 18)
-                if let o = overviews[t.id], !o.isEmpty {
-                    Text(o)
-                        .font(.system(size: 24))
-                        .foregroundStyle(.white.opacity(0.85))
-                        .lineLimit(3)
-                        .frame(maxWidth: 900, alignment: .leading)
-                        .padding(.top, 18)
-                        .transition(.opacity)
-                }
+                .padding(.top, 8)
             }
-            .padding(.horizontal, 56).padding(.vertical, 44)
+            .padding(.leading, 90).padding(.bottom, 120).padding(.trailing, 90)
         }
-        .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
         .task(id: t.id) { await overview(t) }
     }
     #else

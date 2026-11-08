@@ -80,7 +80,8 @@ struct HomeView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 30) {
                 #if os(tvOS)
-                // As on the Mac: the greeting and thermostat are in the bar at the top (TVMacRoot); the scenes here.
+                // The weather, the greeting and the thermostat across the top (as the Mac's bar), then the scenes.
+                TVHomeHeader()
                 if !arranging { ScenesStrip() }
                 #elseif os(iOS)
                 // The greeting with its one-liner floating at the top, then the weather and Edit on the left and the thermostat

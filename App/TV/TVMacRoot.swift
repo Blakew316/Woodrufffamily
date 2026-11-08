@@ -1,150 +1,72 @@
 import SwiftUI
 import WoodruffKit
 
-/// Woodruff on Apple TV, laid out as the Mac app: Home, Watch and Settings in the Mac's glass bar centred at the very
-/// top; under it, on Home, the greeting centred with its one-liner centred beneath (the weather beside the greeting)
-/// and the thermostat pill at the right; on Watch, Movies | TV Shows and the TV it plays on at the right. Then the
-/// Mac's pages (Settings is the Mac's, its list on the left). No remote panel: the Siri Remote is the remote.
+/// Woodruff on Apple TV, laid out as Apple's own TV app: the Liquid Glass sidebar on the left (Home, Movies, TV
+/// Shows, Search, Settings), which tucks away to its icons and opens when the remote moves left onto it; each page
+/// fills the screen behind it. Movies and TV Shows open with the full-screen banner and rows of posters that lift
+/// when the remote is on them.
 struct TVMacRoot: View {
     @Environment(Fleet.self) private var fleet
-    @AppStorage("section") private var stored = AppSection.home.rawValue
+    @AppStorage("tv.tab") private var tab = "home"
     @AppStorage("watch.section") private var watchSection = "movies"
-
-    private var section: AppSection {
-        let s = AppSection(rawValue: stored) ?? .home
-        return AppSection.mac.contains(s) ? s : .home
-    }
-
     @State private var query = ""
-    private let layout = HomeLayout.shared
-    /// Which section in the bar the remote is on (nil: it's down in the page).
-    @FocusState private var barFocus: AppSection?
-    private let nav = TVNav.shared
 
     var body: some View {
-        let s = section
-        VStack(spacing: 0) {
-            bar(s)
-                .padding(.horizontal, 30)
-                .padding(.top, 20)
-                .padding(.bottom, 14)
-            NavigationStack {
-                Group {
-                    if s == .watch && !query.isEmpty {
-                        ScrollView { WatchSearchResults(query: query).padding(.horizontal, 40) }
-                    } else {
-                        page(s)
-                    }
-                }
-                .environment(\.macPageStack, false)
-                .toolbar(.hidden, for: .navigationBar)
+        TabView(selection: $tab) {
+            Tab("Home", systemImage: "house", value: "home") {
+                NavigationStack { HomeView() }
+                    .background { HomeBackdrop() }
             }
-            .id(s)
-            .focusSection()
+            Tab("Movies", systemImage: "film", value: "movies") {
+                NavigationStack { WatchView() }
+                    .background { HomeBackdrop() }
+                    .onAppear { watchSection = "movies" }
+            }
+            Tab("TV Shows", systemImage: "tv", value: "shows") {
+                NavigationStack { WatchView() }
+                    .background { HomeBackdrop() }
+                    .onAppear { watchSection = "shows" }
+            }
+            Tab(value: "search", role: .search) {
+                NavigationStack {
+                    ScrollView { WatchSearchResults(query: query).padding(.horizontal, 60) }
+                        .searchable(text: $query, prompt: "Movies and TV Shows")
+                }
+            }
+            Tab("Settings", systemImage: "gearshape", value: "settings") {
+                NavigationStack { TVSettingsView() }
+                    .background { IconBackdrop() }
+            }
         }
-        // Inside the TV's title-safe area: many TVs crop the picture's edges.
-        .padding(.horizontal, 50)
-        .padding(.vertical, 10)
-        .background {
-            if s == .settings { IconBackdrop() } else { HomeBackdrop() }
+        .tabViewStyle(.sidebarAdaptable)
+        .onAppear {
+            // The screenshot run (-tvTab watch) opens a given page.
+            if let t = UserDefaults.standard.string(forKey: "tvTab") { tab = t == "watch" ? "movies" : t }
         }
-        // Back (Menu) from anywhere in a page goes up to the bar first, as Apple TV apps do; from the bar it leaves the
-        // app. A page opened inside Settings closes first.
-        .onExitCommand(perform: barFocus == nil && nav.depth == 0 ? { barFocus = s } : nil)
-        .task(id: s) {
-            guard s == .home else { return }
+        .task {
             HomeWeather.shared.refresh()
             HomeGreeting.shared.refresh()
         }
     }
+}
 
-    /// The Mac's bar, exactly: the sections centred at the very top; under them on Home Edit Home at the left, the
-    /// weather and greeting in the middle and the thermostat at the right; on Watch search at the left, Movies | TV
-    /// Shows in the middle, the TV it plays on and the thermostat at the right. Settings has no second row.
-    private func bar(_ s: AppSection) -> some View {
-        VStack(spacing: 10 * macScale) {
-            // Across the whole width, so Up from anywhere under it (the thermostat at the right, say) lands here.
-            sections(s)
-                .frame(maxWidth: .infinity)
-                .focusSection()
-            if s == .home {
-                HStack(spacing: 10 * macScale) {
-                    // The weather where the Mac has Edit Home (Home is arranged with the remote here).
-                    TVWeatherPill()
-                    Spacer(minLength: 8)
-                    ThermostatChip(compact: false, height: 44)
-                        .scaleEffect(macScale, anchor: .trailing)
-                }
-                .overlay { MacGreetingHero() }
-                .focusSection()
-            } else if s == .watch {
-                HStack(spacing: 10 * macScale) {
-                    HStack(spacing: 10) {
-                        Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                        TextField("Search Movies and TV Shows", text: $query)
-                        .textFieldStyle(.plain)
-                    }
-                    .padding(.horizontal, 16 * macScale)
-                    .frame(width: 320 * macScale, height: 44 * macScale)
-                    .glass(Capsule(), interactive: false)
-                    Spacer(minLength: 8)
-                    // Room for the pill at the TV's size (it's drawn larger than its own space).
-                    ThermostatChip(compact: false, height: 44)
-                        .scaleEffect(macScale, anchor: .trailing)
-                        .padding(.leading, 170)
-                }
-                .focusSection()
-                .overlay {
-                    Picker("Library", selection: $watchSection) {
-                        Text("Movies").tag("movies")
-                        Text("TV Shows").tag("shows")
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                    .fixedSize()
-                }
-            }
+/// The top of Home on Apple TV: the weather at the left, the greeting centred with its one-liner beneath, and the
+/// thermostat at the right.
+struct TVHomeHeader: View {
+    var body: some View {
+        HStack(spacing: 20) {
+            TVWeatherPill()
+            Spacer(minLength: 8)
+            ThermostatChip(compact: false, height: 44)
+                .scaleEffect(macScale, anchor: .trailing)
         }
-    }
-
-    /// The Mac's section bar, drawn here so the remote's place in it is known (Back brings the remote up to it).
-    private func sections(_ current: AppSection) -> some View {
-        HStack(spacing: 2) {
-            ForEach(AppSection.mac) { sec in
-                let on = current == sec
-                Button { query = ""; stored = sec.rawValue } label: {
-                    Text(sec.title)
-                        .font(.system(size: 13.5 * macScale, weight: on ? .bold : .semibold))
-                        .foregroundStyle(on ? IconPalette.white : IconPalette.ice)
-                        .padding(.horizontal, 16 * macScale)
-                        .frame(height: 36 * macScale)
-                        .background {
-                            if on {
-                                Capsule().fill(IconPalette.cyan.opacity(0.25))
-                                    .overlay(Capsule().strokeBorder(IconPalette.cyan.opacity(0.6), lineWidth: 0.75))
-                            }
-                        }
-                }
-                .buttonStyle(TVBarButtonStyle())
-                .focused($barFocus, equals: sec)
-            }
-        }
-        .padding(4 * macScale)
+        .overlay { MacGreetingHero() }
         .frame(height: 44 * macScale)
-        .glass(Capsule(), tint: IconPalette.cyan.opacity(0.08))
-        .overlay(Capsule().strokeBorder(IconPalette.cyan.opacity(0.35), lineWidth: 0.75))
-    }
-
-    @ViewBuilder private func page(_ s: AppSection) -> some View {
-        switch s {
-        case .watch: WatchView()
-        case .settings: TVSettingsView()
-        default: HomeView()
-        }
+        .focusSection()
     }
 }
 
-/// The weather, as a pill at the left of Home's bar: the sky and the temperature, as on the Mac.
+/// The weather, as a pill: the sky and the temperature, as on the Mac.
 private struct TVWeatherPill: View {
     private let weather = HomeWeather.shared
 
@@ -169,8 +91,7 @@ private struct TVWeatherPill: View {
     }
 }
 
-/// How many pages are open inside the current page (Settings' rows open pages): Back closes those before going to
-/// the bar.
+/// How many pages are open inside the current page (Settings' rows open pages).
 @Observable @MainActor
 final class TVNav {
     static let shared = TVNav()
