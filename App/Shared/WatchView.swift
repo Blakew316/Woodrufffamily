@@ -746,7 +746,14 @@ struct ContinueTile: View {
     var poster: URL?
 
     var body: some View {
-        Button { PlayRouter.start(item.play, fleet: fleet) } label: {
+        Button {
+            #if os(tvOS)
+            // On Apple TV it opens the title's card (Resume and Start Over), as the other tiles do.
+            if let id = item.titleId { openTitle(id) } else { PlayRouter.start(item.play, fleet: fleet) }
+            #else
+            PlayRouter.start(item.play, fleet: fleet)
+            #endif
+        } label: {
             VStack(alignment: .leading, spacing: 6) {
                 Color.clear.frame(width: width, height: width * 1.5)
                     .overlay { Artwork(url: poster, maxPixel: 512) }
@@ -987,15 +994,23 @@ struct TitleSheet: View {
                     }
                     VStack(alignment: .leading, spacing: 18) {
                         if let p = t?.play {
-                            Button { if PlayRouter.start(p, fleet: fleet) { dismiss() } } label: { Label(p.label ?? "Play", systemImage: "play.fill").frame(maxWidth: .infinity) }
+                            // Part watched: Resume and Start Over side by side.
+                            let started = (p.position ?? 0) > 0
+                            HStack(spacing: 18) {
+                                Button { if PlayRouter.start(p, fleet: fleet) { dismiss() } } label: {
+                                    Label(started ? "Resume" : (p.label ?? "Play"), systemImage: "play.fill").frame(maxWidth: .infinity)
+                                }
                                 .focused($tvFocus, equals: "play")
+                                if started || t?.restart != nil {
+                                    Button { if PlayRouter.start(t?.restart ?? p, fleet: fleet, fromStart: true) { dismiss() } } label: {
+                                        Text("Start Over").frame(maxWidth: .infinity)
+                                    }
+                                }
+                            }
                         } else if failed != nil {
                             ActionButton(action: { await load() }) { Text("Try Again") }
                         } else {
                             ProgressView()
-                        }
-                        if let r = t?.restart {
-                            Button { if PlayRouter.start(r, fleet: fleet, fromStart: true) { dismiss() } } label: { Text(r.label ?? "Start Over") }
                         }
                         if let d = shown, let key = d.watchKey, d.kind != "show" {
                             Button { mark(key, watched: !(d.watched ?? false)) } label: { Text(d.watched == true ? "Mark as Unwatched" : "Mark as Watched") }
