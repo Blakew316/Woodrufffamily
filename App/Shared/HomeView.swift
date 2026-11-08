@@ -49,14 +49,25 @@ struct HomeView: View {
     /// still loading at launch, say) shows All Rooms until it's back, without forgetting the choice; with the room
     /// bar hidden there's no way to pick a room, so everything shows.
     private func shownRoom(_ rooms: [String]) -> String {
+        #if os(tvOS)
+        // Apple TV: every room, one row each, as the TV app's shelves.
+        return ""
+        #else
         if layout.hiddenSections.contains("rooms") { return "" }
         return picked == favoritesKey || picked == allDevicesKey || picked.isEmpty || rooms.contains(picked) ? picked : ""
+        #endif
     }
 
     #if os(macOS)
     private let columns = [GridItem(.adaptive(minimum: 400), spacing: 22)]
     #else
     private let columns = [GridItem(.adaptive(minimum: 320), spacing: 18)]
+    #endif
+
+    #if os(tvOS)
+    private let isTV = true
+    #else
+    private let isTV = false
     #endif
 
     /// iPhone: the height of the weather, Edit and thermostat pills under the greeting.
@@ -115,14 +126,20 @@ struct HomeView: View {
                 #else
                 if !arranging { ScenesStrip().padding(.bottom, -14) }
                 #endif
+                #if os(tvOS)
+                ForEach(layout.visibleSections.filter { $0 == "status" }, id: \.self) { key in
+                    section(key, c)
+                }
+                #else
                 ForEach(layout.visibleSections.filter { $0 == "status" || $0 == "rooms" }, id: \.self) { key in
                     section(key, c)
                 }
+                #endif
                 if room == allDevicesKey {
                     // Every device, room by room: tap to turn on or off, press and hold for its controls.
                     AllDevicesView()
                 }
-                if room == favoritesKey || (room.isEmpty && !layout.favorites.isEmpty) {
+                if room == favoritesKey || (room.isEmpty && !layout.favorites.isEmpty && !isTV) {
                     favoritesGroup(c)
                 }
                 if room != favoritesKey && room != allDevicesKey {
@@ -130,7 +147,7 @@ struct HomeView: View {
                         // One room picked in the room bar: its tiles, to arrange as you like.
                         let tiles = roomTiles(room, c)
                         if !tiles.isEmpty { roomGroup(room, tiles, c) }
-                    } else if layout.groupByRoom {
+                    } else if layout.groupByRoom || isTV {
                         // Like the Home app: each room with everything in it.
                         ForEach(roomGroups(c)) { g in roomGroup(g.id, g.tiles, c) }
                         if !layout.hiddenSections.contains("wifi") { WifiSection() }
@@ -366,7 +383,11 @@ struct HomeView: View {
     private func roomGroup(_ r: String, _ tiles: [HomeTile], _ c: Contents) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             // The room picked in the room bar is already its title; names only when every room is listed.
+            #if os(tvOS)
+            if c.room.isEmpty { Text(r == noRoom ? "Other" : r).font(.system(size: 34, weight: .bold)).foregroundStyle(IconPalette.white) }
+            #else
             if c.room.isEmpty { Text(r == noRoom ? "Other" : r).font(.title3.bold()) }
+            #endif
             #if os(macOS)
             HomeBoard(page: r, tiles: tiles, openTV: { open($0) }, zoom: zoom, zoomed: openTV)
                 .equatable()

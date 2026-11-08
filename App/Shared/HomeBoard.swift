@@ -323,6 +323,44 @@ struct HomeBoard: View, Equatable {
     }
 
     var body: some View {
+        #if os(tvOS)
+        tvRow
+        #else
+        grid
+        #endif
+    }
+
+    #if os(tvOS)
+    /// Apple TV: one row across the screen, as the TV app's shelves, that the remote moves along; cameras and TVs
+    /// wide, everything else square-ish.
+    private var tvRow: some View {
+        let byID = Dictionary(tiles.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        return ScrollView(.horizontal) {
+            LazyHStack(alignment: .top, spacing: 40) {
+                ForEach(currentOrder(), id: \.self) { id in
+                    if let tile = byID[id] {
+                        let size: CGSize = tile.kind == .camera ? CGSize(width: 560, height: 315)
+                            : tile.kind == .tv ? CGSize(width: 480, height: 315) : CGSize(width: 315, height: 315)
+                        tileView(tile, size).frame(width: size.width, height: size.height)
+                    }
+                }
+            }
+            .padding(.vertical, 30)
+            .padding(.horizontal, 4)
+        }
+        .scrollClipDisabled()
+        .scrollIndicators(.hidden)
+        .environment(\.inHomeBoard, true)
+        .sheet(item: $openSpeaker) { r in
+            NavigationStack { SpeakerDetailView(speakerID: r.id, inSheet: true) }
+        }
+        .sheet(item: $openLight) { l in LightSheet(lightID: l.id) }
+        .sheet(item: $openDevice) { d in NavigationStack { DeviceDetailView(deviceID: d.id, inSheet: true) } }
+        .cameraPresenter($openCamera)
+    }
+    #endif
+
+    private var grid: some View {
         let m = BoardMetrics(width: width)
         let byID = Dictionary(tiles.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         let order = currentOrder()
