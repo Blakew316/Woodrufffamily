@@ -41,7 +41,7 @@ jobs:
           APP=$(ls -d build-tv/Build/Products/Debug-appletvsimulator/*.app | head -1)
           xcrun simctl install "$UDID" "$APP"
           mkdir -p shots
-          for tab in home watch tvs settings; do
+          for tab in home watch search settings; do
             xcrun simctl launch "$UDID" com.blakew316.woodruff.tv -demo YES -tvTab "$tab"
             sleep 15
             xcrun simctl io "$UDID" screenshot "shots/$tab.png"

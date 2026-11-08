@@ -672,7 +672,9 @@ struct ThermostatChip: View {
         .padding(.horizontal, height == nil ? 0 : 3)
         .frame(height: height)
         // Plain glass behind it (the button inside takes the taps).
+        #if !os(tvOS)
         .glass(Capsule(), interactive: false)
+        #endif
         .opacity(t?.reachable == false ? 0.6 : 1)
         .scaleEffect(hovering ? 1.02 : 1)
         .animation(.spring(response: 0.3, dampingFraction: 0.8), value: hovering)
