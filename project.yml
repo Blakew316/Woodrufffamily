@@ -189,6 +189,10 @@ targets:
         NSLocalNetworkUsageDescription: Woodruff finds and controls the family’s TVs, Sonos speakers and lights on your network.
         NSLocationWhenInUseUsageDescription: Woodruff shows the weather where you are on Home.
         NSPhotoLibraryUsageDescription: Woodruff shows the album you pick as a slideshow on the Top Shelf.
+        # The Top Shelf's photos open the app (woodruff://home).
+        CFBundleURLTypes:
+          - CFBundleURLName: com.blakew316.woodruff.tv
+            CFBundleURLSchemes: [woodruff]
         NSBonjourServices: [_woodruff._tcp, _sonos._tcp, _woodruffsync._tcp, _woodruffatv._tcp]
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true

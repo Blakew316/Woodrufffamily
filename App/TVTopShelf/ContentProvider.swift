@@ -14,6 +14,7 @@ final class ContentProvider: TVTopShelfContentProvider {
         guard !pictures.isEmpty else { return nil }
         let items: [TVTopShelfCarouselItem] = pictures.map { url in
             let item = TVTopShelfCarouselItem(identifier: url.lastPathComponent)
+            item.title = "Woodruff Family"
             item.setImageURL(url, for: .screenScale1x)
             item.setImageURL(url, for: .screenScale2x)
             if let open = URL(string: "woodruff://home") { item.displayAction = TVTopShelfAction(url: open) }

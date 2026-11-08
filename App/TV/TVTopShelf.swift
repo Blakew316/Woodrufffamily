@@ -3,7 +3,7 @@ import Photos
 import TVServices
 import UIKit
 
-/// The Top Shelf slideshow: an iCloud Photos album picked here, its pictures kept ready (4K) in the folder
+/// The Top Shelf slideshow: an iCloud Photos album picked here, its pictures kept ready (1920 × 1080, the Top Shelf's own size) in the folder
 /// the Top Shelf reads, and refreshed when the app opens.
 @Observable @MainActor
 final class TopShelfAlbum {
@@ -70,7 +70,7 @@ final class TopShelfAlbum {
             let img: UIImage? = await withCheckedContinuation { c in
                 var done = false
                 var rough: UIImage?
-                PHImageManager.default().requestImage(for: a, targetSize: CGSize(width: 3840, height: 2160), contentMode: .aspectFill, options: req) { im, info in
+                PHImageManager.default().requestImage(for: a, targetSize: CGSize(width: 1920, height: 1080), contentMode: .aspectFill, options: req) { im, info in
                     if done { return }
                     // The quick, smaller copy first: kept in case the full one can't come.
                     if (info?[PHImageResultIsDegradedKey] as? Bool) == true { rough = im; return }
@@ -88,7 +88,7 @@ final class TopShelfAlbum {
                     o.deliveryMode = .highQualityFormat
                     PHImageManager.default().requestImageDataAndOrientation(for: a, options: o) { d, _, _, _ in c.resume(returning: d) }
                 }
-                picture = data.flatMap { UIImage(data: $0)?.preparingThumbnail(of: CGSize(width: 3840, height: 2160)) }
+                picture = data.flatMap { UIImage(data: $0)?.preparingThumbnail(of: CGSize(width: 1920, height: 1080)) }
             }
             if let data = picture?.jpegData(compressionQuality: 0.8) {
                 // Apple TV only lets apps write in Caches (the shared folder's too), which is where the Top Shelf reads.
@@ -122,6 +122,13 @@ struct TopShelfSettings: View {
                 }
             } footer: {
                 Text(shelf.note ?? "With Woodruff's icon highlighted on the Home Screen, this album plays across the top as a slideshow.")
+            }
+            Section {
+                LabeledContent("Photos Ready", value: "\(TopShelfAlbum.files().count)")
+                Button("Update the Top Shelf Now") { Task { await shelf.refresh() } }
+                    .disabled(shelf.picked == nil)
+            } footer: {
+                Text("Woodruff has to be in the top row of the Home Screen for its Top Shelf to show.")
             }
         }
         .task { await shelf.load() }
