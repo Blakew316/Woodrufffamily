@@ -954,17 +954,18 @@ struct TitleSheet: View {
         return ZStack {
             Color.black.opacity(0.6).ignoresSafeArea()
             VStack(alignment: .leading, spacing: 0) {
-                ZStack(alignment: .bottomLeading) {
-                    Color.clear.frame(height: 440)
-                        .overlay { Artwork(url: t?.art, maxPixel: 1800) }
-                        .clipped()
-                    LinearGradient(stops: [.init(color: .clear, location: 0.35), .init(color: .black.opacity(0.92), location: 1)], startPoint: .top, endPoint: .bottom)
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text(t?.title ?? "").font(.system(size: 50, weight: .bold)).foregroundStyle(.white).lineLimit(2).minimumScaleFactor(0.6)
-                        if let f = t?.facts, !f.isEmpty { Text(f).font(.callout.weight(.medium)).foregroundStyle(.white.opacity(0.8)).lineLimit(2) }
+                // The picture flush with the card's top; the title and details over its foot.
+                Color.clear.frame(height: 400)
+                    .overlay { Artwork(url: t?.art, maxPixel: 1800) }
+                    .overlay { LinearGradient(stops: [.init(color: .clear, location: 0.4), .init(color: .black.opacity(0.92), location: 1)], startPoint: .top, endPoint: .bottom) }
+                    .overlay(alignment: .bottomLeading) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(t?.title ?? "").font(.system(size: 50, weight: .bold)).foregroundStyle(.white).lineLimit(2).minimumScaleFactor(0.6)
+                            if let f = t?.facts, !f.isEmpty { Text(f).font(.callout.weight(.medium)).foregroundStyle(.white.opacity(0.8)).lineLimit(2) }
+                        }
+                        .padding(.horizontal, 36).padding(.bottom, 20)
                     }
-                    .padding(.horizontal, 36).padding(.bottom, 22)
-                }
+                    .clipped()
                 VStack(alignment: .leading, spacing: 22) {
                     if let o = shown?.overview { Text(o).font(.caption).foregroundStyle(.white.opacity(0.85)).lineLimit(4) }
                     if let failed, shown == nil {
@@ -1009,9 +1010,9 @@ struct TitleSheet: View {
                         .frame(height: 200)
                     }
                 }
-                .padding(.horizontal, 36).padding(.top, 20).padding(.bottom, 36)
+                .padding(.horizontal, 36).padding(.top, 18).padding(.bottom, 30)
             }
-            .frame(width: 620)
+            .frame(width: 620).fixedSize(horizontal: false, vertical: true)
             .background(Color(white: 0.11))
             .clipShape(RoundedRectangle(cornerRadius: 44, style: .continuous))
             .overlay(alignment: .topTrailing) {
