@@ -139,9 +139,13 @@ struct TVPhotoBackdrop: View {
         ZStack {
             HomeBackdrop()
             if let image = show.image {
+                // The new photo fades in over the old one, which stays whole underneath until it's covered: no dip
+                // to the background between them.
                 KenBurns(image: image)
                     .id(show.shown)
-                    .transition(.opacity)
+                    .zIndex(Double(show.shown))
+                    .transition(.asymmetric(insertion: .opacity,
+                                            removal: .opacity.animation(.linear(duration: 0.2).delay(7))))
                 LinearGradient(stops: [.init(color: .black.opacity(0.72), location: 0),
                                        .init(color: .black.opacity(0.45), location: 0.45),
                                        .init(color: .black.opacity(0.6), location: 1)],
@@ -185,7 +189,7 @@ final class HomeSlideshow {
 
     private func run() async {
         while !Task.isCancelled {
-            try? await Task.sleep(nanoseconds: image == nil ? 0 : 20_000_000_000)
+            try? await Task.sleep(nanoseconds: image == nil ? 0 : 30_000_000_000)
             if Task.isCancelled { return }
             let files = TopShelfAlbum.files()
             let next: UIImage?
@@ -200,7 +204,7 @@ final class HomeSlideshow {
                     next = await TVPhotoBackdrop.stock(Int.random(in: 0..<TVPhotoBackdrop.nature.count))
                 }
             }
-            if let next { withAnimation(.easeInOut(duration: 4)) { image = next; shown += 1 } }
+            if let next { withAnimation(.easeInOut(duration: 6)) { image = next; shown += 1 } }
             else { try? await Task.sleep(nanoseconds: 5_000_000_000) }
         }
     }
@@ -245,9 +249,9 @@ private struct KenBurns: View {
         Image(uiImage: image)
             .resizable()
             .scaledToFill()
-            .scaleEffect(grow ? 1.08 : 1)
+            .scaleEffect(grow ? 1.06 : 1)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .clipped()
-            .onAppear { withAnimation(.linear(duration: 26)) { grow = true } }
+            .onAppear { withAnimation(.easeInOut(duration: 40)) { grow = true } }
     }
 }
