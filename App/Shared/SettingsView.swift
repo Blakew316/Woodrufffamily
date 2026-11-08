@@ -348,6 +348,12 @@ struct TVsView: View {
             }
             // The family's Apple TVs running Woodruff, and Connect for one not in the family yet.
             AppleTVsSection()
+            #if os(tvOS)
+            // Apple TV: the speakers are kept with the TVs (no Notes or Send here).
+            Section {
+                PageLink("Speakers") { TVSettingsPage(title: "Speakers") { SpeakersListView() } } label: { Text("Speakers") }
+            }
+            #else
             Section {
                 // The notes kept on the TVs (Command Center → Notes there).
                 PageLink("Notes") { NotesView() } label: { IconRow(symbol: "", color: .clear, title: "Notes") }
@@ -358,6 +364,7 @@ struct TVsView: View {
                 }
                 #endif
             }
+            #endif
             if fleet.attentionCount > 0 {
                 Section {
                     Button("Hide All Alerts") { withAnimation { fleet.hideAllAlerts() } }

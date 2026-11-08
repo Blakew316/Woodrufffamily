@@ -41,6 +41,7 @@ struct WatchSettingsView: View {
                               : "Sign in to Google Drive below to choose Google Drive, which works at home or away.")
             }
 
+            #if !os(tvOS)
             Section {
                 Picker("Play Button Plays On", selection: $playOn) {
                     Text("TV").tag("tv")
@@ -50,6 +51,7 @@ struct WatchSettingsView: View {
                 Text(playOn == "here" ? "Play opens the film or episode here, from where it was left off. Play On… still sends it to a TV."
                                       : "Play sends the film or episode to the TV the remote is on.")
             }
+            #endif
 
             Section {
                 NavigationLink("Downloads") { DownloadsView() }

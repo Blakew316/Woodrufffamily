@@ -21,19 +21,14 @@ struct TVSettingsView: View {
         if !NeedsAttentionSection.issues(fleet).isEmpty {
             g.append(("", [Self.row("Needs Attention") { Form { NeedsAttentionSection(hub: HubSettings.shared) } }]))
         }
-        g.append(("Home", [
-            Self.row("TVs") { TVsView() },
-            Self.row("Speakers") { SpeakersListView() },
-            Self.row("Lights") { LightsListView() },
-            Self.row("Cameras") { CamerasPhoneView(hub: HubSettings.shared) },
-            Self.row("Devices") { DevicesListView() },
-            Self.row("Scenes") { ScenesSettingsView() },
-        ]))
         g.append(("", [
-            Self.row("Top Shelf") { TopShelfSettings() },
+            // The TVs with their speakers.
+            Self.row("TVs") { TVsView() },
+            // Lights, cameras, devices, scenes and the accounts they sign in with, all in one place.
+            Self.row("Smart Devices") { TVSmartDevices() },
             Self.row("Watch") { WatchSettingsView() },
-            Self.row("Accounts") { ConnectionsView(hub: HubSettings.shared) },
-            Self.row("Sync Across Devices") { SyncSettingsView() },
+            Self.row("Top Shelf") { TopShelfSettings() },
+            // Sync Across Devices is inside General.
             Self.row("General") { GeneralSettingsView(hub: HubSettings.shared) },
         ]))
         return g
@@ -107,5 +102,22 @@ struct TVSettingsPage<Content: View>: View {
         }
         .background { IconBackdrop().ignoresSafeArea() }
         .toolbar(.hidden, for: .navigationBar)
+    }
+}
+
+/// Settings → Smart Devices: everything besides the TVs, and the accounts they sign in with.
+private struct TVSmartDevices: View {
+    var body: some View {
+        List {
+            Section {
+                PageLink("Lights") { TVSettingsPage(title: "Lights") { LightsListView() } } label: { Text("Lights") }
+                PageLink("Cameras") { TVSettingsPage(title: "Cameras") { CamerasPhoneView(hub: HubSettings.shared) } } label: { Text("Cameras") }
+                PageLink("Devices") { TVSettingsPage(title: "Devices") { DevicesListView() } } label: { Text("Devices") }
+                PageLink("Scenes") { TVSettingsPage(title: "Scenes") { ScenesSettingsView() } } label: { Text("Scenes") }
+            }
+            Section {
+                PageLink("Accounts") { TVSettingsPage(title: "Accounts") { ConnectionsView(hub: HubSettings.shared) } } label: { Text("Accounts") }
+            }
+        }
     }
 }

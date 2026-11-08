@@ -14,10 +14,10 @@ final class TopShelfAlbum {
     var albums: [(id: String, name: String)] = []
     var picked: String? { saved.string(forKey: "topShelf.album") }
     var note: String?
-    /// Goes up each time the pictures are written again (Home's background follows).
+    /// Goes up each time the pictures are written again.
     var version = 0
 
-    /// The pictures kept for the Top Shelf (and Home's background).
+    /// The pictures kept for the Top Shelf.
     nonisolated static func files() -> [URL] {
         guard let dir = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: group)?
             .appendingPathComponent("Library/Caches/TopShelf", isDirectory: true) else { return [] }
@@ -100,7 +100,6 @@ final class TopShelfAlbum {
         }
         TVTopShelfContentProvider.topShelfContentDidChange()
         version += 1
-        if saved > 0 { HomeSlideshow.shared.restart() }
         note = chosen.isEmpty ? "That album has no photos." : saved == 0 ? "Couldn’t get the photos from iCloud" + (lastError.map { ": \($0)" } ?? ".") + " Check that iCloud Photos is on in this Apple TV’s Settings → Users and Accounts." : "\(saved) photos are on the Top Shelf and Home."
     }
 }
@@ -129,9 +128,9 @@ struct TopShelfSettings: View {
     }
 }
 
-/// Home's background: the Top Shelf album's photos, one fading into the next with a slow drift, as the Apple TV
-/// screensaver does, dimmed (most at the top) so the greeting, weather and thermostat stay easy to read. Landscape
-/// photographs until an album is picked.
+/// Home's background: nature photographs, one fading into the next with a slow drift, as the Apple TV
+/// screensaver does, dimmed (most at the top) so the greeting, weather and thermostat stay easy to read. The Top
+/// Shelf album stays on the Top Shelf.
 struct TVPhotoBackdrop: View {
     private let show = HomeSlideshow.shared
 
@@ -167,7 +166,7 @@ final class HomeSlideshow {
 
     private init() {
         // At once, from disk: one of the album's photos, else a nature photograph kept from before.
-        let first = TopShelfAlbum.files().randomElement() ?? TVPhotoBackdrop.keptStock().randomElement()
+        let first = TVPhotoBackdrop.keptStock().randomElement()
         if let first { image = UIImage(contentsOfFile: first.path) }
     }
 
@@ -180,29 +179,18 @@ final class HomeSlideshow {
         }
     }
 
-    /// The album's photos changed.
-    func restart() {
-        task?.cancel()
-        task = nil
-        start()
-    }
-
     private func run() async {
         while !Task.isCancelled {
             try? await Task.sleep(nanoseconds: image == nil ? 0 : 30_000_000_000)
             if Task.isCancelled { return }
-            let files = TopShelfAlbum.files()
+            // Nature photographs only (the album is the Top Shelf's): a kept one if there are a few (no waiting),
+            // else the next to come from the network.
             let next: UIImage?
-            if let f = files.randomElement() {
+            let kept = TVPhotoBackdrop.keptStock()
+            if let f = kept.randomElement(), kept.count > 3 {
                 next = await Task.detached(priority: .utility) { UIImage(contentsOfFile: f.path)?.preparingForDisplay() }.value
             } else {
-                // A kept one if there is one (no waiting), else the next to come from the network.
-                let kept = TVPhotoBackdrop.keptStock()
-                if let f = kept.randomElement(), kept.count > 3 {
-                    next = await Task.detached(priority: .utility) { UIImage(contentsOfFile: f.path)?.preparingForDisplay() }.value
-                } else {
-                    next = await TVPhotoBackdrop.stock(Int.random(in: 0..<TVPhotoBackdrop.nature.count))
-                }
+                next = await TVPhotoBackdrop.stock(Int.random(in: 0..<TVPhotoBackdrop.nature.count))
             }
             if let next { withAnimation(.easeInOut(duration: 6)) { image = next; shown += 1 } }
             else { try? await Task.sleep(nanoseconds: 5_000_000_000) }

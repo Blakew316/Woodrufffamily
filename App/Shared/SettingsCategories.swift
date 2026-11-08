@@ -152,16 +152,18 @@ struct GeneralSettingsView: View {
 
     var body: some View {
         Form {
+            #if !os(tvOS)
             Section {
                 PageLink("Shortcuts") { ShortcutsView(hub: hub) } label: {
                     IconRow(symbol: "", color: .clear, title: "Shortcuts")
                 }
             }
+            #endif
             #if os(macOS)
             Section {
                 Toggle("Click Sound on Remote Keys", isOn: $remoteClick)
             }
-            #else
+            #elseif os(iOS)
             Section {
                 Toggle("Away From Home Note", isOn: $awayNote)
             } footer: {
