@@ -101,13 +101,12 @@ private struct TVTileBody: View {
     }
 }
 
-/// A frosted rounded panel (the iPhone's glass cards).
+/// A Liquid Glass rounded panel (the iPhone's glass cards).
 struct TVGlass: ViewModifier {
     var corner: CGFloat = 28
     func body(content: Content) -> some View {
         content
-            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: corner, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: corner, style: .continuous).strokeBorder(.white.opacity(0.12), lineWidth: 1))
+            .glassEffect(.regular, in: RoundedRectangle(cornerRadius: corner, style: .continuous))
     }
 }
 

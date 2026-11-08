@@ -433,6 +433,7 @@ final class Dreo {
     }
 }
 
+#if !os(tvOS)
 /// The Dreo part of Settings → Smart Home → Devices.
 struct DreoSection: View {
     private let dreo = Dreo.shared
@@ -466,3 +467,4 @@ struct DreoSection: View {
         }
     }
 }
+#endif

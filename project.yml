@@ -158,8 +158,14 @@ targets:
     platform: tvOS
     sources:
       - App/TV
-      # The family's settings sync, the same file the iPhone and Mac run (its services are stand-ins here).
+      # The family's settings sync, the same file the iPhone and Mac run (some of its services are stand-ins here).
       - path: App/Shared/SettingsSync.swift
+      # The house's devices (SmartThings and Dreo, with the family's sign-ins), as on the iPhone and Mac.
+      - path: App/Shared/HomeDeviceModel.swift
+      - path: App/Shared/AccessoryStore.swift
+      - path: App/Shared/BespokeAppliances.swift
+      - path: App/Shared/SmartThings.swift
+      - path: App/Shared/Dreo.swift
     dependencies:
       - package: WoodruffKit
     settings:

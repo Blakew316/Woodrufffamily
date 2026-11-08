@@ -148,11 +148,19 @@ final class SmartThings {
             throw OAuthRelay.Failure.refused(Self.waitingForMac)
         }
         #endif
+        #if os(tvOS)
+        // The Apple TV never renews the family's sign-in itself (the Macs do, and pass it on): it reads the
+        // family's copy and uses the new key once it's there.
+        await SettingsSync.shared.syncNow()
+        if let a = Keychain.get("st.access"), let e = Keychain.get("st.expires").flatMap(Double.init), e > Date().timeIntervalSince1970 { return a }
+        throw OAuthRelay.Failure.refused(Self.waitingForMac)
+        #else
         if let running = renewing { return try await running.value }
         let t = Task { try await self.renew() }
         renewing = t
         defer { renewing = nil }
         return try await t.value
+        #endif
     }
 
     private func renew() async throws -> String {
@@ -733,11 +741,13 @@ final class SmartThings {
         guard was == "run", now == "stop" else { return }
         // Stopped from here: not "done".
         if let s = userStopped[d.id], s.timeIntervalSinceNow > -600 { userStopped[d.id] = nil; return }
+        #if !os(tvOS)
         let c = UNMutableNotificationContent()
         c.title = "\(d.name) is done"
         c.body = d.kind == .dryer ? "The dryer has finished." : d.kind == .washer ? "The wash has finished. Time to move it to the dryer." : "It has finished."
         c.sound = .default
         Notifier.deliver(c, id: "st-\(d.id)-done")
+        #endif
     }
 
     // MARK: Commands
@@ -926,6 +936,7 @@ extension ISO8601DateFormatter {
     }()
 }
 
+#if !os(tvOS)
 /// The Samsung part of Settings → Smart Home → Devices.
 struct SmartThingsSection: View {
     private let st = SmartThings.shared
@@ -972,3 +983,4 @@ struct SmartThingsSection: View {
         }
     }
 }
+#endif

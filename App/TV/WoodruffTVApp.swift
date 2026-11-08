@@ -22,6 +22,9 @@ struct WoodruffTVApp: App {
                     await fleet.start()
                     SettingsSync.shared.start(fleet)
                     SmartHome.shared.start()
+                    // The washer, dryer, thermostat, fans and the rest, with the family's sign-ins.
+                    SmartThings.shared.start()
+                    Dreo.shared.start()
                 }
         }
     }
@@ -111,7 +114,20 @@ struct HomeTab: View {
                             .padding(.horizontal, 80)
                         }
                     }
-                    if home.speakers.isEmpty && home.lights.isEmpty && !tvs.isEmpty {
+                    let devices = AccessoryStore.shared.all
+                    if !devices.isEmpty {
+                        VStack(alignment: .leading, spacing: 24) {
+                            TVSectionTitle(text: "Devices")
+                            LazyVGrid(columns: [GridItem(.adaptive(minimum: 340), spacing: 40)], spacing: 40) {
+                                ForEach(devices) { d in
+                                    Button { toggle(d) } label: { DeviceCard(device: d) }
+                                        .buttonStyle(TVTileStyle())
+                                }
+                            }
+                            .padding(.horizontal, 80)
+                        }
+                    }
+                    if home.speakers.isEmpty && home.lights.isEmpty && devices.isEmpty && !tvs.isEmpty {
                         Text("Speakers and lights show here once this Apple TV finds them on the Wi‑Fi.")
                             .font(.headline.weight(.regular)).foregroundStyle(.white.opacity(0.6))
                             .padding(.horizontal, 80)
@@ -121,6 +137,59 @@ struct HomeTab: View {
             }
             .background { TVBackdrop() }
         }
+    }
+}
+
+/// A device on Home: on, off, lock or unlock with a click; the rest show how they are.
+private func toggle(_ d: HomeDevice) {
+    guard d.reachable else { return }
+    if d.kind == .lock, let locked = d.locked {
+        AccessoryStore.shared.send(d, .lock(!locked))
+    } else if let on = d.isOn, d.kind != .washer, d.kind != .dryer, d.kind != .dishwasher, d.kind != .oven {
+        AccessoryStore.shared.send(d, .power(!on))
+    }
+}
+
+/// A device as on the iPhone's Home: the Samsung appliances drawn as themselves, the rest with how they are, ice-white
+/// while on.
+private struct DeviceCard: View {
+    let device: HomeDevice
+
+    var body: some View {
+        let d = device
+        let on = d.reachable && (d.isOn == true || d.machineState == "run" || d.locked == false)
+        HStack(alignment: .center, spacing: 20) {
+            if let look = d.bespokeLook {
+                BespokeAppliance(model: look, running: d.machineState == "run", alert: d.alert)
+                    .frame(width: 110, height: 150)
+            }
+            VStack(alignment: .leading, spacing: 8) {
+                Spacer(minLength: 0)
+                Text(d.name).font(.headline.bold()).lineLimit(2)
+                Text(d.reachable ? d.status : AccessoryStore.shared.notResponding(d))
+                    .font(.subheadline)
+                    .lineLimit(2)
+                    .opacity(0.75)
+            }
+            Spacer(minLength: 0)
+        }
+        .foregroundStyle(on && d.bespokeLook == nil ? TVPalette.onInk : .white)
+        .padding(28)
+        .frame(width: 340, height: 210, alignment: .topLeading)
+        .background {
+            if on && d.bespokeLook == nil {
+                RoundedRectangle(cornerRadius: 28, style: .continuous).fill(TVPalette.onTile)
+            } else {
+                RoundedRectangle(cornerRadius: 28, style: .continuous).fill(.white.opacity(0.06))
+                    .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 28, style: .continuous))
+            }
+        }
+        .overlay {
+            if d.alert {
+                RoundedRectangle(cornerRadius: 28, style: .continuous).strokeBorder(Color.orange, lineWidth: 3)
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
     }
 }
 
@@ -227,7 +296,8 @@ private struct LightCard: View {
             if on {
                 RoundedRectangle(cornerRadius: 28, style: .continuous).fill(TVPalette.onTile)
             } else {
-                RoundedRectangle(cornerRadius: 28, style: .continuous).fill(.ultraThinMaterial)
+                RoundedRectangle(cornerRadius: 28, style: .continuous).fill(.white.opacity(0.06))
+                    .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 28, style: .continuous))
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
@@ -296,8 +366,8 @@ struct TVRemoteView: View {
                 VStack(spacing: 50) {
                     // The round pad.
                     ZStack {
-                        Circle().fill(.ultraThinMaterial).frame(width: 470, height: 470)
-                            .overlay(Circle().strokeBorder(.white.opacity(0.12), lineWidth: 1))
+                        Circle().fill(.white.opacity(0.04)).frame(width: 470, height: 470)
+                            .glassEffect(.regular, in: Circle())
                         VStack(spacing: 18) {
                             key("chevron.up", "Up", "up")
                             HStack(spacing: 18) {
