@@ -78,7 +78,6 @@ struct SettingsTab: View {
                     LabeledContent("Version", value: version)
                 }
             }
-            .scrollContentBackground(.hidden)
             .background { TVBackdrop() }
             .navigationTitle("Settings")
             .onAppear { discovery.start() }
