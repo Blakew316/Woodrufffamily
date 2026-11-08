@@ -26,6 +26,7 @@ struct TVMacRoot: View {
             NavigationStack {
                 page(s)
                     .environment(\.macPageStack, false)
+                    .toolbar(.hidden, for: .navigationBar)
             }
             .id(s)
         }
@@ -44,7 +45,6 @@ struct TVMacRoot: View {
         ZStack {
             HStack(alignment: .center, spacing: 24) {
                 MacSectionBar(current: s) { stored = $0.rawValue }
-                    .scaleEffect(1.4, anchor: .leading)
                 Spacer(minLength: 20)
                 if s == .watch {
                     Picker("Library", selection: $watchSection) {
@@ -57,14 +57,14 @@ struct TVMacRoot: View {
                     TVPicker()
                 }
                 if s == .home {
-                    ThermostatChip(compact: false, height: 60)
+                    ThermostatChip(compact: false, height: 44 * macScale)
                 }
             }
             if s == .home {
-                MacGreetingHero().scaleEffect(1.4)
+                MacGreetingHero()
             }
         }
-        .frame(height: 80)
+        .frame(height: 50 * macScale)
     }
 
     @ViewBuilder private func page(_ s: AppSection) -> some View {

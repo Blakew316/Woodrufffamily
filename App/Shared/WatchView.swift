@@ -94,7 +94,7 @@ struct WatchView: View {
         .scrollDismissesKeyboard(.immediately)
         .onGeometryChange(for: CGFloat.self, of: { $0.size.width }) { w in fitPosters(w) }
         .environment(\.posterWidth, posterWidth)
-        #if os(iOS) || os(tvOS)
+        #if os(iOS)
         .toolbar {
             ToolbarItem(placement: .principal) {
                 // iPad: Movies | TV Shows on the same row as the TV.

@@ -512,6 +512,13 @@ struct CornerCurve: Shape {
 
 /// The app's colours, taken from its icon: the background's steel blue fading to deep navy, its glowing cyan, its ice
 /// blue and its white core. Home, its tiles, the Mac's bar and Settings follow it (as the widgets do).
+/// The Mac layout's sizes, as the Apple TV draws them (it's seen from across the room): 1 on the Mac.
+#if os(tvOS)
+let macScale: CGFloat = 1.75
+#else
+let macScale: CGFloat = 1
+#endif
+
 enum IconPalette {
     static let steel = Color(red: 0.220, green: 0.325, blue: 0.443)
     static let mid = Color(red: 0.114, green: 0.200, blue: 0.314)

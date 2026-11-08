@@ -1008,10 +1008,10 @@ struct MacSectionBar: View {
                 let on = current == s
                 Button { go(s) } label: {
                     Text(s.title)
-                        .font(.system(size: 13.5, weight: on ? .bold : .semibold))
+                        .font(.system(size: 13.5 * macScale, weight: on ? .bold : .semibold))
                         .foregroundStyle(on ? IconPalette.white : IconPalette.ice)
-                        .padding(.horizontal, 16)
-                        .frame(height: 36)
+                        .padding(.horizontal, 16 * macScale)
+                        .frame(height: 36 * macScale)
                         .background {
                             if on {
                                 Capsule().fill(IconPalette.cyan.opacity(0.25))
@@ -1022,12 +1022,16 @@ struct MacSectionBar: View {
                         }
                         .contentShape(Capsule())
                 }
+                #if os(tvOS)
+                .buttonStyle(TVBarButtonStyle())
+                #else
                 .buttonStyle(.plain)
+                #endif
                 .accessibilityAddTraits(on ? .isSelected : [])
             }
         }
-        .padding(4)
-        .frame(height: 44)
+        .padding(4 * macScale)
+        .frame(height: 44 * macScale)
         .glass(Capsule(), tint: IconPalette.cyan.opacity(0.08))
         .overlay(Capsule().strokeBorder(IconPalette.cyan.opacity(0.35), lineWidth: 0.75))
         .animation(.spring(response: 0.35, dampingFraction: 0.82), value: current)
@@ -1106,7 +1110,7 @@ struct MacSettingsView: View {
                 .padding(10)
             }
             .scrollIndicators(.never)
-            .frame(width: 230)
+            .frame(width: 230 * macScale)
             .glass(RoundedRectangle(cornerRadius: 22, style: .continuous), tint: IconPalette.cyan.opacity(0.06), interactive: false)
             .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).strokeBorder(IconPalette.cyan.opacity(0.25), lineWidth: 0.75))
             .padding(.leading, 18).padding(.vertical, 6)
@@ -1114,7 +1118,7 @@ struct MacSettingsView: View {
             // The page: its name large at the top, then its settings, all in one glass panel matching the list.
             VStack(alignment: .leading, spacing: 0) {
                 Text(shownTitle ?? current?.id ?? "Settings")
-                    .font(.system(size: 26, weight: .bold, design: .rounded))
+                    .font(.system(size: 26 * macScale, weight: .bold, design: .rounded))
                     .padding(.horizontal, 28).padding(.top, 22).padding(.bottom, 4)
                 Group {
                     if let shown { shown } else if let current { current.view().id(current.id) }
@@ -1125,7 +1129,9 @@ struct MacSettingsView: View {
                 .scrollContentBackground(.hidden)
                 #endif
                 .environment(\.defaultMinListRowHeight, 40)
+                #if !os(tvOS)
                 .font(.system(size: 14))
+                #endif
                 .tint(IconPalette.cyan)
                 .contentMargins(.horizontal, 12, for: .scrollContent)
                 .transition(.opacity)
@@ -1150,12 +1156,12 @@ struct MacSettingsView: View {
             picked = it.id
         } label: {
             Text(it.id)
-                .font(.system(size: 13.5, weight: on ? .semibold : .regular))
+                .font(.system(size: 13.5 * macScale, weight: on ? .semibold : .regular))
                 .foregroundStyle(it.id == "Needs Attention" ? Palette.attention : (on ? IconPalette.white : IconPalette.ice))
                 .lineLimit(1)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 12)
-                .frame(height: 32)
+                .padding(.horizontal, 12 * macScale)
+                .frame(height: 32 * macScale)
                 .background {
                     if on {
                         RoundedRectangle(cornerRadius: 9, style: .continuous).fill(IconPalette.cyan.opacity(0.22))
@@ -1164,7 +1170,11 @@ struct MacSettingsView: View {
                 }
                 .contentShape(Rectangle())
         }
+        #if os(tvOS)
+        .buttonStyle(TVBarButtonStyle())
+        #else
         .buttonStyle(.plain)
+        #endif
     }
 }
 #endif

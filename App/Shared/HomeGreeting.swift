@@ -625,26 +625,26 @@ struct MacGreetingHero: View {
                 HStack(spacing: 8) {
                     Image(systemName: now.sky.symbol)
                         .symbolRenderingMode(.multicolor)
-                        .font(.system(size: 27, weight: .semibold))
+                        .font(.system(size: 27 * macScale, weight: .semibold))
                     Text(now.tempText)
-                        .font(.system(size: 29, weight: .semibold, design: .rounded))
+                        .font(.system(size: 29 * macScale, weight: .semibold, design: .rounded))
                         .monospacedDigit()
                         .contentTransition(.numericText())
                 }
                 #if os(macOS)
                 .help([now.sky.words, now.range].compactMap { $0 }.joined(separator: " · "))
                 #endif
-                Rectangle().fill(IconPalette.cyan).frame(width: 1.5, height: 40).shadow(color: IconPalette.cyan.opacity(0.6), radius: 4)
+                Rectangle().fill(IconPalette.cyan).frame(width: 1.5, height: 40 * macScale).shadow(color: IconPalette.cyan.opacity(0.6), radius: 4)
             }
             VStack(alignment: .leading, spacing: 3) {
                 Text(greeting.greeting)
-                    .font(.system(size: 24, weight: .bold, design: .rounded))
+                    .font(.system(size: 24 * macScale, weight: .bold, design: .rounded))
                     .foregroundStyle(IconPalette.white)
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)
                 if !greeting.line.isEmpty {
                     Text(greeting.line)
-                        .font(.system(size: 14.5, weight: .medium))
+                        .font(.system(size: 14.5 * macScale, weight: .medium))
                         .foregroundStyle(IconPalette.ice)
                         .lineLimit(1)
                         .minimumScaleFactor(0.8)

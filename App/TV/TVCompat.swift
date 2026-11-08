@@ -347,3 +347,26 @@ struct DisclosureGroup<Content: View>: View {
 extension View {
     func listRowSeparator(_ v: Visibility, edges: VerticalEdge.Set = .all) -> some View { self }
 }
+
+/// The Mac's plain buttons (the section bar, Settings' list) on the remote: no white platter, a gentle lift and glow
+/// on the one the remote is on.
+struct TVBarButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View { TVBarButtonBody(configuration: configuration) }
+}
+
+private struct TVBarButtonBody: View {
+    let configuration: ButtonStyleConfiguration
+    @Environment(\.isFocused) private var focused
+
+    var body: some View {
+        configuration.label
+            .background {
+                if focused {
+                    Capsule().fill(.white.opacity(0.16))
+                        .overlay(Capsule().strokeBorder(IconPalette.ice.opacity(0.8), lineWidth: 1.5))
+                }
+            }
+            .scaleEffect(configuration.isPressed ? 0.96 : (focused ? 1.06 : 1))
+            .animation(.spring(response: 0.25, dampingFraction: 0.8), value: focused)
+    }
+}
