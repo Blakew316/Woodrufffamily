@@ -20,7 +20,7 @@ final class TopShelfAlbum {
     /// The pictures kept for the Top Shelf (and Home's background).
     nonisolated static func files() -> [URL] {
         guard let dir = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: group)?
-            .appendingPathComponent("TopShelf", isDirectory: true) else { return [] }
+            .appendingPathComponent("Library/Caches/TopShelf", isDirectory: true) else { return [] }
         return ((try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? [])
             .filter { $0.pathExtension == "jpg" }.sorted { $0.lastPathComponent < $1.lastPathComponent }
     }
@@ -50,7 +50,7 @@ final class TopShelfAlbum {
         guard let id = picked,
               let album = PHAssetCollection.fetchAssetCollections(withLocalIdentifiers: [id], options: nil).firstObject,
               let dir = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: Self.group)?
-                .appendingPathComponent("TopShelf", isDirectory: true) else { return }
+                .appendingPathComponent("Library/Caches/TopShelf", isDirectory: true) else { return }
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let opts = PHFetchOptions()
         opts.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
@@ -90,9 +90,12 @@ final class TopShelfAlbum {
                 }
                 picture = data.flatMap { UIImage(data: $0)?.preparingThumbnail(of: CGSize(width: 3840, height: 2160)) }
             }
-            if let data = picture?.jpegData(compressionQuality: 0.8),
-               (try? data.write(to: dir.appendingPathComponent(String(format: "%02d.jpg", i)), options: .atomic)) != nil {
-                saved += 1
+            if let data = picture?.jpegData(compressionQuality: 0.8) {
+                // Apple TV only lets apps write in Caches (the shared folder's too), which is where the Top Shelf reads.
+                do { try data.write(to: dir.appendingPathComponent(String(format: "%02d.jpg", i)), options: .atomic); saved += 1 }
+                catch { lastError = error.localizedDescription }
+            } else if lastError == nil {
+                lastError = "iCloud sent no picture"
             }
         }
         TVTopShelfContentProvider.topShelfContentDidChange()

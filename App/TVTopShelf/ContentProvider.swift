@@ -8,7 +8,7 @@ final class ContentProvider: TVTopShelfContentProvider {
 
     override func loadTopShelfContent() async -> (any TVTopShelfContent)? {
         guard let dir = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: Self.group)?
-            .appendingPathComponent("TopShelf", isDirectory: true),
+            .appendingPathComponent("Library/Caches/TopShelf", isDirectory: true),
               let files = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) else { return nil }
         let pictures = files.filter { $0.pathExtension == "jpg" }.sorted { $0.lastPathComponent < $1.lastPathComponent }
         guard !pictures.isEmpty else { return nil }
