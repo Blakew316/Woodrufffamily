@@ -56,6 +56,8 @@ struct AllDevicesView: View {
 
     #if os(macOS)
     private let columns = [GridItem(.adaptive(minimum: 150, maximum: 190), spacing: 14)]
+    #elseif os(tvOS)
+    private let columns = [GridItem(.adaptive(minimum: 270, maximum: 320), spacing: 34)]
     #else
     private let columns = [GridItem(.adaptive(minimum: 104, maximum: 140), spacing: 12)]
     #endif

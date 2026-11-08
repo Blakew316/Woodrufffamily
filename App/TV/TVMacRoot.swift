@@ -22,7 +22,7 @@ struct TVMacRoot: View {
         let s = section
         VStack(spacing: 0) {
             bar(s)
-                .padding(.horizontal, 40)
+                .padding(.horizontal, 30)
                 .padding(.top, 20)
                 .padding(.bottom, 14)
                 .focusSection()
@@ -40,6 +40,9 @@ struct TVMacRoot: View {
             .id(s)
             .focusSection()
         }
+        // Inside the TV's title-safe area: many TVs crop the picture's edges.
+        .padding(.horizontal, 50)
+        .padding(.vertical, 10)
         .background {
             if s == .settings { IconBackdrop() } else { HomeBackdrop() }
         }
@@ -106,7 +109,7 @@ struct TVMacRoot: View {
     @ViewBuilder private func page(_ s: AppSection) -> some View {
         switch s {
         case .watch: WatchView()
-        case .settings: MacSettingsView()
+        case .settings: TVSettingsView()
         default: HomeView()
         }
     }

@@ -645,7 +645,11 @@ struct ThermostatChip: View {
                     .padding(.vertical, compact ? 6 : 4)
                     .contentShape(Capsule())
             }
+            #if os(tvOS)
+            .buttonStyle(TVBarButtonStyle())
+            #else
             .buttonStyle(PressScale(scale: 0.95))
+            #endif
             .accessibilityLabel(spoken(t))
             .accessibilityHint("Shows the thermostat’s controls")
             // − and + are buttons of their own beside it (they change the temperature; they don't open anything).
@@ -721,7 +725,11 @@ struct ThermostatChip: View {
                 .background(Circle().fill(Color.primary.opacity(0.1)))
                 .contentShape(Circle())
         }
+        #if os(tvOS)
+        .buttonStyle(TVBarButtonStyle())
+        #else
         .buttonStyle(.plain)
+        #endif
         .help(name)
         .accessibilityLabel(name)
     }

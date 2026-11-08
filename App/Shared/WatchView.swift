@@ -453,8 +453,13 @@ struct Billboard: View {
         }
         .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
         .contentShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        #if os(tvOS)
+        .modifier(TVFocusTile())
+        .onTapGesture { open(t) }
+        #else
         .onTapGesture { open(t) }
         .contextMenu { TitleMenu(title: t) }
+        #endif
         .task(id: t.id) { await overview(t) }
     }
 
@@ -517,8 +522,13 @@ struct Billboard: View {
         }
         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        #if os(tvOS)
+        .modifier(TVFocusTile())
+        .onTapGesture { open(t) }
+        #else
         .onTapGesture { open(t) }
         .contextMenu { TitleMenu(title: t) }
+        #endif
     }
 
     /// Its sheet, with this card's picture and name at the top while the rest loads.
