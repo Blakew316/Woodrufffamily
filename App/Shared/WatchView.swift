@@ -970,24 +970,24 @@ struct TitleSheet: View {
             Color.black.opacity(0.6).ignoresSafeArea()
             VStack(alignment: .leading, spacing: 0) {
                 ZStack(alignment: .bottomLeading) {
-                    Color.clear.frame(height: 400)
+                    Color.clear.frame(height: 440)
                         .overlay { Artwork(url: t?.art, maxPixel: 1800) }
                         .clipped()
                     LinearGradient(stops: [.init(color: .clear, location: 0.35), .init(color: .black.opacity(0.92), location: 1)], startPoint: .top, endPoint: .bottom)
                     VStack(alignment: .leading, spacing: 10) {
-                        Text(t?.title ?? "").font(.system(size: 62, weight: .bold)).foregroundStyle(.white).lineLimit(1).minimumScaleFactor(0.6)
-                        if let f = t?.facts, !f.isEmpty { Text(f).font(.headline.weight(.medium)).foregroundStyle(.white.opacity(0.8)) }
+                        Text(t?.title ?? "").font(.system(size: 50, weight: .bold)).foregroundStyle(.white).lineLimit(2).minimumScaleFactor(0.6)
+                        if let f = t?.facts, !f.isEmpty { Text(f).font(.callout.weight(.medium)).foregroundStyle(.white.opacity(0.8)).lineLimit(2) }
                     }
-                    .padding(.horizontal, 50).padding(.bottom, 26)
+                    .padding(.horizontal, 36).padding(.bottom, 22)
                 }
-                VStack(alignment: .leading, spacing: 26) {
-                    if let o = shown?.overview { Text(o).font(.callout).foregroundStyle(.white.opacity(0.85)).lineLimit(3) }
+                VStack(alignment: .leading, spacing: 22) {
+                    if let o = shown?.overview { Text(o).font(.caption).foregroundStyle(.white.opacity(0.85)).lineLimit(4) }
                     if let failed, shown == nil {
                         Text(failed).font(.callout).foregroundStyle(.secondary)
                     }
-                    HStack(spacing: 24) {
+                    VStack(alignment: .leading, spacing: 18) {
                         if let p = t?.play {
-                            Button { if PlayRouter.start(p, fleet: fleet) { dismiss() } } label: { Label(p.label ?? "Play", systemImage: "play.fill") }
+                            Button { if PlayRouter.start(p, fleet: fleet) { dismiss() } } label: { Label(p.label ?? "Play", systemImage: "play.fill").frame(maxWidth: .infinity) }
                                 .focused($tvFocus, equals: "play")
                         } else if failed != nil {
                             ActionButton(action: { await load() }) { Text("Try Again") }
@@ -1020,9 +1020,9 @@ struct TitleSheet: View {
                         .frame(height: 200)
                     }
                 }
-                .padding(.horizontal, 50).padding(.top, 24).padding(.bottom, 44)
+                .padding(.horizontal, 36).padding(.top, 20).padding(.bottom, 36)
             }
-            .frame(width: 1240)
+            .frame(width: 620)
             .background(Color(white: 0.11))
             .clipShape(RoundedRectangle(cornerRadius: 44, style: .continuous))
             .overlay(alignment: .topTrailing) {
