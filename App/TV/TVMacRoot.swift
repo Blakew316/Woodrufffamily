@@ -72,7 +72,8 @@ struct TVMacRoot: View {
                     }
                     .buttonStyle(TVBarButtonStyle())
                     Spacer(minLength: 8)
-                    ThermostatChip(compact: false, height: 44 * macScale)
+                    ThermostatChip(compact: false, height: 44)
+                        .scaleEffect(macScale, anchor: .trailing)
                 }
                 .overlay { MacGreetingHero() }
             } else if s == .watch {
@@ -86,7 +87,8 @@ struct TVMacRoot: View {
                     .glass(Capsule(), interactive: false)
                     Spacer(minLength: 8)
                     TVPicker()
-                    ThermostatChip(compact: false, height: 44 * macScale)
+                    ThermostatChip(compact: false, height: 44)
+                        .scaleEffect(macScale, anchor: .trailing)
                 }
                 .overlay {
                     Picker("Library", selection: $watchSection) {

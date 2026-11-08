@@ -10,7 +10,11 @@ struct HomeView: View {
     @AppStorage("home.awayNote") private var awayNote = true
     @State private var openTV: String?
     /// The room bar's choice: Favorites (first, and where Home opens), All Rooms (""), or a room.
+    #if os(tvOS)
+    @AppStorage("home.room2") private var picked = allDevicesKey
+    #else
     @AppStorage("home.room2") private var picked = favoritesKey
+    #endif
     /// The TV whose player is open (iPhone: tapping a TV opens straight into what it's playing).
     @State private var playerTV: String?
     /// The page's scrolling, so a tile dragged to an edge scrolls the page under it.
@@ -424,6 +428,9 @@ struct HomeView: View {
             }
         }
         .scrollIndicators(.hidden)
+        #if os(tvOS)
+        .scrollClipDisabled()
+        #endif
     }
 
     private func chip(_ title: String, selected: Bool) -> some View {
