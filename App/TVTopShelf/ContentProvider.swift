@@ -6,7 +6,13 @@ import TVServices
 final class ContentProvider: TVTopShelfContentProvider {
     static let group = "group.com.blakew316.woodruff.tv"
 
-    override func loadTopShelfContent() async -> (any TVTopShelfContent)? {
+    // The completion-handler form, as Apple's own template has it (the system calls this one directly).
+    override func loadTopShelfContent(completionHandler: @escaping ((any TVTopShelfContent)?) -> Void) {
+        completionHandler(content())
+    }
+
+    private func content() -> (any TVTopShelfContent)? {
+        UserDefaults(suiteName: Self.group)?.set(Date().timeIntervalSince1970, forKey: "topShelf.asked")
         // The album's photos the app kept in the shared folder; until there are some, the nature photographs that come
         // with the app, so the Top Shelf is never empty.
         let dir = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: Self.group)?

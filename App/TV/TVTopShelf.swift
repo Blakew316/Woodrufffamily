@@ -19,9 +19,11 @@ final class TopShelfAlbum {
 
     /// When the Top Shelf last asked for its pictures (it notes the time in the shared folder), or Never.
     nonisolated static func lastAsked() -> String {
-        guard let f = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: group)?
+        var t = UserDefaults(suiteName: group)?.double(forKey: "topShelf.asked") ?? 0
+        if t == 0, let f = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: group)?
                 .appendingPathComponent("Library/Caches/topshelf-asked.txt"),
-              let s = try? String(contentsOf: f, encoding: .utf8), let t = Double(s) else { return "Never" }
+           let s = try? String(contentsOf: f, encoding: .utf8), let v = Double(s) { t = v }
+        guard t > 0 else { return "Never" }
         return Date(timeIntervalSince1970: t).formatted(date: .omitted, time: .shortened)
     }
 
