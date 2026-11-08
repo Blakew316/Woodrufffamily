@@ -90,6 +90,9 @@ struct SpeakerTile: View {
         .frame(maxWidth: .infinity, minHeight: 64, maxHeight: .infinity, alignment: .leading)
         .contentShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         .glass(RoundedRectangle(cornerRadius: 20, style: .continuous))
+        #if os(tvOS)
+        .modifier(TVFocusTile())
+        #endif
         .onTapGesture { if HomeLayout.shared.tapsAllowed { openControls() } }
         .contextMenu {
             ArrangeHomeButton()
@@ -314,6 +317,9 @@ struct LightTile: View {
         .contentShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         .modifier(OffGlass(on: lit))
         .animation(.smooth(duration: 0.25), value: lit)
+        #if os(tvOS)
+        .modifier(TVFocusTile())
+        #endif
         .onTapGesture {
             guard HomeLayout.shared.tapsAllowed else { return }
             guard !light.isOffline else { openControls(); return }

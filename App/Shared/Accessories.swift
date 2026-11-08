@@ -127,6 +127,9 @@ struct DeviceTile: View, Equatable {
             tappedAt.map { Date().timeIntervalSince($0) < 8 } ?? false
         }
         #endif
+        #if os(tvOS)
+        .modifier(TVFocusTile())
+        #endif
         .onTapGesture { if HomeLayout.shared.tapsAllowed { tappedAt = Date(); tap() } }
         // Press and hold arranges Home's tiles (on the Mac too); the controls are in the menu.
         .contextMenu {

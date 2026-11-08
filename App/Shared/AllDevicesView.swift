@@ -201,6 +201,9 @@ struct AllDevicesView: View {
             tappedAt[item.id].map { Date().timeIntervalSince($0) < 8 } ?? false
         }
         #endif
+        #if os(tvOS)
+        .modifier(TVFocusTile())
+        #endif
         .onTapGesture { tap(item) }
         .onLongPressGesture(minimumDuration: 0.4) { open(item) }
         #if os(macOS)

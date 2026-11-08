@@ -622,6 +622,9 @@ struct HomeTVTile: View, Equatable {
             }
         }
         #endif
+        #if os(tvOS)
+        .modifier(TVFocusTile())
+        #endif
         .onTapGesture { if HomeLayout.shared.tapsAllowed { open() } }
         .onHover { hovering = $0 }
         .alert("Rename TV", isPresented: $renaming) {

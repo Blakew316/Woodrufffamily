@@ -370,3 +370,21 @@ private struct TVBarButtonBody: View {
             .animation(.spring(response: 0.25, dampingFraction: 0.8), value: focused)
     }
 }
+
+/// A Home tile (a TV, speaker, light, device or camera) the remote can land on: it lifts and gets a light edge when
+/// focused, and a click is its tap.
+struct TVFocusTile: ViewModifier {
+    @FocusState private var focused: Bool
+    func body(content: Content) -> some View {
+        content
+            .focusable()
+            .focused($focused)
+            .overlay {
+                RoundedRectangle(cornerRadius: 24, style: .continuous)
+                    .strokeBorder(IconPalette.ice.opacity(focused ? 0.9 : 0), lineWidth: 3)
+            }
+            .scaleEffect(focused ? 1.05 : 1)
+            .shadow(color: .black.opacity(focused ? 0.45 : 0), radius: 20, y: 10)
+            .animation(.spring(response: 0.3, dampingFraction: 0.8), value: focused)
+    }
+}

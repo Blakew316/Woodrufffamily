@@ -794,6 +794,9 @@ struct LiveCameraTile: View, Equatable {
             }
         }
         .contentShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+        #if os(tvOS)
+        .modifier(TVFocusTile())
+        #endif
         .onTapGesture {
             guard HomeLayout.shared.tapsAllowed else { return }
             if camera.webRTC && camera.online { streams.expanded = camera.id; open() }
