@@ -227,8 +227,8 @@ struct WatchView: View {
         .onChange(of: section) { _, _ in
             pickerFocused = true
             Task {
-                for _ in 0..<4 {
-                    try? await Task.sleep(nanoseconds: 250_000_000)
+                for _ in 0..<2 {
+                    try? await Task.sleep(nanoseconds: 200_000_000)
                     pickerFocused = true
                 }
             }
