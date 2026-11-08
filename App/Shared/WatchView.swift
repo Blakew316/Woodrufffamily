@@ -60,6 +60,15 @@ struct WatchView: View {
         let shown = home ?? (error == nil ? kept : nil)
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 28) {
+                #if os(iOS)
+                // Movies | TV Shows, then search right under it (on iPad the switch is in the bar at the top).
+                VStack(spacing: 12) {
+                    if sizeClass != .regular { sectionPicker }
+                    WatchSearchField(text: $query)
+                }
+                .padding(.horizontal)
+                .padding(.top, 8)
+                #endif
                 if !query.isEmpty {
                     WatchSearchResults(query: query)
                 } else if let h = shown {
@@ -92,8 +101,6 @@ struct WatchView: View {
             }
             .sharedBackgroundVisibility(.hidden)
         }
-        // Search right here, under the title: the results take the shelves' place, nothing opens.
-        .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Movies and TV Shows")
         #else
         // The window's own bar has the search; the TV that plays is picked at the top of the page.
         // The TV it plays on and Movies | TV Shows are in the window's top bar.
@@ -154,15 +161,9 @@ struct WatchView: View {
         let watchingIDs = Set((h.continue ?? []).filter { ($0.kind == "show") == (place == "shows") }.compactMap(\.titleId))
         let worked = shelves.get(place: place, titles: titles, shown: watchingIDs)
         let featured = worked.featured
-        VStack(spacing: 12) {
-            #if os(iOS)
-            if sizeClass != .regular { sectionPicker }
-            #endif
-            if !featured.isEmpty {
-                Billboard(titles: featured, page: $page, client: client).id(place)
-            }
+        if !featured.isEmpty {
+            Billboard(titles: featured, page: $page, client: client).id(place)
         }
-        .padding(.top, 8)
         let watching = (h.continue ?? []).filter { !removed.contains($0.key) && ($0.kind == "show") == (place == "shows") }
         if !watching.isEmpty {
             ShelfRow("Continue Watching") { ForEach(watching) { ContinueTile(item: $0, poster: client?.artURL($0.poster)) } }
@@ -1366,6 +1367,34 @@ struct SearchPage: View {
         .sheet(item: Binding(get: { openTitle.map { TitleRef(id: $0) } }, set: { openTitle = $0?.id })) { TitleSheet(id: $0.id).macResizable(width: 760, height: 820, minWidth: 520, minHeight: 500) }
     }
 }
+
+#if os(iOS)
+/// iPhone Watch's search, under Movies | TV Shows: what's typed shows its results in place of the shelves.
+private struct WatchSearchField: View {
+    @Binding var text: String
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+            TextField("Movies and TV Shows", text: $text)
+                .focused($focused)
+                .submitLabel(.search)
+                .autocorrectionDisabled()
+            if !text.isEmpty {
+                Button { text = ""; focused = false } label: {
+                    Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Clear")
+            }
+        }
+        .padding(.horizontal, 14)
+        .frame(height: 44)
+        .glass(Capsule(), interactive: false)
+    }
+}
+#endif
 
 /// What [query] finds in Movies and TV Shows, as shelves (or why nothing came back). Opening a title is the page's
 /// (its `openTitle`). [again]: asked again when it changes.
