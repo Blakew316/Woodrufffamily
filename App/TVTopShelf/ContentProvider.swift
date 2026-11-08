@@ -11,9 +11,14 @@ final class ContentProvider: TVTopShelfContentProvider {
         // with the app, so the Top Shelf is never empty.
         let dir = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: Self.group)?
             .appendingPathComponent("Library/Caches/TopShelf", isDirectory: true)
+        // When the Apple TV last asked (Woodruff → Settings → Top Shelf shows it), and how many photos it was given.
+        if let base = dir?.deletingLastPathComponent() {
+            try? "\(Date().timeIntervalSince1970)".write(to: base.appendingPathComponent("topshelf-asked.txt"), atomically: true, encoding: .utf8)
+        }
         let kept = dir.flatMap { try? FileManager.default.contentsOfDirectory(at: $0, includingPropertiesForKeys: nil) } ?? []
-        var pictures = kept.filter { $0.pathExtension == "jpg" }.sorted { $0.lastPathComponent < $1.lastPathComponent }
-        if pictures.isEmpty { pictures = Bundle.main.urls(forResourcesWithExtension: "jpg", subdirectory: nil) ?? [] }
+        // The album's photos, then the nature photographs that come with it.
+        let pictures = kept.filter { $0.pathExtension == "jpg" }.sorted { $0.lastPathComponent < $1.lastPathComponent }
+            + (Bundle.main.urls(forResourcesWithExtension: "jpg", subdirectory: nil) ?? [])
         guard !pictures.isEmpty else { return nil }
         let items: [TVTopShelfCarouselItem] = pictures.map { url in
             let item = TVTopShelfCarouselItem(identifier: url.lastPathComponent)

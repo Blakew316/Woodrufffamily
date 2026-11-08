@@ -17,6 +17,14 @@ final class TopShelfAlbum {
     /// Goes up each time the pictures are written again.
     var version = 0
 
+    /// When the Top Shelf last asked for its pictures (it notes the time in the shared folder), or Never.
+    nonisolated static func lastAsked() -> String {
+        guard let f = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: group)?
+                .appendingPathComponent("Library/Caches/topshelf-asked.txt"),
+              let s = try? String(contentsOf: f, encoding: .utf8), let t = Double(s) else { return "Never" }
+        return Date(timeIntervalSince1970: t).formatted(date: .omitted, time: .shortened)
+    }
+
     /// The pictures kept for the Top Shelf.
     nonisolated static func files() -> [URL] {
         guard let dir = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: group)?
@@ -125,6 +133,7 @@ struct TopShelfSettings: View {
             }
             Section {
                 LabeledContent("Photos Ready", value: "\(TopShelfAlbum.files().count)")
+                LabeledContent("Apple TV Last Asked", value: TopShelfAlbum.lastAsked())
                 Button("Update the Top Shelf Now") { Task { await shelf.refresh() } }
                     .disabled(shelf.picked == nil)
             } footer: {
