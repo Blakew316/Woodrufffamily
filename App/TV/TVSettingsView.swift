@@ -15,35 +15,25 @@ struct TVSettingsView: View {
         Row(id: title) { AnyView(v()) }
     }
 
+    /// Only what an Apple TV needs (no Shortcuts, Send, Notes or alerts, which are the iPhone's and Mac's).
     private var groups: [(String, [Row])] {
         var g: [(String, [Row])] = []
         if !NeedsAttentionSection.issues(fleet).isEmpty {
             g.append(("", [Self.row("Needs Attention") { Form { NeedsAttentionSection(hub: HubSettings.shared) } }]))
         }
-        g.append(("", [
-            Self.row("TVs") { TVsView() },
-            Self.row("Notes") { NotesView() },
-            Self.row("Software Update") { SoftwareUpdateView() },
-            Self.row("Send") { SendView() },
-        ]))
         g.append(("Home", [
+            Self.row("TVs") { TVsView() },
             Self.row("Speakers") { SpeakersListView() },
             Self.row("Lights") { LightsListView() },
             Self.row("Cameras") { CamerasPhoneView(hub: HubSettings.shared) },
             Self.row("Devices") { DevicesListView() },
-            Self.row("Wi‑Fi") { WifiView() },
             Self.row("Scenes") { ScenesSettingsView() },
         ]))
-        g.append(("Watch & Notifications", [
+        g.append(("", [
             Self.row("Watch") { WatchSettingsView() },
-            Self.row("Notifications") { PhoneSettingsView(hub: HubSettings.shared) },
-            Self.row("Camera Alerts") { CameraAlertsView(hub: HubSettings.shared) },
             Self.row("Accounts") { ConnectionsView(hub: HubSettings.shared) },
-        ]))
-        g.append(("More", [
-            Self.row("General") { GeneralSettingsView(hub: HubSettings.shared) },
-            Self.row("Shortcuts") { ShortcutsView(hub: HubSettings.shared) },
             Self.row("Sync Across Devices") { SyncSettingsView() },
+            Self.row("General") { GeneralSettingsView(hub: HubSettings.shared) },
         ]))
         return g
     }
@@ -70,9 +60,7 @@ struct TVSettingsView: View {
                     Section {
                         ForEach(rows) { r in
                             NavigationLink {
-                                r.page()
-                                    .navigationTitle(r.id)
-                                    .toolbar(.visible, for: .navigationBar)
+                                TVSettingsPage(title: r.id) { r.page() }
                                     .onAppear { TVNav.shared.depth += 1 }
                                     .onDisappear { TVNav.shared.depth = max(0, TVNav.shared.depth - 1) }
                             } label: {
@@ -87,5 +75,34 @@ struct TVSettingsView: View {
             .frame(maxWidth: .infinity)
         }
         .task { await HubSettings.shared.loadIfNeeded(fleet) }
+    }
+}
+
+/// A page inside Settings, laid out as the first one (Apple TV's own Settings keeps it the same throughout): the
+/// page's name large on the left over the backdrop, its settings on the right.
+struct TVSettingsPage<Content: View>: View {
+    let title: String
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 80) {
+            VStack(spacing: 24) {
+                Image("Emblem")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 220, height: 220)
+                    .shadow(color: IconPalette.cyan.opacity(0.45), radius: 30)
+                Text(title)
+                    .font(.system(size: 48, weight: .bold))
+                    .foregroundStyle(IconPalette.white)
+                    .multilineTextAlignment(.center)
+            }
+            .frame(width: 560)
+            .frame(maxHeight: .infinity)
+            content
+                .frame(maxWidth: .infinity)
+        }
+        .background { IconBackdrop().ignoresSafeArea() }
+        .toolbar(.hidden, for: .navigationBar)
     }
 }

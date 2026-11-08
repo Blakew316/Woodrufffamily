@@ -50,8 +50,8 @@ struct HomeView: View {
     /// bar hidden there's no way to pick a room, so everything shows.
     private func shownRoom(_ rooms: [String]) -> String {
         #if os(tvOS)
-        // Apple TV: every room, one row each, as the TV app's shelves.
-        return ""
+        // Apple TV: every device, room by room, one row each (Favorites above them).
+        return allDevicesKey
         #else
         if layout.hiddenSections.contains("rooms") { return "" }
         return picked == favoritesKey || picked == allDevicesKey || picked.isEmpty || rooms.contains(picked) ? picked : ""
@@ -135,6 +135,11 @@ struct HomeView: View {
                     section(key, c)
                 }
                 #endif
+                #if os(tvOS)
+                // Favorites first, then every device room by room.
+                if !layout.favorites.isEmpty { favoritesGroup(c) }
+                AllDevicesView()
+                #else
                 if room == allDevicesKey {
                     // Every device, room by room: tap to turn on or off, press and hold for its controls.
                     AllDevicesView()
@@ -142,6 +147,7 @@ struct HomeView: View {
                 if room == favoritesKey || (room.isEmpty && !layout.favorites.isEmpty && !isTV) {
                     favoritesGroup(c)
                 }
+                #endif
                 if room != favoritesKey && room != allDevicesKey {
                     if !room.isEmpty {
                         // One room picked in the room bar: its tiles, to arrange as you like.
@@ -316,6 +322,9 @@ struct HomeView: View {
     /// Favorites: everything starred, whatever room it's in.
     private func favoritesGroup(_ c: Contents) -> some View {
         VStack(alignment: .leading, spacing: 16) {
+            #if os(tvOS)
+            Text("Favorites").font(.system(size: 34, weight: .bold)).foregroundStyle(IconPalette.white)
+            #endif
             if layout.favorites.isEmpty {
                 Text("Touch and hold anything on Home (a camera, TV, speaker, light or device) and choose Add to Favorites. It shows up here.")
                     .font(.subheadline).foregroundStyle(.secondary)

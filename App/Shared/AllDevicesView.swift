@@ -91,10 +91,23 @@ struct AllDevicesView: View {
                 let list = section.rooms.flatMap { byRoom[$0] ?? [] }
                 if !list.isEmpty {
                     VStack(alignment: .leading, spacing: 10) {
+                        #if os(tvOS)
+                        Text(section.title).font(.system(size: 34, weight: .bold)).foregroundStyle(IconPalette.white)
+                        ScrollView(.horizontal) {
+                            LazyHStack(spacing: 40) {
+                                ForEach(list) { item in tile(item).frame(width: 300, height: 330) }
+                            }
+                            .padding(.vertical, 30)
+                            .padding(.horizontal, 4)
+                        }
+                        .scrollClipDisabled()
+                        .scrollIndicators(.hidden)
+                        #else
                         Text(section.title).font(.title3.bold())
                         LazyVGrid(columns: columns, alignment: .leading, spacing: 12) {
                             ForEach(list) { item in tile(item) }
                         }
+                        #endif
                     }
                 }
             }
@@ -148,6 +161,8 @@ struct AllDevicesView: View {
     /// The pictures' size in the tiles: larger on the Mac and iPad's wide tiles than on iPhone's narrow ones.
     #if os(macOS)
     static let glyphScale: CGFloat = 1.4
+    #elseif os(tvOS)
+    static let glyphScale: CGFloat = 3.0
     #else
     static let glyphScale: CGFloat = UIDevice.current.userInterfaceIdiom == .pad ? 1.35 : 1.2
     #endif
@@ -173,17 +188,29 @@ struct AllDevicesView: View {
             VStack(spacing: 2) {
                 // Two lines kept for the name and the state in every tile, used or not, so every tile in a row is the
                 // same height whatever its name ("Shelf Light" was shorter than "Shelf Light 2" beside it).
+                #if os(tvOS)
+                Spacer(minLength: 0)
+                Text(f.name).font(.system(size: 26, weight: .bold)).lineLimit(2, reservesSpace: true)
+                Text(f.state).font(.system(size: 21, weight: .medium))
+                    .foregroundStyle(f.on ? Color.black.opacity(0.55) : .secondary).lineLimit(1)
+                #else
                 Text(f.name).font(.footnote.weight(.semibold)).lineLimit(2, reservesSpace: true)
                 // Two lines, so a TV's title reads in full more often.
                 Text(f.state).font(.caption)
                     .foregroundStyle(f.on ? Color.black.opacity(0.55) : .secondary).lineLimit(2, reservesSpace: true)
+                #endif
             }
             .multilineTextAlignment(.center)
             .frame(maxWidth: .infinity)
         }
         .foregroundStyle(f.on ? Color.black : .primary)
+        #if os(tvOS)
+        .padding(.top, 30).padding(.horizontal, 18).padding(.bottom, 22)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        #else
         .padding(12)
         .frame(maxWidth: .infinity, minHeight: 150, alignment: .top)
+        #endif
         .background {
             if f.on {
                 RoundedRectangle(cornerRadius: 22, style: .continuous).fill(IconPalette.onTile)
