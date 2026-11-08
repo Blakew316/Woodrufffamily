@@ -16,6 +16,10 @@ struct WatchView: View {
     @State private var removed: Set<String> = []
     /// Movies or TV Shows, as on the TV's streaming screen.
     @AppStorage("watch.section") private var section = "movies"
+    #if os(tvOS)
+    /// Apple TV: Movies | TV Shows has the focus (kept there when it's switched).
+    @FocusState private var pickerFocused: Bool
+    #endif
     /// The TV's library or the Drive one (Settings → Watch).
     @AppStorage("watch.source") private var source = "tv"
     /// The posters' width (fitted to the window on the Mac).
@@ -173,23 +177,25 @@ struct WatchView: View {
         // Until the whole list is read, the library's own featured titles, so the banner shows at once.
         let featured = worked.featured.isEmpty ? (h.featured ?? []).filter { ($0.kind == "show") == (place == "shows") } : worked.featured
         #if os(tvOS)
-        // Still loading the banner: Movies | TV Shows on its own at the top.
-        if featured.isEmpty { tvSectionPicker.padding(.top, 30) }
-        #endif
-        if !featured.isEmpty {
-            #if os(tvOS)
-            // The whole screen; the first row (Continue Watching) rises up over its bottom, as the TV app does.
-            Billboard(titles: featured, page: $page, client: client).id(place)
-                // Movies | TV Shows at its top, in the page itself: Up from the banner's buttons reaches it, Down
-                // from it reaches them.
-                .overlay(alignment: .top) { tvSectionPicker.padding(.top, 30) }
-                // Fading out as the page moves down to the rows (and back in on the way up), as the TV app's does.
-                .visualEffect { c, p in c.opacity(max(0, min(1, 1 + p.frame(in: .scrollView).minY / 650))) }
-                .padding(.bottom, -330)
-            #else
-            Billboard(titles: featured, page: $page, client: client).id(place)
-            #endif
+        // The banner with Movies | TV Shows over its top. The switch is always the same one in the same place (the banner
+        // under it can change or still be loading), so picking TV Shows keeps the focus on it: nothing moves it to Play.
+        ZStack(alignment: .top) {
+            if !featured.isEmpty {
+                // The whole screen; the first row (Continue Watching) rises up over its bottom, as the TV app does.
+                Billboard(titles: featured, page: $page, client: client).id(place)
+                    // Fading out as the page moves down to the rows (and back in on the way up), as the TV app's does.
+                    .visualEffect { c, p in c.opacity(max(0, min(1, 1 + p.frame(in: .scrollView).minY / 650))) }
+                    .padding(.bottom, -330)
+            } else {
+                Color.clear.frame(height: 140)
+            }
+            tvSectionPicker.padding(.top, 30)
         }
+        #else
+        if !featured.isEmpty {
+            Billboard(titles: featured, page: $page, client: client).id(place)
+        }
+        #endif
         let watching = (h.continue ?? []).filter { !removed.contains($0.key) && ($0.kind == "show") == (place == "shows") }
         if !watching.isEmpty {
             ShelfRow("Continue Watching") { ForEach(watching) { ContinueTile(item: $0, poster: client?.artURL($0.poster)) } }
@@ -214,8 +220,19 @@ struct WatchView: View {
         .pickerStyle(.segmented)
         .labelsHidden()
         .fixedSize()
+        .focused($pickerFocused)
         .frame(maxWidth: .infinity)
         .focusSection()
+        // Switching Movies | TV Shows keeps the focus here while the other library comes in (and after it has).
+        .onChange(of: section) { _, _ in
+            pickerFocused = true
+            Task {
+                for _ in 0..<4 {
+                    try? await Task.sleep(nanoseconds: 250_000_000)
+                    pickerFocused = true
+                }
+            }
+        }
     }
     #endif
 
