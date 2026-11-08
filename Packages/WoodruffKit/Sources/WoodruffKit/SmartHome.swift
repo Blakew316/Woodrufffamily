@@ -697,6 +697,8 @@ public enum Govee {
 @MainActor
 final class GoveeLAN {
     private var listener: NWListener?
+    /// Seconds before trying the port again after it failed (doubling, up to two minutes).
+    private var retryDelay: Double = 1
     /// Each light's own channel to us; closed with the listener so none are left open.
     private var connections: [ObjectIdentifier: NWConnection] = [:]
     var onScan: ((String, String, String) -> Void)?          // ip, device id, sku
@@ -722,14 +724,20 @@ final class GoveeLAN {
                 self.receive(c)
             }
         }
-        // iOS closes it while the app is in the background; open a new one when that happens.
+        // iOS closes it while the app is in the background; open a new one when that happens. When the port can't be
+        // had (another app holds it, as on Apple TV), waiting twice as long each time, up to two minutes, instead of
+        // trying every second forever.
         l.stateUpdateHandler = { [weak self] state in
             switch state {
+            case .ready:
+                MainActor.assumeIsolated { self?.retryDelay = 1 }
             case .failed, .cancelled:
                 Task { @MainActor in
                     guard let self, self.listener === l else { return }
                     self.listener = nil
-                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                    let wait = self.retryDelay
+                    self.retryDelay = min(wait * 2, 120)
+                    try? await Task.sleep(nanoseconds: UInt64(wait) * 1_000_000_000)
                     self.start()
                 }
             default: break
@@ -743,6 +751,7 @@ final class GoveeLAN {
     func restart() {
         let old = listener
         listener = nil
+        retryDelay = 1
         old?.cancel()
         for c in connections.values { c.cancel() }
         connections.removeAll()
