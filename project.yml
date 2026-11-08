@@ -220,7 +220,7 @@ targets:
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         NSExtension:
           NSExtensionPointIdentifier: com.apple.tv-top-shelf
-          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ContentProvider
+          NSExtensionPrincipalClass: ContentProvider
 
   WoodruffFamilyMac:
     type: application

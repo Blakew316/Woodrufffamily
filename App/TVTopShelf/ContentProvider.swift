@@ -3,6 +3,7 @@ import TVServices
 /// Woodruff's Top Shelf: with the app's icon highlighted on the Apple TV's Home Screen, the iCloud Photos album
 /// picked in Woodruff → Settings → Top Shelf, as a slideshow across the top of the screen. The app keeps the
 /// pictures ready in the shared folder; this only lists them.
+@objc(ContentProvider)
 final class ContentProvider: TVTopShelfContentProvider {
     static let group = "group.com.blakew316.woodruff.tv"
 
