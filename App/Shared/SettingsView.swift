@@ -431,11 +431,10 @@ struct TVRow: View {
     private var line: String {
         if tv.isUnpaired { return "Found on Wi‑Fi · Not paired" }
         if tv.link == "refused" { return tv.alertsHidden ? "Off · link stopped working" : "Link again" }
-        // Not answering: away from home that's only the distance (a TV in standby still answers at home), so it says
-        // where things stand rather than "Off", which it can't know from here.
+        // Not answering (asleep with its Wi‑Fi off, or unplugged): said as it is, not "Off", which can't be known.
         if !tv.online {
             let seen = (tv.seen ?? 0) > 0 ? " · seen \(relative(tv.seen))" : ""
-            return (Fleet.shared.probablyAway ? "Can’t reach from here" : "Not responding") + seen
+            return "Not answering" + seen
         }
         if let p = tv.nowPlaying { return (p.isPlaying ? "Playing " : "Paused · ") + p.title + (p.app.map { " · \($0)" } ?? "") }
         return tv.onScreen ? "Woodruff on screen" : "Nothing playing"
