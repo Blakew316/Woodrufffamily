@@ -88,6 +88,13 @@ struct HubSettingsPending: View {
                 Text(e).font(.subheadline).foregroundStyle(.secondary)
                 ActionButton(action: { await hub.load(fleet.hubClient()) }) { Text("Try Again") }
             }
+        } else if !fleet.tvs.contains(where: { $0.online }) {
+            // No TV answering (away from home, say): said plainly, not a spinner that never stops.
+            Section {
+                Text("The TVs can’t be reached from here").font(.headline)
+                Text("Their sign-ins (Google Drive, Photos, Calendar, Nest) show here once a TV answers.").font(.subheadline).foregroundStyle(.secondary)
+                ActionButton(action: { await hub.load(fleet.hubClient()) }) { Text("Try Again") }
+            }
         } else {
             ProgressView().frame(maxWidth: .infinity)
         }
@@ -424,7 +431,12 @@ struct TVRow: View {
     private var line: String {
         if tv.isUnpaired { return "Found on Wi‑Fi · Not paired" }
         if tv.link == "refused" { return tv.alertsHidden ? "Off · link stopped working" : "Link again" }
-        if !tv.online { return "Off · seen \(relative(tv.seen))" }
+        // Not answering: away from home that's only the distance (a TV in standby still answers at home), so it says
+        // where things stand rather than "Off", which it can't know from here.
+        if !tv.online {
+            let seen = (tv.seen ?? 0) > 0 ? " · seen \(relative(tv.seen))" : ""
+            return (Fleet.shared.probablyAway ? "Can’t reach from here" : "Not responding") + seen
+        }
         if let p = tv.nowPlaying { return (p.isPlaying ? "Playing " : "Paused · ") + p.title + (p.app.map { " · \($0)" } ?? "") }
         return tv.onScreen ? "Woodruff on screen" : "Nothing playing"
     }
