@@ -63,6 +63,7 @@ final class TopShelfAlbum {
         req.deliveryMode = .highQualityFormat
         req.isNetworkAccessAllowed = true
         req.isSynchronous = false
+        var saved = 0
         for (i, a) in chosen.enumerated() {
             let img: UIImage? = await withCheckedContinuation { c in
                 var done = false
@@ -73,13 +74,25 @@ final class TopShelfAlbum {
                     c.resume(returning: im)
                 }
             }
-            if let data = img?.jpegData(compressionQuality: 0.8) {
-                try? data.write(to: dir.appendingPathComponent(String(format: "%02d.jpg", i)), options: .atomic)
+            var picture = img
+            if picture == nil {
+                // Some iCloud photos only come as their original: read that and size it down here.
+                let data: Data? = await withCheckedContinuation { c in
+                    let o = PHImageRequestOptions()
+                    o.isNetworkAccessAllowed = true
+                    o.deliveryMode = .highQualityFormat
+                    PHImageManager.default().requestImageDataAndOrientation(for: a, options: o) { d, _, _, _ in c.resume(returning: d) }
+                }
+                picture = data.flatMap { UIImage(data: $0)?.preparingThumbnail(of: CGSize(width: 3840, height: 2160)) }
+            }
+            if let data = picture?.jpegData(compressionQuality: 0.8),
+               (try? data.write(to: dir.appendingPathComponent(String(format: "%02d.jpg", i)), options: .atomic)) != nil {
+                saved += 1
             }
         }
         TVTopShelfContentProvider.topShelfContentDidChange()
         version += 1
-        note = chosen.isEmpty ? "That album has no photos." : "\(chosen.count) photos are on the Top Shelf."
+        note = chosen.isEmpty ? "That album has no photos." : saved == 0 ? "Couldn’t get the photos from iCloud. Try another album." : "\(saved) photos are on the Top Shelf and Home."
     }
 }
 
@@ -108,8 +121,8 @@ struct TopShelfSettings: View {
 }
 
 /// Home's background: the Top Shelf album's photos, one fading into the next with a slow drift, as the Apple TV
-/// screensaver does, dimmed (most at the top) so the greeting, weather and thermostat stay easy to read. The blue
-/// until an album is picked.
+/// screensaver does, dimmed (most at the top) so the greeting, weather and thermostat stay easy to read. Landscape
+/// photographs until an album is picked.
 struct TVPhotoBackdrop: View {
     private let shelf = TopShelfAlbum.shared
     @State private var image: UIImage?
@@ -134,17 +147,38 @@ struct TVPhotoBackdrop: View {
 
     private func run() async {
         let files = TopShelfAlbum.files()
-        guard !files.isEmpty else { image = nil; return }
-        var i = Int.random(in: 0..<files.count)
+        // The album's photos, else a set of landscape photographs (4K) until an album is picked.
+        let count = files.isEmpty ? 30 : files.count
+        var i = Int.random(in: 0..<count)
         while !Task.isCancelled {
-            let url = files[i % files.count]
-            let next = await Task.detached(priority: .utility) { UIImage(contentsOfFile: url.path)?.preparingForDisplay() }.value
+            let next: UIImage?
+            if files.isEmpty {
+                next = await Self.stock(i % count)
+            } else {
+                let url = files[i % count]
+                next = await Task.detached(priority: .utility) { UIImage(contentsOfFile: url.path)?.preparingForDisplay() }.value
+            }
             if let next {
                 withAnimation(.easeInOut(duration: 2.5)) { image = next; shown += 1 }
             }
             try? await Task.sleep(nanoseconds: 14_000_000_000)
             i += 1
         }
+    }
+}
+
+extension TVPhotoBackdrop {
+    /// One of the stock photographs, kept on disk after the first time.
+    static func stock(_ n: Int) async -> UIImage? {
+        let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("Backdrops", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let file = dir.appendingPathComponent("\(n).jpg")
+        if let d = try? Data(contentsOf: file), let img = UIImage(data: d) { return img.preparingForDisplay() }
+        guard let url = URL(string: "https://picsum.photos/seed/woodruff\(n)/3840/2160"),
+              let (d, r) = try? await URLSession.shared.data(from: url),
+              (r as? HTTPURLResponse)?.statusCode == 200, let img = UIImage(data: d) else { return nil }
+        try? d.write(to: file, options: .atomic)
+        return img.preparingForDisplay()
     }
 }
 
