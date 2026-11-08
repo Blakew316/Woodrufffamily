@@ -44,7 +44,7 @@ struct PairPanel: View {
             Text("On any TV, open Woodruff → Settings → Phone connection. It shows a QR code and a link. Pairing one TV is enough: every TV linked to it shows up too.")
                 .font(.callout).foregroundStyle(.secondary)
 
-            #if os(iOS) || os(tvOS)
+            #if os(iOS)
             Button { scanning = true } label: {
                 Text("Scan the TV’s QR Code").frame(maxWidth: .infinity)
             }
@@ -53,7 +53,9 @@ struct PairPanel: View {
 
             HStack {
                 TextField("http://192.168.1.20:8090/?k=…", text: $link)
+                    #if !os(tvOS)
                     .textFieldStyle(.roundedBorder)
+                    #endif
                     .autocorrectionDisabled()
                     #if os(iOS) || os(tvOS)
                     .textInputAutocapitalization(.never).keyboardType(.URL)
@@ -61,7 +63,7 @@ struct PairPanel: View {
                     .onSubmit { pair(link) }
                 Button("Pair") { pair(link) }.disabled(link.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || busy)
             }
-            #if os(iOS) || os(tvOS)
+            #if os(iOS)
             PasteButton(payloadType: String.self) { s in if let first = s.first { link = first; pair(first) } }
                 .labelStyle(.titleAndIcon)
             #endif
@@ -108,7 +110,7 @@ struct PairPanel: View {
         .glass(RoundedRectangle(cornerRadius: 28, style: .continuous), interactive: false)
         .onAppear { discovery.start() }
         .onDisappear { discovery.stop() }
-        #if os(iOS) || os(tvOS)
+        #if os(iOS)
         .sheet(isPresented: $scanning) {
             NavigationStack {
                 QRScannerView { code in scanning = false; pair(code) }
