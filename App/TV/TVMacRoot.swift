@@ -41,6 +41,9 @@ struct TVMacRoot: View {
                             .labelsHidden()
                             .fixedSize()
                             .padding(.top, 30)
+                            // A section across the whole width: Up from anywhere on the banner lands here first.
+                            .frame(maxWidth: .infinity)
+                            .focusSection()
                         }
                         .toolbar(.hidden, for: .navigationBar)
                         .ignoresSafeArea(edges: .top)
