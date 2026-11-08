@@ -90,8 +90,10 @@ struct TVMacRoot: View {
                     .glass(Capsule(), interactive: false)
                     Spacer(minLength: 8)
                     TVPicker()
+                    // Room for the pill at the TV's size (it's drawn larger than its own space).
                     ThermostatChip(compact: false, height: 44)
                         .scaleEffect(macScale, anchor: .trailing)
+                        .padding(.leading, 170)
                 }
                 .overlay {
                     Picker("Library", selection: $watchSection) {
