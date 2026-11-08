@@ -44,13 +44,7 @@ struct TVsTab: View {
         NavigationStack {
             let tvs = fleet.tvs.filter { !$0.isUnpaired }
             if tvs.isEmpty {
-                VStack(spacing: 16) {
-                    Text("No TVs Yet").font(.title2.bold())
-                    Text("Pair one of the family’s TVs in Settings. The TVs linked to it come with it.")
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                        .frame(maxWidth: 900)
-                }
+                ConnectPhoneCard().padding(60)
             } else {
                 ScrollView {
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 380), spacing: 48)], spacing: 48) {

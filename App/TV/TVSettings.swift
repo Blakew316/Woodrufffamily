@@ -15,6 +15,9 @@ struct SettingsTab: View {
     var body: some View {
         NavigationStack {
             List {
+                Section {
+                    ConnectPhoneCard().padding(.vertical, 20)
+                }
                 Section("TVs") {
                     let paired = fleet.tvs.filter { !$0.isUnpaired }
                     if paired.isEmpty { Text("None paired yet").foregroundStyle(.secondary) }
