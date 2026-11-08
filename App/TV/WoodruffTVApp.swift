@@ -21,6 +21,8 @@ struct WoodruffTVApp: App {
             TVRoot()
                 .environment(fleet)
                 .preferredColorScheme(.dark)
+                // How long from launch until the screen first showed (Settings → General → Speed), as on the Mac.
+                .onAppear { Timings.note("Open", since: Timings.processStart) }
                 .task {
                     // Announced on the Wi‑Fi from the start, so the iPhone app can find and connect it.
                     TVJoin.shared.start()
@@ -29,12 +31,19 @@ struct WoodruffTVApp: App {
                     TMDB.prewarm()
                     SettingsSync.shared.prepare(fleet)
                     await fleet.start()
+                    // How long until the TVs first answered (Settings → General → Speed).
+                    Task {
+                        for _ in 0..<600 where fleet.refreshedAt == nil { try? await Task.sleep(nanoseconds: 50_000_000) }
+                        if fleet.refreshedAt != nil { Timings.note("TVs", since: Timings.processStart) }
+                    }
+                    // What Home shows besides the TVs comes a moment later, so the first screen isn't held up.
                     try? await Task.sleep(nanoseconds: 150_000_000)
                     SmartHome.shared.start()
                     SmartThings.shared.start()
                     Dreo.shared.start()
                     Cync.shared.start()
                     NestCameras.shared.start()
+                    // Behind-the-scenes work about a second in: Watch's first pictures, the weather, the sync.
                     try? await Task.sleep(nanoseconds: 1_000_000_000)
                     WatchPrefetch.start(fleet)
                     if !Demo.isOn && !fleet.hubs.isEmpty { LocationWeather.shared.start(fleet) }
@@ -50,6 +59,10 @@ struct WoodruffTVApp: App {
                 AppWake.wentAway = true
                 CameraStreams.shared.background()
                 DriveLibrary.shared.flush()
+                // Pictures not on screen are let go (they're on disk), as the iPhone does: a smaller app in the
+                // background is less likely to be closed, so it opens at once next time.
+                ImageStore.shared.memory.empty()
+                BlurStore.empty()
             }
             if phase == .active {
                 CameraStreams.shared.foreground()
