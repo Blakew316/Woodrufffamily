@@ -339,6 +339,8 @@ struct TVsView: View {
             } footer: {
                 Text("Tap a TV for its screen, controls and health. Swipe left on one to hide alerts you already know about.")
             }
+            // The family's Apple TVs running Woodruff, and Connect for one not in the family yet.
+            AppleTVsSection()
             Section {
                 // The notes kept on the TVs (Command Center → Notes there).
                 PageLink("Notes") { NotesView() } label: { IconRow(symbol: "", color: .clear, title: "Notes") }

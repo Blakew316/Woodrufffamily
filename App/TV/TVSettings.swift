@@ -1,32 +1,63 @@
 import SwiftUI
 import WoodruffKit
 
-/// Settings on Apple TV: the paired TVs, pairing one found on the Wi‑Fi (the others linked to it come with it), and
-/// this app's version.
+/// Settings on Apple TV: the family (connected or not, with the family code typed in as another way in), this Apple
+/// TV's name as the iPhone lists it, the family's TVs, pairing one found on the Wi‑Fi, and this app's version.
 struct SettingsTab: View {
     @Environment(Fleet.self) private var fleet
     @StateObject private var discovery = TVDiscovery()
+    private let sync = SettingsSync.shared
     @State private var picked: DiscoveredTV?
     @State private var key = ""
     @State private var link = ""
+    @State private var code = ""
+    @State private var codeNote: String?
+    @State private var name = TVJoin.name == "Apple TV" ? "" : TVJoin.name
     @State private var busy = false
     @State private var note: String?
 
     var body: some View {
         NavigationStack {
             List {
+                if sync.familyCode == nil {
+                    Section {
+                        ConnectPhoneCard()
+                            .listRowBackground(Color.clear)
+                            .padding(.vertical, 20)
+                    }
+                }
                 Section {
-                    ConnectPhoneCard().padding(.vertical, 20)
+                    LabeledContent("Family", value: sync.familyCode == nil ? "Not connected" : sync.otherCode ? "Another family code" : "Connected")
+                    LabeledContent("Sync", value: sync.status)
+                    if sync.familyCode == nil || sync.otherCode || sync.needsCode {
+                        TextField("Enter Family Code", text: $code)
+                            .autocorrectionDisabled()
+                            .textInputAutocapitalization(.characters)
+                            .onSubmit(useCode)
+                        Button("Use Code", action: useCode)
+                            .disabled(code.trimmingCharacters(in: .whitespaces).isEmpty)
+                    }
+                } header: {
+                    Text("Family")
+                } footer: {
+                    Text(codeNote ?? "The family code is in Woodruff on your iPhone or Mac, under Settings → General → Sync Across Devices.")
+                }
+                Section {
+                    TextField("Name, like Master Bedroom", text: $name)
+                        .onSubmit {
+                            UserDefaults.standard.set(name.trimmingCharacters(in: .whitespaces), forKey: "atv.name")
+                            TVJoin.shared.announce()
+                        }
+                } header: {
+                    Text("This Apple TV")
+                } footer: {
+                    Text("The name your iPhone shows for it, under Settings → TVs.")
                 }
                 Section("TVs") {
                     let paired = fleet.tvs.filter { !$0.isUnpaired }
-                    if paired.isEmpty { Text("None paired yet").foregroundStyle(.secondary) }
+                    if paired.isEmpty { Text("None yet. They come with the family.").foregroundStyle(.secondary) }
                     ForEach(paired) { tv in
-                        HStack {
-                            Text(tv.name)
-                            Spacer()
-                            Text(tv.online ? "On" : "Off").foregroundStyle(.secondary)
-                        }
+                        LabeledContent(tv.name, value: tv.online ? (tv.nowPlaying?.title ?? "On") : "Off")
                     }
                 }
                 Section {
@@ -47,6 +78,8 @@ struct SettingsTab: View {
                     LabeledContent("Version", value: version)
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background { TVBackdrop() }
             .navigationTitle("Settings")
             .onAppear { discovery.start() }
             .onDisappear { discovery.stop() }
@@ -64,6 +97,16 @@ struct SettingsTab: View {
         let b = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
         let c = (Bundle.main.object(forInfoDictionaryKey: "WoodruffCommit") as? String).map { String($0.prefix(7)) } ?? ""
         return c.isEmpty ? "Build \(b)" : "Build \(b) · \(c)"
+    }
+
+    private func useCode() {
+        if let problem = sync.enter(code: code) {
+            codeNote = problem
+        } else {
+            code = ""
+            codeNote = "Connected. The family’s TVs and settings are coming over."
+            TVJoin.shared.announce()
+        }
     }
 
     private func pairPicked() {
