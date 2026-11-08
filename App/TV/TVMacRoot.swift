@@ -17,6 +17,9 @@ struct TVMacRoot: View {
 
     @State private var query = ""
     private let layout = HomeLayout.shared
+    /// Which section in the bar the remote is on (nil: it's down in the page).
+    @FocusState private var barFocus: AppSection?
+    private let nav = TVNav.shared
 
     var body: some View {
         let s = section
@@ -25,7 +28,6 @@ struct TVMacRoot: View {
                 .padding(.horizontal, 30)
                 .padding(.top, 20)
                 .padding(.bottom, 14)
-                .focusSection()
             NavigationStack {
                 Group {
                     if s == .watch && !query.isEmpty {
@@ -46,6 +48,9 @@ struct TVMacRoot: View {
         .background {
             if s == .settings { IconBackdrop() } else { HomeBackdrop() }
         }
+        // Back (Menu) from anywhere in a page goes up to the bar first, as Apple TV apps do; from the bar it leaves the
+        // app. A page opened inside Settings closes first.
+        .onExitCommand(perform: barFocus == nil && nav.depth == 0 ? { barFocus = s } : nil)
         .task(id: s) {
             guard s == .home else { return }
             HomeWeather.shared.refresh()
@@ -58,11 +63,10 @@ struct TVMacRoot: View {
     /// Shows in the middle, the TV it plays on and the thermostat at the right. Settings has no second row.
     private func bar(_ s: AppSection) -> some View {
         VStack(spacing: 10 * macScale) {
-            HStack {
-                Spacer(minLength: 0)
-                MacSectionBar(current: s) { query = ""; stored = $0.rawValue }
-                Spacer(minLength: 0)
-            }
+            // Across the whole width, so Up from anywhere under it (the thermostat at the right, say) lands here.
+            sections(s)
+                .frame(maxWidth: .infinity)
+                .focusSection()
             if s == .home {
                 HStack(spacing: 10 * macScale) {
                     // The weather where the Mac has Edit Home (Home is arranged with the remote here).
@@ -72,6 +76,7 @@ struct TVMacRoot: View {
                         .scaleEffect(macScale, anchor: .trailing)
                 }
                 .overlay { MacGreetingHero() }
+                .focusSection()
             } else if s == .watch {
                 HStack(spacing: 10 * macScale) {
                     HStack(spacing: 10) {
@@ -88,6 +93,7 @@ struct TVMacRoot: View {
                         .scaleEffect(macScale, anchor: .trailing)
                         .padding(.leading, 170)
                 }
+                .focusSection()
                 .overlay {
                     Picker("Library", selection: $watchSection) {
                         Text("Movies").tag("movies")
@@ -99,6 +105,34 @@ struct TVMacRoot: View {
                 }
             }
         }
+    }
+
+    /// The Mac's section bar, drawn here so the remote's place in it is known (Back brings the remote up to it).
+    private func sections(_ current: AppSection) -> some View {
+        HStack(spacing: 2) {
+            ForEach(AppSection.mac) { sec in
+                let on = current == sec
+                Button { query = ""; stored = sec.rawValue } label: {
+                    Text(sec.title)
+                        .font(.system(size: 13.5 * macScale, weight: on ? .bold : .semibold))
+                        .foregroundStyle(on ? IconPalette.white : IconPalette.ice)
+                        .padding(.horizontal, 16 * macScale)
+                        .frame(height: 36 * macScale)
+                        .background {
+                            if on {
+                                Capsule().fill(IconPalette.cyan.opacity(0.25))
+                                    .overlay(Capsule().strokeBorder(IconPalette.cyan.opacity(0.6), lineWidth: 0.75))
+                            }
+                        }
+                }
+                .buttonStyle(TVBarButtonStyle())
+                .focused($barFocus, equals: sec)
+            }
+        }
+        .padding(4 * macScale)
+        .frame(height: 44 * macScale)
+        .glass(Capsule(), tint: IconPalette.cyan.opacity(0.08))
+        .overlay(Capsule().strokeBorder(IconPalette.cyan.opacity(0.35), lineWidth: 0.75))
     }
 
     @ViewBuilder private func page(_ s: AppSection) -> some View {
@@ -133,4 +167,12 @@ private struct TVWeatherPill: View {
         .frame(height: 44 * macScale)
         .glass(Capsule(), interactive: false)
     }
+}
+
+/// How many pages are open inside the current page (Settings' rows open pages): Back closes those before going to
+/// the bar.
+@Observable @MainActor
+final class TVNav {
+    static let shared = TVNav()
+    var depth = 0
 }

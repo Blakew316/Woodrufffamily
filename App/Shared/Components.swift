@@ -114,12 +114,35 @@ struct GlassCircle: View {
 struct PressScale: ButtonStyle {
     var scale: CGFloat = 0.92
     func makeBody(configuration: Configuration) -> some View {
+        #if os(tvOS)
+        PressScaleFocused(configuration: configuration, scale: scale)
+        #else
         configuration.label
             .scaleEffect(configuration.isPressed ? scale : 1)
             .brightness(configuration.isPressed ? -0.04 : 0)
             .animation(.spring(response: 0.25, dampingFraction: 0.6), value: configuration.isPressed)
+        #endif
     }
 }
+
+#if os(tvOS)
+/// Apple TV: the one the remote is on lifts toward you with a soft shadow and a little light, as tvOS does.
+private struct PressScaleFocused: View {
+    let configuration: ButtonStyleConfiguration
+    let scale: CGFloat
+    @Environment(\.isFocused) private var focused
+
+    var body: some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? scale : (focused ? 1.1 : 1))
+            .brightness(focused ? 0.06 : 0)
+            .shadow(color: .black.opacity(focused ? 0.55 : 0), radius: focused ? 24 : 0, y: focused ? 16 : 0)
+            .zIndex(focused ? 1 : 0)
+            .animation(.spring(response: 0.3, dampingFraction: 0.75), value: focused)
+            .animation(.spring(response: 0.25, dampingFraction: 0.6), value: configuration.isPressed)
+    }
+}
+#endif
 
 /// A white capsule "Play" button, or a glass capsule for secondary actions.
 struct CapsuleButton: View {

@@ -73,6 +73,8 @@ struct TVSettingsView: View {
                                 r.page()
                                     .navigationTitle(r.id)
                                     .toolbar(.visible, for: .navigationBar)
+                                    .onAppear { TVNav.shared.depth += 1 }
+                                    .onDisappear { TVNav.shared.depth = max(0, TVNav.shared.depth - 1) }
                             } label: {
                                 Text(r.id).foregroundStyle(r.id == "Needs Attention" ? Palette.attention : .primary)
                             }
