@@ -610,7 +610,7 @@ struct GreetingText: View {
     }
 }
 
-#if os(macOS)
+#if os(macOS) || os(tvOS)
 /// The Mac's Home greeting, in the middle of Woodruff's bar: the weather, then the greeting over its one-liner, in
 /// one Liquid Glass capsule.
 /// The Mac's Home greeting, large and floating (no pill around it): the weather beside "Good evening, Woodruff
@@ -631,7 +631,9 @@ struct MacGreetingHero: View {
                         .monospacedDigit()
                         .contentTransition(.numericText())
                 }
+                #if os(macOS)
                 .help([now.sky.words, now.range].compactMap { $0 }.joined(separator: " · "))
+                #endif
                 Rectangle().fill(IconPalette.cyan).frame(width: 1.5, height: 40).shadow(color: IconPalette.cyan.opacity(0.6), radius: 4)
             }
             VStack(alignment: .leading, spacing: 3) {
@@ -677,7 +679,9 @@ struct MacGreetingPill: View {
                         .monospacedDigit()
                         .contentTransition(.numericText())
                 }
+                #if os(macOS)
                 .help([now.sky.words, now.range].compactMap { $0 }.joined(separator: " · "))
+                #endif
                 Divider().frame(height: 26)
             }
             GreetingText(alignment: .leading, compact: true)

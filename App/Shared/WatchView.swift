@@ -63,7 +63,11 @@ struct WatchView: View {
                 #if os(iOS) || os(tvOS)
                 // Movies | TV Shows, then search right under it (on iPad the switch is in the bar at the top).
                 VStack(spacing: 12) {
+                    #if os(tvOS)
+                    sectionPicker
+                    #else
                     if sizeClass != .regular { sectionPicker }
+                    #endif
                     WatchSearchField(text: $query)
                 }
                 .padding(.horizontal)
