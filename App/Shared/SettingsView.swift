@@ -706,7 +706,11 @@ struct DeviceSignIns: Equatable {
 /// phone and Mac) and given to every TV (`GoogleGrants`), with how the TVs' sign-in stands.
 struct GoogleGrantView: View {
     @Environment(Fleet.self) private var fleet
+    #if os(tvOS)
+    private let webAuth = TVWebAuth()
+    #else
     @Environment(\.webAuthenticationSession) private var webAuth
+    #endif
     var grant: String
     var title: String
     var about: String

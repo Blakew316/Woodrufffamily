@@ -1,5 +1,7 @@
 import SwiftUI
+#if canImport(QuickLook)
 import QuickLook
+#endif
 import UniformTypeIdentifiers
 import WoodruffKit
 
@@ -520,7 +522,9 @@ struct FilesView: View {
             Text(f.dir ? "Everything in it is deleted from the TV too. This can’t be undone." : "It’s deleted from the TV. This can’t be undone.")
         }
         .task { await loadRoots() }
+        #if canImport(QuickLook)
         .quickLookPreview($previewing)
+        #endif
         .dropDestination(for: URL.self) { urls, _ in upload(urls); return true }
         #if os(macOS)
         .focusable()

@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 import WoodruffKit
 
 // The iPhone app's own screens run on Apple TV (App/Shared). These are the few iPhone-only pieces they reach for,
@@ -111,4 +112,143 @@ final class LivePlayer: NSObject {
     func setMuted(_ m: Bool) {}
     func frameJPEG() async -> Data? { nil }
     func received(_ name: String, _ body: String) {}
+}
+
+// MARK: Sign-ins (they come to the Apple TV from the family)
+
+struct TVWebAuth {
+    func authenticate(using url: URL, callbackURLScheme: String) async throws -> URL {
+        throw OAuthRelay.Failure.refused("Sign in on your iPhone or Mac. The Apple TV gets the sign-in from the family.")
+    }
+}
+
+struct ASWebAuthenticationSessionError: Error {
+    enum Code { case canceledLogin, presentationContextNotProvided, presentationContextInvalid }
+    var code: Code
+}
+
+// MARK: Controls the Apple TV doesn't have, made for the remote
+
+/// A level (brightness, volume, speed) on the remote: select it, then left and right move it.
+struct Slider: View {
+    @Binding var value: Double
+    var range: ClosedRange<Double>
+    var step: Double
+    var onEditingChanged: (Bool) -> Void
+    @FocusState private var focused: Bool
+
+    init(value: Binding<Double>, in range: ClosedRange<Double>, step: Double = 0, onEditingChanged: @escaping (Bool) -> Void = { _ in }) {
+        _value = value
+        self.range = range
+        self.step = step > 0 ? step : (range.upperBound - range.lowerBound) / 20
+        self.onEditingChanged = onEditingChanged
+    }
+
+    var body: some View {
+        let span = max(range.upperBound - range.lowerBound, 0.0001)
+        let f = min(1, max(0, (value - range.lowerBound) / span))
+        Capsule().fill(.white.opacity(0.18))
+            .overlay(alignment: .leading) {
+                GeometryReader { g in Capsule().fill(focused ? Color.white : IconPalette.ice).frame(width: max(12, g.size.width * f)) }
+            }
+            .frame(height: focused ? 14 : 10)
+            .padding(.vertical, 18)
+            .focusable()
+            .focused($focused)
+            .onMoveCommand { d in
+                switch d {
+                case .left: move(-step)
+                case .right: move(step)
+                default: break
+                }
+            }
+            .animation(.snappy, value: focused)
+    }
+
+    private func move(_ by: Double) {
+        onEditingChanged(true)
+        value = min(range.upperBound, max(range.lowerBound, value + by))
+        onEditingChanged(false)
+    }
+}
+
+/// − and + on the remote.
+struct Stepper<Label: View>: View {
+    @Binding var value: Double
+    var range: ClosedRange<Double>
+    var step: Double
+    var label: Label
+
+    init(value: Binding<Double>, in range: ClosedRange<Double>, step: Double = 1, @ViewBuilder label: () -> Label) {
+        _value = value
+        self.range = range
+        self.step = step
+        self.label = label()
+    }
+
+    var body: some View {
+        HStack(spacing: 20) {
+            label
+            Spacer()
+            Button("−") { value = max(range.lowerBound, value - step) }
+            Button("+") { value = min(range.upperBound, value + step) }
+        }
+    }
+}
+
+/// Dragging and pinching need a touch screen: on Apple TV these never happen (the remote does it another way).
+struct DragGesture: Gesture {
+    struct Value: Equatable {
+        var time = Date()
+        var location: CGPoint = .zero
+        var startLocation: CGPoint = .zero
+        var translation: CGSize = .zero
+        var velocity: CGSize = .zero
+        var predictedEndLocation: CGPoint = .zero
+        var predictedEndTranslation: CGSize = .zero
+    }
+    init(minimumDistance: CGFloat = 10, coordinateSpace: CoordinateSpace = .local) {}
+    var body: some Gesture<Value> { TapGesture(count: 99).map { _ in Value() } }
+}
+
+struct MagnifyGesture: Gesture {
+    struct Value: Equatable {
+        var time = Date()
+        var magnification: CGFloat = 1
+        var velocity: CGFloat = 0
+        var startAnchor: UnitPoint = .center
+        var startLocation: CGPoint = .zero
+    }
+    init(minimumScaleDelta: CGFloat = 0.01) {}
+    var body: some Gesture<Value> { TapGesture(count: 99).map { _ in Value() } }
+}
+
+enum TVTextSelection { case enabled, disabled }
+enum TVKeyboardDismiss { case automatic, immediately, interactively, never }
+
+extension View {
+    func onHover(perform action: @escaping (Bool) -> Void) -> some View { self }
+    func textSelection(_ s: TVTextSelection) -> some View { self }
+    func scrollDismissesKeyboard(_ m: TVKeyboardDismiss) -> some View { self }
+    func statusBarHidden(_ hidden: Bool = true) -> some View { self }
+    func fileImporter(isPresented: Binding<Bool>, allowedContentTypes: [UTType], onCompletion: @escaping (Result<URL, Error>) -> Void) -> some View { self }
+    func fileImporter(isPresented: Binding<Bool>, allowedContentTypes: [UTType], allowsMultipleSelection: Bool, onCompletion: @escaping (Result<[URL], Error>) -> Void) -> some View { self }
+}
+
+// MARK: Photos (added from the iPhone; the Apple TV shows them)
+
+struct TVPickerFilter {
+    static let images = TVPickerFilter()
+    static let videos = TVPickerFilter()
+    static func any(of: [TVPickerFilter]) -> TVPickerFilter { TVPickerFilter() }
+}
+
+struct PhotosPickerItem: Hashable {
+    var supportedContentTypes: [UTType] { [] }
+    func loadTransferable<T: Transferable>(type: T.Type) async throws -> T? { nil }
+}
+
+struct PhotosPicker<Label: View>: View {
+    init(selection: Binding<[PhotosPickerItem]>, matching: TVPickerFilter? = nil, @ViewBuilder label: () -> Label) {}
+    var body: some View { EmptyView() }
 }

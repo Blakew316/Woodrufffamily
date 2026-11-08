@@ -1,5 +1,7 @@
 import Foundation
+#if canImport(MetricKit)
 import MetricKit
+#endif
 import WoodruffKit
 
 /// Crashes, freezes and slow launches as Apple reports them (MetricKit, about once a day): each kept in full on this
@@ -26,9 +28,11 @@ final class Diagnostics: NSObject {
     func start() {
         guard !started, !Demo.isOn else { return }
         started = true
+        #if canImport(MetricKit)
         MXMetricManager.shared.add(self)
         // What was delivered while the app wasn't running.
         take(MXMetricManager.shared.pastDiagnosticPayloads)
+        #endif
         #if os(macOS)
         writeFamilyLog()
         #endif
@@ -42,6 +46,7 @@ final class Diagnostics: NSObject {
 
     // MARK: Taking reports in
 
+    #if canImport(MetricKit)
     fileprivate func take(_ payloads: [MXDiagnosticPayload]) {
         var new: [Report] = []
         for p in payloads {
@@ -59,6 +64,7 @@ final class Diagnostics: NSObject {
         }
         add(new)
     }
+    #endif
 
     /// The app's own stall detector: a moment the screen froze (`StallMonitor`), as a report like Apple's.
     func noteStall(seconds: Double, screen: String) {
@@ -87,10 +93,13 @@ final class Diagnostics: NSObject {
         #endif
     }
 
+    #if canImport(MetricKit)
     private func report(_ d: MXDiagnostic, _ kind: String, _ detail: String) -> Report {
         Report(at: Date().timeIntervalSince1970, kind: kind, build: d.metaData.applicationBuildVersion, detail: detail)
     }
+    #endif
 
+    #if canImport(MetricKit)
     private func crashDetail(_ c: MXCrashDiagnostic) -> String {
         var bits: [String] = []
         if let t = c.exceptionType { bits.append("exception \(t)") }
@@ -99,11 +108,13 @@ final class Diagnostics: NSObject {
         if let o = c.virtualMemoryRegionInfo, !o.isEmpty { bits.append(String(o.prefix(120))) }
         return (bits.isEmpty ? "crashed" : bits.joined(separator: ", ")) + frames(c.callStackTree)
     }
+    #endif
 
     private func seconds(_ m: Measurement<UnitDuration>) -> String {
         String(format: "%.1f s", m.converted(to: .seconds).value)
     }
 
+    #if canImport(MetricKit)
     /// The first frames of the thread that was running (binary and offset; symbols are matched to the build later).
     private func frames(_ tree: MXCallStackTree) -> String {
         guard let json = try? JSONSerialization.jsonObject(with: tree.jsonRepresentation()) as? [String: Any],
@@ -119,6 +130,7 @@ final class Diagnostics: NSObject {
         }
         return out.isEmpty ? "" : " | " + out.joined(separator: " < ")
     }
+    #endif
 
     // MARK: Where they're kept
 
@@ -146,6 +158,7 @@ final class Diagnostics: NSObject {
         return dir
     }
 
+    #if canImport(MetricKit)
     /// The whole report as Apple gave it (the last 20 kept).
     private func saveFull(_ p: MXDiagnosticPayload) {
         guard let dir = Self.folder else { return }
@@ -159,6 +172,7 @@ final class Diagnostics: NSObject {
             for old in all.dropFirst(20) { try? fm.removeItem(at: old) }
         }
     }
+    #endif
 
     #if os(macOS)
     /// Every device's summaries, newest first, in ~/Library/Logs/Woodruff Family/diagnostics.log.
@@ -183,8 +197,10 @@ final class Diagnostics: NSObject {
     #endif
 }
 
+#if canImport(MetricKit)
 extension Diagnostics: MXMetricManagerSubscriber {
     nonisolated func didReceive(_ payloads: [MXDiagnosticPayload]) {
         Task { @MainActor in Diagnostics.shared.take(payloads) }
     }
 }
+#endif

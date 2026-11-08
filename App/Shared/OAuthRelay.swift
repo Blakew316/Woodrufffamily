@@ -10,6 +10,7 @@ import AppKit
 /// Signs in to a service (Google for the cameras, Samsung SmartThings) in Apple's sign-in browser, the same
 /// way the TVs do: the service sends you back to the family's small relay page, which passes the one-time
 /// code over the Wi‑Fi to this device. Here a tiny listener on this device takes it, so no server is involved.
+#if !os(tvOS)
 @MainActor
 final class OAuthRelay: NSObject, ASWebAuthenticationPresentationContextProviding {
     static let redirect = "https://blakew316.github.io/woodrufffiles/oauth.html"
@@ -137,6 +138,28 @@ final class OAuthRelay: NSObject, ASWebAuthenticationPresentationContextProvidin
         }
     }
 }
+#else
+/// Apple TV signs in to nothing itself: the family's sign-ins come to it through the settings sync.
+@MainActor
+final class OAuthRelay: NSObject {
+    static let redirect = "https://blakew316.github.io/woodrufffiles/oauth.html"
+
+    enum Failure: LocalizedError {
+        case noWiFi, cancelled, refused(String)
+        var errorDescription: String? {
+            switch self {
+            case .noWiFi: return "Connect to your home Wi‑Fi first."
+            case .cancelled: return "Sign-in was cancelled."
+            case .refused(let m): return m
+            }
+        }
+    }
+
+    func signIn(authorize: (String) -> URL) async throws -> String {
+        throw Failure.refused("Sign in on your iPhone or Mac. The Apple TV gets the sign-in from the family.")
+    }
+}
+#endif
 
 /// This device's address on the home network.
 enum LocalAddress {

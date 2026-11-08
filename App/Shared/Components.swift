@@ -402,11 +402,16 @@ func copyToClipboard(_ s: String) {
 
 struct ShareItem: Identifiable { var url: URL; var id: URL { url } }
 
-#if os(iOS) || os(tvOS)
+#if os(iOS)
 struct ShareSheet: UIViewControllerRepresentable {
     var items: [Any]
     func makeUIViewController(context: Context) -> UIActivityViewController { UIActivityViewController(activityItems: items, applicationActivities: nil) }
     func updateUIViewController(_ c: UIActivityViewController, context: Context) {}
+}
+#elseif os(tvOS)
+struct ShareSheet: View {
+    var items: [Any]
+    var body: some View { Text("Sharing isn’t available on Apple TV.").padding(60) }
 }
 #endif
 
@@ -422,7 +427,9 @@ extension View {
     /// The same, with a page's own buttons beside the field on the Mac (they were in the window's toolbar; on iPhone
     /// they stay in the toolbar, so [trailing] isn't shown there).
     @ViewBuilder func pageSearch<Trailing: View>(text: Binding<String>, prompt: String, @ViewBuilder trailing: () -> Trailing) -> some View {
-        #if os(iOS) || os(tvOS)
+        #if os(tvOS)
+        self.searchable(text: text, prompt: prompt)
+        #elseif os(iOS)
         // Under the page's title, not at the bottom (iOS 26's default), where the app's tab bar covers it.
         self.searchable(text: text, placement: .navigationBarDrawer, prompt: prompt)
         #else
