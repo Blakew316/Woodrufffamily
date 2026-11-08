@@ -665,7 +665,7 @@ struct ShelfRow<Content: View>: View {
             .padding(.horizontal, 20)
             ScrollView(.horizontal) {
                 #if os(tvOS)
-                LazyHStack(alignment: .top, spacing: 40) { content }
+                FirstFocusRow(spacing: 40, alignment: .top) { content }
                     .scrollTargetLayout()
                     .padding(.horizontal, 20)
                     .padding(.vertical, 30)

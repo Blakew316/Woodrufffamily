@@ -447,3 +447,23 @@ struct TVFocusTile: ViewModifier {
             .animation(.spring(response: 0.3, dampingFraction: 0.8), value: focused)
     }
 }
+
+/// A row the remote enters at its first item: Down (or Up) from another row lands there, as the TV app's shelves do.
+struct FirstFocusRow<Content: View>: View {
+    var spacing: CGFloat
+    var alignment: VerticalAlignment = .center
+    @ViewBuilder var content: Content
+    @FocusState private var focus: Int?
+
+    var body: some View {
+        LazyHStack(alignment: alignment, spacing: spacing) {
+            Group(subviews: content) { subs in
+                ForEach(Array(subs.enumerated()), id: \.offset) { i, sub in
+                    sub.focused($focus, equals: i)
+                }
+            }
+        }
+        .focusSection()
+        .defaultFocus($focus, 0, priority: .userInitiated)
+    }
+}

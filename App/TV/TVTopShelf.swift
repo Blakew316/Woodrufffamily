@@ -60,18 +60,23 @@ final class TopShelfAlbum {
         assets.enumerateObjects { a, i, stop in chosen.append(a); if i >= 14 { stop.pointee = true } }
         for f in (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? [] { try? FileManager.default.removeItem(at: f) }
         let req = PHImageRequestOptions()
-        req.deliveryMode = .highQualityFormat
+        req.deliveryMode = .opportunistic
+        req.resizeMode = .fast
         req.isNetworkAccessAllowed = true
         req.isSynchronous = false
         var saved = 0
+        var lastError: String?
         for (i, a) in chosen.enumerated() {
             let img: UIImage? = await withCheckedContinuation { c in
                 var done = false
+                var rough: UIImage?
                 PHImageManager.default().requestImage(for: a, targetSize: CGSize(width: 3840, height: 2160), contentMode: .aspectFill, options: req) { im, info in
                     if done { return }
-                    if (info?[PHImageResultIsDegradedKey] as? Bool) == true { return }
+                    // The quick, smaller copy first: kept in case the full one can't come.
+                    if (info?[PHImageResultIsDegradedKey] as? Bool) == true { rough = im; return }
                     done = true
-                    c.resume(returning: im)
+                    if im == nil, let e = info?[PHImageErrorKey] as? Error { lastError = e.localizedDescription }
+                    c.resume(returning: im ?? rough)
                 }
             }
             var picture = img
@@ -92,7 +97,7 @@ final class TopShelfAlbum {
         }
         TVTopShelfContentProvider.topShelfContentDidChange()
         version += 1
-        note = chosen.isEmpty ? "That album has no photos." : saved == 0 ? "Couldn’t get the photos from iCloud. Try another album." : "\(saved) photos are on the Top Shelf and Home."
+        note = chosen.isEmpty ? "That album has no photos." : saved == 0 ? "Couldn’t get the photos from iCloud" + (lastError.map { ": \($0)" } ?? ".") + " Check that iCloud Photos is on in this Apple TV’s Settings → Users and Accounts." : "\(saved) photos are on the Top Shelf and Home."
     }
 }
 

@@ -94,7 +94,7 @@ struct AllDevicesView: View {
                         #if os(tvOS)
                         Text(section.title).font(.system(size: 34, weight: .bold)).foregroundStyle(IconPalette.white)
                         ScrollView(.horizontal) {
-                            LazyHStack(spacing: 40) {
+                            FirstFocusRow(spacing: 40) {
                                 ForEach(list) { item in tile(item).frame(width: 300, height: 330) }
                             }
                             .padding(.vertical, 30)

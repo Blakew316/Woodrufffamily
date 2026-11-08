@@ -336,7 +336,7 @@ struct HomeBoard: View, Equatable {
     private var tvRow: some View {
         let byID = Dictionary(tiles.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         return ScrollView(.horizontal) {
-            LazyHStack(alignment: .top, spacing: 40) {
+            FirstFocusRow(spacing: 40, alignment: .top) {
                 ForEach(currentOrder(), id: \.self) { id in
                     if let tile = byID[id] {
                         let size: CGSize = tile.kind == .camera ? CGSize(width: 560, height: 315)
