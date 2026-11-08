@@ -161,7 +161,7 @@ targets:
       # The iPhone app's own screens and everything behind them, laid out for the TV (App/TV/TVCompat.swift has the
       # Apple TV versions of the few iPhone-only pieces). Not the WebRTC camera player: there's no WebRTC for tvOS.
       - path: App/Shared
-        excludes: [NativeCamera.swift, CameraSound.swift]
+        excludes: [NativeCamera.swift, CameraSound.swift, Notifier.swift]
       # The sample family's pictures (-demo YES), for the screenshot run.
       - path: App/Resources/Demo
     dependencies:

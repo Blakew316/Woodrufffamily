@@ -67,11 +67,6 @@ final class WidgetCenter {
     static func update(_ fleet: Fleet) {}
 }
 
-@MainActor enum AlertsRefresh {
-    static let id = "com.woodruff.family.alerts"
-    static func schedule() {}
-}
-
 @MainActor final class HomeKitLights {
     static let shared = HomeKitLights()
     static var enabled: Bool { false }
@@ -251,4 +246,62 @@ struct PhotosPickerItem: Hashable {
 struct PhotosPicker<Label: View>: View {
     init(selection: Binding<[PhotosPickerItem]>, matching: TVPickerFilter? = nil, @ViewBuilder label: () -> Label) {}
     var body: some View { EmptyView() }
+}
+
+// MARK: Alerts (the iPhones and Macs post them; an Apple TV shows none)
+
+/// What an alert carries, as the shared code builds it (on Apple TV it isn't posted).
+final class UNMutableNotificationContent {
+    var title = ""
+    var subtitle = ""
+    var body = ""
+    var sound: UNNotificationSound?
+    var userInfo: [AnyHashable: Any] = [:]
+    var attachments: [UNNotificationAttachment] = []
+    var categoryIdentifier = ""
+    var threadIdentifier = ""
+    var interruptionLevel: TVInterruptionLevel = .active
+    var relevanceScore: Double = 0
+}
+
+enum TVInterruptionLevel { case passive, active, timeSensitive, critical }
+
+final class UNNotificationSound {
+    static let `default` = UNNotificationSound()
+    static let defaultCritical = UNNotificationSound()
+}
+
+final class UNNotificationAttachment {
+    init(identifier: String, url: URL, options: [AnyHashable: Any]? = nil) throws {}
+}
+
+let UNNotificationAttachmentOptionsThumbnailTimeKey = "thumbnailTime"
+
+@MainActor
+enum Notifier {
+    static let handler = NotificationHandler()
+    static func requestPermission() {}
+    static func attach(to fleet: Fleet) {}
+    static func post(_ title: String, _ body: String, id: String, category: String, tv: String?, relay: Bool = true) {}
+    static func deliver(_ c: UNMutableNotificationContent, id: String, relay: Bool = true) {}
+}
+
+final class NotificationHandler: NSObject {
+    @MainActor static var presentedKeys: Set<String> = []
+}
+
+/// The iPhone's widgets' shared store (no widgets on Apple TV).
+enum PhoneWidgetShare {
+    static let tvsCamerasKind = "com.woodruff.family.widget.tvscameras"
+    static let doorbellKind = "com.woodruff.family.widget.doorbell"
+    @discardableResult
+    static func saveCamera(id: String, name: String, doorbell: Bool, jpeg: Data? = nil, event: String? = nil) -> Bool { false }
+}
+
+/// Pairing by the TV's QR code needs a camera: on Apple TV a TV is paired from Settings → TVs with its link instead.
+struct QRScannerView: View {
+    var onCode: (String) -> Void
+    var body: some View {
+        Text("Scanning needs a camera. Type the TV’s link instead.").padding(60)
+    }
 }

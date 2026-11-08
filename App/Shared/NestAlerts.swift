@@ -274,7 +274,7 @@ final class NestAlerts {
         #if os(macOS)
         if !quiet { WeeklyNote.countAlert(camera: body) }
         #endif
-        #if os(iOS) || os(tvOS)
+        #if os(iOS)
         // The TVs & Cameras widget: the camera's red tag at once, its picture of the moment when it comes.
         let doorbell = NestCameras.shared.cameras.first { $0.id == camera }?.doorbell ?? false
         let tag = title.localizedCaseInsensitiveContains("person") ? "Person"
@@ -366,7 +366,7 @@ final class NestAlerts {
         #endif
     }
 
-    #if os(iOS) || os(tvOS)
+    #if os(iOS)
     /// Whether this event's alert is already on the iPhone (the Mac's push), by its id or its event key.
     static func alreadyShown(id: String, key: String) async -> Bool {
         if NotificationHandler.presentedKeys.contains(key) { return true }

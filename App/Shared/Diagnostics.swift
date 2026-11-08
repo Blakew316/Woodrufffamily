@@ -1,5 +1,5 @@
 import Foundation
-#if canImport(MetricKit)
+#if !os(tvOS)
 import MetricKit
 #endif
 import WoodruffKit
@@ -28,7 +28,7 @@ final class Diagnostics: NSObject {
     func start() {
         guard !started, !Demo.isOn else { return }
         started = true
-        #if canImport(MetricKit)
+        #if !os(tvOS)
         MXMetricManager.shared.add(self)
         // What was delivered while the app wasn't running.
         take(MXMetricManager.shared.pastDiagnosticPayloads)
@@ -46,7 +46,7 @@ final class Diagnostics: NSObject {
 
     // MARK: Taking reports in
 
-    #if canImport(MetricKit)
+    #if !os(tvOS)
     fileprivate func take(_ payloads: [MXDiagnosticPayload]) {
         var new: [Report] = []
         for p in payloads {
@@ -93,13 +93,13 @@ final class Diagnostics: NSObject {
         #endif
     }
 
-    #if canImport(MetricKit)
+    #if !os(tvOS)
     private func report(_ d: MXDiagnostic, _ kind: String, _ detail: String) -> Report {
         Report(at: Date().timeIntervalSince1970, kind: kind, build: d.metaData.applicationBuildVersion, detail: detail)
     }
     #endif
 
-    #if canImport(MetricKit)
+    #if !os(tvOS)
     private func crashDetail(_ c: MXCrashDiagnostic) -> String {
         var bits: [String] = []
         if let t = c.exceptionType { bits.append("exception \(t)") }
@@ -114,7 +114,7 @@ final class Diagnostics: NSObject {
         String(format: "%.1f s", m.converted(to: .seconds).value)
     }
 
-    #if canImport(MetricKit)
+    #if !os(tvOS)
     /// The first frames of the thread that was running (binary and offset; symbols are matched to the build later).
     private func frames(_ tree: MXCallStackTree) -> String {
         guard let json = try? JSONSerialization.jsonObject(with: tree.jsonRepresentation()) as? [String: Any],
@@ -158,7 +158,7 @@ final class Diagnostics: NSObject {
         return dir
     }
 
-    #if canImport(MetricKit)
+    #if !os(tvOS)
     /// The whole report as Apple gave it (the last 20 kept).
     private func saveFull(_ p: MXDiagnosticPayload) {
         guard let dir = Self.folder else { return }
@@ -197,7 +197,7 @@ final class Diagnostics: NSObject {
     #endif
 }
 
-#if canImport(MetricKit)
+#if !os(tvOS)
 extension Diagnostics: MXMetricManagerSubscriber {
     nonisolated func didReceive(_ payloads: [MXDiagnosticPayload]) {
         Task { @MainActor in Diagnostics.shared.take(payloads) }
