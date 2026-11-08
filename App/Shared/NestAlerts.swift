@@ -299,7 +299,7 @@ final class NestAlerts {
             if let file, let a = CameraEventMedia.attachment(file) { c.attachments = [a] }
             Notifier.deliver(c, id: id)
         }
-        #else
+        #elseif os(macOS)
         // One alert per event, with its picture: it waits for the picture (a few seconds at most, less for the
         // doorbell), then goes once, here and to every iPhone. A picture that comes later doesn't send it again.
         let once = SentOnce()

@@ -333,7 +333,7 @@ struct OpenLinkView: View {
                     .textInputAutocapitalization(.never).keyboardType(.URL)
                     #endif
                     .onSubmit { open() }
-                #if os(iOS) || os(tvOS)
+                #if os(iOS)
                 PasteButton(payloadType: String.self) { s in link = s.first ?? "" }
                 #endif
             } footer: {

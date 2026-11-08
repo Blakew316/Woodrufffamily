@@ -1,7 +1,7 @@
 import SwiftUI
 import CoreLocation
 import WoodruffKit
-#if canImport(FoundationModels)
+#if canImport(FoundationModels) && !os(tvOS)
 import FoundationModels
 #endif
 
@@ -246,7 +246,7 @@ final class HomeGreeting {
     /// Apple Intelligence's own line, when it's available on this device; it replaces the picked one.
     private func write(_ p: DayPart) {
         writing?.cancel()
-        #if canImport(FoundationModels)
+        #if canImport(FoundationModels) && !os(tvOS)
         let weather = HomeWeather.shared.now
         let sky = weather.map { "\($0.sky.words.lowercased()) and \(Int($0.temp.rounded()))°F" } ?? "unknown weather"
         // Just opened: the model waits a moment, so Woodruff's first seconds (Home drawn, its pictures, the TVs

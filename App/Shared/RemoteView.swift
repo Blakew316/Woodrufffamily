@@ -146,7 +146,9 @@ struct RemoteView: View {
                     }
                 }
             }
+                #if !os(tvOS)
                 .sharedBackgroundVisibility(.hidden)
+                #endif
             if let tv, !all, fleet.lg(for: tv) != nil {
                 ToolbarItem(placement: .primaryAction) { LGMenu(tv: tv) }
             }
@@ -775,7 +777,7 @@ struct KeyboardSheet: View {
             }
             .formStyle(.grouped)
             .navigationTitle("Keyboard")
-            #if os(iOS) || os(tvOS)
+            #if os(iOS)
             .navigationSubtitle(tv.name)
             .navigationBarTitleDisplayMode(.inline)
             #endif

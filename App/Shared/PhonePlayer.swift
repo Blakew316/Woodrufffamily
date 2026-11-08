@@ -141,8 +141,10 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
         c.player = p
         c.delegate = self
         c.allowsPictureInPicturePlayback = true
+        #if os(iOS)
         c.canStartPictureInPictureAutomaticallyFromInline = true
         c.updatesNowPlayingInfoCenter = true
+        #endif
         c.modalPresentationStyle = .fullScreen
         c.onGone = { [weak self] in self?.closed() }
         controller = c

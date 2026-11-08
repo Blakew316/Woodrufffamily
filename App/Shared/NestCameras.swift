@@ -75,7 +75,9 @@ final class NestCameras {
         CameraEventMedia.prune()
         #endif
         // Ready before the first camera is opened: the video engine, and a fresh Google sign-in.
+        #if !os(tvOS)
         if LivePlayer.nativeEnabled { NativeRTC.prewarm() }
+        #endif
         Task { _ = try? await self.token() }
         if poll == nil { startPolling(now: true) } else { Task { await load() } }
     }

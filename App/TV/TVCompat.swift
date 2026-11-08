@@ -219,12 +219,10 @@ struct MagnifyGesture: Gesture {
 }
 
 enum TVTextSelection { case enabled, disabled }
-enum TVKeyboardDismiss { case automatic, immediately, interactively, never }
 
 extension View {
     func onHover(perform action: @escaping (Bool) -> Void) -> some View { self }
     func textSelection(_ s: TVTextSelection) -> some View { self }
-    func scrollDismissesKeyboard(_ m: TVKeyboardDismiss) -> some View { self }
     func statusBarHidden(_ hidden: Bool = true) -> some View { self }
     func fileImporter(isPresented: Binding<Bool>, allowedContentTypes: [UTType], onCompletion: @escaping (Result<URL, Error>) -> Void) -> some View { self }
     func fileImporter(isPresented: Binding<Bool>, allowedContentTypes: [UTType], allowsMultipleSelection: Bool, onCompletion: @escaping (Result<[URL], Error>) -> Void) -> some View { self }
@@ -328,4 +326,24 @@ struct TextEditor: View {
     @Binding var text: String
     init(text: Binding<String>) { _text = text }
     var body: some View { TextField("", text: $text, axis: .vertical) }
+}
+
+/// A part that opens: on Apple TV it's simply shown, under its name.
+struct DisclosureGroup<Content: View>: View {
+    let title: String
+    let content: Content
+    init(_ title: String, isExpanded: Binding<Bool>, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.content = content()
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title).font(.headline)
+            content
+        }
+    }
+}
+
+extension View {
+    func listRowSeparator(_ v: Visibility, edges: VerticalEdge.Set = .all) -> some View { self }
 }
