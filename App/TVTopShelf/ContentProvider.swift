@@ -7,10 +7,13 @@ final class ContentProvider: TVTopShelfContentProvider {
     static let group = "group.com.blakew316.woodruff.tv"
 
     override func loadTopShelfContent() async -> (any TVTopShelfContent)? {
-        guard let dir = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: Self.group)?
-            .appendingPathComponent("Library/Caches/TopShelf", isDirectory: true),
-              let files = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) else { return nil }
-        let pictures = files.filter { $0.pathExtension == "jpg" }.sorted { $0.lastPathComponent < $1.lastPathComponent }
+        // The album's photos the app kept in the shared folder; until there are some, the nature photographs that come
+        // with the app, so the Top Shelf is never empty.
+        let dir = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: Self.group)?
+            .appendingPathComponent("Library/Caches/TopShelf", isDirectory: true)
+        let kept = dir.flatMap { try? FileManager.default.contentsOfDirectory(at: $0, includingPropertiesForKeys: nil) } ?? []
+        var pictures = kept.filter { $0.pathExtension == "jpg" }.sorted { $0.lastPathComponent < $1.lastPathComponent }
+        if pictures.isEmpty { pictures = Bundle.main.urls(forResourcesWithExtension: "jpg", subdirectory: nil) ?? [] }
         guard !pictures.isEmpty else { return nil }
         let items: [TVTopShelfCarouselItem] = pictures.map { url in
             let item = TVTopShelfCarouselItem(identifier: url.lastPathComponent)
