@@ -525,7 +525,9 @@ struct FilesView: View {
         #if canImport(QuickLook)
         .quickLookPreview($previewing)
         #endif
+        #if !os(tvOS)
         .dropDestination(for: URL.self) { urls, _ in upload(urls); return true }
+        #endif
         #if os(macOS)
         .focusable()
         .focusEffectDisabled()

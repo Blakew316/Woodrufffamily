@@ -112,8 +112,12 @@ struct WatchView: View {
         .navigationTitle("Watch")
         #endif
         .navigationDestination(for: LibraryRef.self) { LibraryGrid(place: $0.place, genre: $0.genre, sort: $0.sort ?? "az") }
-        .sheet(item: Binding(get: { openTitle.map { TitleRef(id: $0) } }, set: { openTitle = $0?.id })) { ref in
+        .sheet(item: Binding(get: { openTitle.map { TitleRef(id: $0) } }, set: { openTitle = $0?.id })) { (ref: TitleRef) in
+            #if os(tvOS)
+            TitleSheet(id: ref.id)
+            #else
             TitleSheet(id: ref.id).zoomDestination(ref.id, zoom).macResizable(width: 760, height: 820, minWidth: 520, minHeight: 500)
+            #endif
         }
         .environment(\.openTitle, OpenTitleAction { openTitle = $0 })
         .environment(\.zoomNamespace, zoom)
