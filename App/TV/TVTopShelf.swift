@@ -217,9 +217,10 @@ final class HomeSlideshow {
 }
 
 extension TVPhotoBackdrop {
-    /// Nature only (mountains, coasts, lakes, forests, fields, deserts), as the Apple TV screensaver shows.
-    nonisolated static let nature = [10, 11, 13, 14, 15, 16, 17, 18, 28, 29, 54, 110, 112, 116, 124, 127, 128, 174, 184, 190, 191, 218, 247,
-                         256, 289, 327, 337, 353, 368, 377, 381, 386, 406, 416, 421, 432, 440, 450, 456, 459, 461]
+    /// Twelve nature photographs, each taken at well over 4K (4,200 to 5,000 pixels across) so they stay sharp at 3840 ×
+    /// 2160: a sunset field, sea cliffs, snowy peaks, a mountain sunrise, a coast, misty mountains, foggy hills, a
+    /// forest, a beach, desert dunes, a fjord and a sea of clouds.
+    nonisolated static let nature = [110, 218, 377, 432, 381, 368, 353, 28, 421, 184, 461, 386]
 
     nonisolated static var stockDir: URL {
         FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("Backdrops", isDirectory: true)
@@ -227,7 +228,11 @@ extension TVPhotoBackdrop {
 
     /// The nature photographs already on disk.
     nonisolated static func keptStock() -> [URL] {
-        ((try? FileManager.default.contentsOfDirectory(at: stockDir, includingPropertiesForKeys: nil)) ?? []).filter { $0.pathExtension == "jpg" }
+        // Only the twelve (older picks kept from before are left out, and cleared away).
+        let keep = Set(nature.map { "n\($0).jpg" })
+        let files = (try? FileManager.default.contentsOfDirectory(at: stockDir, includingPropertiesForKeys: nil)) ?? []
+        for f in files where f.pathExtension == "jpg" && !keep.contains(f.lastPathComponent) { try? FileManager.default.removeItem(at: f) }
+        return files.filter { keep.contains($0.lastPathComponent) }
     }
 
     /// One of the stock photographs, kept on disk after the first time.
