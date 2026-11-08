@@ -784,13 +784,6 @@ struct ContinueTile: View {
             if let r = item.restart { Button(r.label ?? "Start Over") { PlayRouter.start(r, fleet: fleet, fromStart: true) } }
             PlayOnMenu(action: item.play)
             if let id = item.titleId { Button(item.kind == "show" ? "Episodes" : "Details") { openTitle(id) } }
-            Button {
-                act {
-                    guard let c = WatchSources.current(fleet) else { throw TVError.notPaired }
-                    try await c.markWatched([item.key], true)
-                    watchChanged(removed: item.key)
-                }
-            } label: { Text("Mark as Watched") }
             Button(role: .destructive) {
                 act {
                     guard let c = WatchSources.current(fleet) else { throw TVError.notPaired }
@@ -820,21 +813,6 @@ struct TitleMenu: View {
             Button(p.label ?? "Play") { PlayRouter.start(p, fleet: fleet) }
             if (p.position ?? 0) > 0 { Button("Start Over") { PlayRouter.start(p, fleet: fleet, fromStart: true) } }
             PlayOnMenu(action: p)
-        }
-        if !title.isShow {
-            let on = !(title.watched ?? false)
-            Button {
-                Task {
-                    do {
-                        guard let c = WatchSources.current(fleet) else { throw TVError.notPaired }
-                        guard let k = try await c.title(title.id).watchKey else {
-                            throw TVError.badAnswer("\(title.title) can’t be marked as watched from here.")
-                        }
-                        try await c.markWatched([k], on)
-                        watchChanged()
-                    } catch { fleet.show(error) }
-                }
-            } label: { Text(on ? "Mark as Watched" : "Mark as Unwatched") }
         }
     }
 }
@@ -1012,10 +990,6 @@ struct TitleSheet: View {
                         } else {
                             ProgressView()
                         }
-                        if let d = shown, let key = d.watchKey, d.kind != "show" {
-                            Button { mark(key, watched: !(d.watched ?? false)) } label: { Text(d.watched == true ? "Mark as Unwatched" : "Mark as Watched") }
-                                .disabled(marking)
-                        }
                     }
                     if let d = shown, let seasons = d.seasons, !seasons.isEmpty {
                         Picker("Season", selection: Binding(get: { season }, set: { picked = $0 })) {
@@ -1069,16 +1043,6 @@ struct TitleSheet: View {
                         VStack(alignment: .leading, spacing: 14) {
                             if let o = d.overview { Text(o).font(.body).foregroundStyle(.primary.opacity(0.9)) }
                             if let cast = d.cast, !cast.isEmpty { Text("Starring " + cast.joined(separator: ", ")).font(.footnote).foregroundStyle(.secondary) }
-                            if let key = d.watchKey, d.kind != "show" {
-                                Button { mark(key, watched: !(d.watched ?? false)) } label: {
-                                    HStack(spacing: 8) {
-                                        Text(d.watched == true ? "Mark as Unwatched" : "Mark as Watched")
-                                        if marking { ProgressView().controlSize(.small) }
-                                    }
-                                }
-                                .buttonStyle(.glass)
-                                .disabled(marking)
-                            }
                             if let seasons = d.seasons, !seasons.isEmpty {
                                 Menu {
                                     Picker("Season", selection: Binding(get: { season }, set: { picked = $0 })) {
@@ -1372,15 +1336,6 @@ struct EpisodeRow: View {
         .contextMenu {
             Button("Play from the Start") { if PlayRouter.start(action, fleet: fleet, fromStart: true) { played() } }
             PlayOnMenu(action: action, then: played)
-            Button {
-                Task {
-                    do {
-                        guard let c = WatchSources.current(fleet) else { throw TVError.notPaired }
-                        try await c.markWatched([episode.key], !(episode.watched ?? false))
-                        changed()
-                    } catch { fleet.show(error) }
-                }
-            } label: { Text(episode.watched == true ? "Mark as Unwatched" : "Mark as Watched") }
         }
     }
 
