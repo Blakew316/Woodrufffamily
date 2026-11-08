@@ -88,6 +88,8 @@ struct WatchView: View {
             .padding(.bottom, 30)
         }
         .scrollIndicators(.hidden)
+        // Scrolling the page puts the search keyboard away.
+        .scrollDismissesKeyboard(.immediately)
         .onGeometryChange(for: CGFloat.self, of: { $0.size.width }) { w in fitPosters(w) }
         .environment(\.posterWidth, posterWidth)
         #if os(iOS)
@@ -1375,14 +1377,29 @@ private struct WatchSearchField: View {
     @FocusState private var focused: Bool
 
     var body: some View {
+        HStack(spacing: 10) {
+            field
+            // While typing: Done puts the keyboard away (what's typed stays).
+            if focused {
+                Button("Done") { focused = false }
+                    .fontWeight(.semibold)
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
+            }
+        }
+        .animation(.smooth(duration: 0.25), value: focused)
+    }
+
+    private var field: some View {
         HStack(spacing: 8) {
             Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
             TextField("Movies and TV Shows", text: $text)
                 .focused($focused)
                 .submitLabel(.search)
                 .autocorrectionDisabled()
+                // The keyboard's search key puts it away (the results are already showing).
+                .onSubmit { focused = false }
             if !text.isEmpty {
-                Button { text = ""; focused = false } label: {
+                Button { text = "" } label: {
                     Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
