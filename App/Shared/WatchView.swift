@@ -366,7 +366,7 @@ struct Billboard: View {
             .onChange(of: titles.count) { _, n in if page >= n { page = 0 } }
     }
 
-    #if os(iOS) || os(tvOS)
+    #if os(iOS)
     private var pages: some View {
         // iPad: the wide banner, as on the Mac (the words and buttons on the left, the picture on the right), short
         // enough that Continue Watching shows under it. iPhone: the picture's own shape, across the screen.
@@ -409,6 +409,49 @@ struct Billboard: View {
 
     /// The Mac's and iPad's banner, as on the TV: the words on the left, the whole 16:9 picture on the right in a
     /// rounded frame, over a blurred copy of it filling the banner.
+    #if os(tvOS)
+    /// Apple TV: the picture across the whole banner, the name large at the top left, and at the bottom what it is,
+    /// Play and Details, then what it's about, as the streaming apps lay it out.
+    private func wideCard(_ t: Title) -> some View {
+        let art = client?.artURL(t.backdrop ?? t.poster)
+        return ZStack(alignment: .topLeading) {
+            Color.clear.overlay { Artwork(url: art, maxPixel: 2400) }.clipped()
+            LinearGradient(stops: [.init(color: .black.opacity(0.75), location: 0), .init(color: .black.opacity(0.35), location: 0.45),
+                                   .init(color: .clear, location: 0.75)], startPoint: .leading, endPoint: .trailing)
+            LinearGradient(stops: [.init(color: .clear, location: 0.45), .init(color: .black.opacity(0.7), location: 1)],
+                           startPoint: .top, endPoint: .bottom)
+            VStack(alignment: .leading, spacing: 0) {
+                Text(t.title)
+                    .font(.system(size: 64, weight: .heavy))
+                    .foregroundStyle(.white)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.7)
+                    .shadow(color: .black.opacity(0.5), radius: 12)
+                Spacer(minLength: 20)
+                Text(meta(t)).font(.system(size: 26, weight: .semibold)).foregroundStyle(.white.opacity(0.85))
+                HStack(spacing: 22) {
+                    if let p = t.play {
+                        CapsuleButton(title: p.label ?? "Play", symbol: "play.fill") { PlayRouter.start(p, fleet: fleet) }
+                    }
+                    CapsuleButton(title: "Details", symbol: nil, prominent: false) { open(t) }
+                }
+                .padding(.top, 18)
+                if let o = overviews[t.id], !o.isEmpty {
+                    Text(o)
+                        .font(.system(size: 24))
+                        .foregroundStyle(.white.opacity(0.85))
+                        .lineLimit(3)
+                        .frame(maxWidth: 900, alignment: .leading)
+                        .padding(.top, 18)
+                        .transition(.opacity)
+                }
+            }
+            .padding(.horizontal, 56).padding(.vertical, 44)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+        .task(id: t.id) { await overview(t) }
+    }
+    #else
     private func wideCard(_ t: Title) -> some View {
         let art = client?.artURL(t.backdrop ?? t.poster)
         return GeometryReader { g in
@@ -462,6 +505,8 @@ struct Billboard: View {
         #endif
         .task(id: t.id) { await overview(t) }
     }
+
+    #endif
 
     /// The title's story, from the details kept from an earlier look or read now.
     private func overview(_ t: Title) async {

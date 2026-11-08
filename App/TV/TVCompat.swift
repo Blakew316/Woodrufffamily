@@ -418,10 +418,13 @@ private struct TVBarButtonBody: View {
         configuration.label
             .background {
                 if focused {
-                    Capsule().fill(.white.opacity(0.16))
-                        .overlay(Capsule().strokeBorder(IconPalette.ice.opacity(0.8), lineWidth: 1.5))
+                    Capsule().fill(.ultraThinMaterial)
+                        .overlay(Capsule().fill(Color(red: 0.03, green: 0.07, blue: 0.14).opacity(0.45)))
+                        .overlay(Capsule().strokeBorder(.white.opacity(0.9), lineWidth: 2))
+                        .shadow(color: .black.opacity(0.35), radius: 12, y: 4)
                 }
             }
+            .shadow(color: .black.opacity(focused ? 0.5 : 0.25), radius: 3, y: 1)
             .scaleEffect(configuration.isPressed ? 0.96 : (focused ? 1.06 : 1))
             .animation(.spring(response: 0.25, dampingFraction: 0.8), value: focused)
     }

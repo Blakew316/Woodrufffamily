@@ -20,13 +20,13 @@ struct TVSettingsView: View {
         if !NeedsAttentionSection.issues(fleet).isEmpty {
             g.append(("", [Self.row("Needs Attention") { Form { NeedsAttentionSection(hub: HubSettings.shared) } }]))
         }
-        g.append(("TVs", [
+        g.append(("", [
             Self.row("TVs") { TVsView() },
             Self.row("Notes") { NotesView() },
             Self.row("Software Update") { SoftwareUpdateView() },
             Self.row("Send") { SendView() },
         ]))
-        g.append(("Smart Home", [
+        g.append(("Home", [
             Self.row("Speakers") { SpeakersListView() },
             Self.row("Lights") { LightsListView() },
             Self.row("Cameras") { CamerasPhoneView(hub: HubSettings.shared) },
@@ -34,13 +34,13 @@ struct TVSettingsView: View {
             Self.row("Wi‑Fi") { WifiView() },
             Self.row("Scenes") { ScenesSettingsView() },
         ]))
-        g.append(("Watch & Alerts", [
+        g.append(("Watch & Notifications", [
             Self.row("Watch") { WatchSettingsView() },
             Self.row("Notifications") { PhoneSettingsView(hub: HubSettings.shared) },
             Self.row("Camera Alerts") { CameraAlertsView(hub: HubSettings.shared) },
             Self.row("Accounts") { ConnectionsView(hub: HubSettings.shared) },
         ]))
-        g.append(("General", [
+        g.append(("More", [
             Self.row("General") { GeneralSettingsView(hub: HubSettings.shared) },
             Self.row("Shortcuts") { ShortcutsView(hub: HubSettings.shared) },
             Self.row("Sync Across Devices") { SyncSettingsView() },
@@ -65,8 +65,9 @@ struct TVSettingsView: View {
             .frame(maxHeight: .infinity)
 
             List {
-                ForEach(groups, id: \.0) { title, rows in
-                    Section(title) {
+                ForEach(Array(groups.enumerated()), id: \.offset) { _, group in
+                    let (title, rows) = group
+                    Section {
                         ForEach(rows) { r in
                             NavigationLink {
                                 r.page()
@@ -76,6 +77,8 @@ struct TVSettingsView: View {
                                 Text(r.id).foregroundStyle(r.id == "Needs Attention" ? Palette.attention : .primary)
                             }
                         }
+                    } header: {
+                        if !title.isEmpty { Text(title) }
                     }
                 }
             }

@@ -12,6 +12,8 @@ struct WoodruffTVApp: App {
     init() {
         // The screenshot run (-tvTab home) opens a given tab.
         if let tab = UserDefaults.standard.string(forKey: "tvTab") { UserDefaults.standard.set(tab, forKey: "section") }
+        // Watch plays right here on the Apple TV (no TV to pick).
+        UserDefaults.standard.set("here", forKey: "watch.playOn")
         let keys = SettingsSync.keychainKeys + Fleet.shared.tvs.map { "lg.\($0.id)" }
         Task.detached(priority: .userInitiated) { for k in keys { _ = Keychain.read(k) } }
     }
@@ -46,7 +48,9 @@ struct WoodruffTVApp: App {
                     // Behind-the-scenes work about a second in: Watch's first pictures, the weather, the sync.
                     try? await Task.sleep(nanoseconds: 1_000_000_000)
                     WatchPrefetch.start(fleet)
-                    if !Demo.isOn && !fleet.hubs.isEmpty { LocationWeather.shared.start(fleet) }
+                    // The weather from where this Apple TV is (asked once), whether or not its TVs are paired yet.
+                    if !Demo.isOn { LocationWeather.shared.start(fleet) }
+                    HomeWeather.shared.refresh()
                     SettingsSync.shared.start(fleet)
                     NestAlerts.shared.start(fleet)
                     DecoWifi.shared.start()

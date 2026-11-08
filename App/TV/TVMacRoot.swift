@@ -65,15 +65,8 @@ struct TVMacRoot: View {
             }
             if s == .home {
                 HStack(spacing: 10 * macScale) {
-                    Button { layout.arranging ? layout.stopArranging() : layout.startArranging() } label: {
-                        Text(layout.arranging ? "Done" : "Edit Home")
-                            .font(.system(size: 14 * macScale, weight: .semibold))
-                            .foregroundStyle(layout.arranging ? Color.white : .primary)
-                            .padding(.horizontal, 18 * macScale)
-                            .frame(height: 44 * macScale)
-                            .glass(Capsule(), tint: layout.arranging ? .accentColor : nil)
-                    }
-                    .buttonStyle(TVBarButtonStyle())
+                    // The weather where the Mac has Edit Home (Home is arranged with the remote here).
+                    TVWeatherPill()
                     Spacer(minLength: 8)
                     ThermostatChip(compact: false, height: 44)
                         .scaleEffect(macScale, anchor: .trailing)
@@ -84,12 +77,12 @@ struct TVMacRoot: View {
                     HStack(spacing: 10) {
                         Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
                         TextField("Search Movies and TV Shows", text: $query)
+                        .textFieldStyle(.plain)
                     }
                     .padding(.horizontal, 16 * macScale)
                     .frame(width: 320 * macScale, height: 44 * macScale)
                     .glass(Capsule(), interactive: false)
                     Spacer(minLength: 8)
-                    TVPicker()
                     // Room for the pill at the TV's size (it's drawn larger than its own space).
                     ThermostatChip(compact: false, height: 44)
                         .scaleEffect(macScale, anchor: .trailing)
@@ -114,5 +107,30 @@ struct TVMacRoot: View {
         case .settings: TVSettingsView()
         default: HomeView()
         }
+    }
+}
+
+/// The weather, as a pill at the left of Home's bar: the sky and the temperature, as on the Mac.
+private struct TVWeatherPill: View {
+    private let weather = HomeWeather.shared
+
+    var body: some View {
+        HStack(spacing: 14) {
+            if let now = weather.now {
+                Image(systemName: now.sky.symbol)
+                    .symbolRenderingMode(.multicolor)
+                    .font(.system(size: 34, weight: .semibold))
+                Text(now.tempText)
+                    .font(.system(size: 38, weight: .semibold, design: .rounded))
+                    .monospacedDigit()
+                    .foregroundStyle(IconPalette.white)
+            } else {
+                Image(systemName: "cloud.sun").font(.system(size: 30, weight: .semibold)).foregroundStyle(IconPalette.ice)
+                Text("--").font(.system(size: 34, weight: .semibold, design: .rounded)).foregroundStyle(IconPalette.ice)
+            }
+        }
+        .padding(.horizontal, 30)
+        .frame(height: 44 * macScale)
+        .glass(Capsule(), interactive: false)
     }
 }

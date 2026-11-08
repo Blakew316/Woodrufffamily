@@ -621,7 +621,12 @@ struct MacGreetingHero: View {
 
     var body: some View {
         HStack(alignment: .center, spacing: 16) {
-            if let now = weather.now {
+            #if os(tvOS)
+            let showWeather = false
+            #else
+            let showWeather = true
+            #endif
+            if showWeather, let now = weather.now {
                 HStack(spacing: 8) {
                     Image(systemName: now.sky.symbol)
                         .symbolRenderingMode(.multicolor)

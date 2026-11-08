@@ -209,7 +209,9 @@ struct HomeView: View {
             }
         }
         #endif
+        #if !os(tvOS)
         .background { HomeBackdrop(playing: featuredTV?.nowPlaying, scroller: scroller) }
+        #endif
         // Home is always the dark, cinematic room: its glass and text read over the backdrop.
         .environment(\.colorScheme, .dark)
         .navigationTitle(openTV.flatMap { fleet.tv($0)?.name } ?? "Home")
