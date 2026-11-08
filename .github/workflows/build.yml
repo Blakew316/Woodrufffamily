@@ -73,6 +73,12 @@ jobs:
             -destination 'platform=macOS' -configuration Release \
             -derivedDataPath build CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=NO build | xcbeautify
           (cd build/Build/Products/Release && ditto -c -k --keepParent "Woodruff Family.app" "$GITHUB_WORKSPACE/out/WoodruffFamily-mac.zip")
+      - name: Build Apple TV app (simulator)
+        run: |
+          set -o pipefail
+          xcodebuild -project WoodruffFamily.xcodeproj -scheme WoodruffFamilyTV \
+            -destination 'generic/platform=tvOS Simulator' -configuration Debug \
+            -derivedDataPath build-tv CODE_SIGNING_ALLOWED=NO build | xcbeautify
       - name: Build Mac Apple Home helper (Mac Catalyst)
         run: |
           set -o pipefail

@@ -4,6 +4,7 @@ options:
   deploymentTarget:
     iOS: "26.0"
     macOS: "26.0"
+    tvOS: "26.0"
   createIntermediateGroups: true
   developmentLanguage: en
 
@@ -150,6 +151,32 @@ targets:
         NSExtension:
           NSExtensionPointIdentifier: com.apple.usernotifications.service
           NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).NotificationService
+
+  # Apple TV: its own screens for the Siri Remote, on the shared WoodruffKit (no iPhone or Mac code).
+  WoodruffFamilyTV:
+    type: application
+    platform: tvOS
+    sources:
+      - App/TV
+    dependencies:
+      - package: WoodruffKit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.blakew316.woodruff.tv
+        PRODUCT_NAME: Woodruff Family
+        TARGETED_DEVICE_FAMILY: "3"
+    info:
+      path: App/TV/Info.plist
+      properties:
+        CFBundleDisplayName: Woodruff
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        WoodruffCommit: $(WOODRUFF_COMMIT)
+        UILaunchScreen: {}
+        NSLocalNetworkUsageDescription: Woodruff finds and controls the family’s TVs, Sonos speakers and lights on your network.
+        NSBonjourServices: [_woodruff._tcp, _sonos._tcp, _woodruffsync._tcp]
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
+          NSAllowsLocalNetworking: true
 
   WoodruffFamilyMac:
     type: application
