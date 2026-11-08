@@ -306,3 +306,7 @@ schemes:
     build:
       targets:
         WoodruffHomeHelper: all
+  WoodruffFamilyTV:
+    build:
+      targets:
+        WoodruffFamilyTV: all
