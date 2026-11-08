@@ -322,3 +322,10 @@ extension View {
     func keyboardShortcut(_ k: Character, modifiers: TVModifiers = .command) -> some View { self }
     func swipeActions<T: View>(edge: HorizontalEdge = .trailing, allowsFullSwipe: Bool = true, @ViewBuilder content: () -> T) -> some View { self }
 }
+
+/// A few lines of writing (a note), typed with the remote or the iPhone's keyboard.
+struct TextEditor: View {
+    @Binding var text: String
+    init(text: Binding<String>) { _text = text }
+    var body: some View { TextField("", text: $text, axis: .vertical) }
+}

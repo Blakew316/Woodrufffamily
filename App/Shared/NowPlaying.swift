@@ -356,7 +356,11 @@ struct NowPlayingSheet: View {
                     Button { dismiss() } label: { Image(systemName: "chevron.down") }
                         .accessibilityLabel("Close")
                 }
+                #if os(tvOS)
+                if tvID == nil { ToolbarItem(placement: .principal) { TVPicker() } }
+                #else
                 if tvID == nil { ToolbarItem(placement: .principal) { TVPicker() }.sharedBackgroundVisibility(.hidden) }
+                #endif
                 // Carry on in another room: the same title, from the same spot, on another TV (this one pauses).
                 if let tv, let now = tv.nowPlaying, let key = now.key, !key.isEmpty, !otherTVs(than: tv).isEmpty {
                     ToolbarItem(placement: .primaryAction) {
