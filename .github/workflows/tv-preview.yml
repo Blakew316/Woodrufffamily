@@ -47,6 +47,16 @@ jobs:
             xcrun simctl io "$UDID" screenshot "shots/$tab.png"
             xcrun simctl terminate "$UDID" com.blakew316.woodruff.tv || true
           done
+      - name: Top Shelf check
+        if: always()
+        run: |
+          APP=$(ls -d build-tv/Build/Products/Debug-appletvsimulator/*.app | head -1)
+          echo "== appex in the app"; ls -la "$APP/PlugIns" || true
+          plutil -p "$APP/PlugIns/WoodruffTopShelf.appex/Info.plist" || true
+          echo "== pluginkit"
+          xcrun simctl spawn "$UDID" pluginkit -mAvvv -p com.apple.tv-top-shelf 2>&1 | tail -60 || true
+          echo "== log"
+          xcrun simctl spawn "$UDID" log show --last 10m --style compact --predicate 'eventMessage CONTAINS[c] "topshelf" OR eventMessage CONTAINS[c] "top-shelf" OR eventMessage CONTAINS "woodruff.tv"' 2>&1 | tail -120 || true
       - name: Errors
         if: failure()
         run: grep -E "error:" build.log | sort -u | head -80 > shots-errors.txt || true; mkdir -p shots; cp shots-errors.txt shots/ || true
