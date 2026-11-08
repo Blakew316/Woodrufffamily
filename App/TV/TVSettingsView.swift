@@ -102,6 +102,7 @@ struct TVSettingsPage<Content: View>: View {
             .frame(width: 560)
             .frame(maxHeight: .infinity)
             content
+                .listStyle(.plain)
                 .frame(maxWidth: .infinity)
         }
         .background { IconBackdrop().ignoresSafeArea() }

@@ -445,7 +445,7 @@ extension View {
     /// platters behind each row).
     @ViewBuilder func familyFormStyle() -> some View {
         #if os(tvOS)
-        self.formStyle(.automatic)
+        self.formStyle(.automatic).listStyle(.plain)
         #else
         self.formStyle(.grouped)
         #endif

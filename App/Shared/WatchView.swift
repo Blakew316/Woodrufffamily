@@ -170,7 +170,8 @@ struct WatchView: View {
         let titles = sectionTitles[place] ?? []
         let watchingIDs = Set((h.continue ?? []).filter { ($0.kind == "show") == (place == "shows") }.compactMap(\.titleId))
         let worked = shelves.get(place: place, titles: titles, shown: watchingIDs)
-        let featured = worked.featured
+        // Until the whole list is read, the library's own featured titles, so the banner shows at once.
+        let featured = worked.featured.isEmpty ? (h.featured ?? []).filter { ($0.kind == "show") == (place == "shows") } : worked.featured
         if !featured.isEmpty {
             #if os(tvOS)
             // The whole screen; the first row (Continue Watching) rises up over its bottom, as the TV app does.
@@ -219,6 +220,8 @@ struct WatchView: View {
         while let p = try? await c.library(place: place, sort: "recent", unwatched: false, genre: nil, q: nil, offset: offset, limit: 120) {
             all += p.items
             offset += p.items.count
+            // The first page shows at once (the rows fill in as the rest arrives).
+            if offset == p.items.count, sectionTitles[place] == nil { sectionTitles[place] = all }
             if p.items.isEmpty || offset >= p.count || offset >= 3000 { break }
         }
         if !all.isEmpty || sectionTitles[place] == nil { sectionTitles[place] = all }

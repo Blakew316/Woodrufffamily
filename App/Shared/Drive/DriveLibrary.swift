@@ -47,7 +47,13 @@ enum DiskWriter {
 
 /// The Watch folder in Application Support, where the library and TMDB's answers are kept.
 func watchFile(_ name: String) -> URL {
+    #if os(tvOS)
+    // Apple TV keeps an app's files only in Caches (writing elsewhere fails): the library was never kept, so every
+    // launch read the whole Drive library again.
+    let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("Watch", isDirectory: true)
+    #else
     let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Watch", isDirectory: true)
+    #endif
     try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
     return dir.appendingPathComponent(name)
 }
