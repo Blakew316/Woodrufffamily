@@ -172,7 +172,13 @@ struct WatchView: View {
         let worked = shelves.get(place: place, titles: titles, shown: watchingIDs)
         let featured = worked.featured
         if !featured.isEmpty {
+            #if os(tvOS)
+            // The whole screen; the first row (Continue Watching) rises up over its bottom, as the TV app does.
             Billboard(titles: featured, page: $page, client: client).id(place)
+                .padding(.bottom, -330)
+            #else
+            Billboard(titles: featured, page: $page, client: client).id(place)
+            #endif
         }
         let watching = (h.continue ?? []).filter { !removed.contains($0.key) && ($0.kind == "show") == (place == "shows") }
         if !watching.isEmpty {
@@ -397,8 +403,8 @@ struct Billboard: View {
             }
         }
         #if os(tvOS)
-        // Apple TV: the whole screen, edge to edge, as the TV app's own banner (the rows rise up under it).
-        .frame(height: 860)
+        // Apple TV: the whole screen, edge to edge, as the TV app's own banner (the first row rises up over it).
+        .frame(height: 1080)
         .frame(maxWidth: .infinity)
         .ignoresSafeArea(edges: [.top, .horizontal])
         #else
@@ -451,7 +457,8 @@ struct Billboard: View {
                 }
                 .padding(.top, 8)
             }
-            .padding(.leading, 90).padding(.bottom, 120).padding(.trailing, 90)
+            // Above the row that rises over the banner's bottom.
+            .padding(.leading, 90).padding(.bottom, 400).padding(.trailing, 90)
         }
         .task(id: t.id) { await overview(t) }
     }
@@ -542,7 +549,11 @@ struct Billboard: View {
         #if os(macOS)
         .padding(.trailing, 44).padding(.bottom, 26)
         #else
+        #if os(tvOS)
+        .padding(.trailing, 90).padding(.bottom, 360)
+        #else
         .padding(.trailing, 30).padding(.bottom, 14)
+        #endif
         #endif
         .animation(.snappy, value: page)
     }

@@ -77,7 +77,7 @@ struct TVHomeHeader: View {
         }
         .overlay { MacGreetingHero().scaleEffect(1.25) }
         .padding(.horizontal, 20)
-        .frame(height: 360)
+        .frame(height: 700)
         .frame(maxWidth: .infinity)
         .focusSection()
     }
