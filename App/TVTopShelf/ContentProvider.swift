@@ -1,4 +1,5 @@
 import TVServices
+import os
 
 /// Woodruff's Top Shelf: with the app's icon highlighted on the Apple TV's Home Screen, the iCloud Photos album
 /// picked in Woodruff → Settings → Top Shelf, as a slideshow across the top of the screen. The app keeps the
@@ -8,8 +9,13 @@ final class ContentProvider: TVTopShelfContentProvider {
     static let group = "group.com.blakew316.woodruff.tv"
 
     // The completion-handler form, as Apple's own template has it (the system calls this one directly).
+    private static let log = Logger(subsystem: "com.blakew316.woodruff.tv.topshelf", category: "TopShelf")
+
     override func loadTopShelfContent(completionHandler: @escaping ((any TVTopShelfContent)?) -> Void) {
-        completionHandler(content())
+        Self.log.notice("Woodruff Top Shelf asked for its content")
+        let c = content()
+        Self.log.notice("Woodruff Top Shelf answered: \(c == nil ? "nothing" : "a slideshow", privacy: .public)")
+        completionHandler(c)
     }
 
     private func content() -> (any TVTopShelfContent)? {
@@ -27,14 +33,15 @@ final class ContentProvider: TVTopShelfContentProvider {
         let pictures = kept.filter { $0.pathExtension == "jpg" }.sorted { $0.lastPathComponent < $1.lastPathComponent }
             + (Bundle.main.urls(forResourcesWithExtension: "jpg", subdirectory: nil) ?? [])
         guard !pictures.isEmpty else { return nil }
-        let items: [TVTopShelfCarouselItem] = pictures.map { url in
-            let item = TVTopShelfCarouselItem(identifier: url.lastPathComponent)
-            item.title = "Woodruff Family"
+        Self.log.notice("Woodruff Top Shelf has \(pictures.count, privacy: .public) photos, shared folder \(dir?.path ?? "none", privacy: .public)")
+        // Inset: one wide photo across the top at a time, moving on by itself (open to every app).
+        let items: [TVTopShelfItem] = pictures.map { url in
+            let item = TVTopShelfItem(identifier: url.lastPathComponent)
             item.setImageURL(url, for: .screenScale1x)
             item.setImageURL(url, for: .screenScale2x)
             if let open = URL(string: "woodruff://home") { item.displayAction = TVTopShelfAction(url: open) }
             return item
         }
-        return TVTopShelfCarouselContent(style: .actions, items: items)
+        return TVTopShelfInsetContent(items: items)
     }
 }
