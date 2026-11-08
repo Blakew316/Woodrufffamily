@@ -379,6 +379,10 @@ struct Billboard: View {
     @Environment(\.horizontalSizeClass) private var sizeClass
     @State private var width: CGFloat = 0
     #endif
+    #if os(tvOS)
+    /// Play or Details picked with the remote: the banner stays on this title (moving on would take the focus away).
+    @FocusState private var focusedButton: String?
+    #endif
 
     var body: some View {
         pages
@@ -430,6 +434,10 @@ struct Billboard: View {
         #endif
         .task(id: page) {
             try? await Task.sleep(nanoseconds: 12_000_000_000)
+            #if os(tvOS)
+            // Not while its Play or Details has the focus: the next title would take it away, and Down would stop working.
+            while !Task.isCancelled && focusedButton != nil { try? await Task.sleep(nanoseconds: 1_000_000_000) }
+            #endif
             guard !Task.isCancelled, titles.count > 1 else { return }
             withAnimation(.easeInOut(duration: 0.7)) { page = (page + 1) % titles.count }
         }
@@ -468,8 +476,10 @@ struct Billboard: View {
                 HStack(spacing: 22) {
                     if let p = t.play {
                         CapsuleButton(title: p.label ?? "Play", symbol: "play.fill") { PlayRouter.start(p, fleet: fleet) }
+                            .focused($focusedButton, equals: "play")
                     }
                     CapsuleButton(title: "Details", symbol: nil, prominent: false) { open(t) }
+                        .focused($focusedButton, equals: "details")
                 }
                 .padding(.top, 8)
             }
