@@ -1174,6 +1174,8 @@ struct SyncSettingsView: View {
     private let sync = SettingsSync.shared
     @State private var busy = false
     @State private var codeText = ""
+    /// Change Family Code was chosen (a device holding the wrong one).
+    @State private var changing = false
     @State private var codeError: String?
     @State private var showCode = false
     @State private var copied = false
@@ -1207,6 +1209,7 @@ struct SyncSettingsView: View {
                             .textSelection(.enabled)
                     }
                     Button(showCode ? "Hide Code" : "Show Code") { showCode.toggle() }
+                    Button("Change Family Code") { changing = true; codeText = "" }
                     Button(copied ? "Copied" : "Copy Code") {
                         copyToClipboard(code)
                         copied = true
@@ -1216,7 +1219,7 @@ struct SyncSettingsView: View {
                     Text("Enter it once on a new iPhone or Mac to give it the family's settings.")
                 }
             }
-            if sync.familyCode == nil || sync.otherCode {
+            if sync.familyCode == nil || sync.otherCode || changing {
                 Section {
                     TextField("Enter Family Code", text: $codeText)
                         .font(.body.monospaced())
@@ -1239,6 +1242,6 @@ struct SyncSettingsView: View {
 
     private func useCode() {
         codeError = sync.enter(code: codeText)
-        if codeError == nil { codeText = "" }
+        if codeError == nil { codeText = ""; changing = false }
     }
 }
