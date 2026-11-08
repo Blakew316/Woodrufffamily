@@ -367,7 +367,7 @@ struct EmptyState: View {
 
 extension View {
     func screenTitle(_ t: String) -> some View {
-        #if os(iOS) || os(tvOS)
+        #if os(iOS)
         return self.navigationTitle(t).navigationBarTitleDisplayMode(.large)
         #else
         return self.navigationTitle(t)
@@ -375,7 +375,7 @@ extension View {
     }
 
     func inlineTitle() -> some View {
-        #if os(iOS) || os(tvOS)
+        #if os(iOS)
         return self.navigationBarTitleDisplayMode(.inline)
         #else
         return self

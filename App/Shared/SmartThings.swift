@@ -936,7 +936,6 @@ extension ISO8601DateFormatter {
     }()
 }
 
-#if !os(tvOS)
 /// The Samsung part of Settings → Smart Home → Devices.
 struct SmartThingsSection: View {
     private let st = SmartThings.shared
@@ -983,4 +982,3 @@ struct SmartThingsSection: View {
         }
     }
 }
-#endif

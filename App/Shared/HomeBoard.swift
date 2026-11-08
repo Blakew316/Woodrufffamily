@@ -487,7 +487,11 @@ struct HomeBoard: View, Equatable {
     private func moveGesture(_ id: String) -> some Gesture {
         #if os(iOS) || os(tvOS)
         // A short hold, then drag: a quick swipe still scrolls the page.
+        #if os(tvOS)
+        return LongPressGesture(minimumDuration: 0.15)
+        #else
         return LongPressGesture(minimumDuration: 0.15, maximumDistance: 10)
+        #endif
             .sequenced(before: DragGesture(minimumDistance: 0, coordinateSpace: .global))
             .updating($moving) { _, state, _ in state = true }
             .onChanged { value in

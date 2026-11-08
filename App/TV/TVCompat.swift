@@ -305,3 +305,20 @@ struct QRScannerView: View {
         Text("Scanning needs a camera. Type the TV’s link instead.").padding(60)
     }
 }
+
+// MARK: Keyboard and swipes (none on the remote)
+
+enum TVShortcut { case cancelAction, defaultAction, `return`, escape }
+
+struct TVModifiers: OptionSet {
+    let rawValue: Int
+    static let command = TVModifiers(rawValue: 1)
+    static let shift = TVModifiers(rawValue: 2)
+    static let option = TVModifiers(rawValue: 4)
+}
+
+extension View {
+    func keyboardShortcut(_ k: TVShortcut, modifiers: TVModifiers = []) -> some View { self }
+    func keyboardShortcut(_ k: Character, modifiers: TVModifiers = .command) -> some View { self }
+    func swipeActions<T: View>(edge: HorizontalEdge = .trailing, allowsFullSwipe: Bool = true, @ViewBuilder content: () -> T) -> some View { self }
+}
