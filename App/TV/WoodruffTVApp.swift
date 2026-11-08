@@ -12,7 +12,11 @@ struct WoodruffTVApp: App {
             TVRoot()
                 .environment(fleet)
                 .task {
+                    // The family's settings first (the TVs, keys and sign-ins kept with the family's code), then the
+                    // TVs and Home as everywhere else.
+                    SettingsSync.shared.prepare(fleet)
                     await fleet.start()
+                    SettingsSync.shared.start(fleet)
                     SmartHome.shared.start()
                 }
         }

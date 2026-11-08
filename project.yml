@@ -158,6 +158,8 @@ targets:
     platform: tvOS
     sources:
       - App/TV
+      # The family's settings sync, the same file the iPhone and Mac run (its services are stand-ins here).
+      - path: App/Shared/SettingsSync.swift
     dependencies:
       - package: WoodruffKit
     settings:
