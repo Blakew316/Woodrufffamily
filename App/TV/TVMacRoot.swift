@@ -75,16 +75,21 @@ struct TVMacRoot: View {
 /// middle with its one-liner beneath, the weather floating at its left and the thermostat at its right (no pills).
 struct TVHomeHeader: View {
     var body: some View {
-        HStack(alignment: .center, spacing: 20) {
-            TVWeatherFloat()
-            Spacer(minLength: 8)
-            ThermostatChip(compact: false, height: 44)
-                .scaleEffect(macScale, anchor: .trailing)
+        // As high as it goes: the greeting with its one-liner in the middle and the thermostat at the right, level with
+        // the sidebar's Home; the weather at the left, just under it.
+        ZStack(alignment: .top) {
+            MacGreetingHero().scaleEffect(1.25, anchor: .top)
+                .frame(maxWidth: .infinity)
+            HStack(alignment: .top, spacing: 20) {
+                TVWeatherFloat().padding(.top, 96)
+                Spacer(minLength: 8)
+                ThermostatChip(compact: false, height: 44)
+                    .scaleEffect(macScale, anchor: .topTrailing)
+            }
         }
-        .overlay { MacGreetingHero().scaleEffect(1.25) }
         .padding(.horizontal, 20)
-        .frame(height: 380)
-        .frame(maxWidth: .infinity)
+        .frame(maxWidth: .infinity, minHeight: 250, alignment: .top)
+        .padding(.top, -50)
         .focusSection()
     }
 }

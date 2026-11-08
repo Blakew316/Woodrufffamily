@@ -148,7 +148,7 @@ struct TVPhotoBackdrop: View {
     private func run() async {
         let files = TopShelfAlbum.files()
         // The album's photos, else a set of landscape photographs (4K) until an album is picked.
-        let count = files.isEmpty ? 30 : files.count
+        let count = files.isEmpty ? Self.nature.count : files.count
         var i = Int.random(in: 0..<count)
         while !Task.isCancelled {
             let next: UIImage?
@@ -159,22 +159,26 @@ struct TVPhotoBackdrop: View {
                 next = await Task.detached(priority: .utility) { UIImage(contentsOfFile: url.path)?.preparingForDisplay() }.value
             }
             if let next {
-                withAnimation(.easeInOut(duration: 2.5)) { image = next; shown += 1 }
+                withAnimation(.easeInOut(duration: 4)) { image = next; shown += 1 }
             }
-            try? await Task.sleep(nanoseconds: 14_000_000_000)
+            try? await Task.sleep(nanoseconds: 20_000_000_000)
             i += 1
         }
     }
 }
 
 extension TVPhotoBackdrop {
+    /// Nature only (mountains, coasts, lakes, forests, fields, deserts), as the Apple TV screensaver shows.
+    static let nature = [10, 11, 13, 14, 15, 16, 17, 18, 28, 29, 54, 110, 112, 116, 124, 127, 128, 174, 184, 190, 191, 218, 247,
+                         256, 289, 327, 337, 353, 368, 377, 381, 386, 406, 416, 421, 432, 440, 450, 456, 459, 461]
+
     /// One of the stock photographs, kept on disk after the first time.
     static func stock(_ n: Int) async -> UIImage? {
         let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("Backdrops", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let file = dir.appendingPathComponent("\(n).jpg")
+        let file = dir.appendingPathComponent("n\(nature[n % nature.count]).jpg")
         if let d = try? Data(contentsOf: file), let img = UIImage(data: d) { return img.preparingForDisplay() }
-        guard let url = URL(string: "https://picsum.photos/seed/woodruff\(n)/3840/2160"),
+        guard let url = URL(string: "https://picsum.photos/id/\(nature[n % nature.count])/3840/2160"),
               let (d, r) = try? await URLSession.shared.data(from: url),
               (r as? HTTPURLResponse)?.statusCode == 200, let img = UIImage(data: d) else { return nil }
         try? d.write(to: file, options: .atomic)
@@ -194,6 +198,6 @@ private struct KenBurns: View {
             .scaleEffect(grow ? 1.08 : 1)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .clipped()
-            .onAppear { withAnimation(.linear(duration: 18)) { grow = true } }
+            .onAppear { withAnimation(.linear(duration: 26)) { grow = true } }
     }
 }
