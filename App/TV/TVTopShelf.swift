@@ -3,7 +3,7 @@ import Photos
 import TVServices
 import UIKit
 
-/// The Top Shelf slideshow: an iCloud Photos album picked here, its pictures kept ready (1920 × 1080) in the folder
+/// The Top Shelf slideshow: an iCloud Photos album picked here, its pictures kept ready (4K) in the folder
 /// the Top Shelf reads, and refreshed when the app opens.
 @Observable @MainActor
 final class TopShelfAlbum {
@@ -14,6 +14,16 @@ final class TopShelfAlbum {
     var albums: [(id: String, name: String)] = []
     var picked: String? { saved.string(forKey: "topShelf.album") }
     var note: String?
+    /// Goes up each time the pictures are written again (Home's background follows).
+    var version = 0
+
+    /// The pictures kept for the Top Shelf (and Home's background).
+    nonisolated static func files() -> [URL] {
+        guard let dir = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: group)?
+            .appendingPathComponent("TopShelf", isDirectory: true) else { return [] }
+        return ((try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? [])
+            .filter { $0.pathExtension == "jpg" }.sorted { $0.lastPathComponent < $1.lastPathComponent }
+    }
 
     /// The albums on this Apple TV's iCloud Photos (asking once for permission).
     func load() async {
@@ -56,18 +66,19 @@ final class TopShelfAlbum {
         for (i, a) in chosen.enumerated() {
             let img: UIImage? = await withCheckedContinuation { c in
                 var done = false
-                PHImageManager.default().requestImage(for: a, targetSize: CGSize(width: 1920, height: 1080), contentMode: .aspectFill, options: req) { im, info in
+                PHImageManager.default().requestImage(for: a, targetSize: CGSize(width: 3840, height: 2160), contentMode: .aspectFill, options: req) { im, info in
                     if done { return }
                     if (info?[PHImageResultIsDegradedKey] as? Bool) == true { return }
                     done = true
                     c.resume(returning: im)
                 }
             }
-            if let data = img?.jpegData(compressionQuality: 0.85) {
+            if let data = img?.jpegData(compressionQuality: 0.8) {
                 try? data.write(to: dir.appendingPathComponent(String(format: "%02d.jpg", i)), options: .atomic)
             }
         }
         TVTopShelfContentProvider.topShelfContentDidChange()
+        version += 1
         note = chosen.isEmpty ? "That album has no photos." : "\(chosen.count) photos are on the Top Shelf."
     }
 }
@@ -93,5 +104,62 @@ struct TopShelfSettings: View {
             }
         }
         .task { await shelf.load() }
+    }
+}
+
+/// Home's background: the Top Shelf album's photos, one fading into the next with a slow drift, as the Apple TV
+/// screensaver does, dimmed (most at the top) so the greeting, weather and thermostat stay easy to read. The blue
+/// until an album is picked.
+struct TVPhotoBackdrop: View {
+    private let shelf = TopShelfAlbum.shared
+    @State private var image: UIImage?
+    @State private var shown = 0
+
+    var body: some View {
+        ZStack {
+            HomeBackdrop()
+            if let image {
+                KenBurns(image: image)
+                    .id(shown)
+                    .transition(.opacity)
+                LinearGradient(stops: [.init(color: .black.opacity(0.72), location: 0),
+                                       .init(color: .black.opacity(0.45), location: 0.45),
+                                       .init(color: .black.opacity(0.6), location: 1)],
+                               startPoint: .top, endPoint: .bottom)
+            }
+        }
+        .ignoresSafeArea()
+        .task(id: shelf.version) { await run() }
+    }
+
+    private func run() async {
+        let files = TopShelfAlbum.files()
+        guard !files.isEmpty else { image = nil; return }
+        var i = Int.random(in: 0..<files.count)
+        while !Task.isCancelled {
+            let url = files[i % files.count]
+            let next = await Task.detached(priority: .utility) { UIImage(contentsOfFile: url.path)?.preparingForDisplay() }.value
+            if let next {
+                withAnimation(.easeInOut(duration: 2.5)) { image = next; shown += 1 }
+            }
+            try? await Task.sleep(nanoseconds: 14_000_000_000)
+            i += 1
+        }
+    }
+}
+
+/// One photo filling the screen, drifting slowly larger while it shows.
+private struct KenBurns: View {
+    var image: UIImage
+    @State private var grow = false
+
+    var body: some View {
+        Image(uiImage: image)
+            .resizable()
+            .scaledToFill()
+            .scaleEffect(grow ? 1.08 : 1)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .clipped()
+            .onAppear { withAnimation(.linear(duration: 18)) { grow = true } }
     }
 }

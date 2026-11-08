@@ -26,7 +26,7 @@ struct TVMacRoot: View {
                     HomeView()
                         .toolbar(.hidden, for: .navigationBar)
                 }
-                .background { HomeBackdrop() }
+                .background { TVPhotoBackdrop() }
             }
             Tab("Watch", systemImage: "play.tv", value: "watch") {
                 NavigationStack {
