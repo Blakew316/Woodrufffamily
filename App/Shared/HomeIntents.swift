@@ -82,7 +82,8 @@ struct RoomQuery: EntityStringQuery {
     }
     @MainActor private func all() -> [RoomEntity] {
         let h = SmartHome.shared
-        return Array(Set(h.lights.compactMap { h.room(of: $0.id) })).sorted().map { RoomEntity(id: $0) }
+        let roomOf = h.roomIndex
+        return Array(Set(h.lights.compactMap { roomOf[$0.id] })).sorted().map { RoomEntity(id: $0) }
     }
 }
 
@@ -307,7 +308,8 @@ struct RoomLightsOffIntent: AppIntent {
     let cold = startHome()
     let h = SmartHome.shared
     let want = spokenKey(room.id)
-    let list = h.lights.filter { l in h.room(of: l.id).map { spokenKey($0) == want } ?? false }
+    let roomOf = h.roomIndex
+    let list = h.lights.filter { l in roomOf[l.id].map { spokenKey($0) == want } ?? false }
     guard !list.isEmpty else { return "There are no lights in \(room.id)." }
     return await turnAll(list, on: on, what: "the \(room.id) lights", cold: cold)
 }
@@ -470,7 +472,9 @@ enum SiriVocabulary {
 
     private static func names() -> String {
         let h = SmartHome.shared
-        let lights = h.lights.map { "\($0.id)=\($0.name)@\(h.room(of: $0.id) ?? "")" }
+        // Every room at once (looking each light up in every list was the slow part, and this runs on each change).
+        let roomOf = h.roomIndex
+        let lights = h.lights.map { "\($0.id)=\($0.name)@\(roomOf[$0.id] ?? "")" }
         let speakers = h.speakers.map { "\($0.id)=\($0.name)" }
         let tvs = Fleet.shared.tvs.filter { !$0.isUnpaired }.map { "\($0.id)=\($0.name)" }
         return (lights + ["#"] + speakers + ["#"] + tvs).joined(separator: ";")

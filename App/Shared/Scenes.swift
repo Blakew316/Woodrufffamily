@@ -177,7 +177,10 @@ enum SceneRunner {
         var results: [Int: String?] = [:]
         await withTaskGroup(of: (Int, String?).self) { group in
             for (i, tv) in tvs.enumerated() {
-                group.addTask { (i, await turnOff(tv)) }
+                group.addTask {
+                    let p = await SceneRunner.turnOff(tv)
+                    return (i, p)
+                }
             }
             for await (i, p) in group { results[i] = p }
         }

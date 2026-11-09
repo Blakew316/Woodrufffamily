@@ -86,9 +86,10 @@ struct AppleTVsSection: View {
     @State private var finder = AppleTVFinder.shared
     @State private var busy: String?
     @State private var note: String?
+    /// This device's family code's fingerprint: read from the Keychain (slow) as the page opens, not at every redraw.
+    @State private var mine: String?
 
     var body: some View {
-        let mine = AppleTVFinder.familyPrint()
         Section {
             if finder.found.isEmpty {
                 Text("None found on this Wi‑Fi").foregroundStyle(.secondary)
@@ -113,7 +114,12 @@ struct AppleTVsSection: View {
         } footer: {
             Text(note ?? "Connect gives an Apple TV the family’s TVs, keys and settings. Then choose Allow on the Apple TV with its remote.")
         }
-        .onAppear { finder.start() }
+        .onAppear {
+            mine = AppleTVFinder.familyPrint()
+            finder.start()
+        }
+        // Not looking for Apple TVs on the Wi‑Fi once the page has gone (it starts again as it's back).
+        .onDisappear { finder.stop() }
     }
 
     private func state(_ atv: FoundAppleTV, _ inFamily: Bool) -> String {
