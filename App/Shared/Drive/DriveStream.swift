@@ -46,11 +46,21 @@ final class DriveStream: NSObject {
         return asset
     }
 
+    /// Drive's own address with the sign-in in the request's header, for the player to fetch and buffer itself:
+    /// far faster for big films than answering its requests one by one (as the Android TVs' player does). Nil
+    /// without a kept token lasting at least [minLife] seconds (then the asset above is used).
+    nonisolated static func directAsset(fileID: String, minLife: Double = 900) -> AVURLAsset? {
+        guard let token = GoogleDrive.cachedToken(minLife: minLife) else { return nil }
+        return AVURLAsset(url: GoogleDrive.mediaURL(fileID),
+                          options: ["AVURLAssetHTTPHeaderFieldsKey": ["Authorization": "Bearer \(token)"]])
+    }
+
     /// Gets a token that will last the film's start and fetches the file's first part (and its index when that's
     /// further on), kept for a while for the player. Asked again for the same file, it does nothing.
     static func prefetch(fileID: String) {
         Task {
-            guard let token = try? await GoogleDrive.token(minLife: 600) else { return }
+            // Long enough for Play to use Drive's address directly (directAsset).
+            guard let token = try? await GoogleDrive.token(minLife: 1800) else { return }
             streamQueue.async { Prefetch.start(fileID, token: token) }
         }
     }

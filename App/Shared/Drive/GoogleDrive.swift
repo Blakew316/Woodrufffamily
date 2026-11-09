@@ -172,6 +172,8 @@ enum GoogleDrive {
     /// The token in memory when it has more than a minute left, from any thread (the player's stream asks for one for
     /// every part it fetches, and shouldn't wait for the main thread or the keychain to get it).
     nonisolated static func cachedToken() -> String? { memo.get(minLife: 60) }
+    /// The kept token if it lasts at least [minLife] seconds more.
+    nonisolated static func cachedToken(minLife: Double) -> String? { memo.get(minLife: minLife) }
 
     nonisolated private static let memo = DriveTokenMemo()
 

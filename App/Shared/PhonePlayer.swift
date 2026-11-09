@@ -151,6 +151,38 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
     private var pendingFailure: String?
     /// Says so when it hasn't started in time.
     private var watchdog: Task<Void, Never>?
+    /// Playing Drive's address directly: its file, and the task that renews the sign-in before it runs out.
+    private var directID: String?
+    private var renew: Task<Void, Never>?
+
+    private static func titleItem(_ title: String) -> AVMetadataItem {
+        let t = AVMutableMetadataItem()
+        t.identifier = .commonIdentifierTitle
+        t.value = title as NSString
+        t.extendedLanguageTag = "und"
+        return t
+    }
+
+    /// A sign-in lasts an hour: before it runs out, the same place in a fresh item with a fresh one (a long film
+    /// would otherwise stop when the player next asks Drive for more).
+    private func renewSignIn(_ p: AVPlayer, _ play: PhonePlay) {
+        renew?.cancel()
+        renew = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 40 * 60 * 1_000_000_000)
+                guard let self, self.player === p, let id = self.directID else { return }
+                guard (try? await GoogleDrive.token(minLife: 1800)) != nil,
+                      let a = DriveStream.directAsset(fileID: id, minLife: 1800) else { continue }
+                let at = p.currentTime()
+                let wasPlaying = p.rate > 0
+                let fresh = AVPlayerItem(asset: a)
+                fresh.externalMetadata = [Self.titleItem(play.title)]
+                fresh.seek(to: at, toleranceBefore: .zero, toleranceAfter: .zero, completionHandler: nil)
+                p.replaceCurrentItem(with: fresh)
+                if wasPlaying { p.play() }
+            }
+        }
+    }
 
     func present(_ play: PhonePlay) {
         // One still showing (another Play while it's up, or one in picture in picture): closed first, without it
@@ -172,16 +204,18 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
         case .url(let u):
             item = AVPlayerItem(url: u)
         case .drive(let id):
-            let s = DriveStream(fileID: id)
-            stream = s
-            item = AVPlayerItem(asset: s.asset())
+            // Drive's address straight to the player when the sign-in is fresh: the player's own fetching and
+            // buffering, smooth on big films. Else answered request by request (DriveStream).
+            if let a = DriveStream.directAsset(fileID: id) {
+                item = AVPlayerItem(asset: a)
+                directID = id
+            } else {
+                let s = DriveStream(fileID: id)
+                stream = s
+                item = AVPlayerItem(asset: s.asset())
+            }
         }
-        // The title on the player and the Lock Screen.
-        let title = AVMutableMetadataItem()
-        title.identifier = .commonIdentifierTitle
-        title.value = play.title as NSString
-        title.extendedLanguageTag = "und"
-        item.externalMetadata = [title]
+        item.externalMetadata = [Self.titleItem(play.title)]
 
         PhonePlayback.quickStart(item)
 
@@ -232,6 +266,7 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
     private func ready(_ p: AVPlayer, _ play: PhonePlay) {
         guard !begun else { return }
         begun = true
+        if directID != nil { renewSignIn(p, play) }
         Task { @MainActor in await PhonePlayback.begin(p, play) }
     }
 
@@ -335,6 +370,9 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
         player?.replaceCurrentItem(with: nil)
         player = nil
         stream = nil
+        directID = nil
+        renew?.cancel()
+        renew = nil
         current = nil
         controller = nil
     }
