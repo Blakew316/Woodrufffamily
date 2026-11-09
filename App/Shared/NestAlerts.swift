@@ -383,7 +383,7 @@ final class NestAlerts {
         if !quiet, MacCameraShare.save(id: camera, name: macCam?.name ?? body, doorbell: macCam?.doorbell ?? false, event: macTag) {
             WidgetCenter.shared.reloadTimelines(ofKind: MacCameraShare.kind); WidgetCenter.shared.reloadTimelines(ofKind: "com.woodruff.family.widget.tvs")
         }
-        let race = EventPicture(camera: camera, event: event, clip: clip, key: short)
+        let race = EventPicture(camera: camera, event: event, clip: clip, key: short, happened: happened, title: title)
         if let session { racing[session] = race }
         race.start(given: picture)
         Task { [weak self] in
@@ -420,7 +420,7 @@ final class NestAlerts {
             Saved.save(LastCameraEvent.savedKey, LastCameraEvent(title: title, body: body, camera: camera, key: short, happened: happened,
                                                                  event: event ?? "", clip: race.clip ?? clip ?? "", at: received, thumb: thumb))
             let waited = String(format: "%.1f", Date().timeIntervalSince(received))
-            PushRelay.log.notice("picture for \(body, privacy: .public) after \(waited, privacy: .public) s: \(got.map { $0.source.text } ?? "none (no picture from Google, the live stream or before)", privacy: .public)\(thumb.map { ", \($0.count) characters in the push" } ?? ", none in the push", privacy: .public)\(focus != nil ? ", on its subject" : "", privacy: .public)")
+            PushRelay.log.notice("picture for \(body, privacy: .public) after \(waited, privacy: .public) s: \(got.map { race.text($0.source) } ?? "none (no picture from Google, the live stream or before)", privacy: .public)\(thumb.map { ", \($0.count) characters in the push" } ?? ", none in the push", privacy: .public)\(focus != nil ? ", on its subject" : "", privacy: .public)")
             if let thumb { c.userInfo["thumb"] = thumb }
             if let shown, let a = CameraEventMedia.attachment(shown, focus: focus) { c.attachments = [a] }
             // The Apple TVs' own alert for it (the hub only; its picture is kept above for them to fetch).
@@ -468,16 +468,18 @@ final class NestAlerts {
 #if os(macOS)
 /// The Mac: the picture for one event's alert, got every way at once the moment the event comes. Google's own picture
 /// of the event (its snapshot, asked for at once as it's made only within 30 seconds, or its clip's first frames) is
-/// the one Google Home shows, so it's waited for a few seconds; meanwhile a frame of the camera's live stream (every
-/// camera is kept live on the Mac that sends) is ready, and the camera's latest picture is the last resort.
+/// the one Google Home shows, so it's waited for a few seconds; meanwhile the moment it happened is picked from the
+/// last few seconds of the camera's live stream (every camera is kept live on the Mac that sends, `StreamMoment`), a
+/// frame of the stream now is ready in case that can't be had, and the camera's latest picture is the last resort.
 @MainActor
 private final class EventPicture {
     enum Source: Int {
-        case given = 0, google, live, grabbed, kept
+        case given = 0, google, moment, live, grabbed, kept
         var text: String {
             switch self {
             case .given: return "the Mac’s own frame"
             case .google: return "Google’s picture of the event"
+            case .moment: return "the moment it happened, from the stream"
             case .live: return "the live stream, at once"
             case .grabbed: return "the live stream, started for it"
             case .kept: return "the camera’s latest picture"
@@ -488,19 +490,28 @@ private final class EventPicture {
     let camera: String
     let event: String?
     let key: String
+    /// When the event happened (Google's time) and its alert's title: which of the stream's last few seconds shows it.
+    let happened: Date?
+    let title: String
     private(set) var clip: String?
     private(set) var best: (file: URL, source: Source)?
     /// Google's fetches still going.
     private var googleBusy = 0
     private var askedImage = false
+    /// The moment it happened is still being looked for in the stream's last few seconds.
+    private var findingMoment = false
+    /// Why that frame was picked ("person found"), for the log.
+    private var momentWhy: String?
 
-    init(camera: String, event: String?, clip: String?, key: String) {
+    init(camera: String, event: String?, clip: String?, key: String, happened: Date? = nil, title: String = "") {
         self.camera = camera; self.event = event; self.clip = clip.flatMap { $0.isEmpty ? nil : $0 }; self.key = key
+        self.happened = happened; self.title = title
     }
 
     func start(given: Data?) {
         if let given, let u = write(given, "given") { take(u, .given); return }
         google(clip: clip)
+        moment()
         Task { [weak self] in
             guard let self else { return }
             if let jpeg = await CameraStreams.shared.liveFrame(self.camera, maxSide: 1600), let u = self.write(jpeg, "live") {
@@ -511,6 +522,29 @@ private final class EventPicture {
             guard let cam = NestCameras.shared.cameras.first(where: { $0.id == self.camera }), cam.webRTC, cam.online else { return }
             if let jpeg = await CameraStreams.shared.grabFrame(cam, timeout: 15), let u = self.write(jpeg, "grab") { self.take(u, .grabbed) }
         }
+    }
+
+    /// The moment it happened, from the last few seconds of the camera's stream this Mac keeps: better than a frame of
+    /// the stream now, not as good as Google's own picture of the event.
+    private func moment() {
+        guard let happened else { return }
+        findingMoment = true
+        let camera = camera, key = key, title = title
+        Task { [weak self] in
+            let got = await StreamMoment.pick(camera: camera, key: key, happened: happened, title: title)
+            guard let self else { return }
+            self.findingMoment = false
+            if let got {
+                self.momentWhy = got.why
+                self.take(got.file, .moment)
+            }
+        }
+    }
+
+    /// What [s] was, for the log ("the moment it happened, from the stream (person found)").
+    func text(_ s: Source) -> String {
+        guard s == .moment, let why = momentWhy else { return s.text }
+        return "\(s.text) (\(why))"
     }
 
     /// The event's clip came in a later message.
@@ -551,16 +585,18 @@ private final class EventPicture {
     static let freshStill: TimeInterval = 30
 
     /// The picture to alert with: Google's as soon as it's there; else, once [googleWait] seconds are up (or Google
-    /// has nothing), the stream's frame; with nothing at all by [cap], the camera's latest picture if it's from the last
-    /// half minute, and by [staleCap] whatever its age (an older one shows an earlier moment, while the stream started
-    /// for this, or Google's clip a few seconds behind the event, can still bring this one); nil only when there's
-    /// still nothing after [last] seconds.
+    /// has nothing), the moment it happened from the stream (waited for until [cap] at most), else the stream's frame;
+    /// with nothing at all by [cap], the camera's latest picture if it's from the last half minute, and by [staleCap]
+    /// whatever its age (an older one shows an earlier moment, while the stream started for this, or Google's clip a few
+    /// seconds behind the event, can still bring this one); nil only when there's still nothing after [last] seconds.
     func result(googleWait: Double, cap: Double, staleCap: Double, last: Double) async -> (file: URL, source: Source)? {
         let t0 = Date()
         while true {
             let waited = Date().timeIntervalSince(t0)
             if let b = best {
-                if b.source.rawValue <= Source.google.rawValue || googleBusy == 0 || waited >= googleWait { return b }
+                // The moment it happened is still being picked: a frame of the stream now waits for it.
+                let picking = findingMoment && b.source.rawValue > Source.moment.rawValue && waited < cap
+                if b.source.rawValue <= Source.google.rawValue || ((googleBusy == 0 || waited >= googleWait) && !picking) { return b }
             } else if waited >= cap {
                 let age = CameraStreams.shared.stillAt[camera].map { Date().timeIntervalSince($0) } ?? .infinity
                 if age < Self.freshStill || waited >= staleCap, let jpeg = CameraStreams.shared.latestStill(camera),

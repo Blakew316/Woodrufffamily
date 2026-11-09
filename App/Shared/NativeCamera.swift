@@ -139,6 +139,11 @@ final class NativeRTC: NSObject, RTCPeerConnectionDelegate, RTCVideoViewDelegate
         return await Task.detached(priority: .userInitiated) { g.jpeg(maxSide: maxSide) }.value
     }
 
+    #if os(macOS)
+    /// The picture's last few seconds, as the Mac that sends the family's alerts keeps them (`FrameGrabber.keepsMoments`).
+    func moments(since: Date) -> [FrameGrabber.Moment] { grabber.moments(since: since) }
+    #endif
+
     private func say(_ s: String) {
         DispatchQueue.main.async { [weak self] in self?.onState?(s) }
     }
@@ -224,7 +229,8 @@ final class PictureStage: StageView {
     }
 }
 
-/// Keeps the latest frame of the picture, so a still can be made of it at any moment.
+/// Keeps the latest frame of the picture, so a still can be made of it at any moment. On the Mac that sends the
+/// family's alerts it also keeps the last few seconds of the picture (`keepsMoments`).
 final class FrameGrabber: NSObject, RTCVideoRenderer, @unchecked Sendable {
     private let lock = NSLock()
     private var latest: RTCVideoFrame?
@@ -233,9 +239,18 @@ final class FrameGrabber: NSObject, RTCVideoRenderer, @unchecked Sendable {
     func renderFrame(_ frame: RTCVideoFrame?) {
         guard let frame else { return }
         lock.lock(); latest = frame; lock.unlock()
+        #if os(macOS)
+        keepMoment(frame)
+        #endif
     }
 
-    func clear() { lock.lock(); latest = nil; lock.unlock() }
+    func clear() {
+        lock.lock(); latest = nil; lock.unlock()
+        #if os(macOS)
+        // The last few seconds stay a little (an alert about them can still come just after a reconnect), then go.
+        Self.momentQueue.asyncAfter(deadline: .now() + (Self.momentSpan + 1)) { [weak self] in self?.trimMoments() }
+        #endif
+    }
 
     var hasFrame: Bool { lock.lock(); defer { lock.unlock() }; return latest != nil }
 
@@ -246,10 +261,19 @@ final class FrameGrabber: NSObject, RTCVideoRenderer, @unchecked Sendable {
     func jpeg(maxSide: Int) -> Data? {
         lock.lock(); let frame = latest; lock.unlock()
         guard let frame else { Self.log.notice("native frame: none yet"); return nil }
-        // The hardware decoder's own picture when it has one (the usual case); otherwise a plain I420 conversion.
+        guard let full = Self.decoded(frame, maxSide: maxSide) else {
+            Self.log.notice("native frame: couldn't convert a \(Int(frame.width))x\(Int(frame.height)) frame")
+            return nil
+        }
+        guard let small = Self.fitted(full, maxSide: maxSide) else { return nil }
+        return Self.encoded(small, quality: 0.75)
+    }
+
+    /// [frame] as a picture: the hardware decoder's own when it has one (the usual case), scaled down to [maxSide]
+    /// before it's turned into a picture (not a full-size copy first, then scaled); otherwise a plain I420 conversion.
+    private static func decoded(_ frame: RTCVideoFrame, maxSide: Int) -> CGImage? {
         var picture: CGImage?
         if let cv = frame.buffer as? RTCCVPixelBuffer {
-            // Scaled down before it's turned into a picture (not a full-size copy first, then scaled).
             var image = CIImage(cvPixelBuffer: cv.pixelBuffer)
             let side = max(image.extent.width, image.extent.height)
             if side > CGFloat(maxSide), side > 0 {
@@ -257,35 +281,140 @@ final class FrameGrabber: NSObject, RTCVideoRenderer, @unchecked Sendable {
                 image = image.transformed(by: CGAffineTransform(scaleX: k, y: k))
             }
             let r = image.extent.integral
-            if r.width >= 1, r.height >= 1 { picture = Self.ci.createCGImage(image, from: r) }
+            if r.width >= 1, r.height >= 1 { picture = ci.createCGImage(image, from: r) }
         }
         if picture == nil {
             let i420 = frame.buffer.toI420()
             let iw = Int(i420.width), ih = Int(i420.height)
-            if iw > 0, ih > 0 { picture = Self.rgb(i420, width: iw, height: ih) }
+            if iw > 0, ih > 0 { picture = rgb(i420, width: iw, height: ih) }
         }
-        guard let full = picture else {
-            Self.log.notice("native frame: couldn't convert a \(Int(frame.width))x\(Int(frame.height)) frame")
-            return nil
-        }
+        return picture
+    }
+
+    /// [full] at most [maxSide] pixels across (the I420 conversion is full size).
+    private static func fitted(_ full: CGImage, maxSide: Int) -> CGImage? {
         let w = full.width, h = full.height
-        var small = full
-        if max(w, h) > maxSide {
-            let scale = Double(maxSide) / Double(max(w, h))
-            let tw = max(1, Int(Double(w) * scale)), th = max(1, Int(Double(h) * scale))
-            guard let ctx = CGContext(data: nil, width: tw, height: th, bitsPerComponent: 8, bytesPerRow: 0,
-                                      space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipFirst.rawValue) else { return nil }
-            ctx.interpolationQuality = .medium
-            ctx.draw(full, in: CGRect(x: 0, y: 0, width: tw, height: th))
-            guard let made = ctx.makeImage() else { return nil }
-            small = made
-        }
+        guard max(w, h) > maxSide else { return full }
+        let scale = Double(maxSide) / Double(max(w, h))
+        let tw = max(1, Int(Double(w) * scale)), th = max(1, Int(Double(h) * scale))
+        guard let ctx = CGContext(data: nil, width: tw, height: th, bitsPerComponent: 8, bytesPerRow: 0,
+                                  space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipFirst.rawValue) else { return nil }
+        ctx.interpolationQuality = .medium
+        ctx.draw(full, in: CGRect(x: 0, y: 0, width: tw, height: th))
+        return ctx.makeImage()
+    }
+
+    private static func encoded(_ image: CGImage, quality: Double) -> Data? {
         let out = NSMutableData()
         guard let dest = CGImageDestinationCreateWithData(out, UTType.jpeg.identifier as CFString, 1, nil) else { return nil }
-        CGImageDestinationAddImage(dest, small, [kCGImageDestinationLossyCompressionQuality: 0.75] as CFDictionary)
+        CGImageDestinationAddImage(dest, image, [kCGImageDestinationLossyCompressionQuality: quality] as CFDictionary)
         guard CGImageDestinationFinalize(dest) else { return nil }
         return out as Data
     }
+
+    #if os(macOS)
+    // MARK: The last few seconds (the Mac that sends the family's alerts)
+
+    /// One picture of the stream as it came: a JPEG about 1280 pixels across, and a 64 × 36 grey copy of it to tell
+    /// how much changed between two of them.
+    struct Moment: Sendable {
+        let at: Date
+        let jpeg: Data
+        let grey: [UInt8]
+    }
+
+    /// Whether the last few seconds are kept: on the Mac that sends the family's alerts, so an alert's picture can be
+    /// the moment it happened (`StreamMoment`). `CameraStreams.keepWarm` sets it.
+    static var keepsMoments: Bool {
+        get { momentsLock.lock(); defer { momentsLock.unlock() }; return momentsOn }
+        set { momentsLock.lock(); momentsOn = newValue; momentsLock.unlock() }
+    }
+    private static let momentsLock = NSLock()
+    nonisolated(unsafe) private static var momentsOn = false
+
+    /// How far back they go.
+    static let momentSpan: TimeInterval = 12
+    /// About two a second, at most about 8 MB per camera.
+    private static let momentEvery: TimeInterval = 0.5
+    private static let momentBytes = 8_000_000
+    private static let momentSide = 1280
+    private static let greyWidth = 64, greyHeight = 36
+    /// Made one at a time, in the background, for every camera.
+    private static let momentQueue = DispatchQueue(label: "com.woodruff.family.camera-moments", qos: .utility)
+
+    private var moments: [Moment] = []
+    private var lastMoment = Date.distantPast
+    private var makingMoment = false
+
+    /// The pictures kept since [since], oldest first.
+    func moments(since: Date) -> [Moment] {
+        lock.lock(); defer { lock.unlock() }
+        return moments.filter { $0.at >= since }
+    }
+
+    /// On the stream's own thread, for every frame: one every half second is made into a kept picture in the
+    /// background. One waits at a time per camera, so a busy Mac keeps fewer rather than falling behind.
+    private func keepMoment(_ frame: RTCVideoFrame) {
+        let on = Self.keepsMoments, now = Date()
+        lock.lock()
+        guard on else {
+            if !moments.isEmpty { moments = [] }
+            lock.unlock()
+            return
+        }
+        let due = !makingMoment && now.timeIntervalSince(lastMoment) >= Self.momentEvery
+        if due { makingMoment = true; lastMoment = now }
+        lock.unlock()
+        guard due else { return }
+        Self.momentQueue.async { [weak self] in
+            let made = Self.moment(frame, at: now)
+            guard let self else { return }
+            self.lock.lock()
+            self.makingMoment = false
+            if let made { self.moments.append(made) }
+            self.trim()
+            self.lock.unlock()
+        }
+    }
+
+    private static func moment(_ frame: RTCVideoFrame, at: Date) -> Moment? {
+        guard let full = decoded(frame, maxSide: momentSide), let image = fitted(full, maxSide: momentSide),
+              let jpeg = encoded(image, quality: 0.7), let grey = grey(image) else { return nil }
+        return Moment(at: at, jpeg: jpeg, grey: grey)
+    }
+
+    /// [image] as 64 × 36 brightness values (0–255).
+    private static func grey(_ image: CGImage) -> [UInt8]? {
+        var px = [UInt8](repeating: 0, count: greyWidth * greyHeight)
+        let drawn = px.withUnsafeMutableBytes { buffer -> Bool in
+            guard let ctx = CGContext(data: buffer.baseAddress, width: greyWidth, height: greyHeight, bitsPerComponent: 8,
+                                      bytesPerRow: greyWidth, space: CGColorSpaceCreateDeviceGray(),
+                                      bitmapInfo: CGImageAlphaInfo.none.rawValue) else { return false }
+            ctx.interpolationQuality = .medium
+            ctx.draw(image, in: CGRect(x: 0, y: 0, width: greyWidth, height: greyHeight))
+            return true
+        }
+        return drawn ? px : nil
+    }
+
+    /// Only the last twelve seconds, and at most about 8 MB of them (with the lock held).
+    private func trim() {
+        let oldest = Date().addingTimeInterval(-Self.momentSpan)
+        var bytes = moments.reduce(0) { $0 + $1.jpeg.count }
+        while let first = moments.first, first.at < oldest || bytes > Self.momentBytes {
+            bytes -= first.jpeg.count
+            moments.removeFirst()
+        }
+    }
+
+    /// A while after the stream stopped: what's too old goes (all of it, once they aren't kept any more).
+    private func trimMoments() {
+        let on = Self.keepsMoments
+        lock.lock()
+        if on { trim() } else { moments = [] }
+        lock.unlock()
+    }
+    #endif
 
     /// I420 (video range, BT.601) to an RGB picture.
     private static func rgb(_ b: RTCI420BufferProtocol, width w: Int, height h: Int) -> CGImage? {

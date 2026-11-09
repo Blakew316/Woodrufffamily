@@ -588,6 +588,8 @@ final class CameraStreams {
     @ObservationIgnored private var warming: Task<Void, Never>?
     func keepWarm(_ on: Bool) {
         let always = PushRelay.shared.isSender
+        // The Mac that sends keeps each stream's last few seconds too: an alert's picture is the moment it happened.
+        FrameGrabber.keepsMoments = always
         if on || always {
             // A kept stream that's been "running" for over a minute without being live (dropped, its reconnects
             // refused) is started over: an alert's picture comes from it.
@@ -768,6 +770,12 @@ final class CameraStreams {
             if let f = firstLive, Date().timeIntervalSince(f) > 1, let jpeg = await p.frameJPEG() { return jpeg }
         }
         return nil
+    }
+
+    /// The last few seconds of [id]'s stream since [since], oldest first: kept on the Mac that sends the family's
+    /// alerts, so an alert's picture can be the moment it happened (`StreamMoment`).
+    func moments(_ id: String, since: Date) -> [FrameGrabber.Moment] {
+        players[id]?.moments(since: since) ?? []
     }
     #endif
 
@@ -1558,6 +1566,11 @@ final class LivePlayer: NSObject, WKNavigationDelegate {
               let jpeg = Data(base64Encoded: String(url[url.index(after: comma)...])), jpeg.count > 1000 else { return nil }
         return jpeg
     }
+
+    #if os(macOS)
+    /// The picture's last few seconds (kept on the Mac that sends the family's alerts); none from the web page.
+    func moments(since: Date) -> [FrameGrabber.Moment] { usingNative ? native.moments(since: since) : [] }
+    #endif
 
     private func saveStill() {
         let cam = camera

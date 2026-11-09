@@ -48,10 +48,11 @@ final class PhonePlayback {
         item.preferredForwardBufferDuration = 0
     }
 
-    /// Once it's playing, the player buffers as far ahead as it likes again (two seconds ahead all film long would
-    /// stop it at every hiccup of the connection).
+    /// Once it's playing: about a minute ahead at most, as the Android TVs' player keeps. Left to itself the player read
+    /// big films minutes ahead of what was watched, and Google Drive limits how much of one file it sends in a day: a
+    /// few starts and stops of the same film used that up, and Google refused it for the rest of the day.
     nonisolated static func playing(_ item: AVPlayerItem) {
-        item.preferredForwardBufferDuration = 0
+        item.preferredForwardBufferDuration = 60
     }
 
     /// The resume point, asked for before the player has read the file, so the first parts it fetches are from
@@ -372,6 +373,8 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
     /// way it always opened.
     private func watch(_ item: AVPlayerItem, _ p: AVPlayer, _ play: PhonePlay) {
         self.item = item
+        // One taking over mid-film (a renewed sign-in, the other way): the same minute ahead at most.
+        if begun { PhonePlayback.playing(item) }
         statusWatch?.invalidate()
         let which = ObjectIdentifier(item)
         statusWatch = item.observe(\.status, options: [.initial, .new]) { [weak self] item, _ in
