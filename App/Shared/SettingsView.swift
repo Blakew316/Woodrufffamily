@@ -386,6 +386,10 @@ struct TVsView: View {
         .navigationTitle("TVs")
         .inlineTitle()
         .refreshable { await fleet.refresh(); await fleet.loadAllHealth() }
+        #if os(tvOS)
+        // Apple TV has no pull to refresh: every TV is asked again as the page opens.
+        .task { await fleet.refresh(); await fleet.loadAllHealth() }
+        #endif
         .sheet(isPresented: $pairing) {
             NavigationStack {
                 ScrollView { PairPanel().padding() }
@@ -412,14 +416,26 @@ struct TVRow: View {
                     Text(tv.name)
                     if tv.needsAttention { Circle().fill(Palette.attention).frame(width: 7, height: 7).accessibilityLabel("Needs attention") }
                 }
+                #if os(tvOS)
+                // Apple TV: the row's own colour (as its name has), only dimmer. The grey and accent of the iPhone's
+                // row vanished on the Settings backdrop and on the white of the row the remote is on.
+                Text(line).font(.callout)
+                    .foregroundStyle(tv.needsAttention && tv.link == "refused" ? AnyShapeStyle(Palette.attention) : AnyShapeStyle(.foreground))
+                    .opacity(tv.needsAttention && tv.link == "refused" ? 1 : 0.75)
+                    .lineLimit(2)
+                if let v = tv.version, !tv.isUnpaired {
+                    Text("Version \(v)").font(.caption).opacity(0.6).lineLimit(1)
+                }
+                #else
                 Text(line).font(.subheadline).foregroundStyle(tv.needsAttention && tv.link == "refused" ? Palette.attention : tv.isUnpaired ? Color.accentColor : .secondary).lineLimit(1)
+                #endif
                 // What's playing now (a title left paused reads as nothing playing, as on its Home tile).
                 if let p = tv.nowPlaying, let d = p.duration, d > 0 {
                     TimelineView(.periodic(from: .now, by: 1)) { ctx in
                         // From when the TV's answer arrived (as the player's bar does), so every screen agrees.
                         let pos = min(d, livePosition(p, at: ctx.date, since: fleet.refreshedAt))
                         GeometryReader { g in
-                            Capsule().fill(.quaternary)
+                            Capsule().fill(track)
                                 .overlay(alignment: .leading) { Capsule().fill(Color.accentColor).frame(width: g.size.width * pos / d) }
                         }
                         .frame(height: 3)
@@ -429,10 +445,23 @@ struct TVRow: View {
             }
             Spacer(minLength: 0)
             if fleet.isBehind(tv) {
+                #if os(tvOS)
+                Text("Update").font(.callout).opacity(0.75)
+                #else
                 Text("Update").font(.subheadline).foregroundStyle(.secondary)
+                #endif
             }
         }
         .padding(.vertical, 2)
+    }
+
+    /// The progress bar's track: on Apple TV a light one, which shows on the Settings backdrop.
+    private var track: AnyShapeStyle {
+        #if os(tvOS)
+        return AnyShapeStyle(Color.white.opacity(0.25))
+        #else
+        return AnyShapeStyle(.quaternary)
+        #endif
     }
 
     private var line: String {

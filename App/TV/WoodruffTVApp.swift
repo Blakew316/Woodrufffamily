@@ -74,15 +74,50 @@ struct WoodruffTVApp: App {
             }
             if phase == .active {
                 CameraStreams.shared.foreground()
-                if AppWake.wentAway {
+                let woke = AppWake.wentAway
+                if woke {
                     AppWake.wentAway = false
                     HomeWeather.shared.refresh()
                     HomeGreeting.shared.refresh()
-                    SmartHome.shared.wake()
                     SettingsSync.shared.wake()
                     if !Demo.isOn && !fleet.hubs.isEmpty { LocationWeather.shared.start(fleet) }
                 }
+                // The TVs were asked again by `setActive`; the lights, speakers, Samsung, the fans, Cync, the Wi‑Fi
+                // and the cameras now too, so Home's tiles are right as soon as it shows.
+                TVFreshness.foreground(woke: woke)
             }
+        }
+    }
+}
+
+/// Apple TV: everything besides the TVs asked again when the app comes to the front: back from the background, and
+/// back from the screen saver or the Control Center, which only make it inactive (the iPhone app asks on its return
+/// from the background only, and its loops carry on from there). Not more than every 30 seconds, and the cameras not
+/// more than every 5 minutes (as often as their own loop), so flicking in and out doesn't ask the clouds over and over.
+@MainActor
+enum TVFreshness {
+    /// Since launch: the launch itself asks everything once.
+    private static var askedAt = Date()
+    private static var camerasAt = Date()
+
+    static func foreground(woke: Bool) {
+        guard !Demo.isOn else { return }
+        let now = Date()
+        // Back from the background: the lamps' listener opened again and every lamp and speaker asked, as on iPhone.
+        if woke { SmartHome.shared.wake() }
+        guard now.timeIntervalSince(askedAt) >= 30 else { return }
+        askedAt = now
+        if !woke { SmartHome.shared.wake() }
+        Task {
+            async let samsung: Void = SmartThings.shared.refresh(full: false)
+            async let fans: Void = Dreo.shared.refresh(full: false)
+            async let cync: Void = Cync.shared.refresh()
+            async let wifi: Void = DecoWifi.shared.refresh()
+            _ = await (samsung, fans, cync, wifi)
+        }
+        if now.timeIntervalSince(camerasAt) >= 300 {
+            camerasAt = now
+            Task { await NestCameras.shared.load() }
         }
     }
 }
