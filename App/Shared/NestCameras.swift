@@ -515,6 +515,8 @@ final class CameraStreams {
             try? await Task.sleep(nanoseconds: 6_000_000_000)
             guard let self, !Task.isCancelled, self.opening == id else { return }
             self.opening = nil
+            // The tiles that waited behind it start again (when its view is up, they do as it closes instead).
+            if self.expanded == nil { self.unfocus() }
         }
         #if !os(tvOS)
         if LivePlayer.nativeEnabled { NativeRTC.prewarm() }
@@ -694,7 +696,7 @@ final class CameraStreams {
     #if os(macOS)
     /// Far off screen: a camera's picture plays here while no window shows it (a web view in no window plays no video).
     @ObservationIgnored private lazy var grabWindow: NSWindow = {
-        let w = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: 640, height: 360), styleMask: .borderless,
+        let w = OffscreenCameraWindow(contentRect: NSRect(x: -20000, y: -20000, width: 640, height: 360), styleMask: .borderless,
                          backing: .buffered, defer: false)
         w.isReleasedWhenClosed = false
         w.ignoresMouseEvents = true
@@ -1706,9 +1708,70 @@ struct CameraFullScreen: View {
 #else
 struct LiveWebView: NSViewRepresentable {
     var player: LivePlayer
-    func makeNSView(context: Context) -> NSView { player.surface }
-    func updateNSView(_ v: NSView, context: Context) {}
+    /// The stream's one picture, held in a frame of its own. A view is in one place at a time, and the Mac's off-screen
+    /// window (the doorbell and driveway kept live) takes it whenever it's in no window, as it is while Home is still
+    /// putting its tiles in: so the frame takes it back as it comes into a window, or its tile stays black over a
+    /// camera that's live off screen.
+    func makeNSView(context: Context) -> NSView {
+        let host = Host(player: player)
+        host.take()
+        return host
+    }
+    func updateNSView(_ v: NSView, context: Context) {
+        guard let host = v as? Host else { return }
+        host.player = player
+        host.takeIfFree()
+    }
+    /// Gone (a tile scrolled away, the big view closed): a camera kept live goes back to the off-screen window.
+    static func dismantleNSView(_ v: NSView, coordinator: ()) {
+        guard let host = v as? Host, host.player.surface.superview === host else { return }
+        host.player.surface.removeFromSuperview()
+        let cam = host.player.camera
+        if CameraStreams.shared.pinned.contains(cam.id) { CameraStreams.shared.keepPlaying(cam) }
+    }
+
+    final class Host: NSView {
+        var player: LivePlayer
+        init(player: LivePlayer) {
+            self.player = player
+            super.init(frame: .zero)
+            wantsLayer = true
+            layer?.backgroundColor = NSColor.black.cgColor
+            layer?.masksToBounds = true
+        }
+        required init?(coder: NSCoder) { fatalError() }
+
+        /// The picture comes here, from wherever it is.
+        func take() {
+            let s = player.surface
+            guard s.superview !== self else { return }
+            s.removeFromSuperview()
+            s.frame = bounds
+            s.autoresizingMask = [.width, .height]
+            addSubview(s)
+        }
+
+        /// Only from nowhere or the off-screen window: never from the big view or another tile on screen.
+        func takeIfFree() {
+            let s = player.surface
+            guard window != nil, s.superview !== self, s.window == nil || s.window is OffscreenCameraWindow else { return }
+            take()
+        }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            takeIfFree()
+        }
+
+        override func layout() {
+            super.layout()
+            if player.surface.superview === self { player.surface.frame = bounds }
+        }
+    }
 }
+
+/// The far-off window the Mac's cameras play in while no window shows them.
+final class OffscreenCameraWindow: NSWindow {}
 #endif
 
 // MARK: - Settings
