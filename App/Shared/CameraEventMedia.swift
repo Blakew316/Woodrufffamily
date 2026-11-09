@@ -106,10 +106,12 @@ enum CameraEventMedia {
     /// neither for it, or it doesn't come within [timeout] seconds.
     /// [using] is a Google token the caller already has (the Mac's own sign-in); else the one kept for the extension.
     static func fetch(camera: String, eventID: String?, clipURL: String?, key: String, timeout: Double, using: String? = nil) async -> URL? {
-        if let kept = cached(key) { return kept }
+        // A clip kept is the best there is; a snapshot kept is replaced only by the event's clip, never asked for again.
+        let kept = cached(key)
+        if let kept, kept.pathExtension == "mp4" || (clipURL ?? "").isEmpty { return kept }
         var given = using
         if given == nil { given = await token() }
-        guard let f = folder, let token = given else { return nil }
+        guard let f = folder, let token = given else { return kept }
         prune(f)
         if let clipURL, !clipURL.isEmpty, let u = URL(string: clipURL) {
             var r = URLRequest(url: u, timeoutInterval: timeout)
@@ -125,6 +127,7 @@ enum CameraEventMedia {
                 try? FileManager.default.removeItem(at: tmp)
             }
         }
+        if let kept { return kept }
         guard let eventID, !eventID.isEmpty, let cmd = URL(string: sdm + camera + ":executeCommand") else { return nil }
         var r = URLRequest(url: cmd, timeoutInterval: timeout)
         r.httpMethod = "POST"
