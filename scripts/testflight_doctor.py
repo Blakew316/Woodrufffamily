@@ -94,6 +94,8 @@ def main(argv=None):
     p = argparse.ArgumentParser()
     p.add_argument("--fix", action="store_true")
     p.add_argument("--invite", action="append", default=[], help="email to invite to the team (Developer)")
+    p.add_argument("--resend", action="append", default=[], help="tester email to send a fresh TestFlight invite")
+    p.add_argument("--feedback-email", default="blakewoodruff9@gmail.com", help="feedback email for Test Information")
     p.add_argument("--deep", action="store_true", help="also read testers' access, the builds' icons and the app's beta details")
     args = p.parse_args(argv)
 
@@ -189,6 +191,19 @@ def main(argv=None):
             except RuntimeError as e:
                 say("Couldn't add the builds: %s" % e)
 
+    # Fix: TestFlight's Test Information (beta description and feedback email), empty until now.
+    locs = safe(key, "/apps/%s/betaAppLocalizations" % app).get("data") or []
+    if not locs:
+        try:
+            asc.call(key, "POST", "/betaAppLocalizations", {"data": {
+                "type": "betaAppLocalizations",
+                "attributes": {"locale": "en-US", "feedbackEmail": args.feedback_email,
+                               "description": "Woodruff Family: the family's TVs, cameras and smart home in one app."},
+                "relationships": {"app": {"data": {"type": "apps", "id": app}}}}})
+            say("FIXED: filled in TestFlight's Test Information (description, feedback email %s)." % args.feedback_email)
+        except RuntimeError as e:
+            say("Couldn't fill in Test Information: %s" % e)
+
     gid = internal[0]["id"]
     have = {((t.get("attributes") or {}).get("email") or "").lower() for t in internal[1]}
     for e, (first, last) in sorted(emails.items()):
@@ -201,6 +216,33 @@ def main(argv=None):
             say("FIXED: %s added to the internal group (TestFlight sends an invite)." % e)
         except RuntimeError as err:
             say("Couldn't add %s: %s" % (e, err))
+
+    # A fresh invite for testers whose invite never arrived: Apple's resend, else remove and add back.
+    for e in args.resend:
+        e = e.strip().lower()
+        found = asc.call(key, "GET", "/betaTesters" + q({"filter[email]": e, "filter[apps]": app, "limit": 5})).get("data") or []
+        if not found:
+            say("No tester %s to resend to." % e)
+            continue
+        tid = found[0]["id"]
+        try:
+            asc.call(key, "POST", "/betaTesterInvitations", {"data": {
+                "type": "betaTesterInvitations",
+                "relationships": {"app": {"data": {"type": "apps", "id": app}},
+                                  "betaTester": {"data": {"type": "betaTesters", "id": tid}}}}})
+            say("FIXED: Apple sent %s a fresh TestFlight invite." % e)
+            continue
+        except RuntimeError as err:
+            say("Resend didn't go through (%s); removing and adding %s back instead." % (err, e))
+        try:
+            asc.call(key, "DELETE", "/betaTesters/%s" % tid)
+            first, last = emails.get(e, ("Justin", "Woodruff"))
+            asc.call(key, "POST", "/betaTesters", {"data": {
+                "type": "betaTesters", "attributes": {"email": e, "firstName": first or "Justin", "lastName": last or "Woodruff"},
+                "relationships": {"betaGroups": {"data": [{"type": "betaGroups", "id": gid}]}}}})
+            say("FIXED: %s removed and added back to the internal group: Apple sends a new invite." % e)
+        except RuntimeError as err:
+            say("Couldn't re-add %s: %s" % (e, err))
 
     for e in args.invite:
         e = e.strip().lower()
