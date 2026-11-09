@@ -356,7 +356,9 @@ final class PushRelay {
         if anySent { lastSent = Date() }
         lastError = failure
         // The doorbell rang: its Live Activity on each iPhone that can show one.
-        if userInfo["ring"] == "1", let camera = userInfo["camera"] { await startDoorbell(camera: camera, name: body, auth: auth) }
+        if userInfo["ring"] == "1", let camera = userInfo["camera"] {
+            await startDoorbell(camera: camera, name: body, thumb: userInfo["thumb"], auth: auth)
+        }
     }
 
     /// What one iPhone's push came to.
@@ -371,20 +373,29 @@ final class PushRelay {
     }
 
     /// Starts the doorbell's Live Activity on every iPhone that gave an address for it (ActivityKit push-to-start).
-    private func startDoorbell(camera: String, name: String, auth: String) async {
+    /// [thumb]: the ring's small picture (the alert push's): the activity shows the moment it arrives, before the
+    /// alert's own picture step on the iPhone is done, and with only the door's last kept picture it showed an earlier
+    /// moment, or none.
+    private func startDoorbell(camera: String, name: String, thumb: String?, auth: String) async {
         let now = Date()
-        let aps: [String: Any] = [
+        // Dates in ActivityKit's state are seconds since 2001 (Codable's default).
+        let at = now.timeIntervalSinceReferenceDate
+        var aps: [String: Any] = [
             "timestamp": Int(now.timeIntervalSince1970),
             "event": "start",
             "attributes-type": "DoorbellAttributes",
             "attributes": ["camera": camera, "name": name],
-            // Dates in ActivityKit's state are seconds since 2001 (Codable's default).
-            "content-state": ["at": now.timeIntervalSinceReferenceDate],
+            "content-state": ["at": at],
             "stale-date": Int(now.timeIntervalSince1970) + 120,
             // Shown as the activity itself (not a second banner), quietly: the alert already rang.
             "alert": ["title": "Someone\u{2019}s at the door", "body": name],
         ]
-        guard let data = try? JSONSerialization.data(withJSONObject: ["aps": aps]) else { return }
+        guard var data = Self.encoded(["aps": aps]) else { return }
+        // The picture too, while the push stays within Apple's 4 KB (without it, the door's last kept picture shows).
+        if let thumb, !thumb.isEmpty {
+            aps["content-state"] = ["at": at, "thumb": thumb]
+            if let bigger = Self.encoded(["aps": aps]), bigger.count <= Self.pushLimit - 32 { data = bigger }
+        }
         for (_, t) in tokens {
             guard let start = t.start, !start.isEmpty, start.allSatisfy(\.isHexDigit) else { continue }
             let (code, reason) = await post(data, token: t, env: t.env == "production" ? "production" : "development",

@@ -55,19 +55,26 @@ final class DriveStream: NSObject {
 
     /// Drive's own address with the sign-in in the request's header, for the player to fetch and buffer itself:
     /// far faster for big films than answering its requests one by one (as the Android TVs' player does). Nil
-    /// without a kept token lasting at least [minLife] seconds (then the asset above is used).
-    nonisolated static func directAsset(fileID: String, minLife: Double = 900) -> AVURLAsset? {
-        guard let token = GoogleDrive.cachedToken(minLife: minLife) else { return nil }
-        return AVURLAsset(url: GoogleDrive.mediaURL(fileID),
-                          options: ["AVURLAssetHTTPHeaderFieldsKey": ["Authorization": "Bearer \(token)"]])
+    /// without a kept token lasting at least [minLife] seconds (then the asset above is used). [expires] is when the
+    /// sign-in it was given runs out (seconds since 1970): the player's requests are refused after that.
+    nonisolated static func directAsset(fileID: String, minLife: Double = 900) -> (asset: AVURLAsset, expires: Double)? {
+        guard let kept = GoogleDrive.cachedTokenUntil(minLife: minLife) else { return nil }
+        let asset = AVURLAsset(url: GoogleDrive.mediaURL(fileID),
+                               options: ["AVURLAssetHTTPHeaderFieldsKey": ["Authorization": "Bearer \(kept.token)"]])
+        return (asset, kept.expires)
     }
+
+    /// Why the last part couldn't be fetched, in the last few seconds: Google's reason or the connection's (the
+    /// player passes on only a number, "OSStatus -1001").
+    var recentFailure: Error? { loader.failure.recent(within: 20) }
 
     /// Gets a token that will last the film's start and fetches the file's first part (and its index when that's
     /// further on), kept for a while for the player. Asked again for the same file, it does nothing.
     static func prefetch(fileID: String) {
         Task {
-            // Long enough for Play to use Drive's address directly (directAsset).
-            guard let token = try? await GoogleDrive.token(minLife: 1800) else { return }
+            // Long enough for Play to use Drive's address directly (directAsset), and for most of an hour before the
+            // sign-in the player is given has to be renewed (a renewal pauses the picture for a moment).
+            guard let token = try? await GoogleDrive.token(minLife: 2700) else { return }
             streamQueue.async { Prefetch.start(fileID, token: token) }
         }
     }
@@ -96,6 +103,23 @@ final class DriveStream: NSObject {
         info.contentType = UTType(mimeType: mime ?? "video/mp4")?.identifier ?? UTType.mpeg4Movie.identifier
         info.contentLength = total
         info.isByteRangeAccessSupported = true
+    }
+}
+
+/// Why a stream's last part couldn't be fetched, and when: set on the stream queue, read from the main thread.
+private final class LastFailure: @unchecked Sendable {
+    private let lock = NSLock()
+    private var error: Error?
+    private var at = Date.distantPast
+
+    func set(_ e: Error) {
+        lock.lock(); error = e; at = Date(); lock.unlock()
+    }
+
+    /// The last one, if it was within [within] seconds.
+    func recent(within: TimeInterval) -> Error? {
+        lock.lock(); defer { lock.unlock() }
+        return Date().timeIntervalSince(at) < within ? error : nil
     }
 }
 
@@ -294,10 +318,20 @@ private final class Loader: NSObject, AVAssetResourceLoaderDelegate, StreamTask 
         streamQueue.asyncAfter(deadline: .now() + (delay ?? 0.5 * Double(next))) { [weak self] in
             guard let self, !req.isCancelled, !req.isFinished else { return }
             if let token = GoogleDrive.cachedToken() { self.send(req, token: token, retried: retried, attempts: next) }
-            else { self.fetch(req, retried: false) }
+            // A fresh token first: still counted, so a connection that never answers isn't asked for ever.
+            else { self.fetch(req, retried: false, attempts: next) }
         }
     }
     private var loads: [Int: Load] = [:]
+
+    /// Why the last part couldn't be fetched, for the player's message (it passes on only a number).
+    let failure = LastFailure()
+
+    /// Tells the player [req] can't be had, keeping why.
+    private func fail(_ req: AVAssetResourceLoadingRequest, _ error: Error) {
+        failure.set(error)
+        req.finishLoading(with: error)
+    }
 
     init(fileID: String) {
         self.fileID = fileID
@@ -337,7 +371,7 @@ private final class Loader: NSObject, AVAssetResourceLoaderDelegate, StreamTask 
         guard let e = Prefetch.cache[fileID] else { return false }
         if let info = req.contentInformationRequest {
             if let why = DriveStream.unplayable(e.mime) {
-                req.finishLoading(with: GoogleDrive.Failure(why))
+                fail(req, GoogleDrive.Failure(why))
                 return true
             }
             DriveStream.fill(info, total: e.total, mime: e.mime)
@@ -356,22 +390,22 @@ private final class Loader: NSObject, AVAssetResourceLoaderDelegate, StreamTask 
     }
 
     /// A current token (a fresh one after Google refused the last), then the part asked for.
-    private func fetch(_ req: AVAssetResourceLoadingRequest, retried: Bool) {
+    private func fetch(_ req: AVAssetResourceLoadingRequest, retried: Bool, attempts: Int = 0) {
         // Usually in memory: sent at once, without waiting for the main thread.
         if !retried, let token = GoogleDrive.cachedToken() {
-            send(req, token: token, retried: false)
+            send(req, token: token, retried: false, attempts: attempts)
             return
         }
         Task {
             do {
                 if retried { await GoogleDrive.dropToken() }
                 let token = try await GoogleDrive.token()
-                streamQueue.async { self.send(req, token: token, retried: retried) }
+                streamQueue.async { self.send(req, token: token, retried: retried, attempts: attempts) }
             } catch {
                 let ns = error as NSError
                 await MainActor.run { Diagnostics.shared.notePlayback("Drive sign-in couldn’t be renewed (\(ns.domain) \(ns.code))") }
                 streamQueue.async {
-                    if !req.isCancelled && !req.isFinished { req.finishLoading(with: error) }
+                    if !req.isCancelled && !req.isFinished { self.fail(req, error) }
                 }
             }
         }
@@ -421,7 +455,7 @@ private final class Loader: NSObject, AVAssetResourceLoaderDelegate, StreamTask 
             if let why = DriveStream.unplayable(mime) {
                 loads[dataTask.taskIdentifier] = nil
                 answer(.cancel)
-                if !load.request.isCancelled && !load.request.isFinished { load.request.finishLoading(with: GoogleDrive.Failure(why)) }
+                if !load.request.isCancelled && !load.request.isFinished { fail(load.request, GoogleDrive.Failure(why)) }
                 return
             }
             let total = DriveStream.total(response) ?? (code == 200 ? max(0, response.expectedContentLength) : 0)
@@ -459,7 +493,7 @@ private final class Loader: NSObject, AVAssetResourceLoaderDelegate, StreamTask 
             again(load)
             return
         }
-        if let error { req.finishLoading(with: error) } else { req.finishLoading() }
+        if let error { fail(req, error) } else { req.finishLoading() }
     }
 
     /// Google refused a part. Busy (its rate limits, a server error): asked again after a growing pause. A file it
@@ -480,6 +514,6 @@ private final class Loader: NSObject, AVAssetResourceLoaderDelegate, StreamTask 
         }
         let f = GoogleDrive.failure(code, load.body)
         refusal = f.message
-        load.request.finishLoading(with: f)
+        fail(load.request, f)
     }
 }

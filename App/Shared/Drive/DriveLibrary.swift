@@ -413,7 +413,8 @@ final class DriveLibrary: WatchSource {
         // A length not known this time (the player hadn't read it) keeps the one known before.
         s.pos = pos; s.at = nowMS; s.next = false
         if dur > 0 { s.dur = dur }
-        if s.dur > 0 && (s.dur - pos < 5_000 || pos >= 0.95 * s.dur) {
+        let done = s.dur > 0 && (s.dur - pos < 5_000 || pos >= 0.95 * s.dur)
+        if done {
             saved.spots[key] = nil
             saved.gone[key] = nowMS
             saved.watched[key] = nowMS
@@ -423,7 +424,26 @@ final class DriveLibrary: WatchSource {
             saved.spots[key] = s
         }
         unsynced = true
-        store()
+        // The whole library is written each time, and the player reports every 10 seconds: once a minute while it
+        // plays (its stop writes it at once, as the app leaving does).
+        if done || Date().timeIntervalSince(playWritten) >= 60 {
+            playWritten = Date()
+            store()
+        }
+    }
+    /// When a play's place was last written to disk.
+    @ObservationIgnored private var playWritten = Date.distantPast
+
+    /// Plays on this device that have stopped, counted: Watch shows where each was left off as soon as one stops
+    /// (Continue Watching), not on its next look a minute later.
+    private(set) var stoppedHere = 0
+    func playStopped() { stoppedHere += 1 }
+
+    /// Where [key] was left off as kept now (ms), when it's part way through: the newest of this device's plays and
+    /// the TVs'. A page's Resume can carry an older place (read before the last play here, or the TVs' last word).
+    func resumePosition(_ key: String) -> Double? {
+        guard let s = saved.spots[key], !s.next, s.pos > 0, s.dur <= 0 || s.pos / s.dur < 0.95 else { return nil }
+        return s.pos
     }
 
     /// What a play started here is part of (its show, its episode), for Continue Watching.

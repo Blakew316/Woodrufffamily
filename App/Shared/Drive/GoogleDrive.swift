@@ -187,6 +187,9 @@ enum GoogleDrive {
     nonisolated static func cachedToken() -> String? { memo.get(minLife: 60) }
     /// The kept token if it lasts at least [minLife] seconds more.
     nonisolated static func cachedToken(minLife: Double) -> String? { memo.get(minLife: minLife) }
+    /// The kept token and when it runs out (seconds since 1970), if it lasts at least [minLife] seconds more: a film
+    /// given it renews it before then.
+    nonisolated static func cachedTokenUntil(minLife: Double) -> (token: String, expires: Double)? { memo.lasting(minLife: minLife) }
 
     nonisolated private static let memo = DriveTokenMemo()
 
@@ -367,9 +370,13 @@ private final class DriveTokenMemo: @unchecked Sendable {
     private var token: String?
     private var expires: Double = 0
     func get(minLife: Double) -> String? {
+        lasting(minLife: minLife)?.token
+    }
+    /// The token with when it runs out, read together (a fresh one could arrive between two reads).
+    func lasting(minLife: Double) -> (token: String, expires: Double)? {
         lock.lock(); defer { lock.unlock() }
         guard let token, !token.isEmpty, expires - Date().timeIntervalSince1970 > minLife else { return nil }
-        return token
+        return (token, expires)
     }
     func set(_ t: String?, expires e: Double) {
         lock.lock(); token = t; expires = e; lock.unlock()

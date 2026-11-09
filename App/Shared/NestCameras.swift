@@ -601,10 +601,11 @@ final class CameraStreams {
     }
     #endif
 
-    /// A live picture from [id]'s stream: kept for its tile, and on disk for next time.
-    func keepStill(_ cam: NestCameras.Camera, _ jpeg: Data) {
+    /// A live picture from [id]'s stream: kept for its tile, and on disk for next time. [image]: the same picture
+    /// already decoded (Apple TV's), so the tile doesn't decode it again on the main thread.
+    func keepStill(_ cam: NestCameras.Camera, _ jpeg: Data, image: PlatformImage? = nil) {
         let id = cam.id
-        guard let img = PlatformImage(data: jpeg) else { return }
+        guard let img = image ?? PlatformImage(data: jpeg) else { return }
         #if os(macOS)
         // The Mac's TVs & Cameras widget shows it too.
         if MacCameraShare.save(id: id, name: cam.name, doorbell: cam.doorbell, jpeg: jpeg) {
@@ -791,9 +792,29 @@ final class CameraStreams {
         letGoSoon(after: 120)
     }
 
-    /// The app went to the background (or, on the Mac, every window went out of sight): keep the streams a while, in
-    /// case it's a quick switch.
-    func background(after seconds: Double = 60) { backgroundAt = Date(); letGoSoon(after: seconds) }
+    #if os(tvOS)
+    /// How long the streams are kept once the app is in the background. Apple TV: not at all. The app is put to sleep
+    /// there, where a picture stream left open only piles up old pictures (shown in a rush on the way back) and keeps
+    /// the Mac Studio taking them; coming back starts the cameras on screen again at once, from their last pictures
+    /// (`foreground`).
+    nonisolated static let keptInBackground: Double = 0
+    #else
+    /// How long the streams are kept once the app is in the background (a quick switch finds them still going).
+    nonisolated static let keptInBackground: Double = 60
+    #endif
+
+    /// The app went to the background (or, on the Mac, every window went out of sight; on Apple TV, the screen saver
+    /// came up): keep the streams a while, in case it's a quick switch.
+    func background(after seconds: Double = CameraStreams.keptInBackground) {
+        backgroundAt = Date()
+        guard seconds > 0 else {
+            // Each ends now, its tile left as it was (no "Paused" in the app switcher's picture of it).
+            idle?.cancel(); idle = nil
+            for (k, p) in players where !pinned.contains(k) && !grabbing.contains(k) { p.pause() }
+            return
+        }
+        letGoSoon(after: seconds)
+    }
 
     func foreground() {
         #if os(iOS) || os(tvOS)
@@ -1121,6 +1142,16 @@ struct CameraLiveView: View {
         return camera.online ? (streams.status[camera.id] ?? "Starting…") : "Offline"
     }
 
+    /// The dot by the status. Apple TV's picture can be an older one while the Mac Studio's stream for the camera
+    /// starts again ("Updating…"), so there it's red only while the picture is live.
+    private var dotColor: Color {
+        #if os(tvOS)
+        return camera.online && streams.status[camera.id] == "Live" ? .red : .gray
+        #else
+        return camera.online ? .red : .gray
+        #endif
+    }
+
     /// iPhone and iPad: the camera floats in the middle of the screen as one rounded picture over the dimmed, blurred
     /// app, with its name over the top of the picture and small controls in its corners. Tap outside it or swipe it
     /// down to close.
@@ -1173,7 +1204,7 @@ struct CameraLiveView: View {
                     Text(camera.name).font(.headline).lineLimit(1)
                     HStack(spacing: 5) {
                         if showLive || replay == nil {
-                            Circle().fill(camera.online ? Color.red : Color.gray).frame(width: 6, height: 6)
+                            Circle().fill(dotColor).frame(width: 6, height: 6)
                         }
                         Text(subtitle).font(.caption.weight(.medium)).lineLimit(1)
                     }
@@ -1197,10 +1228,13 @@ struct CameraLiveView: View {
                     }
                     .accessibilityLabel(showLive ? "Replay" : "Live")
                 }
+                // Apple TV's cameras are pictures without sound: no sound button there (it did nothing).
+                #if !os(tvOS)
                 GlassCircle(symbol: muted ? "speaker.slash.fill" : "speaker.wave.2.fill", size: 30) {
                     muted.toggle(); player.setMuted(muted)
                 }
                 .accessibilityLabel(muted ? "Turn Sound On" : "Turn Sound Off")
+                #endif
                 if showLive || replay == nil {
                     GlassCircle(symbol: "arrow.up.left.and.arrow.down.right", size: 30) { fullScreen = true }
                         .accessibilityLabel("Full Screen")
@@ -1699,10 +1733,13 @@ struct CameraFullScreen: View {
         }
         .overlay(alignment: .topTrailing) {
             HStack(spacing: 10) {
+                // No sound on Apple TV's cameras (see the card's controls).
+                #if !os(tvOS)
                 GlassCircle(symbol: muted ? "speaker.slash.fill" : "speaker.wave.2.fill", size: 40) {
                     muted.toggle(); player.setMuted(muted)
                 }
                 .accessibilityLabel(muted ? "Turn Sound On" : "Turn Sound Off")
+                #endif
                 GlassCircle(symbol: "arrow.down.right.and.arrow.up.left", size: 40) { dismiss() }
                     .accessibilityLabel("Exit Full Screen")
             }

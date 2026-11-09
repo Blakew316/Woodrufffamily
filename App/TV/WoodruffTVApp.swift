@@ -75,6 +75,11 @@ struct WoodruffTVApp: App {
                 ImageStore.shared.memory.empty()
                 BlurStore.empty()
             }
+            // The screen saver (or Control Center) over the app only makes it inactive, and the cameras on screen kept
+            // sending pictures nobody saw (the open one eight a second) for as long as it ran: they stop after half a
+            // minute of it, and start again on the way back (`foreground` below). Not on the way back from the
+            // background, which passes through inactive too.
+            if phase == .inactive, !AppWake.wentAway { CameraStreams.shared.background(after: 30) }
             if phase == .active {
                 CameraStreams.shared.foreground()
                 // Asking the Mac Studio for alerts again (only once the launch has started everything else).

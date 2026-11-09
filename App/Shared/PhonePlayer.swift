@@ -24,9 +24,11 @@ final class PhonePlayback {
     /// Settings → Watch: the Play button plays on this device instead of the TV.
     static var playsHere: Bool { UserDefaults.standard.string(forKey: "watch.playOn") == "here" }
 
-    /// "iPhone", "iPad" or "This Mac", for the button.
+    /// "iPhone", "iPad", "Apple TV" or "This Mac", for the button (and the progress the TVs read).
     static var deviceName: String {
-        #if os(iOS) || os(tvOS)
+        #if os(tvOS)
+        return "Apple TV"
+        #elseif os(iOS)
         return UIDevice.current.userInterfaceIdiom == .pad ? "iPad" : "iPhone"
         #else
         return "This Mac"
@@ -61,11 +63,22 @@ final class PhonePlayback {
 
     /// Once the file is open: at the resume point (again, if the early ask didn't take) and playing.
     static func begin(_ p: AVPlayer, _ play: PhonePlay) async {
-        if play.start > 5, abs(p.currentTime().seconds - play.start) > 3 {
-            await p.seek(to: CMTime(seconds: play.start, preferredTimescale: 600), toleranceBefore: nearEnough, toleranceAfter: nearEnough)
-        }
-        // Play, letting the player wait until it can keep up (playImmediately started big films with almost
-        // nothing buffered, so they stuttered for the first seconds).
+        await toResumePoint(p, play)
+        startPlaying(p)
+    }
+
+    /// At the resume point once the file is open, if the early ask didn't take.
+    static func toResumePoint(_ p: AVPlayer, _ play: PhonePlay) async {
+        guard play.start > 5, abs(p.currentTime().seconds - play.start) > 3 else { return }
+        // A seek that reports back is refused (an exception) until the item is open, and another may have just
+        // taken over: then it's asked for the way that waits for it.
+        guard p.currentItem?.status == .readyToPlay else { seekAhead(p, play); return }
+        _ = await p.seek(to: CMTime(seconds: play.start, preferredTimescale: 600), toleranceBefore: nearEnough, toleranceAfter: nearEnough)
+    }
+
+    /// Plays, letting the player wait until it can keep up (playImmediately started big films with almost nothing
+    /// buffered, so they stuttered for the first seconds).
+    static func startPlaying(_ p: AVPlayer) {
         p.automaticallyWaitsToMinimizeStalling = true
         p.play()
     }
@@ -88,7 +101,13 @@ final class PhonePlayback {
 
     /// What to play [a] here, or nil (and it says why) when it can't be.
     static func play(_ a: PlayAction, fleet: Fleet, fromStart: Bool = false) -> PhonePlay? {
-        let start = fromStart ? 0 : max(0, (a.position ?? 0) / 1000)
+        var start = fromStart ? 0 : max(0, (a.position ?? 0) / 1000)
+        // Resume from the Drive library: where it was left off as kept now, not as the page last read it (a page
+        // still showing, a title's card opening with what it showed last time, a TV's play merged in since).
+        if !fromStart, (a.position ?? 0) > 0, a.key.hasPrefix("drive:"), WatchSources.usesDrive,
+           let ms = DriveLibrary.shared.resumePosition(a.key) {
+            start = ms / 1000
+        }
         let art = a.key.hasPrefix("drive:") ? DriveLibrary.shared.art(for: a.key) : nil
         // Downloaded here: from the device, with or without a connection.
         if a.key.hasPrefix("drive:"), let file = DriveDownloads.shared.local(a.key) {
@@ -134,7 +153,9 @@ final class PhonePlayback {
             e = inner
         }
         let offline = [NSURLErrorNotConnectedToInternet, NSURLErrorNetworkConnectionLost, NSURLErrorTimedOut]
-        if let ns = e as NSError?, ns.domain == NSURLErrorDomain, offline.contains(ns.code) {
+        // A Drive request that failed this way reaches here as an OSStatus of the same number (the player keeps only
+        // the number): "OSStatus -1001" is a request that timed out.
+        if let ns = e as NSError?, ns.domain == NSURLErrorDomain || ns.domain == NSOSStatusErrorDomain, offline.contains(ns.code) {
             return "No connection. Check the Wi‑Fi, or download it in Settings → Watch → Downloads to watch offline."
         }
         switch play.source {
@@ -181,11 +202,20 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
     private var pendingFailure: String?
     /// Says so when it hasn't started in time.
     private var watchdog: Task<Void, Never>?
-    /// Playing Drive's address directly: its file, and the task that renews the sign-in before it runs out.
+    /// Playing Drive's address directly: its file, when the sign-in it was given runs out (seconds since 1970), and
+    /// the task that renews it before then.
     private var directID: String?
+    private var directExpires: Double = 0
     private var renew: Task<Void, Never>?
     /// The item playing now (it changes when Drive's address fails and the file is read request by request).
     private var item: AVPlayerItem?
+    /// The player's title and picture for the film, given to every item that takes over.
+    private var metadata: [AVMetadataItem] = []
+    /// Where an item taking over mid-film (a renewed sign-in, the other way after Drive's address failed) goes on
+    /// from, once it's open.
+    private var resumeAt: CMTime?
+    /// How long the start waited for the TV to change its picture mode (for the Macs' log).
+    private var switchWait: Double?
 
     private static func titleItem(_ title: String) -> AVMetadataItem {
         let t = AVMutableMetadataItem()
@@ -195,25 +225,53 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
         return t
     }
 
-    /// A sign-in lasts an hour: before it runs out, the same place in a fresh item with a fresh one (a long film
-    /// would otherwise stop when the player next asks Drive for more).
+    /// A sign-in lasts an hour, and the one Drive's address was given may have had much less left (a fixed 40 minutes
+    /// let a film whose sign-in had 30 left stop, and go on the slower way). Five minutes before it runs out: the same
+    /// place in a fresh item with a fresh one, opened before it takes over (so the picture only pauses a moment), with
+    /// the audio and subtitles picked.
     private func renewSignIn(_ p: AVPlayer, _ play: PhonePlay) {
         renew?.cancel()
         renew = Task { @MainActor [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 40 * 60 * 1_000_000_000)
-                guard let self, self.player === p, let id = self.directID else { return }
-                guard (try? await GoogleDrive.token(minLife: 1800)) != nil,
-                      let a = DriveStream.directAsset(fileID: id, minLife: 1800) else { continue }
+                let left = (self?.directExpires ?? 0) - Date().timeIntervalSince1970
+                // A minute between tries at the least (Google out of reach near the end: asked again), an hour at most.
+                try? await Task.sleep(nanoseconds: UInt64(min(3600, max(60, left - 300)) * 1_000_000_000))
+                guard !Task.isCancelled, let self, self.player === p, let id = self.directID, let old = p.currentItem else { return }
+                guard (try? await GoogleDrive.token(minLife: 2700)) != nil,
+                      let fresh = DriveStream.directAsset(fileID: id, minLife: 2700),
+                      (try? await fresh.asset.load(.isPlayable)) == true,
+                      self.player === p, self.directID == id, p.currentItem === old else { continue }
+                let next = AVPlayerItem(asset: fresh.asset)
+                next.externalMetadata = self.metadata
+                await Self.keepChoices(from: old, to: next)
+                guard self.player === p, self.directID == id, p.currentItem === old else { continue }
                 let at = p.currentTime()
                 let wasPlaying = p.rate > 0
-                let fresh = AVPlayerItem(asset: a)
-                fresh.externalMetadata = [Self.titleItem(play.title)]
-                fresh.seek(to: at, toleranceBefore: .zero, toleranceAfter: .zero, completionHandler: nil)
-                self.watch(fresh, p, play)
-                p.replaceCurrentItem(with: fresh)
+                self.resumeAt = at
+                self.directExpires = fresh.expires
+                self.watch(next, p, play)
+                p.replaceCurrentItem(with: next)
+                Self.place(p, at: at)
                 if wasPlaying { p.play() }
             }
+        }
+    }
+
+    /// [p] to [at] and never past it: from the keyframe up to two seconds before (quick to show). It may be asked
+    /// before the item has opened (it goes there once it has), as the resume point is.
+    private static func place(_ p: AVPlayer, at: CMTime) {
+        p.seek(to: at, toleranceBefore: PhonePlayback.nearEnough, toleranceAfter: .zero)
+    }
+
+    /// The audio and subtitles picked on [old] (another language, subtitles on) picked again on [fresh], which would
+    /// otherwise start with the film's own.
+    private static func keepChoices(from old: AVPlayerItem, to fresh: AVPlayerItem) async {
+        for kind in [AVMediaCharacteristic.audible, .legible] {
+            guard let was = try? await old.asset.loadMediaSelectionGroup(for: kind),
+                  let now = try? await fresh.asset.loadMediaSelectionGroup(for: kind),
+                  let picked = old.currentMediaSelection.selectedMediaOption(in: was),
+                  let i = was.options.firstIndex(of: picked), i < now.options.count else { continue }
+            fresh.select(now.options[i], in: now)
         }
     }
 
@@ -244,16 +302,18 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
             // buffering, smooth on big films. Else (or a kind of file Apple's player can't open, said precisely by
             // the other way) answered request by request (DriveStream).
             let listed = DriveLibrary.shared.listedFile(id)
-            if DriveStream.unplayable(listed?.mimeType) == nil, let a = DriveStream.directAsset(fileID: id) {
-                item = AVPlayerItem(asset: a)
+            if DriveStream.unplayable(listed?.mimeType) == nil, let direct = DriveStream.directAsset(fileID: id) {
+                item = AVPlayerItem(asset: direct.asset)
                 directID = id
+                directExpires = direct.expires
             } else {
                 let s = DriveStream(fileID: id)
                 stream = s
                 item = AVPlayerItem(asset: s.asset())
             }
         }
-        item.externalMetadata = [Self.titleItem(play.title)]
+        metadata = [Self.titleItem(play.title)]
+        item.externalMetadata = metadata
 
         PhonePlayback.quickStart(item)
 
@@ -271,13 +331,17 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
         c.canStartPictureInPictureAutomaticallyFromInline = true
         c.updatesNowPlayingInfoCenter = true
         #endif
+        #if os(tvOS)
+        // The TV switches to the film's frame rate and dynamic range (Match Content), which the start waits for.
+        c.appliesPreferredDisplayCriteriaAutomatically = true
+        #endif
         c.modalPresentationStyle = .fullScreen
         c.onGone = { [weak self] in self?.closed() }
         controller = c
         ticker = p.addPeriodicTimeObserver(forInterval: CMTime(seconds: 10, preferredTimescale: 1), queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.report() }
         }
-        if let art = play.art { poster(art, on: c) }
+        if let art = play.art { poster(art, on: c, play: play) }
         watchdog = Task { @MainActor [weak self] in
             // Until it's playing (its first frame), or said why not.
             for _ in 0..<(PhonePlayback.startLimit * 10) {
@@ -309,10 +373,13 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
                 guard let self, self.player === p, let now = self.item, ObjectIdentifier(now) == which else { return }
                 if let words {
                     if let id = self.directID { self.fallBack(p, play, id: id, why: code); return }
-                    // Google's own reason when it refused the file (the player only says it timed out).
+                    // Google's own reason when it refused the file, else what the stream heard from Google or the
+                    // connection (the player passes on only a number).
                     let refusal = self.stream?.refusalNow()
-                    Diagnostics.shared.notePlayback("\(play.title): couldn’t play (\(code))" + (refusal.map { ": \($0)" } ?? ""))
-                    self.failed(refusal ?? words)
+                    let heard = self.stream?.recentFailure
+                    let detail = (heard as NSError?).map { ", \($0.domain) \($0.code)" } ?? ""
+                    Diagnostics.shared.notePlayback("\(play.title): couldn’t play (\(code)\(detail))" + (refusal.map { ": \($0)" } ?? ""))
+                    self.failed(refusal ?? heard.map { PhonePlayback.failure($0, play) } ?? words)
                 } else {
                     self.ready(p, play)
                 }
@@ -326,19 +393,29 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
         directID = nil
         renew?.cancel()
         renew = nil
-        let at = p.currentTime()
+        // Where it was: an item that failed while taking over mid-film never got there itself.
+        let at = resumeAt ?? p.currentTime()
+        let old = p.currentItem
         let s = DriveStream(fileID: id)
         stream = s
         let fresh = AVPlayerItem(asset: s.asset())
-        fresh.externalMetadata = [Self.titleItem(play.title)]
+        fresh.externalMetadata = metadata
         PhonePlayback.quickStart(fresh)
+        // Not open until this one is (the player coming on screen meanwhile must wait for it), and not started
+        // early for the item that failed.
+        fileReady = false
+        startAnyway?.cancel()
+        startAnyway = nil
         watch(fresh, p, play)
         p.replaceCurrentItem(with: fresh)
         if begun {
-            // It had been playing: on from the same place.
+            // It had been playing: on from the same place (looked at again once it's open), with the audio and
+            // subtitles picked.
             if at.isValid, at.seconds > 1 {
                 p.seek(to: at, toleranceBefore: PhonePlayback.nearEnough, toleranceAfter: PhonePlayback.nearEnough)
+                resumeAt = at
             }
+            if let old { Task { @MainActor in await Self.keepChoices(from: old, to: fresh) } }
             p.play()
         } else {
             PhonePlayback.seekAhead(p, play)
@@ -354,7 +431,8 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
         let speed = events.last.map { max(0, $0.observedBitrate) / 1_000_000 } ?? 0
         let start = events.first.map { max(0, $0.startupTime) } ?? 0
         let via = directID != nil ? "Drive’s address" : stream != nil ? "request by request" : "a download or the TV"
-        Diagnostics.shared.notePlayback("\(play.title) via \(via): started in \(String(format: "%.1f", start)) s, \(stalls) stalls, \(dropped) dropped frames, \(String(format: "%.0f", speed)) Mb/s")
+        let mode = switchWait.map { String(format: ", %.1f s for the TV’s picture mode", $0) } ?? ""
+        Diagnostics.shared.notePlayback("\(play.title) via \(via): started in \(String(format: "%.1f", start)) s\(mode), \(stalls) stalls, \(dropped) dropped frames, \(String(format: "%.0f", speed)) Mb/s")
     }
 
     /// The file is open: to the resume point and playing.
@@ -362,16 +440,28 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
     /// before the TV switches to the film's 4K or HDR mode) its first seconds stuttered.
     private func ready(_ p: AVPlayer, _ play: PhonePlay) {
         fileReady = true
+        // An item that took over mid-film: at the same place, if the seek asked for before it opened didn't take.
+        if let at = resumeAt {
+            resumeAt = nil
+            if at.isValid, abs(p.currentTime().seconds - at.seconds) > 3 { Self.place(p, at: at) }
+        }
         guard !begun else { return }
         guard onScreen else {
-            // The player not reported on screen yet: two seconds at most, then it plays anyway (a presentation that
-            // never reports back must never keep the film from starting).
+            // The player not reported on screen yet: two seconds, then it plays anyway if it is up (a presentation
+            // that never reports back must never keep the film from starting), else once it's up (one put up again
+            // later: never a film playing with nothing on screen to stop it).
             startAnyway?.cancel()
             startAnyway = Task { @MainActor [weak self] in
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
-                guard let self, !Task.isCancelled, self.player === p, !self.begun else { return }
-                self.onScreen = true
-                self.ready(p, play)
+                for _ in 0..<30 {
+                    guard let self, !Task.isCancelled, self.player === p, !self.begun else { return }
+                    if self.controller?.presentingViewController != nil {
+                        self.onScreen = true
+                        self.ready(p, play)
+                        return
+                    }
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                }
             }
             return
         }
@@ -379,8 +469,59 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
         startAnyway = nil
         begun = true
         if directID != nil { renewSignIn(p, play) }
-        Task { @MainActor in await PhonePlayback.begin(p, play) }
+        #if os(tvOS)
+        let c = controller
+        #endif
+        Task { @MainActor [weak self] in
+            // The resume point first, so what's fetched from there comes in while the TV changes its picture mode.
+            await PhonePlayback.toResumePoint(p, play)
+            #if os(tvOS)
+            var waited: Double?
+            if let c { waited = await Self.displaySettled(c) }
+            #endif
+            guard let self, self.player === p else { return }
+            #if os(tvOS)
+            self.switchWait = waited
+            #endif
+            PhonePlayback.startPlaying(p)
+        }
     }
+
+    #if os(tvOS)
+    /// Match Content: once the film is open with the player on screen, AVKit asks the TV for the film's frame rate and
+    /// dynamic range, and the TV switches, its picture dark for a second or a few. A film already playing meanwhile
+    /// lost or stuttered its first seconds (the Android TVs don't switch). So it waits for AVKit to ask, for a switch
+    /// to begin (a moment: none does when the TV is in that mode already) and for it to end, ten seconds at most; twice
+    /// at most (the TV still going back from the last film's mode, then this one's). The seconds the switching took,
+    /// nil when there was none.
+    private static func displaySettled(_ c: AVPlayerViewController) async -> Double? {
+        guard let display = c.viewIfLoaded?.window?.avDisplayManager, display.isDisplayCriteriaMatchingEnabled else { return nil }
+        var looks = 0
+        while display.preferredDisplayCriteria == nil, !display.isDisplayModeSwitchInProgress, looks < 10 {
+            try? await Task.sleep(nanoseconds: 50_000_000)
+            looks += 1
+        }
+        var took: Double?
+        for _ in 0..<2 {
+            looks = 0
+            while !display.isDisplayModeSwitchInProgress, looks < 10 {
+                try? await Task.sleep(nanoseconds: 50_000_000)
+                looks += 1
+            }
+            guard display.isDisplayModeSwitchInProgress else { break }
+            let began = Date()
+            looks = 0
+            while display.isDisplayModeSwitchInProgress, looks < 200 {
+                try? await Task.sleep(nanoseconds: 50_000_000)
+                looks += 1
+            }
+            took = (took ?? 0) + Date().timeIntervalSince(began)
+        }
+        // A moment more for the TV to show a picture again.
+        if took != nil { try? await Task.sleep(nanoseconds: 300_000_000) }
+        return took
+    }
+    #endif
 
     /// Shows the player once the screen it goes over is still: the title's page that asked has closed (presenting
     /// while it's closing does nothing, and the film would never show).
@@ -424,8 +565,9 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
         }
     }
 
-    /// The title's picture behind the player's spinner until the first frame shows.
-    private func poster(_ url: URL, on c: PlayerController) {
+    /// The title's picture behind the player's spinner until the first frame shows, and beside its name in the
+    /// player's info and in Now Playing.
+    private func poster(_ url: URL, on c: PlayerController, play: PhonePlay) {
         c.loadViewIfNeeded()
         guard let overlay = c.contentOverlayView else { return }
         let v = UIImageView(frame: overlay.bounds)
@@ -436,10 +578,12 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
         overlay.addSubview(v)
         if let img = ImageStore.shared.cached(url) {
             v.image = img
+            artwork(img, for: play)
         } else {
-            Task { @MainActor [weak v] in
+            Task { @MainActor [weak v, weak self] in
                 let img = await ImageStore.shared.image(url)
                 v?.image = img
+                if let img { self?.artwork(img, for: play) }
             }
         }
         displayWatch = c.observe(\.isReadyForDisplay, options: [.initial, .new]) { [weak v, weak c] _, _ in
@@ -447,6 +591,21 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
                 guard let v, let c, c.isReadyForDisplay else { return }
                 UIView.animate(withDuration: 0.25, animations: { v.alpha = 0 }, completion: { _ in v.removeFromSuperview() })
             }
+        }
+    }
+
+    /// The title's picture with its name in the player's metadata, on the item playing and any that takes over.
+    private func artwork(_ image: UIImage, for play: PhonePlay) {
+        Task { @MainActor [weak self] in
+            let data = await Task.detached(priority: .utility) { image.jpegData(compressionQuality: 0.85) }.value
+            guard let self, let data, self.current?.id == play.id else { return }
+            let a = AVMutableMetadataItem()
+            a.identifier = .commonIdentifierArtwork
+            a.value = data as NSData
+            a.dataType = kCMMetadataBaseDataType_JPEG as String
+            a.extendedLanguageTag = "und"
+            self.metadata = [Self.titleItem(play.title), a]
+            self.item?.externalMetadata = self.metadata
         }
     }
 
@@ -470,6 +629,8 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
         return vc
     }
 
+    /// Where it got to, once it has started (one that never started would only stamp its old place as the newest,
+    /// over a TV's newer one).
     private func report() {
         // Only once it has played: a film that never started (it failed to open) leaves where it was left off alone.
         guard begun, let p = player, let play = current else { return }
@@ -489,6 +650,8 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
         report()
         if let p = player, let play = current, begun { notePlayback(p, play) }
         DriveLibrary.shared.flush()
+        // Watch shows where it was left off at once.
+        DriveLibrary.shared.playStopped()
         Task { await DriveLibrary.shared.sync() }
         if let t = ticker { player?.removeTimeObserver(t) }
         ticker = nil
@@ -506,7 +669,11 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
         player = nil
         stream = nil
         directID = nil
+        directExpires = 0
         item = nil
+        metadata = []
+        resumeAt = nil
+        switchWait = nil
         renew?.cancel()
         renew = nil
         current = nil
@@ -613,7 +780,8 @@ final class MacPlayer: NSObject, NSWindowDelegate {
             var begun = false
             for _ in 0..<(PhonePlayback.startLimit * 20) {
                 guard let self, self.player === p else { return }
-                if item.status == .failed { self.failed(PhonePlayback.failure(item.error, play)); return }
+                // What the stream heard from Google or the connection, when it did (the player passes on a number).
+                if item.status == .failed { self.failed(PhonePlayback.failure(self.stream?.recentFailure ?? item.error, play)); return }
                 if !begun, item.status == .readyToPlay {
                     begun = true
                     await PhonePlayback.begin(p, play)
@@ -646,6 +814,8 @@ final class MacPlayer: NSObject, NSWindowDelegate {
         guard (notification.object as? NSWindow) === window else { return }
         report()
         DriveLibrary.shared.flush()
+        // Watch shows where it was left off at once.
+        DriveLibrary.shared.playStopped()
         Task { await DriveLibrary.shared.sync() }
         watch?.cancel(); watch = nil
         if let t = ticker { player?.removeTimeObserver(t) }

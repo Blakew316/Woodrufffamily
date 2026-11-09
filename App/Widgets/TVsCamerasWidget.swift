@@ -242,7 +242,7 @@ struct DoorbellLockView: View {
 struct DoorbellLiveActivity: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: DoorbellAttributes.self) { context in
-            DoorbellRingView(attributes: context.attributes, at: context.state.at)
+            DoorbellRingView(attributes: context.attributes, at: context.state.at, thumb: context.state.thumb)
                 .background(WidgetBackdrop())   // the app icon's colours
                 .activityBackgroundTint(WidgetPalette.navyBottom)
                 .activitySystemActionForegroundColor(.white)
@@ -251,7 +251,7 @@ struct DoorbellLiveActivity: Widget {
             let a = context.attributes
             return DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
-                    DoorbellPicture(camera: a.camera).frame(width: 64, height: 48)
+                    DoorbellPicture(camera: a.camera, thumb: context.state.thumb, rang: context.state.at).frame(width: 64, height: 48)
                         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                 }
                 DynamicIslandExpandedRegion(.center) {
@@ -284,12 +284,19 @@ struct DoorbellLiveActivity: Widget {
     }
 }
 
-/// The doorbell's latest picture (what the alert's extension or the app last kept), or its symbol.
+/// The ring's picture: the doorbell's still kept since it rang (the alert's own picture, once its extension has it),
+/// else the small picture the Mac sent with the ring, else the doorbell's latest still, or its symbol.
 struct DoorbellPicture: View {
     let camera: String
+    /// The Mac's small picture of the ring (base64), and when it rang.
+    var thumb: String? = nil
+    var rang: Date? = nil
     var body: some View {
         let line = PhoneWidgetShare.loadCameras().first { $0.id == camera }
-        if let image = WidgetImage.load(line?.file, pixels: 360) {
+        // Kept as it rang or since (a few seconds' leeway: the Mac's clock and this iPhone's can differ a little).
+        let ofRing = rang.flatMap { r in line?.at.map { $0 >= r.addingTimeInterval(-5) } } ?? false
+        let kept = ofRing ? WidgetImage.load(line?.file, pixels: 360) : nil
+        if let image = kept ?? WidgetImage.decode(thumb, pixels: 360) ?? WidgetImage.load(line?.file, pixels: 360) {
             Image(uiImage: image).resizable().scaledToFill()
         } else {
             Color.white.opacity(0.08).overlay(Image(systemName: "video.doorbell.fill").font(.title2).foregroundStyle(.white.opacity(0.6)))
@@ -300,9 +307,10 @@ struct DoorbellPicture: View {
 struct DoorbellRingView: View {
     let attributes: DoorbellAttributes
     let at: Date
+    var thumb: String? = nil
     var body: some View {
         HStack(spacing: 12) {
-            DoorbellPicture(camera: attributes.camera)
+            DoorbellPicture(camera: attributes.camera, thumb: thumb, rang: at)
                 .frame(width: 112, height: 72)
                 .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             VStack(alignment: .leading, spacing: 3) {
@@ -327,6 +335,17 @@ enum WidgetImage {
     static func load(_ name: String?, pixels: Int) -> UIImage? {
         guard let name, let url = PhoneWidgetShare.artURL(name),
               let src = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+        return image(src, pixels: pixels)
+    }
+
+    /// A picture carried as base64 (the Mac's small picture of a ring, JPEG or HEIC).
+    static func decode(_ base64: String?, pixels: Int) -> UIImage? {
+        guard let base64, let data = Data(base64Encoded: base64),
+              let src = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        return image(src, pixels: pixels)
+    }
+
+    private static func image(_ src: CGImageSource, pixels: Int) -> UIImage? {
         let opts: [CFString: Any] = [kCGImageSourceCreateThumbnailFromImageAlways: true,
                                      kCGImageSourceCreateThumbnailWithTransform: true,
                                      kCGImageSourceShouldCacheImmediately: true,

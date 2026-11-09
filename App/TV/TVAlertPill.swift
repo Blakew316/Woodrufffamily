@@ -61,10 +61,24 @@ final class TVAlerts {
 
     func start() {
         guard loop == nil, !Demo.isOn else { return }
+        // Earlier alerts' pictures (kept only for opening the camera from the pill) don't pile up.
+        Task.detached(priority: .utility) { Self.tidy() }
         loop = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.poll()
                 try? await Task.sleep(nanoseconds: 3_000_000_000)
+            }
+        }
+    }
+
+    /// The alerts' pictures from over an hour ago, deleted.
+    nonisolated private static func tidy() {
+        let fm = FileManager.default
+        let files = (try? fm.contentsOfDirectory(at: fm.temporaryDirectory, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
+        for f in files where f.lastPathComponent.hasPrefix("tv-alert-") {
+            if let d = (try? f.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate,
+               d.timeIntervalSinceNow < -3600 {
+                try? fm.removeItem(at: f)
             }
         }
     }
@@ -128,23 +142,32 @@ final class TVAlerts {
         var data: Data?
         let order = [host] + hosts.filter { $0 != host }
         for (path, id) in [("/event", e.key), ("/still", e.camera)] where data == nil {
-            for h in order where data == nil {
+            for h in order {
                 guard let u = url(h, path, ["id": id], token: token) else { continue }
                 var r = URLRequest(url: u, timeoutInterval: 3)
                 r.cachePolicy = .reloadIgnoringLocalCacheData
-                if let (d, resp) = try? await URLSession.shared.data(for: r), (resp as? HTTPURLResponse)?.statusCode == 200, d.count > 500 {
-                    data = d
-                }
+                // No answer from this address: the next one.
+                guard let (d, resp) = try? await URLSession.shared.data(for: r),
+                      let code = (resp as? HTTPURLResponse)?.statusCode else { continue }
+                if code == 200, d.count > 500 { data = d }
+                // An answer, picture or not: the Mac's other addresses would say the same (they're the same Mac), and
+                // away from home its home address only times out, holding the alert up three seconds or more.
+                break
             }
         }
         var file: URL?
         var thumb: UIImage?
         if let data {
             let u = FileManager.default.temporaryDirectory.appendingPathComponent("tv-alert-\(e.key).jpg")
-            if (try? data.write(to: u, options: .atomic)) != nil { file = u }
             let focus = CameraEventMedia.focus(e.focus)
             let kind = SubjectCrop.kind(e.title)
-            thumb = await Task.detached(priority: .userInitiated) { Self.roundThumb(data, focus: focus, kind: kind) }.value
+            // Kept for the replay (the camera opened from the pill) and made round, both off the main thread.
+            let made = await Task.detached(priority: .userInitiated) { () -> (file: URL?, thumb: UIImage?) in
+                let kept = (try? data.write(to: u, options: .atomic)) != nil
+                return (file: kept ? u : nil, thumb: Self.roundThumb(data, focus: focus, kind: kind))
+            }.value
+            file = made.file
+            thumb = made.thumb
         }
         guard loop != nil else { return }
         enqueue(Item(id: e.key, camera: e.camera, name: e.name, title: e.title, at: at, thumb: thumb,

@@ -47,6 +47,24 @@ enum CameraEventMedia {
         return (Date(timeIntervalSince1970: t), String(s[s.index(after: bar)...]))
     }
 
+    /// Noted by the notification extension the moment a camera push arrives (by the event's short id), so the app
+    /// never shows its own copy of that alert. Without it the app could: while the extension was still getting the
+    /// push's picture (the alert isn't delivered yet), or after the alert was opened or cleared; and its copy, with no
+    /// picture when this iPhone couldn't get one, replaced the push's alert or came as a second one.
+    static func notePushKey(_ key: String) {
+        guard let s = store, !key.isEmpty else { return }
+        let now = Date().timeIntervalSince1970
+        var keys = (s.dictionary(forKey: "push.keys") as? [String: Double] ?? [:]).filter { now - $0.value < 3600 }
+        keys[key] = now
+        s.set(keys, forKey: "push.keys")
+    }
+
+    /// Whether the Mac's push for [key] reached this iPhone in the last hour.
+    static func pushArrived(_ key: String) -> Bool {
+        guard let t = (store?.dictionary(forKey: "push.keys") as? [String: Double])?[key] else { return false }
+        return Date().timeIntervalSince1970 - t < 3600
+    }
+
     // MARK: The sign-in, kept current by the app
 
     static func keepCredentials(clientID: String?, secret: String?, refresh: String?, access: String?, expires: Double?) {

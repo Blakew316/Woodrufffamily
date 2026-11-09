@@ -155,6 +155,14 @@ struct WatchView: View {
             }
         })
         .refreshable { await load() }
+        // A film or episode played on this device stopped: Continue Watching (and each Resume) shows where it was left
+        // off at once, not a minute later.
+        .onChange(of: DriveLibrary.shared.stoppedHere) { _, _ in
+            Task {
+                await load()
+                if client?.sourceID == "drive" { await loadSection(force: true) }
+            }
+        }
         // Movies | TV Shows (on the Mac, switched in the window's top bar).
         .onChange(of: section) { _, _ in
             page = 0
@@ -162,8 +170,15 @@ struct WatchView: View {
         }
         // Again from the start when the remote moves to a TV with another library.
         .task(id: client?.sourceID) { await loop() }
-        // A fresh Google token ready before Play is pressed (fetching one then adds a round trip to the start).
-        .task { if GoogleDrive.signedIn { _ = try? await GoogleDrive.token() } }
+        // A Google token ready before Play is pressed (fetching one then adds a round trip to the start), lasting most
+        // of an hour: Play on the banner or a poster's menu starts without a title's page warming one up, and one with
+        // under 15 minutes left sends a film the slower way. Looked at every 10 minutes while Watch is open.
+        .task {
+            while !Task.isCancelled, GoogleDrive.signedIn {
+                _ = try? await GoogleDrive.token(minLife: 2700)
+                try? await Task.sleep(nanoseconds: 600_000_000_000)
+            }
+        }
         // The other library picked in Settings → Watch: its titles, read afresh.
         .onChange(of: source) { _, _ in
             sectionTitles = [:]

@@ -106,6 +106,12 @@ final class LivePlayer: NSObject {
     var camera: NestCameras.Camera
     var onStatus: ((String) -> Void)?
     private var feed: Task<Void, Never>?
+    /// The picture stream open now and the pictures a second it asked for, so a camera opened (or closed) over its
+    /// tile changes speed at once.
+    private var reader: MJPEGReader?
+    private var readerFPS: Double = 0
+    /// That stream was ended here for a new speed (not by the Mac Studio or the network).
+    private var cutForSpeed = false
     private var live = false
     private var misses = 0
     private var lastJPEG: Data?
@@ -125,11 +131,22 @@ final class LivePlayer: NSObject {
         surface.backgroundColor = .black
     }
 
-    /// Pictures a second: the open camera's eight, a tile's one.
-    private var wantedFPS: Double { CameraStreams.shared.expanded == camera.id ? 8 : 1 }
+    /// Pictures a second: the open camera's eight (from the moment a selected alert starts opening it), a tile's one.
+    private var wantedFPS: Double {
+        let streams = CameraStreams.shared
+        return streams.expanded == camera.id || streams.opening == camera.id ? 8 : 1
+    }
 
     func start() {
-        guard feed == nil else { return }
+        guard feed == nil else {
+            // Already running: opened (or closed) over its tile, its stream starts again at the new speed now, rather
+            // than at its next picture (a tile's comes once a second, or every three when nothing changes).
+            if let r = reader, readerFPS != wantedFPS {
+                cutForSpeed = true
+                r.cancel()
+            }
+            return
+        }
         misses = 0
         saidNotSharing = false
         let now = Date()
@@ -183,22 +200,34 @@ final class LivePlayer: NSObject {
         }
     }
 
-    /// The Mac Studio's pictures pushed down one connection, until it ends, the player stops or the camera is opened
-    /// or closed (a new speed). How many came.
+    /// The Mac Studio's pictures pushed down one connection, until it ends or the player stops. When the camera is
+    /// opened or closed (a new speed), a new one at that speed from the same address at once, without asking for a
+    /// picture first. How many came.
     private func stream(_ host: String, id: String, token: String, fps: Double) async -> Int {
-        guard let url = TVCameraFeed.url(host, path: "/mjpeg", id: id, token: token, fps: fps) else { return 0 }
-        let reader = MJPEGReader(url: url)
+        var fps = fps
         var got = 0
-        await withTaskCancellationHandler {
-            for await f in reader.frames {
-                got += 1
-                await present(f)
-                if Task.isCancelled || wantedFPS != fps { break }
+        while !Task.isCancelled, let url = TVCameraFeed.url(host, path: "/mjpeg", id: id, token: token, fps: fps) {
+            let reader = MJPEGReader(url: url)
+            self.reader = reader
+            readerFPS = fps
+            cutForSpeed = false
+            await withTaskCancellationHandler {
+                for await f in reader.frames {
+                    got += 1
+                    await present(f)
+                    if Task.isCancelled || wantedFPS != fps { break }
+                }
+            } onCancel: {
+                reader.cancel()
             }
-        } onCancel: {
             reader.cancel()
+            if self.reader === reader { self.reader = nil }
+            // Ended for anything but a new speed (the Mac Studio ended it, the network dropped): over to `run`, which
+            // asks for a picture again first. A stream cut here for a new speed before its first picture isn't one
+            // that answered nothing.
+            guard !Task.isCancelled, cutForSpeed || wantedFPS != fps else { break }
+            fps = wantedFPS
         }
-        reader.cancel()
         return got
     }
 
@@ -223,13 +252,15 @@ final class LivePlayer: NSObject {
         if f.age < 15 {
             lastFresh = Date()
             if !live { live = true; onStatus?("Live") }
-            // Kept for the tile (shown at once next time) and on disk, now and then.
+            // Kept for the tile (shown at once next time) and on disk, now and then: the picture already decoded for
+            // the screen, so the tile never decodes it again on the main thread.
             if lastKept.map({ Date().timeIntervalSince($0) > 60 }) ?? true {
                 lastKept = Date()
-                CameraStreams.shared.keepStill(camera, jpeg)
+                CameraStreams.shared.keepStill(camera, jpeg, image: surface.image.image)
             }
-        } else if (live && f.age > 30) || wasNotSharing {
-            // The Mac Studio has only an older picture now (its stream for the camera is starting again).
+        } else if live || wasNotSharing {
+            // The Mac Studio has only an older picture now (its stream for the camera is starting again): a picture
+            // 15 seconds old isn't called live (it used to be until 30, a frozen doorbell looking live meanwhile).
             live = false
             onStatus?("Updating…")
         }
@@ -267,12 +298,13 @@ struct ShareFrame {
 
 /// Asking the Mac Studio's camera share (CameraShare on the Mac).
 enum TVCameraFeed {
-    /// One session for every camera: connections kept and reused, short waits.
+    /// One session for every camera, short waits. No pipelining: the Mac Studio answers one request on each
+    /// connection and closes it, so a second request sent down the same one would go unanswered.
     static let session: URLSession = {
         let c = URLSessionConfiguration.ephemeral
         c.timeoutIntervalForRequest = 3
         c.httpMaximumConnectionsPerHost = 16
-        c.httpShouldUsePipelining = true
+        c.httpShouldUsePipelining = false
         c.requestCachePolicy = .reloadIgnoringLocalCacheData
         c.urlCache = nil
         c.waitsForConnectivity = false
@@ -381,7 +413,9 @@ final class MJPEGReader: NSObject, URLSessionDataDelegate, @unchecked Sendable {
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        if partMode, partLength < 0, buffer.count > 500 { out.yield(ShareFrame(jpeg: buffer, age: age)) }
+        // The last part (of no stated length) only if the stream ended cleanly: one cut off by a dropped connection
+        // is part of a picture, which would show half grey.
+        if error == nil, partMode, partLength < 0, buffer.count > 500 { out.yield(ShareFrame(jpeg: buffer, age: age)) }
         cancel()
     }
 

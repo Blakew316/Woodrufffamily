@@ -150,7 +150,9 @@ final class TopShelfAlbum {
         let newest = Array(all.prefix(5))
         let chosen = newest + Array(all.dropFirst(5).shuffled().prefix(10))
         let old = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
-        let stamp = String(Int(Date().timeIntervalSince1970))
+        // In milliseconds: two refreshes in the same second (an album picked while one runs) gave the same names, so
+        // the second wrote over the first's photos and then deleted them as old, leaving the Top Shelf without them.
+        let stamp = String(Int(Date().timeIntervalSince1970 * 1000))
         let req = PHImageRequestOptions()
         req.deliveryMode = .opportunistic
         req.resizeMode = .fast
@@ -159,19 +161,21 @@ final class TopShelfAlbum {
         var saved = 0
         var lastError: String?
         for (i, a) in chosen.enumerated() {
-            let img: UIImage? = await withCheckedContinuation { c in
+            let got: (full: UIImage?, rough: UIImage?) = await withCheckedContinuation { c in
                 var done = false
                 var rough: UIImage?
-                PHImageManager.default().requestImage(for: a, targetSize: CGSize(width: 1920, height: 1080), contentMode: .aspectFill, options: req) { im, info in
+                // Fitted whole, so asked for at the size it's drawn (asked to fill 1920 × 1080, a portrait photo came
+                // back with more than twice the pixels it's shown with, all of it downloaded and decoded).
+                PHImageManager.default().requestImage(for: a, targetSize: CGSize(width: 1920, height: 1080), contentMode: .aspectFit, options: req) { im, info in
                     if done { return }
-                    // The quick, smaller copy first: kept in case the full one can't come.
+                    // The quick, smaller copy first: kept in case nothing better comes.
                     if (info?[PHImageResultIsDegradedKey] as? Bool) == true { rough = im; return }
                     done = true
                     if im == nil, let e = info?[PHImageErrorKey] as? Error { lastError = e.localizedDescription }
-                    c.resume(returning: im ?? rough)
+                    c.resume(returning: (full: im, rough: rough))
                 }
             }
-            var picture = img
+            var picture = got.full
             if picture == nil {
                 // Some iCloud photos only come as their original: read that and size it down here.
                 let data: Data? = await withCheckedContinuation { c in
@@ -182,6 +186,9 @@ final class TopShelfAlbum {
                 }
                 if let data { picture = await Task.detached(priority: .utility) { Self.downsample(data) }.value }
             }
+            // Only when neither came: the quick copy (a few hundred pixels across, soft on the TV, but better than a
+            // gap). It used to be taken before the original was tried.
+            if picture == nil { picture = got.rough }
             // Apple TV only lets apps write in Caches (the shared folder's too), which is where the Top Shelf reads.
             // A new name each time (the Apple TV keeps pictures by their address: the same name would keep showing
             // the old photo). Fitted to the Top Shelf and made into a JPEG off the main thread, so the remote stays
@@ -204,7 +211,7 @@ final class TopShelfAlbum {
         TVTopShelfContentProvider.topShelfContentDidChange()
         ready = Self.files().count
         version += 1
-        note = chosen.isEmpty ? "That album has no photos." : saved == 0 ? "Couldn’t get the photos from iCloud" + (lastError.map { ": \($0)" } ?? ".") + " Check that iCloud Photos is on in this Apple TV’s Settings → Users and Accounts." : "\(saved) photos are on the Top Shelf and Home."
+        note = chosen.isEmpty ? "That album has no photos." : saved == 0 ? "Couldn’t get the photos from iCloud" + (lastError.map { ": \($0)" } ?? ".") + " Check that iCloud Photos is on in this Apple TV’s Settings → Users and Accounts." : "\(saved) photos are on the Top Shelf."
     }
 }
 

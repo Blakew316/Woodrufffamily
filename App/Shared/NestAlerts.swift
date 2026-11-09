@@ -44,6 +44,10 @@ final class NestAlerts {
     #if os(macOS)
     /// Each event session's picture being got now (a clip that comes in a later message joins it).
     private var racing: [String: EventPicture] = [:]
+    #elseif os(iOS)
+    /// A visit's clip that came in a later message (a doorbell's ring comes first and its clip a few seconds after):
+    /// this iPhone's own alert for it, shown only when the Mac's push doesn't come, gets its picture from it.
+    private var laterClips: [String: String] = [:]
     #endif
     private weak var fleet: Fleet?
     /// When the event being posted happened (Google's timestamp), for Settings' Last Camera Event.
@@ -240,6 +244,8 @@ final class NestAlerts {
                         PushRelay.log.notice("clip for \(p.body, privacy: .public) came while its picture was being got (used for it)")
                         break
                     }
+                    #elseif os(iOS)
+                    laterClips[session] = url
                     #endif
                     PushRelay.log.notice("clip for \(p.body, privacy: .public) came after its alert (no second alert)")
                 }
@@ -261,6 +267,9 @@ final class NestAlerts {
         }
         seen = seen.filter { $0.value.timeIntervalSinceNow > -3600 }
         posted = posted.filter { $0.value.at.timeIntervalSinceNow > -3600 }
+        #if os(iOS)
+        laterClips = laterClips.filter { posted[$0.key] != nil }
+        #endif
     }
 
     /// [quiet]: an update of an alert already shown (its clip came later), so no second sound.
@@ -311,13 +320,18 @@ final class NestAlerts {
         Task {
             if !quiet { try? await Task.sleep(nanoseconds: 15_000_000_000) }
             let shown = await Self.alreadyShown(id: id, key: short)
+            // The visit's clip, when it came in a later message meanwhile (a ring's comes a few seconds after it, and
+            // without it a doorbell that makes no snapshots had no picture): fetched now, and replayed when it's opened.
+            let later = (clip ?? "").isEmpty ? session.flatMap { self.laterClips[$0] } : nil
+            if let later { c.userInfo["clip"] = later }
             // Google's clip or snapshot, or the Mac Studio's picture of the event, whichever comes first.
-            let got = await CameraEventMedia.firstPicture(camera: camera, eventID: event, clipURL: clip, key: short,
-                                                          deadline: Date().addingTimeInterval(shown ? 10 : 8), google: google)
+            let got = await CameraEventMedia.firstPicture(camera: camera, eventID: event, clipURL: later ?? clip, key: short,
+                                                          deadline: Date().addingTimeInterval(shown ? 10 : 8), google: later == nil ? google : nil)
             var file = got?.file
             var how = got == nil ? "none" : got!.fromMac ? "the Mac’s picture" : file?.pathExtension == "mp4" ? "Google’s clip" : "Google’s snapshot"
-            // Neither: the camera's latest picture (better than none).
-            if file == nil, !shown, let jpeg = CameraStreams.shared.latestStill(camera) {
+            // Neither: the camera's latest picture (better than none), kept from its stream here, else the one the
+            // widgets show (an earlier alert's: a camera never opened on this iPhone has no other).
+            if file == nil, !shown, let jpeg = CameraStreams.shared.latestStill(camera) ?? Self.widgetStill(camera) {
                 file = CameraEventMedia.jpegFile(jpeg, name: "kept-\(short)")
                 if file != nil { how = "the camera’s latest picture" }
             }
@@ -336,7 +350,17 @@ final class NestAlerts {
                 return
             }
             // Its small picture on who or what was seen; expanded, the whole scene.
-            if let file, let a = CameraEventMedia.attachment(file, focus: look.focus) { c.attachments = [a] }
+            if let file {
+                var all: [UNNotificationAttachment] = []
+                if let a = CameraEventMedia.attachment(file, focus: look.focus) { all.append(a) }
+                // A clip also carries a still of it, as the alerts from the Mac do: Apple Watch shows a picture,
+                // never a video.
+                if file.pathExtension == "mp4", let jpeg = look.still, let f = CameraEventMedia.jpegFile(jpeg, name: "still-\(short)"),
+                   let s = CameraEventMedia.attachment(f, focus: look.focus, identifier: "still") {
+                    all.append(s)
+                }
+                c.attachments = all
+            }
             // The Mac's push may have come during the fetch: not shown twice.
             if await Self.alreadyShown(id: id, key: short) {
                 PushRelay.log.notice("alert for \(body, privacy: .public) came from the Mac meanwhile (not shown twice)")
@@ -347,9 +371,9 @@ final class NestAlerts {
         }
         #elseif os(macOS)
         // One alert per event, with its picture: the first good one there is (Google's picture of the event, else a
-        // frame of the camera's live stream, else its latest picture), waited for a few seconds at most (less for the
-        // doorbell); then it goes once, here and to every iPhone, the picture inside the push and kept full size here
-        // for the iPhones to fetch.
+        // frame of the camera's live stream, else its latest picture), waited for a few seconds (less for the doorbell,
+        // a few more when its latest picture is an old one); then it goes once, here and to every iPhone, the picture
+        // inside the push and kept full size here for the iPhones to fetch.
         let ring = c.userInfo["ring"] != nil
         let received = Date(), happened = eventHappened
         // The Mac's TVs & Cameras widget: the camera's red tag at once, its picture of the moment when there is one.
@@ -363,7 +387,7 @@ final class NestAlerts {
         if let session { racing[session] = race }
         race.start(given: picture)
         Task { [weak self] in
-            let got = await race.result(googleWait: ring ? 2.5 : 4.5, cap: ring ? 4 : 7, last: 20)
+            let got = await race.result(googleWait: ring ? 2.5 : 4.5, cap: ring ? 4 : 7, staleCap: ring ? 8 : 12, last: 20)
             if let session, self?.racing[session] === race { self?.racing[session] = nil }
             var thumb: String?
             var still: Data?
@@ -413,8 +437,18 @@ final class NestAlerts {
     /// Whether this event's alert is already on the iPhone (the Mac's push), by its id or its event key.
     static func alreadyShown(id: String, key: String) async -> Bool {
         if NotificationHandler.presentedKeys.contains(key) { return true }
+        // The Mac's push for it arrived (its extension noted it): while that's still getting its picture it isn't
+        // delivered yet, and once opened or cleared it isn't delivered any more.
+        if CameraEventMedia.pushArrived(key) { return true }
         let delivered = await UNUserNotificationCenter.current().deliveredNotifications()
         return delivered.contains { $0.request.identifier == id || ($0.request.content.userInfo["key"] as? String) == key }
+    }
+
+    /// The camera's picture the iPhone's widgets show, if they have one.
+    private static func widgetStill(_ camera: String) -> Data? {
+        guard let name = PhoneWidgetShare.loadCameras().first(where: { $0.id == camera })?.file,
+              let url = PhoneWidgetShare.artURL(name) else { return nil }
+        return try? Data(contentsOf: url)
     }
     #endif
 
@@ -513,17 +547,26 @@ private final class EventPicture {
         CameraEventMedia.jpegFile(d, name: "frame-\(tag)-\(key)")
     }
 
+    /// How recent the camera's latest picture must be to stand for the moment (its stream dropped only just now).
+    static let freshStill: TimeInterval = 30
+
     /// The picture to alert with: Google's as soon as it's there; else, once [googleWait] seconds are up (or Google
-    /// has nothing), the stream's frame; with nothing at all by [cap], the camera's latest picture; nil only when
-    /// there's still nothing after [last] seconds.
-    func result(googleWait: Double, cap: Double, last: Double) async -> (file: URL, source: Source)? {
+    /// has nothing), the stream's frame; with nothing at all by [cap], the camera's latest picture if it's from the last
+    /// half minute, and by [staleCap] whatever its age (an older one shows an earlier moment, while the stream started
+    /// for this, or Google's clip a few seconds behind the event, can still bring this one); nil only when there's
+    /// still nothing after [last] seconds.
+    func result(googleWait: Double, cap: Double, staleCap: Double, last: Double) async -> (file: URL, source: Source)? {
         let t0 = Date()
         while true {
             let waited = Date().timeIntervalSince(t0)
             if let b = best {
                 if b.source.rawValue <= Source.google.rawValue || googleBusy == 0 || waited >= googleWait { return b }
-            } else if waited >= cap, let jpeg = CameraStreams.shared.latestStill(camera), let u = write(jpeg, "kept") {
-                return (u, .kept)
+            } else if waited >= cap {
+                let age = CameraStreams.shared.stillAt[camera].map { Date().timeIntervalSince($0) } ?? .infinity
+                if age < Self.freshStill || waited >= staleCap, let jpeg = CameraStreams.shared.latestStill(camera),
+                   let u = write(jpeg, "kept") {
+                    return (u, .kept)
+                }
             }
             if waited >= last { return best }
             try? await Task.sleep(nanoseconds: 100_000_000)
