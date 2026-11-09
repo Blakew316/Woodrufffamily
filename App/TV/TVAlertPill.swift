@@ -357,9 +357,9 @@ struct TVAlertPill: View {
 
 /// The pill on the remote: it lifts and gets a light edge while the remote is on it (no white platter).
 private struct TVAlertButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View { Body(configuration: configuration) }
+    func makeBody(configuration: Configuration) -> some View { PillLift(configuration: configuration) }
 
-    private struct Body: View {
+    private struct PillLift: View {
         let configuration: ButtonStyleConfiguration
         @Environment(\.isFocused) private var focused
 
