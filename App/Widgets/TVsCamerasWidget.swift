@@ -1,6 +1,7 @@
 import SwiftUI
 import WidgetKit
 import ActivityKit
+import ImageIO
 
 // The TVs & Cameras widget (medium): Master Bedroom, Living Room and Kyler's Room down the left, with what each is
 // playing and the remote's TV lit; the Doorbell and Front Driveway's latest pictures on the right. A TV opens the
@@ -126,7 +127,7 @@ struct TVsCamerasView: View {
     }
 
     @ViewBuilder private func artwork(_ tv: PhoneWidgetShare.TVLine) -> some View {
-        if tv.title != nil, let a = tv.art, let url = PhoneWidgetShare.artURL(a), let image = UIImage(contentsOfFile: url.path) {
+        if tv.title != nil, let image = WidgetImage.load(tv.art, pixels: 120) {
             Image(uiImage: image).resizable().scaledToFill()
                 .frame(width: 34, height: 34).clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         } else {
@@ -134,14 +135,6 @@ struct TVsCamerasView: View {
                 .frame(width: 34, height: 34)
                 .overlay(Image(systemName: "tv").font(.system(size: 14, weight: .semibold)).foregroundStyle(WidgetPalette.cyan))
                 .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(WidgetPalette.cyan.opacity(0.45), lineWidth: 0.75))
-        }
-    }
-
-    @ViewBuilder private func dot(_ tv: PhoneWidgetShare.TVLine) -> some View {
-        if !tv.online {
-            Circle().strokeBorder(WidgetPalette.sky.opacity(0.5), lineWidth: 1.2).frame(width: 6, height: 6)
-        } else {
-            Circle().fill(tv.title == nil ? WidgetPalette.sky : tv.isPlaying ? Color.green : Color.yellow).frame(width: 6, height: 6)
         }
     }
 
@@ -153,7 +146,7 @@ struct TVsCamerasView: View {
         // whole widget larger than its space (everything looked zoomed in and the bottom was cut off).
         return WidgetPalette.cyan.opacity(0.1)
             .overlay {
-                if let f = c.file, let url = PhoneWidgetShare.artURL(f), let image = UIImage(contentsOfFile: url.path) {
+                if let image = WidgetImage.load(c.file, pixels: 480) {
                     Image(uiImage: image).resizable().scaledToFill()
                 }
             }
@@ -221,7 +214,7 @@ struct DoorbellLockView: View {
             let fresh = c.eventAt.map { date.timeIntervalSince($0) < 3600 } ?? false
             HStack(spacing: 8) {
                 Group {
-                    if let f = c.file, let url = PhoneWidgetShare.artURL(f), let image = UIImage(contentsOfFile: url.path) {
+                    if let image = WidgetImage.load(c.file, pixels: 200) {
                         Image(uiImage: image).resizable().scaledToFill()
                     } else {
                         Image(systemName: "video.doorbell.fill").font(.title2)
@@ -296,7 +289,7 @@ struct DoorbellPicture: View {
     let camera: String
     var body: some View {
         let line = PhoneWidgetShare.loadCameras().first { $0.id == camera }
-        if let f = line?.file, let url = PhoneWidgetShare.artURL(f), let image = UIImage(contentsOfFile: url.path) {
+        if let image = WidgetImage.load(line?.file, pixels: 360) {
             Image(uiImage: image).resizable().scaledToFill()
         } else {
             Color.white.opacity(0.08).overlay(Image(systemName: "video.doorbell.fill").font(.title2).foregroundStyle(.white.opacity(0.6)))
@@ -327,6 +320,21 @@ struct DoorbellRingView: View {
     }
 }
 
+
+/// A picture in the app group, decoded no larger than [pixels] across: widgets and Live Activities have little memory,
+/// and decoding a picture at full size only to draw it small uses it up.
+enum WidgetImage {
+    static func load(_ name: String?, pixels: Int) -> UIImage? {
+        guard let name, let url = PhoneWidgetShare.artURL(name),
+              let src = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+        let opts: [CFString: Any] = [kCGImageSourceCreateThumbnailFromImageAlways: true,
+                                     kCGImageSourceCreateThumbnailWithTransform: true,
+                                     kCGImageSourceShouldCacheImmediately: true,
+                                     kCGImageSourceThumbnailMaxPixelSize: pixels]
+        guard let image = CGImageSourceCreateThumbnailAtIndex(src, 0, opts as CFDictionary) else { return nil }
+        return UIImage(cgImage: image)
+    }
+}
 
 /// The widgets' colours, taken from the app icon: its steel-blue to deep-navy background with a soft cyan glow,
 /// its glowing cyan for outlines and accents, its ice blue for labels and its white for what matters most.

@@ -15,6 +15,9 @@ struct QRScannerView: UIViewControllerRepresentable {
     final class ScannerController: UIViewController, AVCaptureMetadataOutputObjectsDelegate {
         var onCode: ((String) -> Void)?
         private let session = AVCaptureSession()
+        /// Starting and stopping go one after the other, off the main thread (a stop that overtook a start left the
+        /// camera running).
+        private let sessionQueue = DispatchQueue(label: "com.woodruff.family.qrscanner")
         private var preview: AVCaptureVideoPreviewLayer?
         private var done = false
 
@@ -41,7 +44,7 @@ struct QRScannerView: UIViewControllerRepresentable {
             p.videoGravity = .resizeAspectFill
             view.layer.addSublayer(p)
             preview = p
-            DispatchQueue.global(qos: .userInitiated).async { [session] in session.startRunning() }
+            sessionQueue.async { [session] in session.startRunning() }
         }
 
         override func viewDidLayoutSubviews() {
@@ -51,7 +54,7 @@ struct QRScannerView: UIViewControllerRepresentable {
 
         override func viewWillDisappear(_ animated: Bool) {
             super.viewWillDisappear(animated)
-            DispatchQueue.global().async { [session] in session.stopRunning() }
+            sessionQueue.async { [session] in session.stopRunning() }
         }
 
         func metadataOutput(_ output: AVCaptureMetadataOutput, didOutput objects: [AVMetadataObject], from connection: AVCaptureConnection) {

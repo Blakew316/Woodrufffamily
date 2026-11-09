@@ -92,25 +92,32 @@ enum PhoneWidgetShare {
     @discardableResult
     static func saveCamera(id: String, name: String, doorbell: Bool, jpeg: Data? = nil, event: String? = nil) -> Bool {
         guard let dir = container else { return false }
-        var all = loadCameras()
-        var line = all.first { $0.id == id } ?? CameraLine(id: id, name: name, doorbell: doorbell)
-        line.name = name
-        line.doorbell = doorbell
-        if let jpeg {
-            let hash = id.utf8.reduce(UInt64(5381)) { ($0 &* 33) &+ UInt64($1) }
-            let file = "cam-\(hash % 100_000_000).jpg"
-            guard (try? jpeg.write(to: dir.appendingPathComponent(file), options: .atomic)) != nil else { return false }
-            line.file = file
-            line.at = Date()
+        let list = dir.appendingPathComponent("cameras.json")
+        var saved = false
+        // The app and the alerts' extension can both write the list at once: one at a time, so neither loses the
+        // other's picture or tag.
+        NSFileCoordinator().coordinate(writingItemAt: list, options: [], error: nil) { _ in
+            var all = loadCameras()
+            var line = all.first { $0.id == id } ?? CameraLine(id: id, name: name, doorbell: doorbell)
+            line.name = name
+            line.doorbell = doorbell
+            if let jpeg {
+                let hash = id.utf8.reduce(UInt64(5381)) { ($0 &* 33) &+ UInt64($1) }
+                let file = "cam-\(hash % 100_000_000).jpg"
+                guard (try? jpeg.write(to: dir.appendingPathComponent(file), options: .atomic)) != nil else { return }
+                line.file = file
+                line.at = Date()
+            }
+            if let event {
+                line.event = event
+                line.eventAt = Date()
+            }
+            all.removeAll { $0.id == id }
+            all.append(line)
+            guard let data = try? JSONEncoder().encode(all), (try? data.write(to: list, options: .atomic)) != nil else { return }
+            saved = true
         }
-        if let event {
-            line.event = event
-            line.eventAt = Date()
-        }
-        all.removeAll { $0.id == id }
-        all.append(line)
-        guard let data = try? JSONEncoder().encode(all),
-              (try? data.write(to: dir.appendingPathComponent("cameras.json"), options: .atomic)) != nil else { return false }
+        guard saved else { return false }
         if event != nil { lastStillReload = Date(); return true }
         if Date().timeIntervalSince(lastStillReload) > 60 { lastStillReload = Date(); return true }
         return false

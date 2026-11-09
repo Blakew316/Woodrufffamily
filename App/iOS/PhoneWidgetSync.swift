@@ -119,9 +119,24 @@ enum PhoneWidgetSync {
         }
     }
 
+    /// The write going now, if any: writes go one after another (one clearing out old pictures could otherwise delete
+    /// one another has just saved but not yet handed over).
+    private static var writing: Task<Void, Never>?
+
     /// Writes it now (a widget's or the Lock Screen's button has just changed what's playing).
     static func write(_ fleet: Fleet) async {
         guard PhoneWidgetShare.container != nil else { return }
+        let previous = writing
+        let task = Task { @MainActor in
+            await previous?.value
+            await writeNow(fleet)
+        }
+        writing = task
+        await task.value
+        if writing == task { writing = nil }
+    }
+
+    private static func writeNow(_ fleet: Fleet) async {
         var s = PhoneWidgetShare.Snapshot()
         if let tv = fleet.selected {
             s.tvName = tv.name
@@ -166,7 +181,12 @@ enum PhoneWidgetSync {
             s.thermostatSet = t.thermostatMode == "off" ? "Off" : set.map(temperatureText)
             s.thermostatAction = t.thermostatMode == "off" ? "off" : t.action
         }
-        if PhoneWidgetShare.save(s) { WidgetCenter.shared.reloadAllTimelines() }
+        // Only the widgets that show any of it (the doorbell's shows only its camera, reloaded with the cameras).
+        if PhoneWidgetShare.save(s) {
+            WidgetCenter.shared.reloadTimelines(ofKind: PhoneWidgetShare.nowPlayingKind)
+            WidgetCenter.shared.reloadTimelines(ofKind: PhoneWidgetShare.homeKind)
+            WidgetCenter.shared.reloadTimelines(ofKind: PhoneWidgetShare.tvsCamerasKind)
+        }
     }
 
     /// Saves a small copy of the title's picture in the app group (once per title) and gives its name.

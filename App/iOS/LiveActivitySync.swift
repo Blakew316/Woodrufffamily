@@ -11,10 +11,9 @@ import WoodruffKit
 final class LiveActivitySync {
     static let shared = LiveActivitySync()
     private var last: NowPlayingAttributes.ContentState?
-    private var lastTV: String?
     /// Following the fleet by itself (see `watch`).
     private var watching = false
-    /// The last update sent to the Live Activity, for `syncAndWait`.
+    /// The last update (or ending) sent to the Live Activity, for `syncAndWait`.
     private var pending: Task<Void, Never>?
     /// Nothing to show for the activity's TV just now: it ends in a moment unless something plays again by then.
     private var ending: Task<Void, Never>?
@@ -61,7 +60,6 @@ final class LiveActivitySync {
         } else {
             end()
             last = state
-            lastTV = tv.id
             _ = try? Activity.request(attributes: NowPlayingAttributes(tvID: tv.id),
                                       content: ActivityContent(state: state, staleDate: state.staleDate))
         }
@@ -71,9 +69,11 @@ final class LiveActivitySync {
         ending?.cancel()
         ending = nil
         last = nil
-        lastTV = nil
-        for a in Activity<NowPlayingAttributes>.activities {
-            Task { await a.end(nil, dismissalPolicy: .immediate) }
+        let all = Activity<NowPlayingAttributes>.activities
+        guard !all.isEmpty else { return }
+        // Kept as the last change, so a Lock Screen button's `syncAndWait` waits for it before the app sleeps again.
+        pending = Task {
+            for a in all { await a.end(nil, dismissalPolicy: .immediate) }
         }
     }
 

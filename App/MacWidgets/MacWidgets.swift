@@ -77,12 +77,12 @@ struct TVsProvider: TimelineProvider {
     func getSnapshot(in context: Context, completion: @escaping (TVsEntry) -> Void) {
         // The widget gallery: what the app last saw, at once (no waiting on the TVs).
         if context.isPreview { completion(TVsProvider.saved()); return }
-        Task { completion(await load()) }
+        Task { completion(await TVsLoads.shared.entry()) }
     }
 
     func getTimeline(in context: Context, completion: @escaping (Timeline<TVsEntry>) -> Void) {
         Task {
-            let e = await load()
+            let e = await TVsLoads.shared.entry()
             // While something plays, again in five minutes (the bars move by themselves, and the app reloads these the
             // moment a TV changes while it runs); otherwise every ten. Sooner when a note about a button that
             // didn't work is showing, so it goes once it's old.
@@ -90,6 +90,13 @@ struct TVsProvider: TimelineProvider {
             let next: TimeInterval = e.problem != nil ? WidgetProblem.lasts + 5 : (playing ? 300 : 600)
             completion(Timeline(entries: [e], policy: .after(.now.addingTimeInterval(next))))
         }
+    }
+
+    /// The TV widgets reload together, so they look once between them (every hub, and the poster), not once each.
+    static func reloadAll() {
+        WidgetCenter.shared.reloadTimelines(ofKind: "com.woodruff.family.widget.nowplaying")
+        WidgetCenter.shared.reloadTimelines(ofKind: "com.woodruff.family.widget.tvs")
+        WidgetCenter.shared.reloadTimelines(ofKind: MacCameraShare.kind)
     }
 
     /// The TVs as the app last saw them (no network).
@@ -200,6 +207,36 @@ struct TVsProvider: TimelineProvider {
         guard CGImageDestinationFinalize(dest) else { return nil }
         return Data(referencing: out)
     }
+
+    /// [data] decoded no larger than [pixels] across: a camera's frame can be full size, and a widget has little memory.
+    static func image(_ data: Data, pixels: Int) -> NSImage? {
+        guard let src = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        let opts: [CFString: Any] = [kCGImageSourceCreateThumbnailFromImageAlways: true,
+                                     kCGImageSourceCreateThumbnailWithTransform: true,
+                                     kCGImageSourceShouldCacheImmediately: true,
+                                     kCGImageSourceThumbnailMaxPixelSize: pixels]
+        guard let img = CGImageSourceCreateThumbnailAtIndex(src, 0, opts as CFDictionary) else { return nil }
+        return NSImage(cgImage: img, size: NSSize(width: img.width, height: img.height))
+    }
+}
+
+/// One look at the TVs for every TV widget asking at about the same time: the three are reloaded together, and each
+/// would otherwise ask every hub and fetch the poster (the hub's whole Watch home) itself.
+actor TVsLoads {
+    static let shared = TVsLoads()
+    private var running: Task<TVsEntry, Never>?
+
+    func entry() async -> TVsEntry {
+        if let running { return await running.value }
+        let task = Task { await TVsProvider().load() }
+        running = task
+        let e = await task.value
+        if running == task { running = nil }
+        return e
+    }
+
+    /// A button was just pressed: the next widget to ask looks again rather than joining a look from before.
+    func forget() { running = nil }
 }
 
 // MARK: - Buttons
@@ -226,7 +263,8 @@ struct WidgetKeyIntent: AppIntent {
     func perform() async throws -> some IntentResult {
         guard let link = SharedStore.load()?.hubs.first(where: { $0.id == hub }) else {
             WidgetProblem.set("Open Woodruff once so the widget finds \(name ?? "that TV") again.", for: "tvs")
-            WidgetCenter.shared.reloadAllTimelines()
+            await TVsLoads.shared.forget()
+            TVsProvider.reloadAll()
             return .result()
         }
         let c = TVClient(hub: Hub(id: link.id, name: link.name, connection: TVConnection(base: link.base, key: link.key)), routeID: route)
@@ -239,7 +277,8 @@ struct WidgetKeyIntent: AppIntent {
         }
         // A moment for the TV to make the change, so the widget shows it when it draws again.
         try? await Task.sleep(nanoseconds: 800_000_000)
-        WidgetCenter.shared.reloadAllTimelines()
+        await TVsLoads.shared.forget()
+        TVsProvider.reloadAll()
         return .result()
     }
 }
@@ -309,7 +348,7 @@ struct NowPlayingWidgetView: View {
             ZStack {
                 // The family's navy, with what's playing softly behind it.
                 WidgetBackdrop()
-                if let data = entry.art, let img = NSImage(data: data) {
+                if let data = entry.art, let img = TVsProvider.image(data, pixels: 600) {
                     Image(nsImage: img).resizable().aspectRatio(contentMode: .fill)
                         .opacity(0.45)
                 }
@@ -550,7 +589,7 @@ struct HomeDevicesWidgetView: View {
             if let s = entry.speaker {
                 HStack(spacing: 10) {
                     Group {
-                        if let d = entry.art, let img = NSImage(data: d) { Image(nsImage: img).resizable().scaledToFill() }
+                        if let d = entry.art, let img = TVsProvider.image(d, pixels: 120) { Image(nsImage: img).resizable().scaledToFill() }
                         else { Color.primary.opacity(0.08).overlay { Image(systemName: "hifispeaker.fill").foregroundStyle(.secondary) } }
                     }
                     .frame(width: 40, height: 40).clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
@@ -693,7 +732,7 @@ struct MacTVsCamerasView: View {
         let playing = tv.online ? tv.playing : nil
         return HStack(spacing: 8) {
             Group {
-                if selected, playing != nil, let data = entry.art, let img = NSImage(data: data) {
+                if selected, playing != nil, let data = entry.art, let img = TVsProvider.image(data, pixels: 120) {
                     Image(nsImage: img).resizable().scaledToFill()
                 } else {
                     RoundedRectangle(cornerRadius: 8, style: .continuous).fill(WidgetPalette.cyan.opacity(0.14))
@@ -730,7 +769,7 @@ struct MacTVsCamerasView: View {
         let fresh = c.eventAt.map { entry.date.timeIntervalSince($0) < 600 } ?? false
         return WidgetPalette.cyan.opacity(0.1)
             .overlay {
-                if let data = MacCameraShare.picture(c), let image = NSImage(data: data) {
+                if let data = MacCameraShare.picture(c), let image = TVsProvider.image(data, pixels: 420) {
                     Image(nsImage: image).resizable().scaledToFill()
                 }
             }

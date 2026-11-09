@@ -31,11 +31,20 @@ struct ShareProvider: TimelineProvider {
         // for anything written without a reload.
         let now = Date()
         let s = PhoneWidgetShare.load()
-        var entries = [ShareEntry(date: now, s: s)]
-        // Once what the TVs were doing is too old to show as now, a second entry stops showing it.
+        var changes: Set<Date> = []
+        // Once what the TVs were doing is too old to show as now, an entry stops showing it.
         if let at = s?.savedAt, !(s?.tvsStale(at: now) ?? true) {
-            entries.append(ShareEntry(date: at.addingTimeInterval(PhoneWidgetShare.staleAfter + 1), s: s))
+            changes.insert(at.addingTimeInterval(PhoneWidgetShare.staleAfter + 1))
         }
+        // A camera's red tag goes after ten minutes (TVs & Cameras) and its alert after an hour (the doorbell), on
+        // time rather than at the next reload.
+        for c in PhoneWidgetShare.loadCameras() {
+            guard let e = c.eventAt else { continue }
+            for after in [600.0, 3600.0] where e.addingTimeInterval(after + 1) > now {
+                changes.insert(e.addingTimeInterval(after + 1))
+            }
+        }
+        let entries = [ShareEntry(date: now, s: s)] + changes.sorted().map { ShareEntry(date: $0, s: s) }
         completion(Timeline(entries: entries, policy: .after(now.addingTimeInterval(900))))
     }
 }
@@ -167,7 +176,7 @@ struct TVsBackground: View {
         ZStack {
             // The family's navy, with what's playing softly behind it.
             WidgetBackdrop()
-            if let art, let url = PhoneWidgetShare.artURL(art), let image = UIImage(contentsOfFile: url.path) {
+            if let image = WidgetImage.load(art, pixels: 300) {
                 Image(uiImage: image).resizable().scaledToFill().blur(radius: 24).opacity(0.3)
                 WidgetPalette.navyBottom.opacity(0.45)
             }
