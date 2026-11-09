@@ -877,6 +877,10 @@ struct CameraLiveView: View {
     @State private var appeared = false
     /// iPhone: how far the card has been pulled down (past a point, it closes).
     @State private var drag: CGFloat = 0
+    #if os(macOS)
+    /// Mac, opened from an alert: its picture of the moment, shown until the stream is live.
+    @State private var alertPicture: NSImage?
+    #endif
     private let streams = CameraStreams.shared
 
     var body: some View {
@@ -893,6 +897,16 @@ struct CameraLiveView: View {
                     .allowsHitTesting(false)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .ignoresSafeArea()
+                // Opened from an alert: its picture at once (else the camera's last live one, dimmed) until it's live.
+                if streams.status[camera.id] != "Live", let still = alertPicture ?? streams.stills[camera.id] {
+                    Image(nsImage: still)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .opacity(alertPicture == nil ? 0.55 : 1)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .ignoresSafeArea()
+                        .allowsHitTesting(false)
+                }
                 // A shade from the very top (under the title bar too) behind the name and buttons.
                 VStack(spacing: 0) {
                     LinearGradient(colors: [.black.opacity(0.6), .clear], startPoint: .top, endPoint: .bottom)
@@ -919,6 +933,7 @@ struct CameraLiveView: View {
             .onExitCommand { close() }
             // Esc closes it wherever the focus is (onExitCommand only hears it while something in it has focus).
             .background { Button("Close") { close() }.keyboardShortcut(.cancelAction).opacity(0).frame(width: 0, height: 0).accessibilityHidden(true) }
+            .task(id: streams.replay?.key) { await loadAlertPicture() }
             #else
             phoneBody(player)
             #endif
@@ -945,6 +960,27 @@ struct CameraLiveView: View {
         if streams.full == camera.id { withAnimation(.smooth(duration: 0.25)) { streams.full = nil } } else { dismiss() }
         #endif
     }
+
+    #if os(macOS)
+    /// The alert's picture, from what's already on this Mac (the alert's own picture, the clip or snapshot kept for it,
+    /// or the small picture in it): nothing fetched, so it shows the moment the camera opens.
+    private func loadAlertPicture() async {
+        guard let r = streams.replay, r.camera == camera.id else { alertPicture = nil; return }
+        let kept = r.media.flatMap { FileManager.default.fileExists(atPath: $0.path) ? $0 : nil } ?? CameraEventMedia.cached(r.key)
+        if let kept {
+            if kept.pathExtension == "mp4" {
+                if let frame = await CameraEventMedia.picture(kept, maxSide: 1280) {
+                    alertPicture = NSImage(cgImage: frame, size: NSSize(width: frame.width, height: frame.height))
+                    return
+                }
+            } else if let img = NSImage(contentsOf: kept) {
+                alertPicture = img
+                return
+            }
+        }
+        if let t = r.thumb, let d = Data(base64Encoded: t), let img = NSImage(data: d) { alertPicture = img }
+    }
+    #endif
 
     #if os(iOS) || os(tvOS)
     /// The alert this camera was opened from, if any.

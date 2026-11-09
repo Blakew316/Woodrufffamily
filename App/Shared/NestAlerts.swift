@@ -296,7 +296,11 @@ final class NestAlerts {
                 PushRelay.log.notice("alert for \(body, privacy: .public) already shown from the Mac (not shown twice)")
                 return
             }
-            if let file, let a = CameraEventMedia.attachment(file) { c.attachments = [a] }
+            if let file {
+                // Its small picture on who or what was seen; expanded, the whole scene.
+                let focus = await CameraEventMedia.focus(file, title: title)
+                if let a = CameraEventMedia.attachment(file, focus: focus) { c.attachments = [a] }
+            }
             Notifier.deliver(c, id: id)
         }
         #elseif os(macOS)
@@ -322,19 +326,40 @@ final class NestAlerts {
         Task {
             var thumb: String?
             var still: Data?
+            // Where who or what was seen is in the picture (Vision, in the same look that crops the small picture):
+            // the Mac's own alert shows the picture, its small picture on the subject.
+            var focus: CGRect?
+            // The picture the Mac's own alert carries (a JPEG), and the files made here for it (let go at the end).
+            var shown: URL?
+            var made: [URL] = []
+            defer { for u in made { try? FileManager.default.removeItem(at: u) } }
             // The camera's already live (the doorbell and driveway are kept ready): its frame now, no wait for Google.
+            // Big enough for the small picture in the push to be cropped to who or what was seen.
             var picture = picture
             var fromLive = false
-            if picture == nil, !quiet, let jpeg = await CameraStreams.shared.liveFrame(camera) { picture = jpeg; fromLive = true }
+            if picture == nil, !quiet, let jpeg = await CameraStreams.shared.liveFrame(camera, maxSide: 1280) { picture = jpeg; fromLive = true }
             if let picture {
-                still = picture
                 let file = FileManager.default.temporaryDirectory.appendingPathComponent("frame-\(short).jpg")
-                if (try? picture.write(to: file, options: .atomic)) != nil { thumb = await CameraEventMedia.thumbnail(file) }
-                try? FileManager.default.removeItem(at: file)
+                if (try? picture.write(to: file, options: .atomic)) != nil {
+                    made.append(file)
+                    let framed = await CameraEventMedia.subjectThumbnail(file, title: title)
+                    thumb = framed.thumb; focus = framed.focus
+                    still = await CameraEventMedia.still(file)
+                    shown = file
+                }
+                if still == nil { still = picture }
             } else if let token = try? await NestCameras.shared.accessToken(),
                let file = await CameraEventMedia.fetch(camera: camera, eventID: event, clipURL: clip, key: short, timeout: 10, using: token) {
-                thumb = await CameraEventMedia.thumbnail(file)
+                let framed = await CameraEventMedia.subjectThumbnail(file, title: title)
+                thumb = framed.thumb; focus = framed.focus
                 still = await CameraEventMedia.still(file)
+                if file.pathExtension == "mp4" {
+                    // A clip: its frame a second in (the one Vision looked at) on the Mac's alert.
+                    let u = FileManager.default.temporaryDirectory.appendingPathComponent("still-\(short).jpg")
+                    if let still, (try? still.write(to: u, options: .atomic)) != nil { made.append(u); shown = u }
+                } else {
+                    shown = file
+                }
             }
             // Google has no picture for these cameras (no snapshot, and often no clip): one frame from the live stream.
             var how = fromLive ? "the live stream, at once" : picture != nil ? "the Mac's own frame" : "Google's clip or snapshot"
@@ -343,8 +368,12 @@ final class NestAlerts {
                 if let jpeg = await CameraStreams.shared.grabFrame(cam) {
                     still = jpeg
                     let file = FileManager.default.temporaryDirectory.appendingPathComponent("grab-\(short).jpg")
-                    if (try? jpeg.write(to: file, options: .atomic)) != nil { thumb = await CameraEventMedia.thumbnail(file) }
-                    try? FileManager.default.removeItem(at: file)
+                    if (try? jpeg.write(to: file, options: .atomic)) != nil {
+                        made.append(file)
+                        let framed = await CameraEventMedia.subjectThumbnail(file, title: title)
+                        thumb = framed.thumb; focus = framed.focus
+                        shown = file
+                    }
                 }
                 how = String(format: "the live stream, %.1f s", Date().timeIntervalSince(t0))
             }
@@ -354,13 +383,14 @@ final class NestAlerts {
             // The latest event, for Send Test Camera Alert.
             Saved.save(LastCameraEvent.savedKey, LastCameraEvent(title: title, body: body, camera: camera, key: short, happened: happened,
                                                                  event: event ?? "", clip: clip ?? "", at: received, thumb: thumb))
-            PushRelay.log.notice("picture for \(body, privacy: .public)\(quiet ? " (clip came later)" : "", privacy: .public): \(thumb.map { "\($0.count) characters, from \(how)" } ?? "none (no clip or snapshot from Google, and no frame from the live stream)", privacy: .public)")
+            PushRelay.log.notice("picture for \(body, privacy: .public)\(quiet ? " (clip came later)" : "", privacy: .public): \(thumb.map { "\($0.count) characters, from \(how)\(focus != nil ? ", on its subject" : "")" } ?? "none (no clip or snapshot from Google, and no frame from the live stream)", privacy: .public)")
             guard !once.done else {
                 if thumb != nil { PushRelay.log.notice("picture for \(body, privacy: .public) came after its alert went (no second alert)") }
                 return
             }
             once.done = true
             if let thumb { c.userInfo["thumb"] = thumb }
+            if let shown, let a = CameraEventMedia.attachment(shown, focus: focus) { c.attachments = [a] }
             Notifier.deliver(c, id: id)
         }
         #endif

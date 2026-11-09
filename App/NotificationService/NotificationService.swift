@@ -1,4 +1,5 @@
 import UserNotifications
+import CoreGraphics
 import WidgetKit
 
 /// Runs the moment a camera or doorbell push arrives (Woodruff can be closed): fetches the event's clip or snapshot
@@ -22,16 +23,19 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
             // The full clip or snapshot when Google gives it quickly; else the small picture the Mac sent in the push.
             // Kept short: the alert waits for this, and the Mac's quiet update brings the picture if it's late.
             var picture: URL?
-            if let file = await CameraEventMedia.fetch(camera: camera, eventID: event, clipURL: clip, key: key, timeout: thumb == nil ? 5 : 4),
-               let a = CameraEventMedia.attachment(file) {
+            let fetched = await CameraEventMedia.fetch(camera: camera, eventID: event, clipURL: clip, key: key, timeout: thumb == nil ? 5 : 4)
+            var focus: CGRect?
+            if let fetched { focus = await CameraEventMedia.focus(fetched, title: request.content.title) }
+            if let file = fetched, let a = CameraEventMedia.attachment(file, focus: focus) {
+                // The alert's small picture shows who or what was seen (Vision finds it); expanded, the whole scene.
                 c.attachments = [a]
                 // A clip also carries a still of it: Apple Watch shows a picture with the alert, never a video.
                 if file.pathExtension == "mp4", let jpeg = await CameraEventMedia.still(file) {
                     let still = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".jpg")
-                    if (try? jpeg.write(to: still)) != nil,
-                       let s = try? UNNotificationAttachment(identifier: "still", url: still, options: nil) {
+                    if (try? jpeg.write(to: still)) != nil, let s = CameraEventMedia.attachment(still, focus: focus, identifier: "still") {
                         c.attachments.append(s)
                     }
+                    try? FileManager.default.removeItem(at: still)
                 }
                 picture = file
                 CameraEventMedia.noteLastPush(file.pathExtension == "mp4" ? "Clip attached" : "Snapshot attached")

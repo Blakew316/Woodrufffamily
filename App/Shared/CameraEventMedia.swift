@@ -142,12 +142,26 @@ enum CameraEventMedia {
     }
 
     /// A notification attachment of a kept file (a copy: the system moves what it's given).
-    static func attachment(_ file: URL) -> UNNotificationAttachment? {
+    /// [focus]: the part the alert's small picture shows (`focus(_:title:)`, a unit rectangle from the top left); the
+    /// expanded alert still shows all of it.
+    static func attachment(_ file: URL, focus: CGRect? = nil, identifier: String = "media") -> UNNotificationAttachment? {
         let copy = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + "." + file.pathExtension)
         guard (try? FileManager.default.copyItem(at: file, to: copy)) != nil else { return nil }
+        var options: [AnyHashable: Any] = [:]
         // A clip's thumbnail (the picture on the alert's right) from a second in, where who was seen is usually in view.
-        let options: [AnyHashable: Any]? = file.pathExtension == "mp4" ? [UNNotificationAttachmentOptionsThumbnailTimeKey: 1] : nil
-        return try? UNNotificationAttachment(identifier: "media", url: copy, options: options)
+        if file.pathExtension == "mp4" { options[UNNotificationAttachmentOptionsThumbnailTimeKey] = 1 }
+        #if !os(tvOS)
+        if let focus { options[UNNotificationAttachmentOptionsThumbnailClippingRectKey] = focus.dictionaryRepresentation }
+        #endif
+        return try? UNNotificationAttachment(identifier: identifier, url: copy, options: options.isEmpty ? nil : options)
+    }
+
+    /// Where the alert's subject is in a kept file (a snapshot, or a clip's frame a second in, as its thumbnail shows):
+    /// the person for "Person seen", else what stands out, as a unit rectangle from the top left. Nil when nothing is
+    /// found, and the small picture shows the whole scene.
+    static func focus(_ file: URL, title: String) async -> CGRect? {
+        guard let image = await picture(file, maxSide: 1280) else { return nil }
+        return SubjectCrop.unitFocus(in: image, kind: SubjectCrop.kind(title))
     }
 
     // MARK: The small picture the Mac sends inside the push
@@ -160,6 +174,20 @@ enum CameraEventMedia {
     /// (no camera sign-in there, or the snapshot's 30 seconds are over: Send Test Camera Alert).
     static func thumbnail(_ file: URL) async -> String? {
         guard let image = await picture(file) else { return nil }
+        return encodedThumbnail(image)
+    }
+
+    /// The same small picture cropped to who or what the alert is about ([title]: "Person seen" is a person, else
+    /// what stands out), so the few bytes there are carry the subject in more detail; and where that subject is in
+    /// the whole picture (`focus`), for an attachment of the same moment. Vision looks once for both.
+    static func subjectThumbnail(_ file: URL, title: String) async -> (thumb: String?, focus: CGRect?) {
+        guard let image = await picture(file, maxSide: 1280) else { return (nil, nil) }
+        let focus = SubjectCrop.unitFocus(in: image, kind: SubjectCrop.kind(title))
+        let subject = focus.flatMap { SubjectCrop.crop(image, unit: $0) } ?? image
+        return (encodedThumbnail(subject), focus)
+    }
+
+    private static func encodedThumbnail(_ image: CGImage) -> String? {
         for side in [256, 208, 168, 136, 112] {
             guard let small = scaled(image, maxSide: side) else { continue }
             for quality in [0.6, 0.45, 0.3] {
@@ -178,17 +206,17 @@ enum CameraEventMedia {
         return jpeg(small, quality: 0.75)
     }
 
-    /// The moment as an image: the snapshot itself, or a clip's frame a second in.
-    private static func picture(_ file: URL) async -> CGImage? {
+    /// The moment as an image at most [maxSide] pixels across: the snapshot itself, or a clip's frame a second in.
+    static func picture(_ file: URL, maxSide: Int = 480) async -> CGImage? {
         if file.pathExtension == "mp4" {
             let generator = AVAssetImageGenerator(asset: AVURLAsset(url: file))
             generator.appliesPreferredTrackTransform = true
-            generator.maximumSize = CGSize(width: 480, height: 480)
+            generator.maximumSize = CGSize(width: maxSide, height: maxSide)
             return try? await generator.image(at: CMTime(seconds: 1, preferredTimescale: 600)).image
         }
         guard let src = CGImageSourceCreateWithURL(file as CFURL, nil) else { return nil }
         return CGImageSourceCreateThumbnailAtIndex(src, 0, [kCGImageSourceCreateThumbnailFromImageAlways: true,
-                                                            kCGImageSourceThumbnailMaxPixelSize: 480,
+                                                            kCGImageSourceThumbnailMaxPixelSize: maxSide,
                                                             kCGImageSourceCreateThumbnailWithTransform: true] as CFDictionary)
     }
 

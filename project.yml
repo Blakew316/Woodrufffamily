@@ -82,7 +82,7 @@ targets:
         NSHomeKitUsageDescription: Show and control your Apple Home lights, thermostat, locks, plugs and sensors next to your TVs.
         WoodruffHomeKit: $(WOODRUFF_HOMEKIT)
         UIBackgroundModes: [fetch, audio]
-        BGTaskSchedulerPermittedIdentifiers: [com.woodruff.family.alerts]
+        BGTaskSchedulerPermittedIdentifiers: [com.woodruff.family.alerts, com.woodruff.family.widgets]
         NSSupportsLiveActivities: true
         NSUserActivityTypes: [com.woodruff.family.remote]
         CFBundleURLTypes:
@@ -131,6 +131,8 @@ targets:
     sources:
       - App/NotificationService
       - path: App/Shared/CameraEventMedia.swift
+      # Frames the alert's small picture on who or what was seen (Vision).
+      - path: App/Shared/SubjectCrop.swift
       # The TVs & Cameras widget's store: each camera alert's picture goes to the widget too.
       - path: App/Common/PhoneWidgetShare.swift
     settings:

@@ -123,11 +123,14 @@ final class NotificationHandler: NSObject, UNUserNotificationCenterDelegate, @un
                 // What it saw, replayed above the live view.
                 let info = response.notification.request.content.userInfo
                 func text(_ k: String) -> String? { (info[k] as? String).flatMap { $0.isEmpty ? nil : $0 } }
-                CameraStreams.shared.replay = CameraReplay(camera: cameraID, key: text("key") ?? response.notification.request.identifier,
+                let key = text("key") ?? response.notification.request.identifier
+                // The clip or snapshot the notification extension (or this device) already fetched and kept for this
+                // event, else a copy of the alert's own attachment: shown the moment the camera opens, never fetched again.
+                CameraStreams.shared.replay = CameraReplay(camera: cameraID, key: key,
                                                            event: text("event"), clip: text("clip"),
                                                            title: response.notification.request.content.title,
                                                            at: response.notification.date,
-                                                           media: Self.attachedMedia(response.notification.request.content),
+                                                           media: CameraEventMedia.cached(key) ?? Self.attachedMedia(response.notification.request.content),
                                                            thumb: text("thumb"))
                 CameraStreams.shared.requested = cameraID
                 #if os(macOS)
