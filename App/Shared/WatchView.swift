@@ -12,6 +12,8 @@ struct WatchView: View {
     @State private var openTitle: String?
     /// The hub whose library is shown (the remote's TV picks it).
     @State private var loadedHub: String?
+    /// The hub `home` came from.
+    @State private var homeFrom: String?
     /// Taken off Continue Watching here, hidden until the TV's next answer (which no longer has them).
     @State private var removed: Set<String> = []
     /// Movies or TV Shows, as on the TV's streaming screen.
@@ -217,7 +219,11 @@ struct WatchView: View {
             }
             // As the row comes into view, the posters further along it are fetched ahead (a few at a time, on disk
             // only), so scrolling sideways never waits on one.
-            .task(id: row.name + place) { await ShelfWarmer.warm(row.titles.prefix(18).compactMap { client?.artURL($0.poster) }) }
+            .task(id: row.name + place) {
+                // A moment after the row shows, so the posters on screen are asked for first.
+                try? await Task.sleep(nanoseconds: 400_000_000)
+                await ShelfWarmer.warm(row.titles.prefix(18).compactMap { client?.artURL($0.poster) })
+            }
         }
     }
 
@@ -267,26 +273,56 @@ struct WatchView: View {
         let place = section == "shows" ? "shows" : "movies"
         // Read again at most every 10 minutes (Watch asks for its page every minute).
         if !force, sectionTitles[place] != nil, let at = sectionRead[place], Date().timeIntervalSince(at) < 600 { return }
+        let source = c.sourceID
         var all: [Title] = []
         var offset = 0
+        var read = false
         while let p = try? await c.library(place: place, sort: "recent", unwatched: false, genre: nil, q: nil, offset: offset, limit: 120) {
+            // The remote moved to a TV with another library meanwhile: these are the old one's.
+            guard client?.sourceID == source else { return }
+            read = true
             all += p.items
             offset += p.items.count
-            // The first page shows at once (the rows fill in as the rest arrives).
-            if offset == p.items.count, sectionTitles[place] == nil { sectionTitles[place] = all }
+            // The first page shows at once (the rows fill in as the rest arrives), unless the rows kept from last time
+            // are already showing: they stay until the whole list is here.
+            if offset == p.items.count, (sectionTitles[place] ?? []).isEmpty { sectionTitles[place] = all }
             if p.items.isEmpty || offset >= p.count || offset >= 3000 { break }
         }
+        guard client?.sourceID == source else { return }
         if !all.isEmpty || sectionTitles[place] == nil { sectionTitles[place] = all }
-        sectionRead[place] = Date()
+        // An empty or failed read is tried again with the next one (a library still being read, a TV that didn't
+        // answer), not ten minutes later.
+        if read && !all.isEmpty {
+            sectionRead[place] = Date()
+            ShelfStore.shared.keep(all, source: source, place: place)
+        }
+    }
+
+    /// The rows as kept from last time, for this library, until it's read again.
+    private func restoreSections() async {
+        guard let c = client else { return }
+        let source = c.sourceID
+        if loadedHub != source { loadedHub = source; sectionTitles = [:]; sectionRead = [:] }
+        for place in ["movies", "shows"] where sectionTitles[place] == nil {
+            guard let kept = await ShelfStore.shared.titles(source: source, place: place), !kept.isEmpty else { continue }
+            // Meanwhile read afresh, or the remote moved to another TV.
+            guard client?.sourceID == source, sectionTitles[place] == nil else { return }
+            sectionTitles[place] = kept
+        }
     }
 
     private func load() async {
         guard let c = client else { error = TVError.notPaired.localizedDescription; return }
         let hubID = c.sourceID
+        if loadedHub != hubID { loadedHub = hubID; sectionTitles = [:]; sectionRead = [:] }
+        // The rows' titles are read alongside the home, not after it: the rows show a round trip sooner.
+        async let rows: Void = loadSection()
         do {
             let h = try await c.watchHome()
             // The remote moved to a TV with another library meanwhile: this answer is for the old one.
             guard client?.sourceID == hubID else { return }
+            // The Drive library read again, or TMDB's posters come in: its rows are read again too.
+            let newer = hubID == "drive" && home != nil && h.updated != home?.updated
             // Asked again every minute and after every play: the page redraws only for an answer that's new (what was
             // taken off Continue Watching here comes back if the TV still has it, as it always did).
             let changed = h != home
@@ -296,13 +332,16 @@ struct WatchView: View {
                     if !removed.isEmpty { removed = [] }
                 }
             }
-            if loadedHub != hubID { loadedHub = hubID; sectionTitles = [:]; sectionRead = [:] }
-            await loadSection()
+            if homeFrom != hubID { homeFrom = hubID }
             if error != nil { error = nil }
+            await rows
+            let place = section == "shows" ? "shows" : "movies"
+            // A library that was still being read when the rows were asked for (a fresh install): asked again now.
+            if newer || (h.state == "ready" && sectionRead[place] == nil) { await loadSection(force: true) }
         } catch {
             if Task.isCancelled { return }
             // A library already shown stays (a blink in the Wi‑Fi isn't worth an empty page); another TV's doesn't.
-            if home == nil || loadedHub != hubID {
+            if home == nil || homeFrom != hubID {
                 home = nil
                 self.error = error.localizedDescription
             }
@@ -310,9 +349,13 @@ struct WatchView: View {
     }
 
     private func loop() async {
+        // Last time's rows at once (an app update keeps them), then read afresh behind them.
+        await restoreSections()
         while !Task.isCancelled {
             await load()
-            try? await Task.sleep(nanoseconds: home?.state == "loading" ? 3_000_000_000 : 60_000_000_000)
+            // Sooner while the library is still being read, or TMDB's posters are still coming in (Drive).
+            let filling = (client as? DriveLibrary)?.isFilling == true
+            try? await Task.sleep(nanoseconds: home?.state == "loading" ? 3_000_000_000 : filling ? 5_000_000_000 : 60_000_000_000)
         }
     }
 
@@ -602,6 +645,11 @@ struct Billboard: View {
     private func overview(_ t: Title) async {
         guard overviews[t.id] == nil, let c = client else { return }
         if let kept = TitleCache.shared.details(hub: c.sourceID, id: t.id)?.overview {
+            overviews[t.id] = kept
+            return
+        }
+        // The Drive library has each story already: no need to read the whole title (its seasons, TMDB's details).
+        if let drive = c as? DriveLibrary, let kept = drive.overview(t.id), !kept.isEmpty {
             overviews[t.id] = kept
             return
         }
@@ -1816,6 +1864,77 @@ final class ShelfCache {
     }
 }
 
+/// Each library's titles (the banner's and the rows' source) as Watch last read them, kept on disk in the Watch
+/// folder (Application Support; Caches on Apple TV), which an app update leaves alone. Watch opens with its rows from
+/// here at once and reads them again behind them, instead of waiting for the whole library, a page at a time.
+final class ShelfStore: @unchecked Sendable {
+    static let shared = ShelfStore()
+
+    private struct Kept: Codable {
+        var lists: [String: [Title]] = [:]
+        /// The keys, the newest last (only the last few libraries are kept).
+        var order: [String] = []
+    }
+    private let file = watchFile("shelves.json")
+    private let lock = NSLock()
+    private var kept = Kept()
+    private var reading: Task<Void, Never>?
+
+    /// Starts reading the file in the background, as the app opens.
+    static func prewarm() { _ = shared.read() }
+
+    private func read() -> Task<Void, Never> {
+        lock.lock()
+        defer { lock.unlock() }
+        if let reading { return reading }
+        let file = self.file
+        let t = Task.detached(priority: .userInitiated) { [self] in
+            guard let d = try? Data(contentsOf: file, options: .mappedIfSafe),
+                  let k = try? JSONDecoder().decode(Kept.self, from: d) else { return }
+            merge(k)
+        }
+        reading = t
+        return t
+    }
+
+    /// What was on disk, under anything kept since the app opened (that's newer).
+    private func merge(_ k: Kept) {
+        lock.lock()
+        defer { lock.unlock() }
+        for key in k.order.reversed() where kept.lists[key] == nil {
+            guard let list = k.lists[key] else { continue }
+            kept.lists[key] = list
+            kept.order.insert(key, at: 0)
+        }
+    }
+
+    private func get(_ key: String) -> [Title]? {
+        lock.lock()
+        defer { lock.unlock() }
+        return kept.lists[key]
+    }
+
+    /// [place]'s titles from [source] as last kept (read off the main thread).
+    func titles(source: String, place: String) async -> [Title]? {
+        await read().value
+        return get(source + "|" + place)
+    }
+
+    /// Keeps [titles] for next time (written in the background, only when they changed).
+    func keep(_ titles: [Title], source: String, place: String) {
+        let key = source + "|" + place
+        lock.lock()
+        if kept.lists[key] == titles { lock.unlock(); return }
+        kept.lists[key] = titles
+        kept.order.removeAll { $0 == key }
+        kept.order.append(key)
+        while kept.order.count > 6 { kept.lists[kept.order.removeFirst()] = nil }
+        let snapshot = kept
+        lock.unlock()
+        DiskWriter.write(snapshot, to: file)
+    }
+}
+
 /// Watch's first pictures fetched while the app opens (when the library the app keeps is Watch's own): the titles at
 /// the top and Continue Watching on disk, and the first few posters ready to draw, so Watch opens with its pictures.
 @MainActor
@@ -1825,7 +1944,14 @@ enum WatchPrefetch {
     static func start(_ fleet: Fleet) {
         guard !done, !Demo.isOn else { return }
         done = true
+        ShelfStore.prewarm()
         Task {
+            // The Drive library (and the Apple TV, which uses it whenever it's signed in): the banner's first picture
+            // and the first row's posters from the rows kept last time.
+            if WatchSources.usesDrive {
+                await warmKept(source: DriveLibrary.shared.sourceID, client: DriveLibrary.shared)
+                return
+            }
             // The library comes with the TVs' first answers: a little while at most.
             for _ in 0..<40 where fleet.library == nil { try? await Task.sleep(nanoseconds: 500_000_000) }
             guard let h = fleet.library, let client = WatchSources.current(fleet),
@@ -1837,7 +1963,20 @@ enum WatchPrefetch {
             for u in continuing.prefix(6) { _ = await ImageStore.shared.image(u, maxPixel: 512) }
             if let first = top.first { _ = await ImageStore.shared.image(first, maxPixel: 1800) }
             for u in Array(continuing.dropFirst(6)) + Array(top.dropFirst()) + recent { await ImageStore.shared.prefetch(u) }
+            await warmKept(source: client.sourceID, client: client)
         }
+    }
+
+    /// The section Watch opens on, from the rows kept last time: its banner's first picture and the first row's
+    /// first posters ready to draw, the rest of that row downloaded.
+    private static func warmKept(source: String, client: any WatchSource) async {
+        let place = UserDefaults.standard.string(forKey: "watch.section") == "shows" ? "shows" : "movies"
+        guard let titles = await ShelfStore.shared.titles(source: source, place: place), !titles.isEmpty else { return }
+        let banner = WatchRows.featured(titles, section: place).first.flatMap { client.artURL($0.backdrop ?? $0.poster) }
+        let first = (WatchRows.rows(titles).first?.titles ?? []).prefix(14).compactMap { client.artURL($0.poster) }
+        if let banner { _ = await ImageStore.shared.image(banner, maxPixel: 1800) }
+        for u in first.prefix(6) { _ = await ImageStore.shared.image(u, maxPixel: 512) }
+        for u in first.dropFirst(6) { await ImageStore.shared.prefetch(u) }
     }
 }
 

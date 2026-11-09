@@ -188,7 +188,11 @@ final class DriveLibrary: WatchSource {
     /// The library as read off the main thread at launch (`prewarm`).
     nonisolated private static let early = EarlyRead<Saved>(watchFile("library.json"))
     /// Starts reading the saved library in the background, ahead of Watch.
-    nonisolated static func prewarm() { _ = early }
+    nonisolated static func prewarm() {
+        _ = early
+        // Watch's rows as last shown (either library's), so Watch opens with them.
+        ShelfStore.prewarm()
+    }
 
     var titleCount: Int { saved.movies.count + saved.shows.count }
     var updated: Date? { saved.updated.map { Date(timeIntervalSince1970: $0 / 1000) } }
@@ -252,6 +256,8 @@ final class DriveLibrary: WatchSource {
                     : " Folders it can see: \(seen.joined(separator: ", ")). If that’s the wrong account, sign out and sign in with the one the TVs use."))
             }
             var movies: [Entry] = [], shows: [Entry] = []
+            previous = Dictionary((saved.movies + saved.shows).map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+            defer { previous = [:] }
             if let m = moviesID { movies = try await films(in: m) }
             if let s = showsID {
                 let list = try await GoogleDrive.children(s)
@@ -273,10 +279,14 @@ final class DriveLibrary: WatchSource {
         }
     }
 
+    /// The titles as before this read, by id (each title read is matched to its old self in one step, not by looking
+    /// through the whole library for every one).
+    @ObservationIgnored private var previous: [String: Entry] = [:]
+
     /// What TMDB already said about [e], kept from the last read.
     private func keep(_ e: Entry) -> Entry {
         // Looked up again when the title read from its name changed (a "Blade Runner 2049" once read as "Blade Runner").
-        guard let old = (saved.movies + saved.shows).first(where: { $0.id == e.id && $0.name == e.name && $0.title == e.title }) else { return e }
+        guard let old = previous[e.id], old.name == e.name, old.title == e.title else { return e }
         var n = e
         n.poster = old.poster; n.backdrop = old.backdrop; n.genres = old.genres; n.rating = old.rating
         n.overview = old.overview; n.tmdb = old.tmdb; n.year = e.year ?? old.year
@@ -292,8 +302,23 @@ final class DriveLibrary: WatchSource {
             let p = TitleNames.parse(f.name, stripExtension: true)
             out.append(keep(Entry(id: f.id, kind: "movie", name: f.name, title: p.title, year: p.year, added: f.added, file: f.id)))
         }
-        for f in list where f.isFolder {
-            let inside = try await GoogleDrive.children(f.id)
+        // Each film's folder listed eight at a time (one after another, a library of a few hundred took minutes on a
+        // fresh install, with Watch empty until it was done).
+        let folders = list.filter(\.isFolder)
+        var listed: [String: [GoogleDrive.File]] = [:]
+        try await withThrowingTaskGroup(of: (String, [GoogleDrive.File]).self) { group in
+            for (i, f) in folders.enumerated() {
+                if i >= 8, let done = try await group.next() { listed[done.0] = done.1 }
+                let id = f.id
+                group.addTask {
+                    let inside = try await GoogleDrive.children(id)
+                    return (id, inside)
+                }
+            }
+            for try await done in group { listed[done.0] = done.1 }
+        }
+        for f in folders {
+            guard let inside = listed[f.id] else { continue }
             saved.folders[f.id] = inside
             let videos = inside.filter(\.isVideo).sorted { $0.bytes > $1.bytes }
             guard !videos.isEmpty else { continue }
@@ -311,13 +336,26 @@ final class DriveLibrary: WatchSource {
         guard !filling else { return }
         filling = true
         defer { filling = false }
-        let todo = (saved.movies + saved.shows).filter { $0.tmdb == nil }
+        // The newest first: they're the banner and the first rows.
+        let todo = (saved.movies + saved.shows).filter { $0.tmdb == nil }.sorted { $0.added > $1.added }
         guard !todo.isEmpty else { return }
         await withTaskGroup(of: Void.self) { group in
             for e in todo { group.addTask { await self.lookUp(e) } }
+            // Watch reads its rows again as the posters come in (every 24 answers), not ten minutes later.
+            var answered = 0
+            for await _ in group {
+                answered += 1
+                if answered % 24 == 0 { filledAt = nowMS }
+            }
         }
+        filledAt = nowMS
         store()
     }
+
+    /// When TMDB's answers last came in (part of Watch home's `updated`, so Watch reads its rows again).
+    @ObservationIgnored private var filledAt: Double?
+    /// TMDB's answers are coming in (Watch asks again sooner meanwhile).
+    var isFilling: Bool { filling }
 
     /// One title's answer from TMDB, kept by its id (the list may have been read again meanwhile).
     private func lookUp(_ e: Entry) async {
@@ -344,7 +382,10 @@ final class DriveLibrary: WatchSource {
         return saved.folders[id] ?? []
     }
 
-    private func entry(_ id: String) -> Entry? { (saved.movies + saved.shows).first { $0.id == id } }
+    private func entry(_ id: String) -> Entry? { saved.movies.first(where: { $0.id == id }) ?? saved.shows.first(where: { $0.id == id }) }
+
+    /// A title's story as TMDB told it (nil until it's been looked up).
+    func overview(_ id: String) -> String? { entry(id)?.overview }
 
     // MARK: Where things were left off
 
@@ -506,7 +547,8 @@ final class DriveLibrary: WatchSource {
             return try decode(["state": busy ? "loading" : "empty"])
         }
         // Only Continue Watching: Watch reads the banner and rows from the library a section at a time.
-        let home: [String: Any] = ["state": "ready", "tv": "Google Drive", "updated": saved.updated ?? 0, "continue": continueItems()]
+        let home: [String: Any] = ["state": "ready", "tv": "Google Drive", "updated": max(saved.updated ?? 0, filledAt ?? 0),
+                                   "continue": continueItems()]
         return try decode(home)
     }
 

@@ -102,7 +102,7 @@ final class DriveDownloads: NSObject {
 
     func add(file: String, title: String, name: String, detail: String?, poster: String?) {
         guard !items.contains(where: { $0.file == file }) else { return }
-        items.append(Item(file: file, title: title, name: name, detail: detail, poster: poster))
+        items.append(Item(file: file, title: title, name: TitleText.withoutYear(name), detail: detail, poster: poster))
         save()
         Task { await begin(file) }
     }
@@ -171,7 +171,8 @@ extension DriveDownloads.Item {
         let c = try d.container(keyedBy: CodingKeys.self)
         file = try c.decode(String.self, forKey: .file)
         title = try c.decodeIfPresent(String.self, forKey: .title) ?? ""
-        name = try c.decodeIfPresent(String.self, forKey: .name) ?? title
+        // The film's or show's name, shown without its year (downloads kept from before names were cleaned too).
+        name = try TitleText.withoutYear(c.decodeIfPresent(String.self, forKey: .name) ?? title)
         detail = try c.decodeIfPresent(String.self, forKey: .detail)
         poster = try c.decodeIfPresent(String.self, forKey: .poster)
         bytes = try c.decodeIfPresent(Int64.self, forKey: .bytes) ?? 0
