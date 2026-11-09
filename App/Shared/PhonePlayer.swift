@@ -40,9 +40,10 @@ final class PhonePlayback {
     /// fetching or decoding (an exact frame can take seconds longer over a stream).
     nonisolated static let nearEnough = CMTime(seconds: 2, preferredTimescale: 600)
 
-    /// Starts as soon as it can: a short buffer before the first frame, the rest filled while it plays.
+    /// The player buffers as it judges best from the start: enough before the first frame that a big film (a 4K
+    /// remux) doesn't stutter as it starts, which a two-second start buffer made it do.
     nonisolated static func quickStart(_ item: AVPlayerItem) {
-        item.preferredForwardBufferDuration = 2
+        item.preferredForwardBufferDuration = 0
     }
 
     /// Once it's playing, the player buffers as far ahead as it likes again (two seconds ahead all film long would
@@ -58,13 +59,15 @@ final class PhonePlayback {
         p.seek(to: CMTime(seconds: play.start, preferredTimescale: 600), toleranceBefore: nearEnough, toleranceAfter: nearEnough)
     }
 
-    /// Once the file is open: at the resume point (again, if the early ask didn't take) and playing, without waiting
-    /// for a long buffer first.
+    /// Once the file is open: at the resume point (again, if the early ask didn't take) and playing.
     static func begin(_ p: AVPlayer, _ play: PhonePlay) async {
         if play.start > 5, abs(p.currentTime().seconds - play.start) > 3 {
             await p.seek(to: CMTime(seconds: play.start, preferredTimescale: 600), toleranceBefore: nearEnough, toleranceAfter: nearEnough)
         }
-        p.playImmediately(atRate: 1)
+        // Play, letting the player wait until it can keep up (playImmediately started big films with almost
+        // nothing buffered, so they stuttered for the first seconds).
+        p.automaticallyWaitsToMinimizeStalling = true
+        p.play()
     }
 
     /// How long it may take to start before it says so.
