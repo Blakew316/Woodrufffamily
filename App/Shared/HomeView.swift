@@ -754,7 +754,7 @@ struct LibrarySearchResults: View {
         }
         .navigationTitle("Search")
         .environment(\.openTitle, OpenTitleAction { openTitle = $0 })
-        .titleSheet(Binding(get: { opened.map { TitleRef(id: $0) } }, set: { openTitle = $0?.id })) { TitleSheet(id: $0.id).macResizable(width: 760, height: 820, minWidth: 520, minHeight: 500) }
+        .titleSheet(Binding(get: { opened.map { TitleRef(id: $0) } }, set: { openTitle = $0?.id })) { TitleSheet(id: $0.id) }
         .task(id: query) {
             try? await Task.sleep(nanoseconds: 220_000_000)
             guard !Task.isCancelled else { return }

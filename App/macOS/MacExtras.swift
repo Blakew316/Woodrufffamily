@@ -200,3 +200,33 @@ enum MacActions {
         }
     }
 }
+
+/// Clicking Woodruff in the Dock brings its window back: out of the Dock when it's minimised, to the front when it's
+/// behind, and a new one when it was closed (the menu bar's panel and the Mini Player don't count as the window).
+@MainActor
+final class MacAppDelegate: NSObject, NSApplicationDelegate {
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        // Handled here: nothing more for AppKit to do. (Not handled only if the window can't be opened from here yet.)
+        !MainWindowOpener.show()
+    }
+}
+
+/// Opens Woodruff's own window from outside SwiftUI (the Dock). The menu bar icon hands over SwiftUI's openWindow
+/// at launch; it's always there, even with every window closed.
+@MainActor
+enum MainWindowOpener {
+    static var openWindow: OpenWindowAction?
+
+    /// Whether the window is showing now (or on its way).
+    @discardableResult static func show() -> Bool {
+        NSApp.activate()
+        if let w = MainWindow.current, w.isVisible || w.isMiniaturized {
+            if w.isMiniaturized { w.deminiaturize(nil) }
+            w.makeKeyAndOrderFront(nil)
+            return true
+        }
+        guard let openWindow else { return false }
+        openWindow(id: "main")
+        return true
+    }
+}

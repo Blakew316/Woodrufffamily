@@ -30,6 +30,10 @@ struct WoodruffApp: App {
     #if os(iOS) || os(tvOS)
     @UIApplicationDelegateAdaptor(PushAppDelegate.self) private var pushDelegate
     #endif
+    #if os(macOS)
+    /// Clicking the Dock icon brings the window back (from the Dock, from behind, or anew after it was closed).
+    @NSApplicationDelegateAdaptor(MacAppDelegate.self) private var appDelegate
+    #endif
 
     init() {
         // The saved sign-ins and keys the settings sync reads before the TVs are first asked, read now in the
@@ -522,6 +526,9 @@ struct MacRoot: View {
     }
     @AppStorage("watch.section") private var watchSection = "movies"
 
+    /// Watch and anything opened from it (its lists, its search): Watch's blue background.
+    private var inWatch: Bool { section == .watch && tvSelection == nil && deviceSelection == nil }
+
     /// Settings' own page: no thermostat row under the bar, so the page sits right under it.
     private var onSettings: Bool {
         section == .settings && tvSelection == nil && deviceSelection == nil && query.isEmpty && nav.path.isEmpty
@@ -546,7 +553,8 @@ struct MacRoot: View {
             }
             .environment(\.macPageStack, true)
             // Not under Home's own first page: its backdrop covers the whole page (and draws what's playing itself).
-            .background { if onSettings { IconBackdrop() } else if !onHome { AmbientArtwork() } }
+            // Settings and Watch have Home's blues (the icon's background); Home draws its own.
+            .background { if onSettings || inWatch { IconBackdrop() } else if !onHome { AmbientArtwork() } }
             // A clicked camera fills everything right of the sidebar (Esc or ✕ to close).
             .overlay {
                 if let cam = camera {
@@ -701,6 +709,7 @@ struct MacRoot: View {
         let centred = greeting && width >= 1150
         // Home scrolled down: the greeting goes and the bar closes up over it.
         let quiet = centred && MacHomeScroll.shared.scrolledDown
+        let watchBarHidden = onWatch && MacWatchScroll.shared.barHidden
         return VStack(alignment: .leading, spacing: onSettings ? 0 : 10) {
             // Where to go, in the middle at the very top: one glass bar the size of the pills under it.
             HStack {
@@ -762,8 +771,9 @@ struct MacRoot: View {
             // Always the same height, so the pages below never jump as the bar's contents change (Settings has no row
             // here at all, so its page starts right under the bar at the top).
             .frame(height: onSettings ? 0 : 46)
-            .opacity(onSettings ? 0 : 1)
-            .allowsHitTesting(!onSettings)
+            // Watch scrolled down: Movies | TV Shows and the rest of this row fade away (back when it scrolls up).
+            .opacity(onSettings || watchBarHidden ? 0 : 1)
+            .allowsHitTesting(!onSettings && !watchBarHidden)
             .overlay {
                 // In the middle of the row, between Edit Home and the thermostat (no extra room under the row for it).
                 if centred {
@@ -942,6 +952,8 @@ struct MenuBarIcon: View {
 
     var body: some View {
         Image(systemName: fleet.menuBarSymbol)
+            // The Dock's click opens Woodruff's window with this (once it's been closed).
+            .onAppear { MainWindowOpener.openWindow = openWindow }
             .onChange(of: CameraStreams.shared.requested) { _, id in
                 guard id != nil else { return }
                 if let w = MainWindow.current, w.isVisible || w.isMiniaturized { return }

@@ -96,6 +96,17 @@ struct WatchView: View {
         .scrollIndicators(.hidden)
         // Scrolling the page puts the search keyboard away.
         .scrollDismissesKeyboard(.immediately)
+        #if os(macOS)
+        // Scrolling down fades the bar's row with Movies | TV Shows away; scrolling up brings it back. (How far down,
+        // kept within the page's ends, so the bounce at either end doesn't count.)
+        .onScrollGeometryChange(for: CGFloat.self, of: { g in
+            let end = g.contentSize.height + g.contentInsets.top + g.contentInsets.bottom - g.containerSize.height
+            return min(max(0, g.contentOffset.y + g.contentInsets.top), max(0, end))
+        }) { old, new in
+            MacWatchScroll.shared.follow(from: old, to: new)
+        }
+        .onDisappear { MacWatchScroll.shared.reset() }
+        #endif
         .onGeometryChange(for: CGFloat.self, of: { $0.size.width }) { w in fitPosters(w) }
         .environment(\.posterWidth, posterWidth)
         #if os(iOS)
@@ -124,7 +135,7 @@ struct WatchView: View {
             #if os(tvOS)
             TitleSheet(id: ref.id)
             #else
-            TitleSheet(id: ref.id).zoomDestination(ref.id, zoom).macResizable(width: 760, height: 820, minWidth: 520, minHeight: 500)
+            TitleSheet(id: ref.id).zoomDestination(ref.id, zoom)
             #endif
         }
         .environment(\.openTitle, OpenTitleAction { openTitle = $0 })
@@ -977,6 +988,10 @@ struct TitleSheet: View {
     /// Why the title couldn't be read (with Try Again, instead of a spinner that never ends).
     @State private var failed: String?
     @State private var marking = false
+    #if os(macOS)
+    /// How tall the sheet's contents are (its window follows them).
+    @State private var macContentHeight: CGFloat = 0
+    #endif
 
     private var client: (any WatchSource)? { WatchSources.current(fleet) }
 
@@ -1092,74 +1107,93 @@ struct TitleSheet: View {
         let season = self.season(of: shown)
         NavigationStack {
             ScrollView {
-                if let d = shown {
-                    VStack(alignment: .leading, spacing: 0) {
-                        header(top(d, c))
-                        VStack(alignment: .leading, spacing: 14) {
-                            if let o = d.overview { Text(o).font(.body).foregroundStyle(.primary.opacity(0.9)) }
-                            if let cast = d.cast, !cast.isEmpty { Text("Starring " + cast.joined(separator: ", ")).font(.footnote).foregroundStyle(.secondary) }
-                            if let seasons = d.seasons, !seasons.isEmpty {
-                                Menu {
-                                    Picker("Season", selection: Binding(get: { season }, set: { picked = $0 })) {
-                                        ForEach(Array(seasons.enumerated()), id: \.offset) { i, s in Text(s.name).tag(i) }
+                VStack(spacing: 0) {
+                    if let d = shown {
+                        VStack(alignment: .leading, spacing: 0) {
+                            header(top(d, c))
+                            VStack(alignment: .leading, spacing: 14) {
+                                if let o = d.overview { Text(o).font(.body).foregroundStyle(.primary.opacity(0.9)) }
+                                if let cast = d.cast, !cast.isEmpty { Text("Starring " + cast.joined(separator: ", ")).font(.footnote).foregroundStyle(.secondary) }
+                                if let seasons = d.seasons, !seasons.isEmpty {
+                                    Menu {
+                                        Picker("Season", selection: Binding(get: { season }, set: { picked = $0 })) {
+                                            ForEach(Array(seasons.enumerated()), id: \.offset) { i, s in Text(s.name).tag(i) }
+                                        }
+                                    } label: {
+                                        HStack(spacing: 6) {
+                                            Text(seasons[safe: season]?.name ?? "Season").font(.title3.bold())
+                                            Image(systemName: "chevron.down").font(.subheadline.weight(.bold)).foregroundStyle(.secondary)
+                                        }
+                                        .foregroundStyle(.primary)
                                     }
-                                } label: {
-                                    HStack(spacing: 6) {
-                                        Text(seasons[safe: season]?.name ?? "Season").font(.title3.bold())
-                                        Image(systemName: "chevron.down").font(.subheadline.weight(.bold)).foregroundStyle(.secondary)
+                                    #if os(macOS)
+                                    // Just its name and the arrow, lined up with the text above (no pop-up button around it).
+                                    .menuStyle(.button)
+                                    .buttonStyle(.plain)
+                                    .menuIndicator(.hidden)
+                                    .fixedSize()
+                                    #endif
+                                    .padding(.top, 8)
+                                    if loadingEpisodes && episodes.isEmpty { ProgressView().frame(maxWidth: .infinity) }
+                                    if let episodesNote, episodes.isEmpty && !loadingEpisodes {
+                                        Text(episodesNote).font(.subheadline).foregroundStyle(.secondary)
+                                        ActionButton(action: { await loadEpisodes() }) { Text("Try Again") }
+                                            .buttonStyle(.glass)
                                     }
-                                    .foregroundStyle(.primary)
+                                    ForEach(episodes) { e in
+                                        EpisodeRow(episode: e, still: c?.artURL(e.still, small: true), changed: { watchChanged(); Task { await loadEpisodes() } }, played: { dismiss() })
+                                    }
                                 }
-                                .padding(.top, 8)
-                                if loadingEpisodes && episodes.isEmpty { ProgressView().frame(maxWidth: .infinity) }
-                                if let episodesNote, episodes.isEmpty && !loadingEpisodes {
-                                    Text(episodesNote).font(.subheadline).foregroundStyle(.secondary)
-                                    ActionButton(action: { await loadEpisodes() }) { Text("Try Again") }
-                                        .buttonStyle(.glass)
-                                }
-                                ForEach(episodes) { e in
-                                    EpisodeRow(episode: e, still: c?.artURL(e.still, small: true), changed: { watchChanged(); Task { await loadEpisodes() } }, played: { dismiss() })
+                                if let films = d.films, !films.isEmpty {
+                                    Text("In This Collection").font(.title3.bold()).padding(.top, 8)
+                                    ForEach(films) { e in
+                                        EpisodeRow(episode: e, still: c?.artURL(e.still, small: true), changed: { watchChanged(); Task { await load() } }, played: { dismiss() })
+                                    }
                                 }
                             }
-                            if let films = d.films, !films.isEmpty {
-                                Text("In This Collection").font(.title3.bold()).padding(.top, 8)
-                                ForEach(films) { e in
-                                    EpisodeRow(episode: e, still: c?.artURL(e.still, small: true), changed: { watchChanged(); Task { await load() } }, played: { dismiss() })
-                                }
-                            }
+                            .modifier(SheetSectionPadding())
                         }
-                        .padding(20)
-                    }
-                } else if let t = TitleCache.shared.tile(id) {
-                    // Opened from a tile: its picture and name at once, the rest as it arrives.
-                    VStack(alignment: .leading, spacing: 0) {
-                        header(top(t, c))
-                        Group {
-                            if let failed {
-                                VStack(alignment: .leading, spacing: 10) {
-                                    Text("Can’t Load This Title").font(.headline)
-                                    Text(failed).font(.subheadline).foregroundStyle(.secondary)
-                                    ActionButton(action: { await load() }) { Text("Try Again") }
-                                        .buttonStyle(.glass)
+                    } else if let t = TitleCache.shared.tile(id) {
+                        // Opened from a tile: its picture and name at once, the rest as it arrives.
+                        VStack(alignment: .leading, spacing: 0) {
+                            header(top(t, c))
+                            Group {
+                                if let failed {
+                                    VStack(alignment: .leading, spacing: 10) {
+                                        Text("Can’t Load This Title").font(.headline)
+                                        Text(failed).font(.subheadline).foregroundStyle(.secondary)
+                                        ActionButton(action: { await load() }) { Text("Try Again") }
+                                            .buttonStyle(.glass)
+                                    }
+                                } else {
+                                    ProgressView().frame(maxWidth: .infinity).padding(.top, 20)
                                 }
-                            } else {
-                                ProgressView().frame(maxWidth: .infinity).padding(.top, 20)
                             }
+                            .modifier(SheetSectionPadding())
                         }
-                        .padding(20)
+                    } else if let failed {
+                        VStack(spacing: 14) {
+                            EmptyState(symbol: "wifi.exclamationmark", title: "Can’t Load This Title", message: failed)
+                            ActionButton(action: { await load() }) { Text("Try Again") }
+                                .buttonStyle(.glass)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.top, 120)
+                    } else {
+                        ProgressView().frame(maxWidth: .infinity).padding(.top, 160)
                     }
-                } else if let failed {
-                    VStack(spacing: 14) {
-                        EmptyState(symbol: "wifi.exclamationmark", title: "Can’t Load This Title", message: failed)
-                        ActionButton(action: { await load() }) { Text("Try Again") }
-                            .buttonStyle(.glass)
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.top, 120)
-                } else {
-                    ProgressView().frame(maxWidth: .infinity).padding(.top, 160)
                 }
+                #if os(macOS)
+                // How tall it all is, so the window is as tall as what it shows (up to a point, then it scrolls).
+                .onGeometryChange(for: CGFloat.self, of: { $0.size.height.rounded() }) { h in
+                    if abs(h - macContentHeight) > 1 { macContentHeight = h }
+                }
+                #endif
             }
+            #if os(macOS)
+            // The app's blues behind it, as on Home, Watch and Settings.
+            .background { IconBackdrop() }
+            #endif
             .ignoresSafeArea(edges: .top)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button(role: .close) { dismiss() } } }
             .task { await load() }
@@ -1169,9 +1203,22 @@ struct TitleSheet: View {
         // Errors from here (a play that failed, Mark as Watched) show over the sheet, not hidden behind it.
         .sheetBanner()
         #if os(macOS)
-        .frame(minWidth: 620, idealWidth: 620, maxWidth: .infinity, minHeight: 700, idealHeight: 700, maxHeight: .infinity)
+        // Light text on the blues, as everywhere else in the app.
+        .environment(\.colorScheme, .dark)
+        .frame(width: Self.macWidth, height: macHeight)
         #endif
     }
+
+    #if os(macOS)
+    /// The Mac's window: as wide as a 16:9 banner reads well, and as tall as what it shows, between a floor (so a
+    /// title still loading isn't a sliver) and most of the screen.
+    static let macWidth: CGFloat = 700
+    private var macHeight: CGFloat {
+        let screen = (NSScreen.main?.visibleFrame.height ?? 900) - 120
+        let tallest = max(480, min(860, screen))
+        return min(tallest, max(480, macContentHeight))
+    }
+    #endif
 
     private func top(_ d: TitleDetails, _ c: (any WatchSource)?) -> SheetTop {
         SheetTop(title: d.title, art: c?.artURL(d.backdrop ?? d.poster), facts: facts(d), play: d.play, restart: d.restart)
@@ -1182,7 +1229,33 @@ struct TitleSheet: View {
         SheetTop(title: t.title, art: c?.artURL(t.backdrop ?? t.poster), facts: "", play: t.play, restart: nil)
     }
 
-    private func header(_ top: SheetTop) -> some View {
+    @ViewBuilder private func header(_ top: SheetTop) -> some View {
+        #if os(macOS)
+        // The Mac: the picture as a 16:9 banner across the top, then the name, the line about it and the buttons
+        // under it, on the same edge as everything below.
+        VStack(alignment: .leading, spacing: 0) {
+            Color.clear.aspectRatio(16.0 / 9.0, contentMode: .fit)
+                .overlay { Artwork(url: top.art, maxPixel: 1800) }
+                .overlay {
+                    LinearGradient(stops: [.init(color: .clear, location: 0.6), .init(color: .black.opacity(0.35), location: 1)], startPoint: .top, endPoint: .bottom)
+                }
+                .clipped()
+            VStack(alignment: .leading, spacing: 8) {
+                Text(top.title)
+                    .font(.largeTitle.bold())
+                    .foregroundStyle(.white)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                if !top.facts.isEmpty {
+                    Text(top.facts).font(.subheadline.weight(.medium)).foregroundStyle(.white.opacity(0.75))
+                }
+                playButtons(top).padding(.top, 6)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 24)
+            .padding(.top, 20)
+        }
+        #else
         ZStack(alignment: .bottomLeading) {
             Color.clear.aspectRatio(0.95, contentMode: .fit)
                 .overlay { Artwork(url: top.art, maxPixel: 1800) }
@@ -1191,22 +1264,30 @@ struct TitleSheet: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text(top.title).font(.largeTitle.bold()).foregroundStyle(.white)
                 Text(top.facts).font(.footnote.weight(.medium)).foregroundStyle(.white.opacity(0.75))
-                HStack(spacing: 10) {
-                    // Closes once the play has gone out; if there's nowhere to play it, stays open and says why.
-                    if let p = top.play { CapsuleButton(title: p.label ?? "Play", symbol: "play.fill") { if PlayRouter.start(p, fleet: fleet) { dismiss() } } }
-                    if let r = top.restart {
-                        Button { if PlayRouter.start(r, fleet: fleet, fromStart: true) { dismiss() } } label: {
-                            Image(systemName: "arrow.counterclockwise").font(.headline).foregroundStyle(.white)
-                                .frame(width: 40, height: 40).glass(Circle()).environment(\.colorScheme, .dark)
-                        }
-                        .buttonStyle(PressScale())
-                        .accessibilityLabel(r.label ?? "Start Over")
-                    }
-                    if let p = top.play { PlayOnButton(action: p, then: { dismiss() }) }
-                }
-                .padding(.top, 4)
+                playButtons(top).padding(.top, 4)
             }
             .padding(20)
+        }
+        #endif
+    }
+
+    /// Play, Start Over and Play On.
+    private func playButtons(_ top: SheetTop) -> some View {
+        HStack(spacing: 10) {
+            // Closes once the play has gone out; if there's nowhere to play it, stays open and says why.
+            if let p = top.play { CapsuleButton(title: p.label ?? "Play", symbol: "play.fill") { if PlayRouter.start(p, fleet: fleet) { dismiss() } } }
+            if let r = top.restart {
+                Button { if PlayRouter.start(r, fleet: fleet, fromStart: true) { dismiss() } } label: {
+                    Image(systemName: "arrow.counterclockwise").font(.headline).foregroundStyle(.white)
+                        .frame(width: 40, height: 40).glass(Circle()).environment(\.colorScheme, .dark)
+                }
+                .buttonStyle(PressScale())
+                .accessibilityLabel(r.label ?? "Start Over")
+                #if os(macOS)
+                .help(r.label ?? "Start Over")
+                #endif
+            }
+            if let p = top.play { PlayOnButton(action: p, then: { dismiss() }) }
         }
     }
 
@@ -1273,6 +1354,17 @@ struct TitleSheet: View {
             if Task.isCancelled { return }
             episodesNote = error.localizedDescription
         }
+    }
+}
+
+/// The padding around a title sheet's details: on the Mac, the same edge as its name and buttons above.
+private struct SheetSectionPadding: ViewModifier {
+    func body(content: Content) -> some View {
+        #if os(macOS)
+        content.padding(.horizontal, 24).padding(.top, 18).padding(.bottom, 24)
+        #else
+        content.padding(20)
+        #endif
     }
 }
 
@@ -1471,7 +1563,7 @@ struct LibraryGrid: View {
             watchChanged(removed: key)
             Task { await reloadShown() }
         })
-        .titleSheet(Binding(get: { openTitle.map { TitleRef(id: $0) } }, set: { openTitle = $0?.id })) { TitleSheet(id: $0.id).macResizable(width: 760, height: 820, minWidth: 520, minHeight: 500) }
+        .titleSheet(Binding(get: { openTitle.map { TitleRef(id: $0) } }, set: { openTitle = $0?.id })) { TitleSheet(id: $0.id) }
         #if os(iOS) || os(tvOS)
         .toolbar { filterMenu }
         #endif
@@ -1586,7 +1678,7 @@ struct SearchPage: View {
             watchChanged(removed: key)
             again += 1
         })
-        .titleSheet(Binding(get: { openTitle.map { TitleRef(id: $0) } }, set: { openTitle = $0?.id })) { TitleSheet(id: $0.id).macResizable(width: 760, height: 820, minWidth: 520, minHeight: 500) }
+        .titleSheet(Binding(get: { openTitle.map { TitleRef(id: $0) } }, set: { openTitle = $0?.id })) { TitleSheet(id: $0.id) }
     }
 }
 
@@ -1749,6 +1841,39 @@ enum WatchPrefetch {
     }
 }
 
+
+#if os(macOS)
+/// Whether Watch's row in the Mac's top bar (Movies | TV Shows, search, the TV) is faded away: it goes as the page
+/// scrolls down and comes back as it scrolls up or nears the top. Only set when that changes, so the bar isn't
+/// drawn again while scrolling.
+@Observable @MainActor
+final class MacWatchScroll {
+    static let shared = MacWatchScroll()
+    private(set) var barHidden = false
+    /// How far the page has gone in one direction (down positive), since it last turned.
+    @ObservationIgnored private var travel: CGFloat = 0
+
+    func follow(from old: CGFloat, to new: CGFloat) {
+        // Near the top: always there.
+        if new < 40 { travel = 0; set(false); return }
+        let step = new - old
+        guard step != 0 else { return }
+        if (step > 0) != (travel > 0) { travel = 0 }
+        travel += step
+        if travel > 24 { set(true) } else if travel < -24 { set(false) }
+    }
+
+    func reset() {
+        travel = 0
+        set(false)
+    }
+
+    private func set(_ hidden: Bool) {
+        guard hidden != barHidden else { return }
+        withAnimation(.smooth(duration: 0.3)) { barHidden = hidden }
+    }
+}
+#endif
 
 /// Fetches a shelf's posters ahead of being scrolled to, a few at a time, onto disk (not into memory).
 enum ShelfWarmer {

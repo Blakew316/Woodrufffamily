@@ -616,6 +616,28 @@ struct GreetingText: View {
     }
 }
 
+/// The weather's place, short: "Lindale, Texas" as "Lindale, TX" (the town and the state's two letters).
+enum WeatherPlace {
+    private static let states: [String: String] = [
+        "Alabama": "AL", "Alaska": "AK", "Arizona": "AZ", "Arkansas": "AR", "California": "CA", "Colorado": "CO",
+        "Connecticut": "CT", "Delaware": "DE", "Florida": "FL", "Georgia": "GA", "Hawaii": "HI", "Idaho": "ID",
+        "Illinois": "IL", "Indiana": "IN", "Iowa": "IA", "Kansas": "KS", "Kentucky": "KY", "Louisiana": "LA",
+        "Maine": "ME", "Maryland": "MD", "Massachusetts": "MA", "Michigan": "MI", "Minnesota": "MN",
+        "Mississippi": "MS", "Missouri": "MO", "Montana": "MT", "Nebraska": "NE", "Nevada": "NV",
+        "New Hampshire": "NH", "New Jersey": "NJ", "New Mexico": "NM", "New York": "NY", "North Carolina": "NC",
+        "North Dakota": "ND", "Ohio": "OH", "Oklahoma": "OK", "Oregon": "OR", "Pennsylvania": "PA",
+        "Rhode Island": "RI", "South Carolina": "SC", "South Dakota": "SD", "Tennessee": "TN", "Texas": "TX",
+        "Utah": "UT", "Vermont": "VT", "Virginia": "VA", "Washington": "WA", "West Virginia": "WV",
+        "Wisconsin": "WI", "Wyoming": "WY", "District of Columbia": "DC",
+    ]
+
+    static func short(_ place: String) -> String {
+        let parts = place.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+        guard parts.count >= 2 else { return place }
+        return parts[0] + ", " + (states[parts[1]] ?? parts[1])
+    }
+}
+
 #if os(macOS) || os(tvOS)
 /// The Mac's Home greeting, in the middle of Woodruff's bar: the weather, then the greeting over its one-liner, in
 /// one Liquid Glass capsule.
@@ -624,6 +646,7 @@ struct GreetingText: View {
 struct MacGreetingHero: View {
     private let weather = HomeWeather.shared
     private let greeting = HomeGreeting.shared
+    @AppStorage("weatherPlace") private var place = ""
 
     var body: some View {
         HStack(alignment: .center, spacing: 16) {
@@ -633,14 +656,23 @@ struct MacGreetingHero: View {
             let showWeather = true
             #endif
             if showWeather, let now = weather.now {
-                HStack(spacing: 8) {
-                    Image(systemName: now.sky.symbol)
-                        .symbolRenderingMode(.multicolor)
-                        .font(.system(size: 27 * macScale, weight: .semibold))
-                    Text(now.tempText)
-                        .font(.system(size: 29 * macScale, weight: .semibold, design: .rounded))
-                        .monospacedDigit()
-                        .contentTransition(.numericText())
+                VStack(alignment: .center, spacing: 1) {
+                    HStack(spacing: 8) {
+                        Image(systemName: now.sky.symbol)
+                            .symbolRenderingMode(.multicolor)
+                            .font(.system(size: 27 * macScale, weight: .semibold))
+                        Text(now.tempText)
+                            .font(.system(size: 29 * macScale, weight: .semibold, design: .rounded))
+                            .monospacedDigit()
+                            .contentTransition(.numericText())
+                    }
+                    // "Austin, TX" under the sky and the temperature.
+                    if !place.isEmpty {
+                        Text(WeatherPlace.short(place))
+                            .font(.system(size: 12 * macScale, weight: .semibold))
+                            .foregroundStyle(IconPalette.ice)
+                            .lineLimit(1)
+                    }
                 }
                 #if os(macOS)
                 .help([now.sky.words, now.range].compactMap { $0 }.joined(separator: " · "))
@@ -683,18 +715,27 @@ struct MacGreetingHero: View {
 struct MacGreetingPill: View {
     var compact = false
     private let weather = HomeWeather.shared
+    @AppStorage("weatherPlace") private var place = ""
 
     var body: some View {
         HStack(spacing: 12) {
             if let now = weather.now {
-                HStack(spacing: 6) {
-                    Image(systemName: now.sky.symbol)
-                        .symbolRenderingMode(.multicolor)
-                        .font(.system(size: 18, weight: .semibold))
-                    Text(now.tempText)
-                        .font(.system(size: 17, weight: .semibold, design: .rounded))
-                        .monospacedDigit()
-                        .contentTransition(.numericText())
+                VStack(spacing: 0) {
+                    HStack(spacing: 6) {
+                        Image(systemName: now.sky.symbol)
+                            .symbolRenderingMode(.multicolor)
+                            .font(.system(size: 18, weight: .semibold))
+                        Text(now.tempText)
+                            .font(.system(size: 17, weight: .semibold, design: .rounded))
+                            .monospacedDigit()
+                            .contentTransition(.numericText())
+                    }
+                    if !place.isEmpty {
+                        Text(WeatherPlace.short(place))
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
                 }
                 #if os(macOS)
                 .help([now.sky.words, now.range].compactMap { $0 }.joined(separator: " · "))

@@ -103,31 +103,12 @@ private struct TVWeatherFloat: View {
             }
             // "Lindale, TX": the town and the state's two letters.
             if !place.isEmpty {
-                Text(Self.short(place))
+                Text(WeatherPlace.short(place))
                     .font(.system(size: 24, weight: .semibold))
                     .foregroundStyle(IconPalette.ice)
             }
         }
         .shadow(color: .black.opacity(0.4), radius: 10, y: 2)
-    }
-
-    private static let states: [String: String] = [
-        "Alabama": "AL", "Alaska": "AK", "Arizona": "AZ", "Arkansas": "AR", "California": "CA", "Colorado": "CO",
-        "Connecticut": "CT", "Delaware": "DE", "Florida": "FL", "Georgia": "GA", "Hawaii": "HI", "Idaho": "ID",
-        "Illinois": "IL", "Indiana": "IN", "Iowa": "IA", "Kansas": "KS", "Kentucky": "KY", "Louisiana": "LA",
-        "Maine": "ME", "Maryland": "MD", "Massachusetts": "MA", "Michigan": "MI", "Minnesota": "MN",
-        "Mississippi": "MS", "Missouri": "MO", "Montana": "MT", "Nebraska": "NE", "Nevada": "NV",
-        "New Hampshire": "NH", "New Jersey": "NJ", "New Mexico": "NM", "New York": "NY", "North Carolina": "NC",
-        "North Dakota": "ND", "Ohio": "OH", "Oklahoma": "OK", "Oregon": "OR", "Pennsylvania": "PA",
-        "Rhode Island": "RI", "South Carolina": "SC", "South Dakota": "SD", "Tennessee": "TN", "Texas": "TX",
-        "Utah": "UT", "Vermont": "VT", "Virginia": "VA", "Washington": "WA", "West Virginia": "WV",
-        "Wisconsin": "WI", "Wyoming": "WY",
-    ]
-
-    static func short(_ place: String) -> String {
-        let parts = place.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
-        guard parts.count >= 2 else { return place }
-        return parts[0] + ", " + (states[parts[1]] ?? parts[1])
     }
 }
 
