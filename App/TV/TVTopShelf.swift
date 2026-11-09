@@ -66,9 +66,13 @@ final class TopShelfAlbum {
         opts.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
         opts.predicate = NSPredicate(format: "mediaType == %d", PHAssetMediaType.image.rawValue)
         let assets = PHAsset.fetchAssets(in: album, options: opts)
-        var chosen: [PHAsset] = []
-        assets.enumerateObjects { a, i, stop in chosen.append(a); if i >= 14 { stop.pointee = true } }
-        for f in (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? [] { try? FileManager.default.removeItem(at: f) }
+        // 15 of the album's photos, a different mix each time (the newest few always among them).
+        var all: [PHAsset] = []
+        assets.enumerateObjects { a, _, _ in all.append(a) }
+        let newest = Array(all.prefix(5))
+        let chosen = newest + Array(all.dropFirst(5).shuffled().prefix(10))
+        let old = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
+        let stamp = String(Int(Date().timeIntervalSince1970))
         let req = PHImageRequestOptions()
         req.deliveryMode = .opportunistic
         req.resizeMode = .fast
@@ -102,12 +106,15 @@ final class TopShelfAlbum {
             }
             if let data = picture?.jpegData(compressionQuality: 0.8) {
                 // Apple TV only lets apps write in Caches (the shared folder's too), which is where the Top Shelf reads.
-                do { try data.write(to: dir.appendingPathComponent(String(format: "%02d.jpg", i)), options: .atomic); saved += 1 }
+                // A new name each time (the Apple TV keeps pictures by their address: the same name would keep showing
+                // the old photo).
+                do { try data.write(to: dir.appendingPathComponent(String(format: "%@-%02d.jpg", stamp, i)), options: .atomic); saved += 1 }
                 catch { lastError = error.localizedDescription }
             } else if lastError == nil {
                 lastError = "iCloud sent no picture"
             }
         }
+        if saved > 0 { for f in old { try? FileManager.default.removeItem(at: f) } }
         TVTopShelfContentProvider.topShelfContentDidChange()
         version += 1
         note = chosen.isEmpty ? "That album has no photos." : saved == 0 ? "Couldn’t get the photos from iCloud" + (lastError.map { ": \($0)" } ?? ".") + " Check that iCloud Photos is on in this Apple TV’s Settings → Users and Accounts." : "\(saved) photos are on the Top Shelf and Home."

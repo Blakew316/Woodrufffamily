@@ -79,6 +79,8 @@ struct WoodruffTVApp: App {
                     AppWake.wentAway = false
                     HomeWeather.shared.refresh()
                     HomeGreeting.shared.refresh()
+                    // The Top Shelf's photos picked again from the album (new ones in it show up).
+                    Task { await TopShelfAlbum.shared.refresh() }
                     SettingsSync.shared.wake()
                     if !Demo.isOn && !fleet.hubs.isEmpty { LocationWeather.shared.start(fleet) }
                 }

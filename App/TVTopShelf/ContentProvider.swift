@@ -29,19 +29,19 @@ final class ContentProvider: TVTopShelfContentProvider {
             try? "\(Date().timeIntervalSince1970)".write(to: base.appendingPathComponent("topshelf-asked.txt"), atomically: true, encoding: .utf8)
         }
         let kept = dir.flatMap { try? FileManager.default.contentsOfDirectory(at: $0, includingPropertiesForKeys: nil) } ?? []
-        // The album's photos, then the nature photographs that come with it.
-        let pictures = kept.filter { $0.pathExtension == "jpg" }.sorted { $0.lastPathComponent < $1.lastPathComponent }
-            + (Bundle.main.urls(forResourcesWithExtension: "jpg", subdirectory: nil) ?? [])
+        // The album's photos; the nature photographs that come with it only until there are some.
+        var pictures = kept.filter { $0.pathExtension == "jpg" }.sorted { $0.lastPathComponent < $1.lastPathComponent }
+        if pictures.isEmpty { pictures = Bundle.main.urls(forResourcesWithExtension: "jpg", subdirectory: nil) ?? [] }
         guard !pictures.isEmpty else { return nil }
         Self.log.notice("Woodruff Top Shelf has \(pictures.count, privacy: .public) photos, shared folder \(dir?.path ?? "none", privacy: .public)")
-        // Inset: one wide photo across the top at a time, moving on by itself (open to every app).
-        let items: [TVTopShelfItem] = pictures.map { url in
-            let item = TVTopShelfItem(identifier: url.lastPathComponent)
+        // Carousel: the photos full width across the top, one moving on to the next by itself (a slideshow).
+        let items: [TVTopShelfCarouselItem] = pictures.map { url in
+            let item = TVTopShelfCarouselItem(identifier: url.lastPathComponent)
             item.setImageURL(url, for: .screenScale1x)
             item.setImageURL(url, for: .screenScale2x)
             if let open = URL(string: "woodruff://home") { item.displayAction = TVTopShelfAction(url: open) }
             return item
         }
-        return TVTopShelfInsetContent(items: items)
+        return TVTopShelfCarouselContent(style: .details, items: items)
     }
 }
