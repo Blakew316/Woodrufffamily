@@ -101,6 +101,9 @@ final class SmartThings {
         capabilities = [:]
         lastMachine = [:]
         commandError = [:]
+        pending = []
+        holdUntil = [:]
+        changedAt = [:]
         listedAt = nil
         error = nil
         AccessoryStore.shared.fromSmartThings = []
@@ -478,7 +481,8 @@ final class SmartThings {
         let agrees = matches(expect, d, status)
         guard agrees || last else { return false }
         // Only a real change reaches the pages that read it.
-        if !(raw[key].map { NSDictionary(dictionary: $0).isEqual(to: status) } ?? false) { raw[key] = status }
+        let same = raw[key].map { NSDictionary(dictionary: $0).isEqual(to: status) } ?? false
+        if !same { raw[key] = status }
         changedAt[key] = Date()
         notifyIfFinished(d)
         var list = AccessoryStore.shared.fromSmartThings
