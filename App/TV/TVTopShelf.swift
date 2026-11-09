@@ -53,15 +53,21 @@ final class TopShelfAlbum {
     func load() async {
         let status = await PHPhotoLibrary.requestAuthorization(for: .readWrite)
         guard status == .authorized || status == .limited else { note = "Allow Photos for Woodruff in Settings → Apps → Woodruff."; return }
-        var list: [(String, String)] = []
+        // Listed off the main thread: counting every album's photos (Recents has thousands) held the remote up.
+        albums = await Task.detached(priority: .userInitiated) { Self.listAlbums() }.value
+    }
+
+    /// Every album with a photo in it, by id and name.
+    nonisolated private static func listAlbums() -> [(id: String, name: String)] {
+        var list: [(id: String, name: String)] = []
         for type in [PHAssetCollectionType.album, .smartAlbum] {
             let r = PHAssetCollection.fetchAssetCollections(with: type, subtype: .any, options: nil)
             r.enumerateObjects { c, _, _ in
                 guard PHAsset.fetchAssets(in: c, options: nil).count > 0 else { return }
-                list.append((c.localIdentifier, c.localizedTitle ?? "Album"))
+                list.append((id: c.localIdentifier, name: c.localizedTitle ?? "Album"))
             }
         }
-        albums = list.map { (id: $0.0, name: $0.1) }
+        return list
     }
 
     func pick(_ id: String) {
@@ -130,25 +136,22 @@ final class TopShelfAlbum {
         blur.inputImage = input.clampedToExtent()
         blur.radius = 8
         guard let out = blur.outputImage?.cropped(to: input.extent),
-              let made = CIContext().createCGImage(out, from: input.extent) else { return nil }
+              let made = blurContext.createCGImage(out, from: input.extent) else { return nil }
         return UIImage(cgImage: made)
     }
 
+    /// Made once: a Core Image context is costly to set up, and one was made for each of the 15 photos every refresh.
+    nonisolated(unsafe) private static let blurContext = CIContext(options: [.cacheIntermediates: false])
+
     private func write() async {
         guard let id = picked,
-              let album = PHAssetCollection.fetchAssetCollections(withLocalIdentifiers: [id], options: nil).firstObject,
               let dir = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: Self.group)?
                 .appendingPathComponent("Library/Caches/TopShelf", isDirectory: true) else { return }
+        // The album read and its photos picked off the main thread: Photos can take seconds to answer (a big album,
+        // or iCloud Photos catching up as the Apple TV wakes), and this runs as the app opens and each time it comes
+        // back, with Home on screen (the remote stalled meanwhile).
+        guard let chosen = await Task.detached(priority: .utility, operation: { Self.choose(fromAlbum: id) }).value?.assets else { return }
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let opts = PHFetchOptions()
-        opts.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
-        opts.predicate = NSPredicate(format: "mediaType == %d", PHAssetMediaType.image.rawValue)
-        let assets = PHAsset.fetchAssets(in: album, options: opts)
-        // 15 of the album's photos, a different mix each time (the newest few always among them).
-        var all: [PHAsset] = []
-        assets.enumerateObjects { a, _, _ in all.append(a) }
-        let newest = Array(all.prefix(5))
-        let chosen = newest + Array(all.dropFirst(5).shuffled().prefix(10))
         let old = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
         // In milliseconds: two refreshes in the same second (an album picked while one runs) gave the same names, so
         // the second wrote over the first's photos and then deleted them as old, leaving the Top Shelf without them.
@@ -161,6 +164,9 @@ final class TopShelfAlbum {
         var saved = 0
         var lastError: String?
         for (i, a) in chosen.enumerated() {
+            // Not while a film is on screen: iCloud's photos came down the same connection as its first minutes (the
+            // rest follow once it closes; the Top Shelf can't be seen meanwhile anyway).
+            while NativePlayer.shared.isOpen && !Task.isCancelled { try? await Task.sleep(nanoseconds: 2_000_000_000) }
             let got: (full: UIImage?, rough: UIImage?) = await withCheckedContinuation { c in
                 var done = false
                 var rough: UIImage?
@@ -213,6 +219,25 @@ final class TopShelfAlbum {
         version += 1
         note = chosen.isEmpty ? "That album has no photos." : saved == 0 ? "Couldn’t get the photos from iCloud" + (lastError.map { ": \($0)" } ?? ".") + " Check that iCloud Photos is on in this Apple TV’s Settings → Users and Accounts." : "\(saved) photos are on the Top Shelf."
     }
+
+    /// 15 of [id]'s photos, a different mix each time (the newest few always among them); nil when there's no such album.
+    nonisolated private static func choose(fromAlbum id: String) -> TopShelfChoice? {
+        guard let album = PHAssetCollection.fetchAssetCollections(withLocalIdentifiers: [id], options: nil).firstObject else { return nil }
+        let opts = PHFetchOptions()
+        opts.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
+        opts.predicate = NSPredicate(format: "mediaType == %d", PHAssetMediaType.image.rawValue)
+        let assets = PHAsset.fetchAssets(in: album, options: opts)
+        // Only the 15 picked are read (every photo of a big iCloud album was listed before).
+        let count = assets.count, newest = min(5, count)
+        let picks = Array(0..<newest) + Array((newest..<count).shuffled().prefix(10))
+        return TopShelfChoice(assets: picks.map { assets.object(at: $0) })
+    }
+}
+
+/// The photos picked for the Top Shelf, handed back from the thread that read the album (Photos' assets are read-only,
+/// so they can be used from any thread).
+private struct TopShelfChoice: @unchecked Sendable {
+    let assets: [PHAsset]
 }
 
 /// Settings → Top Shelf: the album the slideshow shows.
@@ -248,26 +273,21 @@ struct TopShelfSettings: View {
 }
 
 /// Home's background: nature photographs, one fading into the next with a slow drift, as the Apple TV
-/// screensaver does, dimmed (most at the top) so the greeting, weather and thermostat stay easy to read. The Top
-/// Shelf album stays on the Top Shelf.
+/// screensaver does, shown as they are (nothing dims them: the greeting and weather have their own shadows, the
+/// thermostat its glass). The Top Shelf album stays on the Top Shelf.
 struct TVPhotoBackdrop: View {
     private let show = HomeSlideshow.shared
 
     var body: some View {
         ZStack {
-            HomeBackdrop()
             if let image = show.image {
                 // The new photo fades in over the old one, which stays whole underneath until it's covered: no dip
                 // to the background between them.
-                KenBurns(image: image)
-                    .id(show.shown)
-                    .zIndex(Double(show.shown))
-                    .transition(.asymmetric(insertion: .opacity,
-                                            removal: .opacity.animation(.linear(duration: 0.2).delay(7))))
-                LinearGradient(stops: [.init(color: .black.opacity(0.72), location: 0),
-                                       .init(color: .black.opacity(0.45), location: 0.45),
-                                       .init(color: .black.opacity(0.6), location: 1)],
-                               startPoint: .top, endPoint: .bottom)
+                KenBurns(image: image, shown: show.shown)
+            } else {
+                // Until the first photo is there. Once it is, it covers this whole, so its drift isn't drawn (twice a
+                // second, all the time Home was open) where nobody can see it.
+                HomeBackdrop()
             }
         }
         .ignoresSafeArea()
@@ -296,10 +316,20 @@ final class HomeSlideshow {
         }
     }
 
+    /// Home is the page on screen, with nothing over it (a film, a camera, the screen saver).
+    private static var homeInView: Bool {
+        UIApplication.shared.applicationState == .active
+            && (UserDefaults.standard.string(forKey: "tv.tab") ?? "home") == "home"
+            && !NativePlayer.shared.isOpen && CameraStreams.shared.expanded == nil
+    }
+
     private func run() async {
         while !Task.isCancelled {
             if image != nil { try? await Task.sleep(nanoseconds: 30_000_000_000) }
             if Task.isCancelled { return }
+            // Home out of sight: the next photo waits until it's back, instead of a 4K photo being decoded and faded in
+            // every 30 seconds where nobody sees it (all through a film, say).
+            if image != nil && !Self.homeInView { continue }
             // Nature photographs only (the album is the Top Shelf's): a kept one if there are a few (no waiting), or
             // any kept one for the first, else the next to come from the network.
             let first = image == nil
@@ -316,13 +346,10 @@ final class HomeSlideshow {
             }
             guard let next = found else { try? await Task.sleep(nanoseconds: 5_000_000_000); continue }
             current = next.file
-            if first {
-                // The first is simply there (nothing to fade from).
-                image = next.image
-                shown += 1
-            } else {
-                withAnimation(.easeInOut(duration: 6)) { image = next.image; shown += 1 }
-            }
+            // The first is simply there (nothing to fade from); each one after fades in over six seconds, which the
+            // backdrop does itself (`KenBurns`).
+            image = next.image
+            shown += 1
         }
     }
 }
@@ -362,18 +389,91 @@ extension TVPhotoBackdrop {
     }
 }
 
-/// One photo filling the screen, drifting slowly larger while it shows.
-private struct KenBurns: View {
+/// The photos filling the screen: each new one ([shown] goes up) fades in over six seconds over the one before, which
+/// stays whole beneath it until it's covered, and each drifts slowly larger while it shows (6% over 40 seconds). Core
+/// Animation runs the fade and the drift by itself: as SwiftUI animations they were worked out on the main thread every
+/// frame, all the time Home was open, beside its scrolling and the remote's moves.
+private struct KenBurns: UIViewRepresentable {
     var image: UIImage
-    @State private var grow = false
+    var shown: Int
 
-    var body: some View {
-        Image(uiImage: image)
-            .resizable()
-            .scaledToFill()
-            .scaleEffect(grow ? 1.06 : 1)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .clipped()
-            .onAppear { withAnimation(.easeInOut(duration: 40)) { grow = true } }
+    func makeUIView(context: Context) -> Slides { Slides(frame: .zero) }
+
+    func updateUIView(_ slides: Slides, context: Context) { slides.show(image, number: shown) }
+
+    final class Slides: UIView {
+        /// The photo put up last.
+        private var number: Int?
+
+        override init(frame: CGRect) {
+            super.init(frame: frame)
+            clipsToBounds = true
+            isUserInteractionEnabled = false
+        }
+
+        required init?(coder: NSCoder) { fatalError() }
+
+        /// Photo [n] put up, fading in over the one before. The fade and the drift are layer animations of their own, so
+        /// nothing SwiftUI does as it updates the page (UIKit's own animations can be off meanwhile) cuts them short.
+        func show(_ image: UIImage, number n: Int) {
+            guard n != number else { return }
+            // The first is simply there (nothing to fade from), and so is one put up while Home isn't in the window
+            // (another tab showing, say): Core Animation can hold a fade until its layer is on screen, by when the
+            // timer below would have taken away the photo under it, so it would come up out of black.
+            let fades = number != nil && window != nil
+            number = n
+            let photo = UIImageView(image: image)
+            photo.contentMode = .scaleAspectFill
+            photo.bounds = bounds
+            photo.center = CGPoint(x: bounds.midX, y: bounds.midY)
+            addSubview(photo)
+            if window != nil { drift(photo) }
+            guard fades else {
+                // Nothing fading in, so nothing has to stay under it.
+                for old in subviews where old !== photo { old.removeFromSuperview() }
+                return
+            }
+            let fade = CABasicAnimation(keyPath: "opacity")
+            fade.fromValue = 0.0
+            fade.toValue = 1.0
+            fade.duration = 6
+            fade.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            fade.fillMode = .backwards
+            photo.layer.add(fade, forKey: "fade")
+            // Once it's whole, the ones under it go.
+            Task { @MainActor [weak self, weak photo] in
+                try? await Task.sleep(nanoseconds: 6_200_000_000)
+                guard let self, let photo, let i = self.subviews.firstIndex(of: photo) else { return }
+                for old in self.subviews.prefix(i) { old.removeFromSuperview() }
+            }
+        }
+
+        /// Slowly larger, from the moment it's on screen.
+        private func drift(_ photo: UIView) {
+            let grow = CABasicAnimation(keyPath: "transform.scale")
+            grow.fromValue = 1.0
+            grow.toValue = 1.06
+            grow.duration = 40
+            grow.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            grow.fillMode = .forwards
+            // Kept when it ends, and through a trip to the background (which would otherwise take it away, and the
+            // photo would jump back to its first size).
+            grow.isRemovedOnCompletion = false
+            photo.layer.add(grow, forKey: "drift")
+        }
+
+        /// On screen (Home opened, or back from another tab): a photo put up meanwhile starts its drift now.
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            if window != nil, let top = subviews.last, top.layer.animation(forKey: "drift") == nil { drift(top) }
+        }
+
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            for v in subviews {
+                v.bounds = bounds
+                v.center = CGPoint(x: bounds.midX, y: bounds.midY)
+            }
+        }
     }
 }

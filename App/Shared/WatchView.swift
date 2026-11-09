@@ -557,6 +557,14 @@ struct Billboard: View {
         .padding(.horizontal, 20)
         #endif
         .task(id: page) {
+            #if os(tvOS)
+            // The next title's picture made ready meanwhile (it fills the screen), so it fades in whole instead of as a
+            // grey placeholder its picture then fades into.
+            if titles.count > 1, let next = titles[safe: (page + 1) % titles.count],
+               let art = client?.artURL(next.backdrop ?? next.poster), ImageStore.shared.cached(art, maxPixel: 2400) == nil {
+                Task(priority: .utility) { _ = await ImageStore.shared.image(art, maxPixel: 2400) }
+            }
+            #endif
             try? await Task.sleep(nanoseconds: 12_000_000_000)
             #if os(tvOS)
             // Not while its Play or Details has the focus: the next title would take it away, and Down would stop working.
@@ -609,6 +617,8 @@ struct Billboard: View {
                 // A section across the screen: Down from Movies | TV Shows always lands on Play.
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .focusSection()
+                // Play/Pause on the remote plays it from either button, as the TV app's banner does.
+                .onPlayPauseCommand { if let p = t.play { PlayRouter.start(p, fleet: fleet) } }
             }
             // Above the row that rises over the banner's bottom.
             .padding(.leading, 90).padding(.bottom, 400).padding(.trailing, 90)
@@ -811,6 +821,9 @@ struct ShelfRow<Content: View>: View {
             .scrollTargetBehavior(.viewAligned)
             #if os(tvOS)
             .scrollClipDisabled()
+            // The whole width is the row's, so Up and Down reach it from anywhere above or below, even when it's
+            // only a poster or two (from the right of a longer row, the remote passed it by or stopped).
+            .focusSection()
             #endif
         }
     }
@@ -876,6 +889,18 @@ struct PosterTile: View {
         #if os(macOS)
         .hoverTilt(cornerRadius: 12)
         #endif
+        #if os(tvOS)
+        // Play/Pause on the remote plays the title it's on, as the TV app does (one with nothing to play yet, a show
+        // not started, opens its card).
+        .onPlayPauseCommand {
+            guard let p = title.play else {
+                TitleCache.shared.opening(title)
+                openTitle(title.id)
+                return
+            }
+            PlayRouter.start(p, fleet: fleet)
+        }
+        #endif
         .contextMenu { TitleMenu(title: title) }
     }
 }
@@ -923,6 +948,10 @@ struct ContinueTile: View {
             }
         }
         .buttonStyle(PressScale(scale: 0.96))
+        #if os(tvOS)
+        // Play/Pause on the remote goes on from where it got to, as the TV app's Up Next does (a click opens its card).
+        .onPlayPauseCommand { PlayRouter.start(item.play, fleet: fleet) }
+        #endif
         .contextMenu {
             Button(item.play.label ?? "Play") { PlayRouter.start(item.play, fleet: fleet) }
             if let r = item.restart { Button(r.label ?? "Start Over") { PlayRouter.start(r, fleet: fleet, fromStart: true) } }
@@ -1136,9 +1165,25 @@ struct TitleSheet: View {
                             }
                         } else if failed != nil {
                             ActionButton(action: { await load() }) { Text("Try Again") }
-                        } else {
+                        } else if shown == nil {
                             ProgressView()
                         }
+                    }
+                    // A folder of films (a collection) has no Play of its own: each film, to play as an episode is.
+                    // Without them its card only spun.
+                    if let films = shown?.films, !films.isEmpty {
+                        Text("In This Collection").font(.headline)
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            LazyHStack(alignment: .top, spacing: 30) {
+                                ForEach(films) { e in
+                                    EpisodeRow(episode: e, still: c?.artURL(e.still, small: true), changed: { watchChanged(); Task { await load() } }, played: { dismiss() })
+                                        .frame(width: 440)
+                                }
+                            }
+                            .padding(.vertical, 10)
+                        }
+                        .scrollClipDisabled()
+                        .frame(height: 200)
                     }
                     if let d = shown, let seasons = d.seasons, !seasons.isEmpty {
                         Picker("Season", selection: Binding(get: { season }, set: { picked = $0 })) {
@@ -1172,6 +1217,13 @@ struct TitleSheet: View {
             .shadow(color: .black.opacity(0.5), radius: 40, y: 20)
             .focusSection()
             .defaultFocus($tvFocus, "play")
+            // Play/Pause plays the title from anywhere on its card (on an episode, that episode).
+            .onPlayPauseCommand { if let p = t?.play, PlayRouter.start(p, fleet: fleet) { dismiss() } }
+        }
+        // Opened before its Play was known (a show not started yet, or Continue Watching before its details came): the
+        // remote was left on the X, so the next click closed the card. Play takes it as soon as it's there.
+        .onChange(of: t?.play == nil) { wasMissing, missing in
+            if wasMissing && !missing { Task { @MainActor in tvFocus = "play" } }
         }
         .task { await load() }
         .task(id: "\(shown?.id ?? "")|\(season)") { await loadEpisodes() }
@@ -1550,6 +1602,10 @@ struct EpisodeRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        #if os(tvOS)
+        // Play/Pause plays this episode, as a click does (not the show's own Play, which the card's Play/Pause plays).
+        .onPlayPauseCommand { if PlayRouter.start(action, fleet: fleet) { played() } }
+        #endif
         .contextMenu {
             Button("Play from the Start") { if PlayRouter.start(action, fleet: fleet, fromStart: true) { played() } }
             PlayOnMenu(action: action, then: played)

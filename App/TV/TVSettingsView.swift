@@ -51,7 +51,9 @@ struct TVSettingsView: View {
             .frame(maxHeight: .infinity)
 
             List {
-                ForEach(Array(groups.enumerated()), id: \.offset) { _, group in
+                // Each group known by its first row, not by its place: Needs Attention coming or going above the rest
+                // (a sign-in failing for a moment) made every row below it new, which took the remote off its row.
+                ForEach(groups, id: \.1.first?.id) { group in
                     let (title, rows) = group
                     Section {
                         ForEach(rows) { r in

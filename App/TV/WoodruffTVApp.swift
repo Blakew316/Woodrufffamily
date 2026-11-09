@@ -141,6 +141,9 @@ struct TVRoot: View {
     private let join = TVJoin.shared
 
     var body: some View {
+        // Read here, as the iPhone's root does, so the screen notices the moment either changes.
+        let banner = fleet.banner
+        let thermostatOpen = ThermostatUI.shared.open
         Group {
             if fleet.hubs.isEmpty && !Demo.isOn {
                 ZStack {
@@ -150,6 +153,16 @@ struct TVRoot: View {
             } else {
                 TVMacRoot()
             }
+        }
+        // What the app says back (a film that can't play here, a scene that didn't fully run, a TV it can't reach), as
+        // on iPhone. Nothing showed it here, so those presses seemed to do nothing. A title's card or a TV's Now
+        // Playing shows it over itself while it's open (`sheetBanner`).
+        .alert(item: Binding(get: { banner }, set: { fleet.banner = $0 })) { b in
+            Alert(title: Text(b.title), message: Text(b.message), dismissButton: .default(Text("OK")))
+        }
+        // The thermostat's controls, from its pill on Home (nothing showed them here, so the pill did nothing).
+        .sheet(isPresented: Binding(get: { thermostatOpen }, set: { ThermostatUI.shared.open = $0 })) {
+            ThermostatPanel()
         }
         // A camera alert's pill, over every page (in its own window over a video or an open camera).
         .overlay { TVAlertLayer() }

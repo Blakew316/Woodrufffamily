@@ -88,7 +88,7 @@ struct AllDevicesView: View {
         let roomOf = home.roomIndex
         let rooms = Array(Set(homeRooms(fleet, devices: devices, roomOf: roomOf) + laundry)).filter { $0 != noRoom && !$0.isEmpty }
         let byRoom = grouped(devices: devices, roomOf: roomOf)
-        VStack(alignment: .leading, spacing: 26) {
+        roomStack {
             ForEach(sections(rooms), id: \.title) { section in
                 let list = section.rooms.flatMap { byRoom[$0] ?? [] }
                 if !list.isEmpty {
@@ -104,6 +104,9 @@ struct AllDevicesView: View {
                         }
                         .scrollClipDisabled()
                         .scrollIndicators(.hidden)
+                        // The whole width is the room's, so Up and Down reach it from anywhere, even when it has only a
+                        // device or two (from the right of a longer room, the remote passed it by or stopped).
+                        .focusSection()
                         #else
                         Text(section.title).font(.title3.bold())
                         LazyVGrid(columns: columns, alignment: .leading, spacing: 12) {
@@ -123,7 +126,13 @@ struct AllDevicesView: View {
         }
         .sheet(item: $openLight) { l in LightSheet(lightID: l.id).macResizable(width: 520, height: 640) }
         .sheet(item: $openDevice) { d in NavigationStack { DeviceDetailView(deviceID: d.id, inSheet: true) }.macResizable() }
-        .sheet(item: $openTV) { t in NavigationStack { TVDetailView(tvID: t.id) }.macResizable() }
+        .sheet(item: $openTV) { t in
+            NavigationStack { TVDetailView(tvID: t.id) }.macResizable()
+                #if os(tvOS)
+                // Apple TV: what it says back shows over it (the screen's own alert can't while it's open).
+                .sheetBanner()
+                #endif
+        }
         .sheet(item: $miniTV) { t in
             MiniRemote(tvID: t.id)
                 #if os(iOS) || os(tvOS)
@@ -133,10 +142,26 @@ struct AllDevicesView: View {
                 #else
                 .frame(width: 360, height: 300)
                 #endif
+                #if os(tvOS)
+                // Apple TV: a key that can't reach the TV says so over the remote (the screen's own alert can't show
+                // while it's open, so the key seemed to do nothing).
+                .sheetBanner()
+                #endif
         }
         .confirmationDialog("Unlock \(confirmUnlock?.name ?? "")?", isPresented: Binding(get: { confirmUnlock != nil }, set: { if !$0 { confirmUnlock = nil } }), titleVisibility: .visible) {
             Button("Unlock") { if let d = confirmUnlock { store.send(d, .lock(false)) }; confirmUnlock = nil }
         }
+    }
+
+    /// The rooms one under another. Apple TV: in a lazy stack, so only the rooms on screen (and just below) are made
+    /// and drawn; with every room made at once, the ones further down Home kept their pictures moving (a TV's bars,
+    /// a fan, a washer's drum, a breathing bulb) where nobody could see them, beside the scrolling.
+    @ViewBuilder private func roomStack<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        #if os(tvOS)
+        LazyVStack(alignment: .leading, spacing: 26) { content() }
+        #else
+        VStack(alignment: .leading, spacing: 26) { content() }
+        #endif
     }
 
     /// Everything in each room (``noRoom`` for things in none): TVs first, then speakers, lights and devices, each by

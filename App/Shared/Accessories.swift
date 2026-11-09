@@ -476,8 +476,14 @@ struct ThermostatControls: View {
                 Picker("Mode", selection: Binding(get: { d.thermostatMode ?? "off" }, set: { m in pick(m) })) {
                     ForEach(modes, id: \.self) { m in Text(modeName(m)).tag(m) }
                 }
+                #if os(tvOS)
+                // Apple TV: a menu, picked with a click. A segmented control there switches as the remote moves across
+                // it, so passing Heat on the way to Auto sent the thermostat each mode in turn.
+                .pickerStyle(.menu)
+                #else
                 .pickerStyle(.segmented)
                 .labelsHidden()
+                #endif
                 .frame(maxWidth: 360)
                 .disabled(!d.reachable)
             }

@@ -241,13 +241,19 @@ extension EnvironmentValues {
     }
 }
 
-/// Edit Home in a tile's menu (touch and hold on iPhone, right-click on the Mac), like the Home Screen's.
+/// Edit Home in a tile's menu (touch and hold on iPhone, right-click on the Mac), like the Home Screen's. Not on Apple
+/// TV: its rows can't be arranged with the remote, and choosing it only left the tiles not answering a click (and the
+/// scenes gone) until Done was found at the top of the screen.
 struct ArrangeHomeButton: View {
     @Environment(\.inHomeBoard) private var inBoard
     var body: some View {
+        #if os(tvOS)
+        EmptyView()
+        #else
         if inBoard {
             Button("Edit Home") { HomeLayout.shared.startArranging() }
         }
+        #endif
     }
 }
 
@@ -350,6 +356,8 @@ struct HomeBoard: View, Equatable {
         }
         .scrollClipDisabled()
         .scrollIndicators(.hidden)
+        // The whole width is the row's, so Up and Down reach it from anywhere, even with only a tile or two in it.
+        .focusSection()
         .environment(\.inHomeBoard, true)
         .sheet(item: $openSpeaker) { r in
             NavigationStack { SpeakerDetailView(speakerID: r.id, inSheet: true) }

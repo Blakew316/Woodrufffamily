@@ -492,6 +492,21 @@ final class CameraStreams {
                 let at = (try? f.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? Date()
                 if !id.isEmpty, let d = try? Data(contentsOf: f) { found[id] = (d, at) }
             }
+            #if os(tvOS)
+            // Apple TV: decoded here as well. Made from their bytes on the main thread, each camera's picture was
+            // decoded there the moment Home first drew its tile.
+            var decoded: [String: (UIImage, Date)] = [:]
+            for (id, d) in found {
+                if let img = UIImage(data: d.0) { decoded[id] = (img.preparingForDisplay() ?? img, d.1) }
+            }
+            let ready = decoded
+            await MainActor.run {
+                for (id, d) in ready where CameraStreams.shared.stills[id] == nil {
+                    CameraStreams.shared.stillAt[id] = d.1
+                    CameraStreams.shared.stills[id] = d.0
+                }
+            }
+            #else
             let loaded = found
             await MainActor.run {
                 for (id, d) in loaded where CameraStreams.shared.stills[id] == nil {
@@ -501,6 +516,7 @@ final class CameraStreams {
                     }
                 }
             }
+            #endif
         }
     }
 
@@ -789,8 +805,23 @@ final class CameraStreams {
         }
         watching = max(0, watching - 1)
         guard watching == 0 else { return }
+        #if os(tvOS)
+        // Apple TV, under a film playing full screen: let go at once (the tiles start again when it closes), so the
+        // film's first minutes don't share the connection with every camera's pictures.
+        letGoSoon(after: NativePlayer.shared.isOpen ? 1 : 120)
+        #else
         letGoSoon(after: 120)
+        #endif
     }
+
+    #if os(tvOS)
+    /// Apple TV: a film is starting full screen. Streams that no page shows any more (Home left for Watch, say) are
+    /// let go now rather than two minutes after they went out of sight.
+    func filmStarting() {
+        guard watching == 0 else { return }
+        letGoSoon(after: 0)
+    }
+    #endif
 
     #if os(tvOS)
     /// How long the streams are kept once the app is in the background. Apple TV: not at all. The app is put to sleep
@@ -2120,18 +2151,28 @@ private struct AlertGlow: View {
     let since: Date
     @State private var bright = false
     @State private var over = false
+    /// Faded away and taken off the tile: its breathing repeats for as long as it's there, seen or not.
+    @State private var gone = false
 
     var body: some View {
-        RoundedRectangle(cornerRadius: 20, style: .continuous)
-            .strokeBorder(IconPalette.cyan.opacity(bright ? 0.95 : 0.35), lineWidth: bright ? 2.5 : 1.5)
-            .shadow(color: IconPalette.cyan.opacity(bright ? 0.7 : 0.2), radius: bright ? 12 : 4)
-            .opacity(over ? 0 : 1)
-            .allowsHitTesting(false)
-            .onAppear { withAnimation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true)) { bright = true } }
-            .task {
-                let left = max(0, 60 - Date().timeIntervalSince(since))
-                try? await Task.sleep(nanoseconds: UInt64(left * 1_000_000_000))
-                withAnimation(.easeOut(duration: 0.6)) { over = true }
-            }
+        if !gone {
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .strokeBorder(IconPalette.cyan.opacity(bright ? 0.95 : 0.35), lineWidth: bright ? 2.5 : 1.5)
+                .shadow(color: IconPalette.cyan.opacity(bright ? 0.7 : 0.2), radius: bright ? 12 : 4)
+                .opacity(over ? 0 : 1)
+                .allowsHitTesting(false)
+                .onAppear { withAnimation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true)) { bright = true } }
+                .task {
+                    let left = max(0, 60 - Date().timeIntervalSince(since))
+                    try? await Task.sleep(nanoseconds: UInt64(left * 1_000_000_000))
+                    withAnimation(.easeOut(duration: 0.6)) { over = true }
+                    #if os(tvOS)
+                    // Apple TV: gone once it has faded, rather than breathing unseen (every frame, beside Home's
+                    // scrolling) until something else about the tile changes.
+                    try? await Task.sleep(nanoseconds: 700_000_000)
+                    if !Task.isCancelled { gone = true }
+                    #endif
+                }
+        }
     }
 }

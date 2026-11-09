@@ -730,22 +730,31 @@ struct TVFocusTile: ViewModifier {
     }
 }
 
-/// A row the remote enters at its first item: Down (or Up) from another row lands there, as the TV app's shelves do.
+/// A row the remote enters at the item it was last on (its first, the first time): Down (or Up) from another row lands
+/// there, as the TV app's shelves do. Coming back to a row, or back from a title's card or a camera opened from it,
+/// lands on that same item, instead of on the first one with the row scrolling back to its start.
 struct FirstFocusRow<Content: View>: View {
     var spacing: CGFloat
     var alignment: VerticalAlignment = .center
     @ViewBuilder var content: Content
     @FocusState private var focus: Int?
+    /// The item the remote was last on in this row, by what it is rather than where it was: found again if the row
+    /// changes around it, and a row of other things (new search results) starts at its first.
+    @State private var last: Subview.ID?
 
     var body: some View {
-        LazyHStack(alignment: alignment, spacing: spacing) {
-            Group(subviews: content) { subs in
+        Group(subviews: content) { subs in
+            let ids = subs.map(\.id)
+            LazyHStack(alignment: alignment, spacing: spacing) {
                 ForEach(Array(subs.enumerated()), id: \.offset) { i, sub in
                     sub.focused($focus, equals: i)
                 }
             }
+            .focusSection()
+            .defaultFocus($focus, ids.firstIndex(where: { $0 == last }) ?? 0, priority: .userInitiated)
+            .onChange(of: focus) { _, now in
+                if let now, let id = ids[safe: now], id != last { last = id }
+            }
         }
-        .focusSection()
-        .defaultFocus($focus, 0, priority: .userInitiated)
     }
 }

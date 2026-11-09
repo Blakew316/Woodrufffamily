@@ -159,7 +159,9 @@ struct SecondaryGlass: ViewModifier {
     }
 }
 
-/// Runs an action against a TV, showing its error (the TV's own words) if it fails.
+/// Runs an action against a TV, showing its error (the TV's own words) if it fails. On Apple TV it isn't switched off
+/// while it works: a button the remote is on that's switched off loses the focus, which jumped somewhere else on the
+/// page. A second press meanwhile does nothing.
 struct ActionButton<Label: View>: View {
     @Environment(Fleet.self) private var fleet
     var role: ButtonRole? = nil
@@ -169,6 +171,7 @@ struct ActionButton<Label: View>: View {
 
     var body: some View {
         Button(role: role) {
+            guard !busy else { return }
             busy = true
             Task {
                 do { try await action() } catch { fleet.show(error) }
@@ -180,7 +183,9 @@ struct ActionButton<Label: View>: View {
                 if busy { Spacer(); ProgressView().controlSize(.small) }
             }
         }
+        #if !os(tvOS)
         .disabled(busy)
+        #endif
     }
 }
 

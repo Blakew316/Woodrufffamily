@@ -235,7 +235,11 @@ struct ScenesStrip: View {
                             .contentShape(Capsule())
                         }
                         .buttonStyle(.plain)
+                        // Not on Apple TV: a button the remote is on that's switched off loses the focus, which jumped
+                        // somewhere else on Home while the scene ran (a press meanwhile does nothing; see `run`).
+                        #if !os(tvOS)
                         .disabled(running != nil)
+                        #endif
                         .contextMenu {
                             Button("Edit Scene") { editing = s }
                             Button("Remove from Home") {
@@ -250,6 +254,11 @@ struct ScenesStrip: View {
                 .padding(.vertical, 2)
             }
             .scrollClipDisabled()
+            #if os(tvOS)
+            // The whole width is the scenes', so Up and Down stop at them from anywhere (they sit at the left, and from
+            // the right the remote went straight past them).
+            .focusSection()
+            #endif
             .sheet(item: $editing) { s in
                 NavigationStack { SceneEditor(scene: s, isNew: false) }
                     #if os(macOS)
@@ -260,6 +269,8 @@ struct ScenesStrip: View {
     }
 
     private func run(_ s: HomeScene) {
+        // One scene at a time.
+        guard running == nil else { return }
         #if os(iOS) || os(tvOS)
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         #endif

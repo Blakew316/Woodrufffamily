@@ -61,14 +61,24 @@ enum StallMonitor {
         }
     }
 
-    /// The page on screen: Home, Watch or Settings (and, on the Mac, Settings' page).
+    /// The page on screen: Home, Watch or Settings (and, on the Mac, Settings' page; on Apple TV, a film or camera
+    /// open over it).
     @MainActor static var screenName: String {
         let d = UserDefaults.standard
+        #if os(tvOS)
+        // Apple TV's sidebar keeps its page under its own name: read from "section" (the iPhone's), every stall said
+        // Home, whatever was on screen.
+        let page = (d.string(forKey: "tv.tab") ?? "home").capitalized
+        if NativePlayer.shared.isOpen { return "\(page): Film" }
+        if CameraStreams.shared.expanded != nil { return "\(page): Camera" }
+        return page
+        #else
         let s = (d.string(forKey: "section") ?? "home").capitalized
         #if os(macOS)
         if s == "Settings", let page = d.string(forKey: "mac.settingsPage") { return "Settings: \(page)" }
         #endif
         return s
+        #endif
     }
 
     private static var logFile: URL? {

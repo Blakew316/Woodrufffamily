@@ -181,6 +181,11 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
     static let shared = NativePlayer()
 
     private var controller: PlayerController?
+    #if os(tvOS)
+    /// A film's player is on screen, over everything (what's under it can't be seen meanwhile). Not one that never got
+    /// on screen, nor one put away into picture in picture.
+    var isOpen: Bool { controller?.presentingViewController != nil }
+    #endif
     private var player: AVPlayer?
     private var stream: DriveStream?
     private var ticker: Any?
@@ -289,6 +294,11 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
         onScreen = false
         presentAttempts = 0
         pendingFailure = nil
+        #if os(tvOS)
+        // Camera tiles no page shows any more (Home left for Watch) let go now, not two minutes on: their pictures
+        // came down the same connection as the film's first minutes.
+        CameraStreams.shared.filmStarting()
+        #endif
         let audio = AVAudioSession.sharedInstance()
         try? audio.setCategory(.playback, mode: .moviePlayback)
         // Activating can take a moment; not on the main thread, where the player is being shown.
@@ -649,7 +659,13 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
         guard player != nil else { return }
         report()
         if let p = player, let play = current, begun { notePlayback(p, play) }
+        #if os(tvOS)
+        // Queued, not waited for: the page the player closes back to froze while the whole library was written (the
+        // app leaving still waits for it).
+        DriveLibrary.shared.flush(wait: false)
+        #else
         DriveLibrary.shared.flush()
+        #endif
         // Watch shows where it was left off at once.
         DriveLibrary.shared.playStopped()
         Task { await DriveLibrary.shared.sync() }
