@@ -260,6 +260,12 @@ enum GoogleDrive {
     }
 
     /// What a refused Drive request means, in words someone can act on (Drive says why in its answer).
+    /// The reason in Google's refusal ("downloadQuotaExceeded", say), or "" when it gave none.
+    nonisolated static func reason(_ body: Data?) -> String {
+        let j = body.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+        return ((j?["error"] as? [String: Any])?["errors"] as? [[String: Any]])?.first?["reason"] as? String ?? ""
+    }
+
     nonisolated static func failure(_ code: Int, _ body: Data?) -> Failure {
         let j = body.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
         let reason = ((j?["error"] as? [String: Any])?["errors"] as? [[String: Any]])?.first?["reason"] as? String ?? ""
@@ -340,9 +346,11 @@ enum GoogleDrive {
     }
 
     /// The file's bytes, from where the player or a download asks.
-    nonisolated static func mediaURL(_ id: String) -> URL {
+    nonisolated static func mediaURL(_ id: String, acknowledgeAbuse: Bool = false) -> URL {
         var c = URLComponents(string: "\(filesBase)/\(id)")!
         c.queryItems = [.init(name: "alt", value: "media"), .init(name: "supportsAllDrives", value: "true")]
+        // A file Google flagged: its owner may still have it, once that's acknowledged.
+        if acknowledgeAbuse { c.queryItems?.append(.init(name: "acknowledgeAbuse", value: "true")) }
         return c.url!
     }
 

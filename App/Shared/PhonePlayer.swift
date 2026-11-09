@@ -309,8 +309,10 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
                 guard let self, self.player === p, let now = self.item, ObjectIdentifier(now) == which else { return }
                 if let words {
                     if let id = self.directID { self.fallBack(p, play, id: id, why: code); return }
-                    Diagnostics.shared.notePlayback("\(play.title): couldn’t play (\(code))")
-                    self.failed(words)
+                    // Google's own reason when it refused the file (the player only says it timed out).
+                    let refusal = self.stream?.refusalNow()
+                    Diagnostics.shared.notePlayback("\(play.title): couldn’t play (\(code))" + (refusal.map { ": \($0)" } ?? ""))
+                    self.failed(refusal ?? words)
                 } else {
                     self.ready(p, play)
                 }

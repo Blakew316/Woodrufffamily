@@ -39,6 +39,12 @@ final class DriveStream: NSObject {
         streamQueue.async { l.cancelAll() }
     }
 
+    /// What Google said when it refused this file for good, if it did (its daily limit for the file, say).
+    func refusalNow() -> String? {
+        let l = loader
+        return streamQueue.sync { l.refusal }
+    }
+
     /// An asset for the player (this object must be kept while it plays).
     func asset() -> AVURLAsset {
         // A scheme of its own, so the player asks this object instead of fetching it itself.
@@ -264,10 +270,18 @@ private final class Loader: NSObject, AVAssetResourceLoaderDelegate, StreamTask 
         let task: URLSessionDataTask
         /// Times it has been asked for again after a slow or dropped connection.
         let attempts: Int
+        /// Google's refusal (its status and the reason it sent), read whole before anything is decided.
+        var status = 0
+        var body = Data()
         init(request: AVAssetResourceLoadingRequest, retried: Bool, task: URLSessionDataTask, attempts: Int) {
             self.request = request; self.retried = retried; self.task = task; self.attempts = attempts
         }
     }
+
+    /// What Google said when it last refused this file for good (shown instead of the player's timeout).
+    var refusal: String?
+    /// Google flagged the file: asked for with that acknowledged (allowed for its owner).
+    private var acknowledge = false
 
     /// Failures worth asking again for (the connection, not the file).
     private static let transient: Set<URLError.Code> = [.timedOut, .networkConnectionLost, .cannotConnectToHost,
@@ -275,9 +289,9 @@ private final class Loader: NSObject, AVAssetResourceLoaderDelegate, StreamTask 
 
     /// A part that failed for the connection's sake (or Google was busy): asked for again from where it got to, after
     /// a moment, three times at most before the player is told.
-    private func again(_ load: Load) {
+    private func again(_ load: Load, after delay: Double? = nil) {
         let req = load.request, next = load.attempts + 1, retried = load.retried
-        streamQueue.asyncAfter(deadline: .now() + 0.5 * Double(next)) { [weak self] in
+        streamQueue.asyncAfter(deadline: .now() + (delay ?? 0.5 * Double(next))) { [weak self] in
             guard let self, !req.isCancelled, !req.isFinished else { return }
             if let token = GoogleDrive.cachedToken() { self.send(req, token: token, retried: retried, attempts: next) }
             else { self.fetch(req, retried: false) }
@@ -377,6 +391,7 @@ private final class Loader: NSObject, AVAssetResourceLoaderDelegate, StreamTask 
         var r = URLRequest(url: GoogleDrive.mediaURL(fileID))
         r.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         r.setValue("bytes=\(start)-\(end.map(String.init) ?? "")", forHTTPHeaderField: "Range")
+        if acknowledge { r.url = GoogleDrive.mediaURL(fileID, acknowledgeAbuse: true) }
         r.timeoutInterval = 45
         let t = streamSession.dataTask(with: r)
         loads[t.taskIdentifier] = Load(request: req, retried: retried, task: t, attempts: attempts)
@@ -388,17 +403,16 @@ private final class Loader: NSObject, AVAssetResourceLoaderDelegate, StreamTask 
         guard let load = loads[dataTask.taskIdentifier] else { answer(.cancel); return }
         let code = (response as? HTTPURLResponse)?.statusCode ?? 0
         guard code == 200 || code == 206 else {
-            loads[dataTask.taskIdentifier] = nil
-            answer(.cancel)
-            let host = response.url?.host ?? "?"
-            Task { @MainActor in Diagnostics.shared.notePlayback("Drive answered \(code) from \(host)") }
             if code == 401 && !load.retried {
+                loads[dataTask.taskIdentifier] = nil
+                answer(.cancel)
+                Task { @MainActor in Diagnostics.shared.notePlayback("Drive answered 401 (sign-in refused)") }
                 fetch(load.request, retried: true)
-            } else if [429, 500, 502, 503, 504].contains(code), load.attempts < 3 {
-                again(load)
-            } else if !load.request.isCancelled && !load.request.isFinished {
-                load.request.finishLoading(with: GoogleDrive.failure(code, nil))
+                return
             }
+            // Anything else: Google's reason is read in full first (its body), then acted on when it's done.
+            load.status = code
+            answer(.allow)
             return
         }
         if let info = load.request.contentInformationRequest {
@@ -418,6 +432,10 @@ private final class Loader: NSObject, AVAssetResourceLoaderDelegate, StreamTask 
 
     func received(_ dataTask: URLSessionDataTask, data: Data) {
         guard let load = loads[dataTask.taskIdentifier] else { return }
+        if load.status != 0 {
+            if load.body.count < 16_384 { load.body.append(data) }
+            return
+        }
         if load.request.isCancelled {
             loads[dataTask.taskIdentifier] = nil
             StreamRouter.shared.handlers[dataTask.taskIdentifier] = nil
@@ -431,6 +449,10 @@ private final class Loader: NSObject, AVAssetResourceLoaderDelegate, StreamTask 
         guard let load = loads.removeValue(forKey: task.taskIdentifier) else { return }
         let req = load.request
         guard !req.isCancelled, !req.isFinished else { return }
+        if load.status != 0 {
+            refused(load)
+            return
+        }
         // A slow or dropped connection (Google slow to start deep inside a big film, the Wi‑Fi hiccuping): asked for
         // again from where it got to, instead of the film stopping with a timeout.
         if let e = error as? URLError, Self.transient.contains(e.code), load.attempts < 3 {
@@ -438,5 +460,26 @@ private final class Loader: NSObject, AVAssetResourceLoaderDelegate, StreamTask 
             return
         }
         if let error { req.finishLoading(with: error) } else { req.finishLoading() }
+    }
+
+    /// Google refused a part. Busy (its rate limits, a server error): asked again after a growing pause. A file it
+    /// flagged: asked again with that acknowledged. Anything else (its daily limit for the file, say): the player is
+    /// told Google's reason, which is what's shown.
+    private func refused(_ load: Load) {
+        let code = load.status, reason = GoogleDrive.reason(load.body)
+        Task { @MainActor in Diagnostics.shared.notePlayback("Drive answered \(code)" + (reason.isEmpty ? "" : " (\(reason))")) }
+        let busy = code == 429 || code >= 500 || ["rateLimitExceeded", "userRateLimitExceeded", "backendError", "internalError"].contains(reason)
+        if busy, load.attempts < 4 {
+            again(load, after: pow(2, Double(load.attempts)))
+            return
+        }
+        if reason == "cannotDownloadAbusiveFile", !acknowledge {
+            acknowledge = true
+            again(load, after: 0)
+            return
+        }
+        let f = GoogleDrive.failure(code, load.body)
+        refusal = f.message
+        load.request.finishLoading(with: f)
     }
 }
