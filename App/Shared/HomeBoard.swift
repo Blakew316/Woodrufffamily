@@ -399,7 +399,12 @@ struct HomeBoard: View, Equatable {
         }
         .onChange(of: moving) { _, now in if !now { drop() } }
         .onChange(of: sizing) { _, now in if !now { finishResize() } }
-        .onDisappear { scrolling?.cancel(); scrolling = nil }
+        .onDisappear {
+            scrolling?.cancel()
+            scrolling = nil
+            // Gone mid-drag (another room picked, another tab): Home's scrolling isn't left held still.
+            if drag != nil || resize != nil { layout.draggingTile = nil }
+        }
         .sheet(item: $openSpeaker) { r in
             NavigationStack { SpeakerDetailView(speakerID: r.id, inSheet: true) }.presentationBackground(.clear).macResizable()
         }
@@ -664,7 +669,8 @@ struct HomeBoard: View, Equatable {
                 guard speed != 0, let scroller, scroller.scroll(by: speed) else { break }
                 try? await Task.sleep(nanoseconds: 16_000_000)
             }
-            scrolling = nil
+            // Cancelled: whoever cancelled it already let it go (and may have started the next one, kept as is).
+            if !Task.isCancelled { scrolling = nil }
         }
     }
 

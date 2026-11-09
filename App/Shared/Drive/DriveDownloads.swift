@@ -408,8 +408,9 @@ private struct ShowDownloads: View {
                 loading = false
                 return
             }
-            picked = details?.season ?? 0
-            await load()
+            // The season the show is at: picking it reads its episodes (below); the one already picked is read here.
+            let start = details?.season ?? 0
+            if picked != start { picked = start } else { await load() }
         }
         .onChange(of: picked) { _, _ in Task { await load() } }
     }
@@ -421,14 +422,18 @@ private struct ShowDownloads: View {
             return
         }
         loading = true
-        defer { loading = false }
         do {
-            episodes = try await DriveLibrary.shared.episodes(show: show.id, season: s.id).episodes
-            failed = episodes.isEmpty ? "No episodes in \(s.name)." : nil
+            let list = try await DriveLibrary.shared.episodes(show: show.id, season: s.id).episodes
+            // Another season picked meanwhile: its own read shows instead.
+            guard details?.seasons?[safe: picked]?.id == s.id else { return }
+            episodes = list
+            failed = list.isEmpty ? "No episodes in \(s.name)." : nil
         } catch {
+            guard details?.seasons?[safe: picked]?.id == s.id else { return }
             episodes = []
             failed = error.localizedDescription
         }
+        loading = false
     }
 
     private func add(_ e: Episode) {

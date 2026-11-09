@@ -350,7 +350,7 @@ public struct MemoryItem: Codable, Hashable, Sendable, Identifiable {
     public var size: Double?
     public var v: Double?
     public var id: String { path }
-    public var version: String { v.map { String(Int($0)) } ?? "0" }
+    public var version: String { v.flatMap { $0.isFinite ? Int(exactly: $0.rounded(.towardZero)) : nil }.map(String.init) ?? "0" }
     public var takenDate: Date? { taken.map { Date(timeIntervalSince1970: $0 / 1000) } }
 }
 
@@ -396,7 +396,6 @@ public struct Title: Codable, Hashable, Sendable, Identifiable {
     public var caption: String?
     public var added: Double?
     public var play: PlayAction?
-    public var isShow: Bool { kind == "show" }
 
     enum CodingKeys: String, CodingKey { case id, kind, title, year, poster, backdrop, genres, rating, watched, caption, added, play }
 }

@@ -60,7 +60,7 @@ public struct TVClient: Sendable {
     /// Sends the text box's whole text; [submit] presses Done. [field] is echoed with the JSON type the TV gave.
     public func type(_ text: String, field: JSONValue?, submit: Bool = false) async throws {
         let fid: Any? = field.flatMap { f -> Any? in
-            switch f { case .number(let n): return n == n.rounded() ? Int(n) : n; case .string(let s): return s; default: return nil }
+            switch f { case .number(let n): if let i = Int(exactly: n) { return i } else { return n }; case .string(let s): return s; default: return nil }
         }
         if isDirect { try await t.post("/api/type", ["id": fid, "text": text, "submit": submit], timeout: 8) }
         else { try await t.post("/api/tvs/type", ["id": routeID, "field": fid, "text": text, "submit": submit], timeout: 10) }

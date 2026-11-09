@@ -194,17 +194,12 @@ private struct Request {
     var headers: [String: String]
     var body: Data
 
+    private static let separator = Data([13, 10, 13, 10])
+
     init?(_ data: Data) {
-        let bytes = [UInt8](data)
-        let separator: [UInt8] = [13, 10, 13, 10]
-        guard bytes.count >= 4 else { return nil }
-        var headEnd: Int?
-        var i = 0
-        while i + 4 <= bytes.count {
-            if Array(bytes[i..<(i + 4)]) == separator { headEnd = i; break }
-            i += 1
-        }
-        guard let end = headEnd, let head = String(bytes: bytes[0..<end], encoding: .utf8) else { return nil }
+        // Found in place (it was copied into an array, and every 4 bytes into another, at each piece that arrived).
+        guard let split = data.range(of: Request.separator),
+              let head = String(data: data[data.startIndex..<split.lowerBound], encoding: .utf8) else { return nil }
         var lines = head.components(separatedBy: "\r\n")
         guard !lines.isEmpty else { return nil }
         let first = lines.removeFirst().split(separator: " ")
@@ -225,8 +220,8 @@ private struct Request {
         }
         headers = h
         let length = Int(h["content-length"] ?? "0") ?? 0
-        let bodyStart = end + 4
-        guard length >= 0, bytes.count - bodyStart >= length else { return nil }
-        body = Data(bytes[bodyStart..<(bodyStart + length)])
+        let bodyStart = split.upperBound
+        guard length >= 0, data.endIndex - bodyStart >= length else { return nil }
+        body = Data(data[bodyStart..<(bodyStart + length)])
     }
 }

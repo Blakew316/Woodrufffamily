@@ -108,7 +108,14 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
     private var statusWatch: NSKeyValueObservation?
 
     func present(_ play: PhonePlay) {
+        // One still showing (another Play while it's up, or one in picture in picture): closed first, without it
+        // telling this one it has gone when it finishes going (that would stop the new one).
+        let old = controller
+        old?.onGone = nil
+        old?.delegate = nil
         finish()
+        if let old, old.presentingViewController != nil { old.dismiss(animated: false) }
+        inPictureInPicture = false
         try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
         try? AVAudioSession.sharedInstance().setActive(true)
         let item: AVPlayerItem
@@ -211,11 +218,12 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
     // MARK: Picture in picture
 
     nonisolated func playerViewControllerWillStartPictureInPicture(_ c: AVPlayerViewController) {
-        MainActor.assumeIsolated { inPictureInPicture = true }
+        MainActor.assumeIsolated { if c === controller { inPictureInPicture = true } }
     }
 
     nonisolated func playerViewControllerDidStopPictureInPicture(_ c: AVPlayerViewController) {
         MainActor.assumeIsolated {
+            guard c === controller else { return }
             inPictureInPicture = false
             // Closed from its small window (not brought back full screen): done.
             if controller?.presentingViewController == nil { finish() }

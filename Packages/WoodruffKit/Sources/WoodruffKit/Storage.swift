@@ -9,8 +9,20 @@ import CryptoKit
 /// Secrets (pairing keys, LG client keys, the GitHub token) in the Keychain; everything else in UserDefaults.
 public enum Keychain {
     static let service = "com.woodruff.family"
-    /// Goes up with every write, so a watcher knows when to read again (writes all happen in this app).
-    nonisolated(unsafe) public private(set) static var generation = 0
+    /// Goes up with every write, so a watcher knows when to read again (writes all happen in this app). Read and
+    /// written under a lock: writes come from any thread, and the sync reads it on the main one.
+    public static var generation: Int {
+        generationLock.lock()
+        defer { generationLock.unlock() }
+        return generationValue
+    }
+    private static let generationLock = NSLock()
+    nonisolated(unsafe) private static var generationValue = 0
+    private static func bumpGeneration() {
+        generationLock.lock()
+        generationValue &+= 1
+        generationLock.unlock()
+    }
     /// Every item as last read or written here, so the same few aren't fetched again and again (see `KeychainCache`).
     static let cache = KeychainCache()
 
@@ -47,7 +59,7 @@ public enum Keychain {
         // Nothing kept for it is handed out while it's written; what's there afterwards is kept only once the
         // write has gone through (one that didn't is read afresh next time).
         cache.writeStarted(account)
-        defer { generation &+= 1 }
+        defer { bumpGeneration() }
         #if canImport(Security)
         let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: account]
         let deleted = SecItemDelete(q as CFDictionary)

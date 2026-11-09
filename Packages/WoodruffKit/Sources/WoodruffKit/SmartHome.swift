@@ -39,7 +39,6 @@ public struct SonosRoom: Identifiable, Hashable, Sendable, Codable {
     public var unreachableSince: Date? = nil
     public var isOffline: Bool { unreachableSince != nil }
     public var isPlaying: Bool { !isOffline && (state == "PLAYING" || state == "TRANSITIONING") }
-    public var isPaused: Bool { !isOffline && state == "PAUSED_PLAYBACK" }
     public var isCoordinator: Bool { host == coordinatorHost }
     /// Something is loaded that Play can start (not an empty queue).
     public var canPlay: Bool { !isOffline && state != "NO_MEDIA_PRESENT" && (isPlaying || isTV || !(title ?? "").isEmpty) }
@@ -1167,18 +1166,32 @@ public final class SmartHome {
     /// Sonos speakers announce `_sonos._tcp`; any one of them lists the whole household.
     private func browseSonos() {
         let b = NWBrowser(for: .bonjour(type: "_sonos._tcp", domain: nil), using: NWParameters())
-        b.browseResultsChangedHandler = { [weak self] results, _ in
-            for r in results {
+        b.browseResultsChangedHandler = { [weak self] _, changes in
+            // Only speakers that just appeared or changed: every speaker used to be connected to again whenever any
+            // one of them came or went.
+            for change in changes {
+                let r: NWBrowser.Result
+                switch change {
+                case .added(let added): r = added
+                case .changed(old: _, new: let new, flags: _): r = new
+                default: continue
+                }
                 let c = NWConnection(to: r.endpoint, using: .tcp)
                 c.stateUpdateHandler = { s in
-                    if case .ready = s, case let .hostPort(host, _)? = c.currentPath?.remoteEndpoint {
-                        let h = "\(host)".components(separatedBy: "%").first ?? "\(host)"
-                        Task { @MainActor in self?.seed(h) }
+                    switch s {
+                    case .ready:
+                        if case let .hostPort(host, _)? = c.currentPath?.remoteEndpoint {
+                            let h = "\(host)".components(separatedBy: "%").first ?? "\(host)"
+                            Task { @MainActor in self?.seed(h) }
+                        }
                         c.cancel()
+                    // A speaker that can't be reached (unplugged, asleep) left its connection waiting for good.
+                    case .waiting, .failed: c.cancel()
+                    default: break
                     }
-                    if case .failed = s { c.cancel() }
                 }
                 c.start(queue: .main)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 10) { c.cancel() }
             }
         }
         let mine = ObjectIdentifier(b)
@@ -1326,25 +1339,29 @@ public final class SmartHome {
             kept = true
         }
         if kept { next.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending } }
-        speakers = next
+        if next != speakers { speakers = next }
         persist()
         Task { await fillModels() }
     }
 
     /// Asks each speaker once what it is ("Arc", "Sub", "Era 100").
     private func fillModels() async {
+        var learned = false
         for r in speakers where !r.isOffline {
             if r.model == nil, let m = await Sonos.model(r.host), let i = speakers.firstIndex(where: { $0.id == r.id }) {
                 speakers[i].model = m
+                learned = true
             }
             for p in r.parts where p.model == nil {
                 guard let h = p.host, let m = await Sonos.model(h),
                       let i = speakers.firstIndex(where: { $0.id == r.id }),
                       let j = speakers[i].parts.firstIndex(where: { $0.id == p.id }) else { continue }
                 speakers[i].parts[j].model = m
+                learned = true
             }
         }
-        persist()
+        // Every model known already (each search of the rooms ends here): nothing to save or tell.
+        if learned { persist() }
     }
 
     /// Rebuilds the rooms after grouping changes (a failure is shown on the room [id]).
@@ -1488,20 +1505,27 @@ public final class SmartHome {
         let group = r.coordinatorHost
         var before: [String: String] = [:]
         if let expect {
-            for i in speakers.indices where speakers[i].coordinatorHost == group {
-                before[speakers[i].id] = speakers[i].state
-                speakers[i].state = expect
+            // On a copy, put back once (each change to the observed list redraws what shows it).
+            var next = speakers
+            for i in next.indices where next[i].coordinatorHost == group {
+                before[next[i].id] = next[i].state
+                next[i].state = expect
             }
+            if next != speakers { speakers = next }
         }
         transportAt[group] = Date()
         levelsAt[r.id] = Date()
         do {
             try await op(r)
-            speakerErrors[r.id] = nil
+            if speakerErrors[r.id] != nil { speakerErrors[r.id] = nil }
             if let expect { expected[group] = (state: expect, until: Date().addingTimeInterval(4)) }
         } catch {
             expected[group] = nil
-            for i in speakers.indices { if let s = before[speakers[i].id] { speakers[i].state = s } }
+            if !before.isEmpty {
+                var next = speakers
+                for i in next.indices { if let s = before[next[i].id] { next[i].state = s } }
+                if next != speakers { speakers = next }
+            }
             report(r, error)
         }
         transportAt[group] = Date()
@@ -1715,9 +1739,11 @@ public final class SmartHome {
     public private(set) var answers: [LightAnswer] = []
 
     private func found(ip: String, id: String, sku: String) {
-        answers.removeAll { $0.ip == ip }
-        answers.append(LightAnswer(ip: ip, device: id, sku: sku, at: Date()))
-        answers.sort { $0.ip.localizedStandardCompare($1.ip) == .orderedAscending }
+        // On a copy, put back once: each light answers every search.
+        var heard = answers.filter { $0.ip != ip }
+        heard.append(LightAnswer(ip: ip, device: id, sku: sku, at: Date()))
+        heard.sort { $0.ip.localizedStandardCompare($1.ip) == .orderedAscending }
+        answers = heard
         // Worked out on a copy: lamps answer every scan, and only a real change redraws anything.
         var next = lights
         defer {
@@ -1841,11 +1867,16 @@ public final class SmartHome {
     }
 
     private func applyNames() {
-        for i in lights.indices {
-            if let n = names[lights[i].id], !n.isEmpty { lights[i].name = n }
-            else if lights[i].name == "Govee \(lights[i].sku)" { lights[i].name = Govee.product(lights[i].sku) }
+        // On copies, put back only when a name changed (every element set on the observed lists redrew them).
+        var ls = lights
+        for i in ls.indices {
+            if let n = names[ls[i].id], !n.isEmpty { ls[i].name = n }
+            else if ls[i].name == "Govee \(ls[i].sku)" { ls[i].name = Govee.product(ls[i].sku) }
         }
-        for i in speakers.indices { if let n = names[speakers[i].id], !n.isEmpty { speakers[i].name = n } }
+        if ls != lights { lights = ls }
+        var ss = speakers
+        for i in ss.indices { if let n = names[ss[i].id], !n.isEmpty { ss[i].name = n } }
+        if ss != speakers { speakers = ss }
     }
 
     /// Turns a light on or off: on the LAN when it's there, else through Govee's cloud (or Apple Home).
@@ -1898,11 +1929,13 @@ public final class SmartHome {
     private func restore(_ before: GoveeLight?, seq: Int) {
         guard let before, commandSeq[before.id] == seq, let i = lights.firstIndex(where: { $0.id == before.id }) else { return }
         held[before.id] = nil
-        lights[i].on = before.on
-        lights[i].brightness = before.brightness
-        lights[i].color = before.color
-        lights[i].kelvin = before.kelvin
-        lights[i].scene = before.scene
+        var l = lights[i]
+        l.on = before.on
+        l.brightness = before.brightness
+        l.color = before.color
+        l.kelvin = before.kelvin
+        l.scene = before.scene
+        if l != lights[i] { lights[i] = l }
         onChange?()
     }
 

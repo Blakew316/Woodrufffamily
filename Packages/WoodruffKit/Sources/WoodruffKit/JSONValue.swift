@@ -39,7 +39,8 @@ public enum JSONValue: Codable, Hashable, Sendable {
     public var string: String? {
         switch self {
         case .string(let s): return s
-        case .number(let n): return n == n.rounded() ? String(Int(n)) : String(n)
+        // A whole number reads without ".0"; one too large for Int (or not finite) used to crash here.
+        case .number(let n): return Int(exactly: n).map(String.init) ?? String(n)
         case .bool(let b): return b ? "true" : "false"
         default: return nil
         }
@@ -51,7 +52,11 @@ public enum JSONValue: Codable, Hashable, Sendable {
         default: return nil
         }
     }
-    public var int: Int? { double.map { Int($0) } }
+    /// Rounded toward zero; nil for a value that isn't a finite number within Int's range (`Int(_:)` would crash).
+    public var int: Int? {
+        guard let d = double, d.isFinite else { return nil }
+        return Int(exactly: d.rounded(.towardZero))
+    }
     public var bool: Bool? {
         switch self {
         case .bool(let b): return b

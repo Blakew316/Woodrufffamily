@@ -428,7 +428,8 @@ public final class Fleet {
     }
 
     public func setActive(_ on: Bool) {
-        active = on
+        // Observed: set only when it changes (the app tells this on every scene change, often with the same value).
+        if active != on { active = on }
         guard on else { return }
         // Back from the background: what the TVs said before may be long over. Every hub is asked at once, and each
         // answer replaces what that hub said before; one that hasn't answered within `wakeGrace` seconds no longer
@@ -937,7 +938,7 @@ public final class Fleet {
     }
 
     private func keepLibrary() {
-        guard !Demo.isOn, let library, let file = Self.libraryFile else { return }
+        guard !Demo.isOn, !restoringLibrary, let library, let file = Self.libraryFile else { return }
         let from = libraryFrom
         DispatchQueue.global(qos: .utility).async {
             struct Kept: Encodable { let from: String?; let home: WatchHome }
@@ -954,10 +955,15 @@ public final class Fleet {
             await MainActor.run {
                 guard self.library == nil else { return }
                 self.libraryFrom = k.from
+                // Just read from the file: not written straight back to it.
+                self.restoringLibrary = true
                 self.library = k.home
+                self.restoringLibrary = false
             }
         }
     }
+    /// Set while the library read from disk is put in place, so it isn't written back to the same file.
+    @ObservationIgnored private var restoringLibrary = false
     /// The library's lists arranged for looking titles up, made the first time they're needed after it changes.
     @ObservationIgnored private var artIndex: ArtIndex?
     /// What the library has for each title asked about ("key|title"), until the library changes: `artwork(for:)` runs
@@ -1216,6 +1222,8 @@ public final class Fleet {
     public func connectLG(_ tv: FleetTV, host: String) async throws {
         extras[tv.id, default: TVExtras()].lgHost = host
         extras[tv.id]?.platform = .webOS
+        // The connection there before is closed, not just let go of (it kept its socket open).
+        if let old = lgRemotes[tv.id] { Task { await old.disconnect() } }
         lgRemotes[tv.id] = nil
         guard let r = lg(for: tv) else { return }
         let key = try await r.connect()
@@ -1286,6 +1294,8 @@ public final class Fleet {
         var seenOrder = savedSeen
         var seen = Set(seenOrder)
         let shownBefore = recentMessages
+        // Worked out on a copy and put back once: each insert into the observed list redrew what shows it.
+        var messages = shownBefore
         for hub in asking {
             guard let box = boxes[hub.id] else { continue }
             var cur = cursors[hub.id] ?? InboxCursor()
@@ -1294,7 +1304,7 @@ public final class Fleet {
             for m in box.messages where m.seq > (cur.after ?? 0) && !seen.contains(m.id) {
                 seen.insert(m.id)
                 seenOrder.append(m.id)
-                recentMessages.insert(m, at: 0)
+                messages.insert(m, at: 0)
                 // The first poll after pairing only catches up; it doesn't replay old messages as alerts.
                 if !first { onChange?(.message(m, from: hub.name)) }
             }
@@ -1304,7 +1314,7 @@ public final class Fleet {
         let weekAgo = (Date().timeIntervalSince1970 - 7 * 86400) * 1000
         // Each message once (the same one can come from two TVs, or again after the seen list was trimmed).
         var once = Set<String>()
-        let kept = Array(recentMessages.filter { ($0.at ?? weekAgo + 1) > weekAgo && once.insert("\($0.id)|\($0.title)|\($0.at ?? 0)").inserted }.prefix(20))
+        let kept = Array(messages.filter { ($0.at ?? weekAgo + 1) > weekAgo && once.insert("\($0.id)|\($0.title)|\($0.at ?? 0)").inserted }.prefix(20))
         if kept != recentMessages { recentMessages = kept }
         // Written only when something changed (this runs every few seconds).
         if recentMessages != shownBefore { Saved.save("recentMessages", recentMessages) }

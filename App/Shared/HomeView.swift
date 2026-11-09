@@ -234,7 +234,7 @@ struct HomeView: View {
         }
         #endif
         #if !os(tvOS)
-        .background { HomeBackdrop(playing: featuredTV?.nowPlaying, scroller: scroller) }
+        .background { HomeBackdrop(scroller: scroller) }
         #endif
         // Home is always the dark, cinematic room: its glass and text read over the backdrop.
         .environment(\.colorScheme, .dark)
@@ -251,7 +251,10 @@ struct HomeView: View {
         #endif
         .sheet(isPresented: Binding(get: { editing }, set: { layout.editing = $0 })) { EditHomeView().macResizable(width: 520, height: 720) }
         .sheet(item: Binding(get: { player.map { TitleRef(id: $0) } }, set: { playerTV = $0?.id })) { NowPlayingSheet(tvID: $0.id).sheetBanner().macResizable(width: 560, height: 780) }
-        .refreshable { await refreshEverything() }
+        #if os(tvOS)
+        // Menu closes a TV's page opened over Home (and otherwise does what it always does).
+        .onExitCommand(perform: exitAction)
+        #endif
         // Each time Home opens: a fresh one-liner, and the weather if it's been a while.
         .onAppear {
             HomeWeather.shared.refresh()
@@ -287,24 +290,6 @@ struct HomeView: View {
         case "wifi": if room.isEmpty { WifiSection() }
         default: EmptyView()
         }
-    }
-
-    /// Pull down on Home: every TV, speaker, light, camera and device asked again.
-    private func refreshEverything() async {
-        SmartHome.shared.searchLights()
-        SmartHome.shared.wake()
-        #if os(iOS) || os(tvOS)
-        HomeKitLights.shared.refresh()
-        #endif
-        async let tvs: Void = fleet.refresh()
-        async let speakers: Void = SmartHome.shared.refreshSpeakers()
-        async let samsung: Void = SmartThings.shared.refresh(full: false)
-        async let cams: Void = NestCameras.shared.load()
-        // The fans and the Wi‑Fi too (they're on Home as well).
-        async let fans: Void = Dreo.shared.refresh(full: false)
-        async let wifi: Void = DecoWifi.shared.refresh()
-        _ = await (tvs, speakers, samsung, cams, fans, wifi)
-        await fleet.loadAllHealth()
     }
 
     // MARK: By room
@@ -482,13 +467,6 @@ struct HomeView: View {
             .background { if selected { Capsule().fill(.white) } }
     }
 
-    /// The TV whose picture warms Home's backdrop: the remote's, if it's playing right now, else any that is. None
-    /// while nothing plays (no picture of something that's stopped or paused).
-    private var featuredTV: FleetTV? {
-        if let s = fleet.selected, s.nowPlaying?.isPlaying == true { return s }
-        return fleet.tvs.first { $0.nowPlaying?.isPlaying == true }
-    }
-
     private func open(_ id: String) {
         guard layout.tapsAllowed else { return }
         #if os(macOS)
@@ -503,6 +481,14 @@ struct HomeView: View {
     private func close() {
         withAnimation(.spring(response: 0.45, dampingFraction: 0.9)) { openTV = nil }
     }
+
+    #if os(tvOS)
+    /// Menu on the Siri Remote: closes the TV's page while one is open; nil leaves Menu to do what it always does.
+    private var exitAction: (() -> Void)? {
+        guard openTV != nil else { return nil }
+        return { close() }
+    }
+    #endif
 
     private func startArranging() {
         guard !layout.arranging else { return }
@@ -783,7 +769,6 @@ struct LibrarySearchResults: View {
 struct HomeBackdrop: View {
     @Environment(Fleet.self) private var fleet
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    var playing: NowPlaying?
     /// Home's scrolling: the drift rests while the page moves.
     var scroller: HomeScroller? = nil
     /// Low Power Mode: the drift rests.

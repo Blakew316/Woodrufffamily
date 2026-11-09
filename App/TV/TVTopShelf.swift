@@ -2,6 +2,7 @@ import SwiftUI
 import Photos
 import TVServices
 import UIKit
+import ImageIO
 
 /// The Top Shelf slideshow: an iCloud Photos album picked here, its pictures kept ready (1920 × 1080, the Top Shelf's own size) in the folder
 /// the Top Shelf reads, and refreshed when the app opens.
@@ -12,10 +13,21 @@ final class TopShelfAlbum {
     private let saved = UserDefaults(suiteName: TopShelfAlbum.group) ?? .standard
 
     var albums: [(id: String, name: String)] = []
-    var picked: String? { saved.string(forKey: "topShelf.album") }
+    /// The album picked (kept in the shared settings), watched so the list's Showing moves the moment one is picked.
+    private(set) var picked: String?
     var note: String?
     /// Goes up each time the pictures are written again.
     var version = 0
+    /// How many pictures the Top Shelf has ready (Settings → Top Shelf), counted when they're written, not at every redraw.
+    private(set) var ready = 0
+    /// A refresh is under way; one asked for meanwhile runs once it's done (two at once mixed and deleted each other's pictures).
+    @ObservationIgnored private var refreshing = false
+    @ObservationIgnored private var again = false
+
+    private init() {
+        picked = saved.string(forKey: "topShelf.album")
+        ready = Self.files().count
+    }
 
     /// When the Top Shelf last asked for its pictures (it notes the time in the shared folder), or Never.
     nonisolated static func lastAsked() -> String {
@@ -51,12 +63,34 @@ final class TopShelfAlbum {
     }
 
     func pick(_ id: String) {
+        picked = id
         saved.set(id, forKey: "topShelf.album")
         Task { await refresh() }
     }
 
-    /// The album's newest pictures (up to 15) written for the Top Shelf, and the Top Shelf told.
+    /// The album's newest pictures (up to 15) written for the Top Shelf, and the Top Shelf told. One at a time.
     func refresh() async {
+        if refreshing { again = true; return }
+        refreshing = true
+        repeat {
+            again = false
+            await write()
+        } while again
+        refreshing = false
+    }
+
+    /// A photo's original, sized down off the main thread without decoding it whole (a 48-megapixel one is hundreds of MB).
+    nonisolated private static func downsample(_ data: Data) -> UIImage? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        let options: [CFString: Any] = [kCGImageSourceCreateThumbnailFromImageAlways: true,
+                                        kCGImageSourceCreateThumbnailWithTransform: true,
+                                        kCGImageSourceShouldCacheImmediately: true,
+                                        kCGImageSourceThumbnailMaxPixelSize: 1920]
+        guard let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
+        return UIImage(cgImage: cg)
+    }
+
+    private func write() async {
         guard let id = picked,
               let album = PHAssetCollection.fetchAssetCollections(withLocalIdentifiers: [id], options: nil).firstObject,
               let dir = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: Self.group)?
@@ -102,20 +136,28 @@ final class TopShelfAlbum {
                     o.deliveryMode = .highQualityFormat
                     PHImageManager.default().requestImageDataAndOrientation(for: a, options: o) { d, _, _, _ in c.resume(returning: d) }
                 }
-                picture = data.flatMap { UIImage(data: $0)?.preparingThumbnail(of: CGSize(width: 1920, height: 1080)) }
+                if let data { picture = await Task.detached(priority: .utility) { Self.downsample(data) }.value }
             }
-            if let data = picture?.jpegData(compressionQuality: 0.8) {
-                // Apple TV only lets apps write in Caches (the shared folder's too), which is where the Top Shelf reads.
-                // A new name each time (the Apple TV keeps pictures by their address: the same name would keep showing
-                // the old photo).
-                do { try data.write(to: dir.appendingPathComponent(String(format: "%@-%02d.jpg", stamp, i)), options: .atomic); saved += 1 }
-                catch { lastError = error.localizedDescription }
-            } else if lastError == nil {
-                lastError = "iCloud sent no picture"
+            // Apple TV only lets apps write in Caches (the shared folder's too), which is where the Top Shelf reads.
+            // A new name each time (the Apple TV keeps pictures by their address: the same name would keep showing
+            // the old photo). Made into a JPEG off the main thread, so the remote stays smooth meanwhile.
+            let file = dir.appendingPathComponent(String(format: "%@-%02d.jpg", stamp, i))
+            var written: Result<Void, Error>?
+            if let image = picture {
+                written = await Task.detached(priority: .utility) { () -> Result<Void, Error>? in
+                    guard let data = image.jpegData(compressionQuality: 0.8) else { return nil }
+                    do { try data.write(to: file, options: .atomic); return .success(()) } catch { return .failure(error) }
+                }.value
+            }
+            switch written {
+            case .success?: saved += 1
+            case .failure(let e)?: lastError = e.localizedDescription
+            case nil: if lastError == nil { lastError = "iCloud sent no picture" }
             }
         }
         if saved > 0 { for f in old { try? FileManager.default.removeItem(at: f) } }
         TVTopShelfContentProvider.topShelfContentDidChange()
+        ready = Self.files().count
         version += 1
         note = chosen.isEmpty ? "That album has no photos." : saved == 0 ? "Couldn’t get the photos from iCloud" + (lastError.map { ": \($0)" } ?? ".") + " Check that iCloud Photos is on in this Apple TV’s Settings → Users and Accounts." : "\(saved) photos are on the Top Shelf and Home."
     }
@@ -141,7 +183,7 @@ struct TopShelfSettings: View {
                 Text(shelf.note ?? "With Woodruff's icon highlighted on the Home Screen, this album plays across the top as a slideshow.")
             }
             Section {
-                LabeledContent("Photos Ready", value: "\(TopShelfAlbum.files().count)")
+                LabeledContent("Photos Ready", value: "\(shelf.ready)")
                 LabeledContent("Apple TV Last Asked", value: TopShelfAlbum.lastAsked())
                 Button("Update the Top Shelf Now") { Task { await shelf.refresh() } }
                     .disabled(shelf.picked == nil)
@@ -180,20 +222,18 @@ struct TVPhotoBackdrop: View {
     }
 }
 
-/// The slideshow itself, running from launch: a photo is already showing the moment Home opens (the last one kept on
-/// disk), and the rest are fetched behind it.
+/// The slideshow itself, running from launch: the first photo (one kept on disk) is decoded off the main thread the
+/// moment the app starts, so it's there when Home opens without holding up the launch, and the rest are fetched behind it.
 @Observable @MainActor
 final class HomeSlideshow {
     static let shared = HomeSlideshow()
     private(set) var image: UIImage?
     private(set) var shown = 0
     @ObservationIgnored private var task: Task<Void, Never>?
+    /// The file showing now, so the next photo is a different one.
+    @ObservationIgnored private var current: String?
 
-    private init() {
-        // At once, from disk: one of the album's photos, else a nature photograph kept from before.
-        let first = TVPhotoBackdrop.keptStock().randomElement()
-        if let first { image = UIImage(contentsOfFile: first.path) }
-    }
+    private init() {}
 
     func start() {
         guard task == nil else { return }
@@ -206,19 +246,31 @@ final class HomeSlideshow {
 
     private func run() async {
         while !Task.isCancelled {
-            try? await Task.sleep(nanoseconds: image == nil ? 0 : 30_000_000_000)
+            if image != nil { try? await Task.sleep(nanoseconds: 30_000_000_000) }
             if Task.isCancelled { return }
-            // Nature photographs only (the album is the Top Shelf's): a kept one if there are a few (no waiting),
-            // else the next to come from the network.
-            let next: UIImage?
-            let kept = TVPhotoBackdrop.keptStock()
-            if let f = kept.randomElement(), kept.count > 3 {
-                next = await Task.detached(priority: .utility) { UIImage(contentsOfFile: f.path)?.preparingForDisplay() }.value
+            // Nature photographs only (the album is the Top Shelf's): a kept one if there are a few (no waiting), or
+            // any kept one for the first, else the next to come from the network.
+            let first = image == nil
+            var found: (image: UIImage, file: String)?
+            let kept = TVPhotoBackdrop.keptStock().filter { $0.lastPathComponent != current }
+            if let f = kept.randomElement(), first || kept.count > 2 {
+                let decoded = await Task.detached(priority: first ? .userInitiated : .utility) {
+                    UIImage(contentsOfFile: f.path)?.preparingForDisplay()
+                }.value
+                found = decoded.map { (image: $0, file: f.lastPathComponent) }
             } else {
-                next = await TVPhotoBackdrop.stock(Int.random(in: 0..<TVPhotoBackdrop.nature.count))
+                let n = Int.random(in: 0..<TVPhotoBackdrop.nature.count)
+                found = await TVPhotoBackdrop.stock(n).map { (image: $0, file: "n\(TVPhotoBackdrop.nature[n]).jpg") }
             }
-            if let next { withAnimation(.easeInOut(duration: 6)) { image = next; shown += 1 } }
-            else { try? await Task.sleep(nanoseconds: 5_000_000_000) }
+            guard let next = found else { try? await Task.sleep(nanoseconds: 5_000_000_000); continue }
+            current = next.file
+            if first {
+                // The first is simply there (nothing to fade from).
+                image = next.image
+                shown += 1
+            } else {
+                withAnimation(.easeInOut(duration: 6)) { image = next.image; shown += 1 }
+            }
         }
     }
 }

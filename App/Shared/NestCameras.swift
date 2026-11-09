@@ -1346,7 +1346,7 @@ final class LivePlayer: NSObject, WKNavigationDelegate {
     /// The video's current frame as a JPEG at most 480 pixels across, drawn into a canvas in the page (a snapshot of
     /// the web view can miss the video). Nil before the first frame.
     func frameJPEG(maxSide: Int = 480) async -> Data? {
-        if usingNative { return native.frameJPEG(maxSide: maxSide) }
+        if usingNative { return await native.frameJPEG(maxSide: maxSide) }
         let js = """
         (() => { const v = document.querySelector('video'); if (!v || !v.videoWidth) return null;
           const k = Math.min(1, \(maxSide) / Math.max(v.videoWidth, v.videoHeight)); const c = document.createElement('canvas');

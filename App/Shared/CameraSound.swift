@@ -11,6 +11,8 @@ final class CameraSound: NSObject, RTCAudioDevice {
     static let shared = CameraSound()
 
     private let lock = NSLock()
+    /// Starting and stopping the speaker one at a time (WebRTC's threads and the main thread both ask).
+    private let speakerLock = NSLock()
     private var unit: AudioUnit?
     private var getPlayout: RTCAudioDeviceGetPlayoutDataBlock?
     private var delegateRef: RTCAudioDeviceDelegate?
@@ -102,6 +104,8 @@ final class CameraSound: NSObject, RTCAudioDevice {
 
     /// Runs the speaker while WebRTC is playing and a camera's sound is on; stops it (and lets other audio back) otherwise.
     private func update() {
+        speakerLock.lock()
+        defer { speakerLock.unlock() }
         lock.lock()
         let should = playing && wanted > 0 && getPlayout != nil
         let isOn = speakerOn

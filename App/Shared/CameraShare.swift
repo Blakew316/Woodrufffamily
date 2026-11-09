@@ -27,6 +27,8 @@ final class CameraShare {
     /// Each camera's latest picture and when it was taken (taken again at most once a second, only while asked for).
     private var latest: [String: (jpeg: Data, at: Date)] = [:]
     private var token: String?
+    /// A picture being taken of each camera now: every Apple TV asking meanwhile gets the same one.
+    private var taking: [String: Task<Data?, Never>] = [:]
 
     /// On the Mac Studio (the updater's hub) only: it's the Mac that's always home with every camera live.
     func start() {
@@ -35,6 +37,8 @@ final class CameraShare {
               let l = try? NWListener(using: .tcp, on: port) else { return }
         l.newConnectionHandler = { [weak self] c in
             c.start(queue: .main)
+            // An Apple TV that went away mid-request: never left open.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 15) { c.cancel() }
             Task { @MainActor in self?.read(c, Data()) }
         }
         l.start(queue: .main)
@@ -101,12 +105,20 @@ final class CameraShare {
         if token == nil { token = CameraShareKey.token() }
         guard let token, q["k"] == token, let id = q["id"], !id.isEmpty else { return reply(c, "403 Forbidden", nil) }
         if let kept = latest[id], Date().timeIntervalSince(kept.at) < 0.9 { return reply(c, "200 OK", kept.jpeg) }
-        if let jpeg = await CameraStreams.shared.liveFrame(id, maxSide: 1280) {
-            latest[id] = (jpeg, Date())
-            return reply(c, "200 OK", jpeg)
-        }
+        if let jpeg = await frame(id) { return reply(c, "200 OK", jpeg) }
         if let kept = latest[id] { return reply(c, "200 OK", kept.jpeg) }
         reply(c, "503 Service Unavailable", nil)
+    }
+
+    /// The camera's picture now, taken once however many ask at the same moment.
+    private func frame(_ id: String) async -> Data? {
+        if let t = taking[id] { return await t.value }
+        let t = Task { await CameraStreams.shared.liveFrame(id, maxSide: 1280) }
+        taking[id] = t
+        let jpeg = await t.value
+        taking[id] = nil
+        if let jpeg { latest[id] = (jpeg, Date()) }
+        return jpeg
     }
 
     private func reply(_ c: NWConnection, _ status: String, _ jpeg: Data?) {

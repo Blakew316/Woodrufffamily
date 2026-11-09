@@ -328,6 +328,7 @@ final class SmartThings {
         var failures = 0
         var lastFailure: String?
         let before = AccessoryStore.shared.fromSmartThings
+        let beforeByID = Dictionary(before.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         // Every appliance read together (four at a time), then taken in the list's order, as when they were read one
         // by one.
         let answers = await readings(known.compactMap { $0["deviceId"] as? String })
@@ -346,12 +347,12 @@ final class SmartThings {
                 // kept is from last time).
                 failures += 1
                 lastFailure = r.failure
-                if let old = before.first(where: { $0.id == key }) {
+                if let old = beforeByID[key] {
                     out.append(online == false || raw[key] == nil ? Self.offline(old) : old)
                 }
                 continue
             }
-            if let until = holdUntil[key], until > .now, let current = before.first(where: { $0.id == key }) {
+            if let until = holdUntil[key], until > .now, let current = beforeByID[key] {
                 out.append(current)   // a command's re-read owns it right now
                 continue
             }
@@ -364,11 +365,11 @@ final class SmartThings {
             }
         }
         // Anything a command's re-read updated while this went round keeps the newer word.
-        let latest = AccessoryStore.shared.fromSmartThings
+        let latest = Dictionary(AccessoryStore.shared.fromSmartThings.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         out = out.map { d in
             let held = (holdUntil[d.id].map { $0 > .now } ?? false)
             let newer = (changedAt[d.id] ?? .distantPast) > (readAt[d.id] ?? .distantFuture)
-            guard held || newer, let current = latest.first(where: { $0.id == d.id }) else { return d }
+            guard held || newer, let current = latest[d.id] else { return d }
             return current
         }
         let problem = listFailure ?? (failures > 0 && failures == known.count ? lastFailure : nil)
@@ -456,7 +457,11 @@ final class SmartThings {
 
     /// Reads one device again (its page or the thermostat controls are open). Takes the app's id ("st:…").
     func refresh(device key: String) async {
-        await reread(key.hasPrefix("st:") ? String(key.dropFirst(3)) : key)
+        let id = key.hasPrefix("st:") ? String(key.dropFirst(3)) : key
+        // A command on its way owns the tile (its own re-reads follow it): a look now could read the appliance a
+        // moment before it took the change and put the old value back for a few seconds.
+        if let until = holdUntil["st:" + id], until > .now { return }
+        await reread(id)
     }
 
     /// Reads one appliance again (after a command), so its tile updates in a second. With an expectation it
@@ -472,7 +477,8 @@ final class SmartThings {
         guard let d = make(dev, status, online: online) else { return false }
         let agrees = matches(expect, d, status)
         guard agrees || last else { return false }
-        raw[key] = status
+        // Only a real change reaches the pages that read it.
+        if !(raw[key].map { NSDictionary(dictionary: $0).isEqual(to: status) } ?? false) { raw[key] = status }
         changedAt[key] = Date()
         notifyIfFinished(d)
         var list = AccessoryStore.shared.fromSmartThings
@@ -756,6 +762,9 @@ final class SmartThings {
     private(set) var commandError: [String: String] = [:]
     /// Appliances with a command on its way.
     private(set) var pending: Set<String> = []
+    /// Commands sent to each appliance, counted: an older command's re-reads and clean-up leave a newer one alone
+    /// (its hold on the tile, its spinner, and the value it just showed).
+    @ObservationIgnored private var commandSeq: [String: Int] = [:]
 
     /// Sends one command, then reads the appliance again. With `sets`/`to`, the new value shows at once and
     /// the re-read waits for the appliance to agree.
@@ -869,6 +878,8 @@ final class SmartThings {
         commandError[key] = nil
         pending.insert(key)
         holdUntil[key] = Date().addingTimeInterval(20)
+        let seq = (commandSeq[key] ?? 0) + 1
+        commandSeq[key] = seq
         Task {
             do {
                 let r = try await self.call("POST", "/devices/\(id)/commands", ["commands": [c]])
@@ -877,17 +888,22 @@ final class SmartThings {
                 }
                 if stops { self.userStopped[key] = Date() }
                 // Samsung takes a few seconds to show a change (a cloud thermostat like the ecobee longer): look
-                // again until it does, and only then, or at the last look, take what it says.
+                // again until it does, and only then, or at the last look, take what it says. A newer command to
+                // the same appliance takes over the looking.
                 let delays: [Double] = [1.5, 2.5, 4, 6]
                 for (n, delay) in delays.enumerated() {
                     try? await Task.sleep(for: .seconds(delay))
+                    guard self.commandSeq[key] == seq else { break }
                     if await self.reread(id, expect: expect, last: n == delays.count - 1) { break }
                 }
             } catch {
-                self.commandError[key] = self.describe(error, d, c)
-                self.holdUntil[key] = nil
-                await self.reread(id)   // put back what it really says
+                if self.commandSeq[key] == seq {
+                    self.commandError[key] = self.describe(error, d, c)
+                    self.holdUntil[key] = nil
+                    await self.reread(id)   // put back what it really says
+                }
             }
+            guard self.commandSeq[key] == seq else { return }
             self.holdUntil[key] = nil
             self.pending.remove(key)
         }

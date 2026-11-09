@@ -280,22 +280,36 @@ final class PushRelay {
         let kind = userInfo["camera"] != nil ? "camera" : "alert"
         Self.log.notice("push \(id, privacy: .public) (\(kind, privacy: .public)): \(data.count) bytes, picture \(payload["thumb"] != nil ? "in it" : "none", privacy: .public), sound \(sound ? "yes" : "no", privacy: .public)")
         var fixed: [String: String] = [:]
-        for (device, t) in tokens {
-            // A push address is hex (it arrives through the synced settings: nothing else goes into the path).
-            guard !t.token.isEmpty, t.token.allSatisfy(\.isHexDigit) else { continue }
-            var env = t.env == "production" ? "production" : "development"
-            var (code, reason) = await post(data, token: t, env: env, id: id, auth: auth)
-            // An address for the other service (an iPhone that signed up with the wrong one): try that one, and keep it.
-            if reason == "BadDeviceToken" {
-                let other = env == "production" ? "development" : "production"
-                let (c2, r2) = await post(data, token: t, env: other, id: id, auth: auth)
-                if c2 == 200 || r2 != "BadDeviceToken" { code = c2; reason = r2; env = other; fixed[device] = other }
+        // A push address is hex (it arrives through the synced settings: nothing else goes into the path).
+        let targets = tokens.filter { !$0.value.token.isEmpty && $0.value.token.allSatisfy(\.isHexDigit) }
+        let message = data
+        // Every iPhone at once (one slow or unreachable push never holds up the others' alert).
+        let sent = await withTaskGroup(of: Sent.self) { g -> [Sent] in
+            for (device, t) in targets {
+                g.addTask {
+                    var env = t.env == "production" ? "production" : "development"
+                    var (code, reason) = await self.post(message, token: t, env: env, id: id, auth: auth)
+                    var moved = false
+                    // An address for the other service (an iPhone that signed up with the wrong one): try that one, and keep it.
+                    if reason == "BadDeviceToken" {
+                        let other = env == "production" ? "development" : "production"
+                        let (c2, r2) = await self.post(message, token: t, env: other, id: id, auth: auth)
+                        if c2 == 200 || r2 != "BadDeviceToken" { code = c2; reason = r2; env = other; moved = true }
+                    }
+                    return Sent(device: device, name: t.name, env: env, code: code, reason: reason, moved: moved)
+                }
             }
-            Self.log.notice("push \(id, privacy: .public) to \(t.name, privacy: .public) (\(env, privacy: .public)): \(code) \(reason, privacy: .public)")
-            if code == 200 { anySent = true; continue }
-            if code == 410 || reason == "BadDeviceToken" || reason == "Unregistered" { gone.append(device) }
-            if code == 403 { jwt = nil }
-            failure = "\(t.name): \(code == 0 ? reason : Self.explain(reason))"
+            var all: [Sent] = []
+            for await r in g { all.append(r) }
+            return all
+        }
+        for r in sent {
+            if r.moved { fixed[r.device] = r.env }
+            Self.log.notice("push \(id, privacy: .public) to \(r.name, privacy: .public) (\(r.env, privacy: .public)): \(r.code) \(r.reason, privacy: .public)")
+            if r.code == 200 { anySent = true; continue }
+            if r.code == 410 || r.reason == "BadDeviceToken" || r.reason == "Unregistered" { gone.append(r.device) }
+            if r.code == 403 { jwt = nil }
+            failure = "\(r.name): \(r.code == 0 ? r.reason : Self.explain(r.reason))"
         }
         if !fixed.isEmpty {
             var all = Saved.load(Self.tokensKey, as: [String: Token].self) ?? [:]
@@ -313,6 +327,17 @@ final class PushRelay {
         lastError = failure
         // The doorbell rang: its Live Activity on each iPhone that can show one.
         if userInfo["ring"] == "1", let camera = userInfo["camera"] { await startDoorbell(camera: camera, name: body, auth: auth) }
+    }
+
+    /// What one iPhone's push came to.
+    private struct Sent: Sendable {
+        var device: String
+        var name: String
+        var env: String
+        var code: Int
+        var reason: String
+        /// Its address worked on the other push service (kept from now on).
+        var moved: Bool
     }
 
     /// Starts the doorbell's Live Activity on every iPhone that gave an address for it (ActivityKit push-to-start).

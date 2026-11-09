@@ -114,9 +114,15 @@ enum CameraEventMedia {
         if let clipURL, !clipURL.isEmpty, let u = URL(string: clipURL) {
             var r = URLRequest(url: u, timeoutInterval: timeout)
             r.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-            if let (d, resp) = try? await URLSession.shared.data(for: r), (resp as? HTTPURLResponse)?.statusCode == 200, d.count > 1000 {
-                let file = f.appendingPathComponent("\(key).mp4")
-                if (try? d.write(to: file, options: .atomic)) != nil { return file }
+            // Straight to a file, not into memory (the notification extension has little to spare).
+            if let (tmp, resp) = try? await URLSession.shared.download(for: r) {
+                let size = (try? tmp.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+                if (resp as? HTTPURLResponse)?.statusCode == 200, size > 1000 {
+                    let file = f.appendingPathComponent("\(key).mp4")
+                    try? FileManager.default.removeItem(at: file)
+                    if (try? FileManager.default.moveItem(at: tmp, to: file)) != nil { return file }
+                }
+                try? FileManager.default.removeItem(at: tmp)
             }
         }
         guard let eventID, !eventID.isEmpty, let cmd = URL(string: sdm + camera + ":executeCommand") else { return nil }
@@ -142,7 +148,7 @@ enum CameraEventMedia {
     }
 
     /// A notification attachment of a kept file (a copy: the system moves what it's given).
-    /// [focus]: the part the alert's small picture shows (`focus(_:title:)`, a unit rectangle from the top left); the
+    /// [focus]: the part the alert's small picture shows (`stillAndFocus`, a unit rectangle from the top left); the
     /// expanded alert still shows all of it.
     static func attachment(_ file: URL, focus: CGRect? = nil, identifier: String = "media") -> UNNotificationAttachment? {
         let copy = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + "." + file.pathExtension)
@@ -156,12 +162,15 @@ enum CameraEventMedia {
         return try? UNNotificationAttachment(identifier: identifier, url: copy, options: options.isEmpty ? nil : options)
     }
 
-    /// Where the alert's subject is in a kept file (a snapshot, or a clip's frame a second in, as its thumbnail shows):
-    /// the person for "Person seen", else what stands out, as a unit rectangle from the top left. Nil when nothing is
-    /// found, and the small picture shows the whole scene.
-    static func focus(_ file: URL, title: String) async -> CGRect? {
-        guard let image = await picture(file, maxSide: 1280) else { return nil }
-        return SubjectCrop.unitFocus(in: image, kind: SubjectCrop.kind(title))
+    /// A JPEG of the moment for the widget (as `still`), and where the alert's subject is in the file (a snapshot, or
+    /// a clip's frame a second in, as its thumbnail shows): the person for "Person seen", else what stands out, as a
+    /// unit rectangle from the top left; nil when nothing is found, and the small picture shows the whole scene. Both
+    /// from one look at the file (decoded once: the notification extension has little memory and little time).
+    static func stillAndFocus(_ file: URL, title: String) async -> (still: Data?, focus: CGRect?) {
+        guard let image = await picture(file, maxSide: 1280) else { return (nil, nil) }
+        let focus = SubjectCrop.unitFocus(in: image, kind: SubjectCrop.kind(title))
+        let still = scaled(image, maxSide: 480).flatMap { jpeg($0, quality: 0.75) }
+        return (still, focus)
     }
 
     // MARK: The small picture the Mac sends inside the push

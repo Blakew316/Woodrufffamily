@@ -170,10 +170,21 @@ final class Cync {
         Keychain.set(String(Date().timeIntervalSince1970 + life), for: "cync.expires")
     }
 
+    /// A renewal on its way: everyone else waits for it (two at once would spend the refresh token twice).
+    @ObservationIgnored private var renewing: Task<Void, Error>?
+
     /// A fresh access token when the one kept is within the hour of running out.
     private func ensureToken() async throws {
         let expires = Double(Keychain.get("cync.expires") ?? "") ?? 0
         guard expires - Date().timeIntervalSince1970 < 3600 else { return }
+        if let running = renewing { return try await running.value }
+        let t = Task { try await self.renewToken() }
+        renewing = t
+        defer { renewing = nil }
+        try await t.value
+    }
+
+    private func renewToken() async throws {
         guard let refresh = Keychain.get("cync.refresh") else { throw Failure("Sign in to Cync again.") }
         let (code, j) = try await post("/v2/user/token/refresh", ["refresh_token": refresh])
         guard code == 200, let access = j["access_token"] as? String else {
@@ -336,6 +347,7 @@ final class Cync {
 
     private func disconnect() {
         pinger?.cancel(); pinger = nil
+        stateCheck?.cancel(); stateCheck = nil
         connection?.stateUpdateHandler = nil
         connection?.cancel()
         connection = nil
@@ -359,8 +371,17 @@ final class Cync {
         }
     }
 
+    /// Sends a packet. One that can't be sent means the connection is dead (a command would be lost without a
+    /// word, and nothing would come back): it's started again.
     private func write(_ d: Data) {
-        connection?.send(content: d, completion: .contentProcessed { _ in })
+        guard let c = connection else { return }
+        c.send(content: d, completion: .contentProcessed { [weak self] err in
+            guard let err else { return }
+            Task { @MainActor in
+                guard let self, c === self.connection else { return }
+                self.changed(.failed(err), c)
+            }
+        })
     }
 
     private func receive(_ c: NWConnection) {
@@ -411,10 +432,7 @@ final class Cync {
             }
             // Which lights are on the Wi‑Fi (one per home carries the commands), then everyone's state.
             for l in lights.values { write(probePacket(l.deviceID)) }
-            Task { [weak self] in
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
-                self?.queryStates()
-            }
+            queryStatesSoon(after: 2)
         case 10:  // a light answered the probe
             guard version != 0, body.count >= 4 else { return }
             let device = be32(body, 0)
@@ -530,9 +548,19 @@ final class Cync {
                                   UInt8(max(0, min(255, col.g))), UInt8(max(0, min(255, col.b)))], second: true)
         }
         write(pipePacket(hub, packet))
-        // Cync pushes the new state; ask too, in case the push doesn't come.
-        Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 1_500_000_000)
+        // Cync pushes the new state; ask too, in case the push doesn't come (once for a burst of changes: turning on
+        // and setting the brightness, or a whole room).
+        queryStatesSoon(after: 1.5)
+    }
+
+    @ObservationIgnored private var stateCheck: Task<Void, Never>?
+
+    /// Asks every home's lights how they are in a moment; a newer ask replaces one still waiting.
+    private func queryStatesSoon(after seconds: Double) {
+        stateCheck?.cancel()
+        stateCheck = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            guard !Task.isCancelled else { return }
             self?.queryStates()
         }
     }

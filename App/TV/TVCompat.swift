@@ -23,13 +23,6 @@ final class UISelectionFeedbackGenerator {
     func prepare() {}
 }
 
-final class UINotificationFeedbackGenerator {
-    enum FeedbackType { case success, warning, error }
-    init() {}
-    func notificationOccurred(_ type: FeedbackType) {}
-    func prepare() {}
-}
-
 final class UIPasteboard {
     static let general = UIPasteboard()
     var string: String?
@@ -112,6 +105,7 @@ final class LivePlayer: NSObject {
     var onStatus: ((String) -> Void)?
     private var feed: Task<Void, Never>?
     private var live = false
+    private var misses = 0
     private var lastJPEG: Data?
     var isRunning: Bool { feed != nil }
     var isLive: Bool { live }
@@ -125,23 +119,41 @@ final class LivePlayer: NSObject {
     func start() {
         guard feed == nil else { return }
         onStatus?("Starting…")
+        misses = 0
         feed = Task { [weak self] in
-            var misses = 0
             while !Task.isCancelled {
-                guard let self else { return }
-                if let jpeg = await Self.fetch(self.camera.id), let img = UIImage(data: jpeg) {
-                    misses = 0
-                    self.lastJPEG = jpeg
-                    self.surface.image.image = img
-                    self.surface.videoSize = img.size
-                    if !self.live { self.live = true; self.onStatus?("Live") }
-                } else {
-                    misses += 1
-                    if misses == 3 { self.live = false; self.onStatus?("The Mac Studio isn’t sharing this camera right now") }
+                // The player isn't held while it waits, so one let go stops here.
+                guard let id = self?.camera.id else { return }
+                let jpeg = await Self.fetch(id)
+                // Decoded off the main thread (a picture a second), so the remote stays smooth.
+                var img: UIImage?
+                if let jpeg {
+                    img = await Task.detached(priority: .userInitiated) { () -> UIImage? in
+                        let i = UIImage(data: jpeg)
+                        return i?.preparingForDisplay() ?? i
+                    }.value
                 }
-                try? await Task.sleep(nanoseconds: misses == 0 ? 1_000_000_000 : 4_000_000_000)
+                // Paused or closed meanwhile: not shown, and not said to be live again.
+                if Task.isCancelled { return }
+                guard let wait = self?.show(jpeg, img) else { return }
+                try? await Task.sleep(nanoseconds: wait)
             }
         }
+    }
+
+    /// Shows the picture that came (or counts one that didn't); how long to wait before the next.
+    private func show(_ jpeg: Data?, _ img: UIImage?) -> UInt64 {
+        if let jpeg, let img {
+            misses = 0
+            lastJPEG = jpeg
+            surface.image.image = img
+            surface.videoSize = img.size
+            if !live { live = true; onStatus?("Live") }
+            return 1_000_000_000
+        }
+        misses += 1
+        if misses == 3 { live = false; onStatus?("The Mac Studio isn’t sharing this camera right now") }
+        return 4_000_000_000
     }
 
     func restart() { close(); start() }
@@ -323,15 +335,10 @@ final class UNMutableNotificationContent {
     var attachments: [UNNotificationAttachment] = []
     var categoryIdentifier = ""
     var threadIdentifier = ""
-    var interruptionLevel: TVInterruptionLevel = .active
-    var relevanceScore: Double = 0
 }
-
-enum TVInterruptionLevel { case passive, active, timeSensitive, critical }
 
 final class UNNotificationSound {
     static let `default` = UNNotificationSound()
-    static let defaultCritical = UNNotificationSound()
 }
 
 final class UNNotificationAttachment {

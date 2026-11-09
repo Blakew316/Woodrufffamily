@@ -9,8 +9,17 @@ struct MemoriesView: View {
     @Environment(Fleet.self) private var fleet
     /// What the TV last sent, kept on this device: away from home the page opens with it (the pictures it has shown
     /// are kept too) instead of waiting for TVs it can't reach.
-    @State private var memories: Memories? = Saved.load(MemoriesView.keptKey, as: Memories.self)
-    static let keptKey = "memories.kept"
+    @State private var memories: Memories? = MemoriesView.kept()
+    nonisolated static let keptKey = "memories.kept"
+    /// The kept list as last read or written here: read from disk once, not every time the page is made again (each
+    /// redraw of what holds it makes a new one, and a family's list is long).
+    nonisolated(unsafe) private static var keptCopy: Memories??
+    nonisolated private static func kept() -> Memories? {
+        if let k = keptCopy { return k }
+        let k = Saved.load(keptKey, as: Memories.self)
+        keptCopy = .some(k)
+        return k
+    }
     @State private var picks: [PhotosPickerItem] = []
     @State private var uploading: (done: Int, of: Int)?
     @State private var viewing: MemoryItem?
@@ -243,8 +252,9 @@ struct MemoriesView: View {
     /// The TV's answer, shown (and what's worked out from it with it) only when it's new: the page is asked again after
     /// every add and delete, and pulling to refresh, and redraws only for what changed.
     private func take(_ m: Memories) {
-        Saved.save(Self.keptKey, m)
         guard m != memories else { return }
+        Saved.save(Self.keptKey, m)
+        Self.keptCopy = .some(m)
         index = MemoriesIndex(m.items)
         memories = m
     }

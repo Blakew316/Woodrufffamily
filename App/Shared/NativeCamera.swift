@@ -132,8 +132,12 @@ final class NativeRTC: NSObject, RTCPeerConnectionDelegate, RTCVideoViewDelegate
         grabber.clear()
     }
 
-    /// The picture now as a JPEG at most [maxSide] pixels across (for stills, alerts and Vehicle Alerts).
-    func frameJPEG(maxSide: Int = 480) -> Data? { grabber.jpeg(maxSide: maxSide) }
+    /// The picture now as a JPEG at most [maxSide] pixels across (for stills, alerts and Vehicle Alerts), made off the
+    /// main thread (Vehicle Alerts and the Apple TVs ask about once a second).
+    func frameJPEG(maxSide: Int = 480) async -> Data? {
+        let g = grabber
+        return await Task.detached(priority: .userInitiated) { g.jpeg(maxSide: maxSide) }.value
+    }
 
     private func say(_ s: String) {
         DispatchQueue.main.async { [weak self] in self?.onState?(s) }
@@ -221,7 +225,7 @@ final class PictureStage: StageView {
 }
 
 /// Keeps the latest frame of the picture, so a still can be made of it at any moment.
-final class FrameGrabber: NSObject, RTCVideoRenderer {
+final class FrameGrabber: NSObject, RTCVideoRenderer, @unchecked Sendable {
     private let lock = NSLock()
     private var latest: RTCVideoFrame?
 
@@ -245,8 +249,15 @@ final class FrameGrabber: NSObject, RTCVideoRenderer {
         // The hardware decoder's own picture when it has one (the usual case); otherwise a plain I420 conversion.
         var picture: CGImage?
         if let cv = frame.buffer as? RTCCVPixelBuffer {
-            let image = CIImage(cvPixelBuffer: cv.pixelBuffer)
-            picture = Self.ci.createCGImage(image, from: image.extent)
+            // Scaled down before it's turned into a picture (not a full-size copy first, then scaled).
+            var image = CIImage(cvPixelBuffer: cv.pixelBuffer)
+            let side = max(image.extent.width, image.extent.height)
+            if side > CGFloat(maxSide), side > 0 {
+                let k = CGFloat(maxSide) / side
+                image = image.transformed(by: CGAffineTransform(scaleX: k, y: k))
+            }
+            let r = image.extent.integral
+            if r.width >= 1, r.height >= 1 { picture = Self.ci.createCGImage(image, from: r) }
         }
         if picture == nil {
             let i420 = frame.buffer.toI420()
@@ -258,13 +269,17 @@ final class FrameGrabber: NSObject, RTCVideoRenderer {
             return nil
         }
         let w = full.width, h = full.height
-        let scale = min(1, Double(maxSide) / Double(max(w, h)))
-        let tw = max(1, Int(Double(w) * scale)), th = max(1, Int(Double(h) * scale))
-        guard let ctx = CGContext(data: nil, width: tw, height: th, bitsPerComponent: 8, bytesPerRow: 0,
-                                  space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipFirst.rawValue) else { return nil }
-        ctx.interpolationQuality = .medium
-        ctx.draw(full, in: CGRect(x: 0, y: 0, width: tw, height: th))
-        guard let small = ctx.makeImage() else { return nil }
+        var small = full
+        if max(w, h) > maxSide {
+            let scale = Double(maxSide) / Double(max(w, h))
+            let tw = max(1, Int(Double(w) * scale)), th = max(1, Int(Double(h) * scale))
+            guard let ctx = CGContext(data: nil, width: tw, height: th, bitsPerComponent: 8, bytesPerRow: 0,
+                                      space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipFirst.rawValue) else { return nil }
+            ctx.interpolationQuality = .medium
+            ctx.draw(full, in: CGRect(x: 0, y: 0, width: tw, height: th))
+            guard let made = ctx.makeImage() else { return nil }
+            small = made
+        }
         let out = NSMutableData()
         guard let dest = CGImageDestinationCreateWithData(out, UTType.jpeg.identifier as CFString, 1, nil) else { return nil }
         CGImageDestinationAddImage(dest, small, [kCGImageDestinationLossyCompressionQuality: 0.75] as CFDictionary)

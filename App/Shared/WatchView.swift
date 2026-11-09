@@ -16,6 +16,8 @@ struct WatchView: View {
     @State private var homeFrom: String?
     /// Taken off Continue Watching here, hidden until the TV's next answer (which no longer has them).
     @State private var removed: Set<String> = []
+    /// The sections being read now (a second read of the same one waits for nothing: it's skipped).
+    @State private var readingSections: Set<String> = []
     /// Movies or TV Shows, as on the TV's streaming screen.
     @AppStorage("watch.section") private var section = "movies"
     #if os(tvOS)
@@ -63,7 +65,9 @@ struct WatchView: View {
         // what's playing): Watch opens with its shelves instead of placeholders. Only when it came from this page's
         // TV: another TV's library may hold titles this one doesn't.
         let kept = client.flatMap { c in fleet.libraryFrom == c.sourceID ? fleet.library : nil }
-        let shown = home ?? (error == nil ? kept : nil)
+        // Never the last TV's answer once the remote has moved to another (its Continue Watching isn't this one's).
+        let mine = homeFrom == client?.sourceID ? home : nil
+        let shown = mine ?? (error == nil ? kept : nil)
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 28) {
                 #if os(iOS)
@@ -274,6 +278,12 @@ struct WatchView: View {
         // Read again at most every 10 minutes (Watch asks for its page every minute).
         if !force, sectionTitles[place] != nil, let at = sectionRead[place], Date().timeIntervalSince(at) < 600 { return }
         let source = c.sourceID
+        // Already being read (the page asks as it opens, every minute, and when the section or library changes):
+        // one read of the whole list at a time, unless asked for a fresh one.
+        let reading = source + "|" + place
+        if !force && readingSections.contains(reading) { return }
+        readingSections.insert(reading)
+        defer { readingSections.remove(reading) }
         var all: [Title] = []
         var offset = 0
         var read = false
@@ -302,7 +312,13 @@ struct WatchView: View {
     private func restoreSections() async {
         guard let c = client else { return }
         let source = c.sourceID
-        if loadedHub != source { loadedHub = source; sectionTitles = [:]; sectionRead = [:] }
+        if loadedHub != source {
+            loadedHub = source; sectionTitles = [:]; sectionRead = [:]
+            // Another TV's library: its error, what was hidden from its Continue Watching and its banner's page go too.
+            error = nil
+            removed = []
+            page = 0
+        }
         for place in ["movies", "shows"] where sectionTitles[place] == nil {
             guard let kept = await ShelfStore.shared.titles(source: source, place: place), !kept.isEmpty else { continue }
             // Meanwhile read afresh, or the remote moved to another TV.
@@ -1035,7 +1051,6 @@ struct TitleSheet: View {
     @State private var episodesNote: String?
     /// Why the title couldn't be read (with Try Again, instead of a spinner that never ends).
     @State private var failed: String?
-    @State private var marking = false
     #if os(macOS)
     /// How tall the sheet's contents are (its window follows them).
     @State private var macContentHeight: CGFloat = 0
@@ -1365,19 +1380,6 @@ struct TitleSheet: View {
         }
     }
 
-    private func mark(_ key: String, watched: Bool) {
-        marking = true
-        Task {
-            do {
-                guard let c = client else { throw TVError.notPaired }
-                try await c.markWatched([key], watched)
-                await load()
-                watchChanged()
-            } catch { fleet.show(error) }
-            marking = false
-        }
-    }
-
     private func loadEpisodes() async {
         guard let c = client, let d = details(c), let s = d.seasons?[safe: season(of: d)] else { return }
         // Another season: its episodes as they were last time (or none, never the last season's) while they're read.
@@ -1388,7 +1390,8 @@ struct TitleSheet: View {
         }
         episodesNote = nil
         loadingEpisodes = true
-        defer { loadingEpisodes = false }
+        // Not when another season was picked meanwhile: its own read is still going.
+        defer { if !Task.isCancelled { loadingEpisodes = false } }
         do {
             let list = try await c.episodes(show: d.id, season: s.id)
             guard !Task.isCancelled else { return }
@@ -1616,9 +1619,11 @@ struct LibraryGrid: View {
         .toolbar { filterMenu }
         #endif
         .task(id: "\(sort)|\(unwatched)|\(genre ?? "")|\(query)") {
-            try? await Task.sleep(nanoseconds: 200_000_000)
-            // Changed again while waiting (typing): only the newest choice is asked for.
-            guard !Task.isCancelled else { return }
+            // The first page at once; after that a moment's wait, so typing asks only for the newest choice.
+            if loaded || !items.isEmpty || failed != nil {
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                guard !Task.isCancelled else { return }
+            }
             await load(more: false)
         }
         .onDisappear { warming?.cancel() }

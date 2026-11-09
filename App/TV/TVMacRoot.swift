@@ -111,10 +111,3 @@ private struct TVWeatherFloat: View {
         .shadow(color: .black.opacity(0.4), radius: 10, y: 2)
     }
 }
-
-/// How many pages are open inside the current page (Settings' rows open pages).
-@Observable @MainActor
-final class TVNav {
-    static let shared = TVNav()
-    var depth = 0
-}

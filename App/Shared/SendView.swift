@@ -396,6 +396,9 @@ struct FilesView: View {
     @State private var failed: String?
     /// Waiting for "Delete" to be confirmed: nothing on the TV goes without asking (there's no bin to get it back).
     @State private var deleting: FileEntry?
+    /// Each folder opened gets a number: an answer for one opened before the last is dropped (tapping through
+    /// folders quickly never lands back in an earlier one).
+    @State private var opening = 0
 
     private var client: TVClient? { fleet.hubClient() }
     private var root: StorageRoot? { roots.first { path?.hasPrefix($0.path) == true } ?? roots.first }
@@ -722,16 +725,6 @@ struct FilesView: View {
         Button("Delete", role: .destructive) { deleting = f }
     }
 
-    private func icon(_ f: FileEntry) -> String {
-        f.dir ? "folder.fill" : f.isVideo ? "play.fill" : f.isImage ? "photo.fill" : f.isAudio ? "music.note" : f.ext == "apk" ? "shippingbox.fill" : "doc.fill"
-    }
-    private func color(_ f: FileEntry) -> Color {
-        f.dir ? .blue : f.isVideo ? .purple : f.isImage ? .teal : f.isAudio ? .pink : .gray
-    }
-    private func kind(_ f: FileEntry) -> String {
-        f.isVideo ? "Video" : f.isImage ? "Photo" : f.isAudio ? "Music" : f.ext.uppercased()
-    }
-
     private func act(_ op: @escaping () async throws -> Void) { Task { do { try await op() } catch { fleet.show(error) } } }
 
     /// [op] on the TV whose storage this is; says so when there's none, or when the TV says no.
@@ -767,9 +760,12 @@ struct FilesView: View {
     /// Opens folder [p]: the place moves only once the TV has answered with what's in it.
     private func open(_ p: String) {
         guard let c = client else { fleet.show(TVError.notPaired); return }
+        opening += 1
+        let mine = opening
         Task {
             do {
                 let l = try await c.list(p)
+                guard mine == opening else { return }
                 path = p
                 let list = filtered(l)
                 withAnimation(.snappy) {
@@ -778,6 +774,7 @@ struct FilesView: View {
                 }
                 failed = nil
             } catch {
+                guard mine == opening else { return }
                 if listing == nil { failed = error.localizedDescription } else { fleet.show(error) }
             }
         }

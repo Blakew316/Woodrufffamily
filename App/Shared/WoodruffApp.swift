@@ -494,14 +494,8 @@ struct MacRoot: View {
     private let home = SmartHome.shared
     private let nav = MacNav.shared
     private let layout = HomeLayout.shared
-    // Each group in the sidebar folds away (click its heading's arrow); remembered between launches.
-    @AppStorage("sidebar.tvs") private var showTVs = true
-    @AppStorage("sidebar.speakers") private var showSpeakers = false
-    @AppStorage("sidebar.lights") private var showLights = false
-    @AppStorage("sidebar.settings") private var showSettings = true
     @State private var palette = false
     @State private var query = ""
-    @State private var columns: NavigationSplitViewVisibility = .all
     /// How wide the page area is: the search field, the greeting and the thermostat get shorter as it narrows so
     /// everything stays in one row.
     @State private var width: CGFloat = 1000
@@ -802,26 +796,6 @@ struct MacRoot: View {
         }
         // Dragging the bar's empty space moves the window, like a title bar.
         .background { Color.clear.contentShape(Rectangle()).gesture(WindowDragGesture()) }
-    }
-}
-
-/// The sidebar's TVs, apart from the window's root so a change to the TVs redraws only these rows.
-private struct MacSidebarTVs: View {
-    @Environment(Fleet.self) private var fleet
-    let go: (String) -> Void
-
-    var body: some View {
-        ForEach(fleet.tvs) { tv in
-            HStack {
-                Text(tv.name)
-                Spacer()
-                if tv.needsAttention { Circle().fill(Palette.attention).frame(width: 7, height: 7) }
-            }
-            .foregroundStyle(tv.online ? .primary : .secondary)
-            .contentShape(Rectangle())
-            .tag("tv:\(tv.id)")
-            .simultaneousGesture(TapGesture().onEnded { go("tv:\(tv.id)") })
-        }
     }
 }
 

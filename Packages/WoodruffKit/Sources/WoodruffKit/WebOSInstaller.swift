@@ -49,15 +49,26 @@ public enum WebOSInstaller {
             let out = Pipe()
             p.standardOutput = out
             p.standardError = out
+            var input: FileHandle?
             if let stdin {
                 guard let h = try? FileHandle(forReadingFrom: stdin) else { cont.resume(throwing: TVError.badAnswer("Can't read the package")); return }
                 p.standardInput = h
+                input = h
             }
-            p.terminationHandler = { proc in
-                let text = String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-                cont.resume(returning: (proc.terminationStatus, text))
+            do { try p.run() } catch {
+                try? input?.close()
+                cont.resume(throwing: error)
+                return
             }
-            do { try p.run() } catch { cont.resume(throwing: error) }
+            // The output is read while ssh runs, not after: one that filled the pipe (64 KB) waited for ever to
+            // write the rest, and never exited. The package file is closed once it's done (it used to stay open).
+            let handle = input
+            DispatchQueue.global(qos: .userInitiated).async {
+                let data = out.fileHandleForReading.readDataToEndOfFile()
+                p.waitUntilExit()
+                try? handle?.close()
+                cont.resume(returning: (p.terminationStatus, String(decoding: data, as: UTF8.self)))
+            }
         }
     }
 

@@ -192,12 +192,22 @@ enum GoogleDrive {
 
     nonisolated static func time(_ s: String?) -> Double? {
         guard let s else { return nil }
+        if let d = fractionalTime.date(from: s) { return d.timeIntervalSince1970 }
+        return wholeTime.date(from: s)?.timeIntervalSince1970
+    }
+
+    /// Made once (a formatter is slow to make, and every file read from Drive is dated with one). ISO8601DateFormatter
+    /// may be used from any thread.
+    nonisolated(unsafe) private static let fractionalTime: ISO8601DateFormatter = {
         let f = ISO8601DateFormatter()
         f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let d = f.date(from: s) { return d.timeIntervalSince1970 }
+        return f
+    }()
+    nonisolated(unsafe) private static let wholeTime: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
         f.formatOptions = [.withInternetDateTime]
-        return f.date(from: s)?.timeIntervalSince1970
-    }
+        return f
+    }()
 
     /// A Drive API GET, with a fresh token and one retry after a 401.
     static func get(_ url: URL) async throws -> [String: Any] {

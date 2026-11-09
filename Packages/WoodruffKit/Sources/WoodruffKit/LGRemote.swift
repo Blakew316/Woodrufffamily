@@ -53,7 +53,11 @@ public actor LGRemote {
         self.session = URLSession(configuration: .ephemeral, delegate: TrustTVCertificate(host: host), delegateQueue: nil)
     }
 
-    public var isConnected: Bool { socket != nil && registered }
+    /// A session holds its delegate (and its sockets) until it's invalidated: without this, every remote replaced in
+    /// `Fleet.lg(for:)` (a new sign-in, a new address) left its session and connections behind for good.
+    deinit {
+        session.invalidateAndCancel()
+    }
 
     /// Connects and registers. Returns the client key to keep (new or the same).
     @discardableResult
@@ -169,14 +173,6 @@ public actor LGRemote {
             _ = try await call("ssap://com.webos.service.tv.power/turnOffScreen", ["standbyMode": .string("active")])
         }
     }
-    public func screenOn() async throws {
-        do {
-            _ = try await call("ssap://com.webos.service.tvpower/power/turnOnScreen", ["standbyMode": .string("active")])
-        } catch let e as TVError where e.status == 400 {
-            _ = try await call("ssap://com.webos.service.tv.power/turnOnScreen", ["standbyMode": .string("active")])
-        }
-    }
-    public func toast(_ message: String) async throws { _ = try await call("ssap://system.notifications/createToast", ["message": .string(message)]) }
 
     public func launch(_ appId: String, params: [String: JSONValue]? = nil) async throws {
         var p: [String: JSONValue] = ["id": .string(appId)]
@@ -189,9 +185,6 @@ public actor LGRemote {
     public func insertText(_ text: String, replace: Bool = false) async throws {
         _ = try await call("ssap://com.webos.service.ime/insertText", ["text": .string(text), "replace": .number(replace ? 1 : 0)])
     }
-    public func deleteCharacters(_ n: Int) async throws {
-        _ = try await call("ssap://com.webos.service.ime/deleteCharacters", ["count": .number(Double(n))])
-    }
     public func sendEnter() async throws { _ = try await call("ssap://com.webos.service.ime/sendEnterKey") }
 
     public func apps() async throws -> [App] {
@@ -200,10 +193,6 @@ public actor LGRemote {
             guard let id = a["id"]?.string, let title = a["title"]?.string else { return nil }
             return App(id: id, title: title, icon: a["icon"]?.string.flatMap(URL.init(string:)))
         }.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending } ?? []
-    }
-
-    public func foregroundApp() async throws -> String? {
-        try await call("ssap://com.webos.applicationManager/getForegroundAppInfo")["appId"]?.string
     }
 
     public func inputs() async throws -> [App] {
@@ -220,9 +209,6 @@ public actor LGRemote {
         guard let r = try? await call("ssap://com.webos.service.connectionmanager/getinfo") else { return nil }
         return r["wiredInfo"]?["macAddress"]?.string ?? r["wifiInfo"]?["macAddress"]?.string
     }
-
-    public func systemInfo() async throws -> JSONValue { try await call("ssap://system/getSystemInfo") }
-    public func softwareInfo() async throws -> JSONValue { try await call("ssap://com.webos.service.update/getCurrentSWInformation") }
 
     /// Any SSAP request (`ssap://…`).
     public func call(_ uri: String, _ payload: [String: JSONValue] = [:]) async throws -> JSONValue {

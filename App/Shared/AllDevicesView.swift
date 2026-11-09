@@ -16,7 +16,9 @@ struct AllDevicesView: View {
     @State private var miniTV: TitleRef?
     @State private var confirmUnlock: HomeDevice?
     /// When each tile was last tapped: its device really changing within a few seconds of that is felt (iPhone).
-    @State private var tappedAt: [String: Date] = [:]
+    /// A plain class kept in `@State`: a tap doesn't redraw every room for it.
+    @State private var taps = TapLog()
+    private final class TapLog { var at: [String: Date] = [:] }
     /// Settings → General: devices that have no room, under Other at the end (off unless asked for).
     @AppStorage("allDevices.showOther") private var showOther = false
 
@@ -227,7 +229,7 @@ struct AllDevicesView: View {
         #if os(iOS) || os(tvOS)
         // A second, firmer tap once the device has really changed (not when someone else changed it).
         .sensoryFeedback(.impact(weight: .medium), trigger: f.on) { _, _ in
-            tappedAt[item.id].map { Date().timeIntervalSince($0) < 8 } ?? false
+            taps.at[item.id].map { Date().timeIntervalSince($0) < 8 } ?? false
         }
         #endif
         #if os(tvOS)
@@ -330,7 +332,7 @@ struct AllDevicesView: View {
         #if os(iOS) || os(tvOS)
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
         #endif
-        tappedAt[item.id] = Date()
+        taps.at[item.id] = Date()
         switch item {
         case .tv(let tv):
             // A small remote for it (waking it if it's off).

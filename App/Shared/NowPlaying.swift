@@ -1,4 +1,5 @@
 import SwiftUI
+import ImageIO
 import WoodruffKit
 
 // What a TV is playing, shown as it plays: the title's artwork, a progress bar that moves every second,
@@ -303,6 +304,8 @@ struct NowPlayingSheet: View {
     @State private var showScreen = false
     @State private var screen: PlatformImage?
     @State private var screenNote: String?
+    /// The TV [screen] is of.
+    @State private var screenOf: String?
 
     var body: some View {
         let tv = tvID.flatMap { fleet.tv($0) } ?? fleet.selected
@@ -484,16 +487,41 @@ struct NowPlayingSheet: View {
 
     private func screenLoop(_ tv: FleetTV?) async {
         guard showScreen, let tv else { return }
+        // Another TV's screen never shows as this one's while its first grab comes.
+        if screenOf != tv.id { screen = nil; screenNote = nil; screenOf = tv.id }
         while !Task.isCancelled {
             var wait: UInt64 = 800_000_000
             if let c = fleet.client(for: tv) {
-                do { screen = PlatformImage(data: try await c.screen()); screenNote = nil } catch {
+                do {
+                    let data = try await c.screen()
+                    // Decoded off the main thread (it comes about every second), ready to draw.
+                    let img = await Task.detached(priority: .userInitiated) { Self.decode(data) }.value
+                    guard !Task.isCancelled else { return }
+                    screen = img
+                    screenNote = nil
+                } catch {
+                    if Task.isCancelled { return }
                     screenNote = error.localizedDescription
                     wait = 3_000_000_000
                 }
             }
             try? await Task.sleep(nanoseconds: wait)
         }
+    }
+
+    /// A screen grab decoded now (not when it's first drawn, on the main thread).
+    nonisolated private static func decode(_ data: Data) -> PlatformImage? {
+        guard let src = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary) else { return nil }
+        let options: [CFString: Any] = [kCGImageSourceCreateThumbnailFromImageAlways: true,
+                                        kCGImageSourceCreateThumbnailWithTransform: true,
+                                        kCGImageSourceShouldCacheImmediately: true,
+                                        kCGImageSourceThumbnailMaxPixelSize: 1920]
+        guard let cg = CGImageSourceCreateThumbnailAtIndex(src, 0, options as CFDictionary) else { return nil }
+        #if os(macOS)
+        return NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
+        #else
+        return UIImage(cgImage: cg)
+        #endif
     }
 }
 

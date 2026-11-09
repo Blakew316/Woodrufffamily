@@ -149,7 +149,7 @@ final class NestAlerts {
         return name
     }
 
-    private func call(_ method: String, _ path: String, _ body: [String: Any]? = nil, timeout: Double = 20) async throws -> [String: Any] {
+    private func call(_ method: String, _ path: String, _ body: [String: Any]? = nil, timeout: Double = 20, retried: Bool = false) async throws -> [String: Any] {
         var r = URLRequest(url: URL(string: Self.pubsub + path)!, timeoutInterval: timeout + 10)
         r.httpMethod = method
         r.setValue("Bearer \(try await NestCameras.shared.accessToken())", forHTTPHeaderField: "Authorization")
@@ -161,6 +161,12 @@ final class NestAlerts {
         let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
         let json = (try? JSONSerialization.jsonObject(with: d) as? [String: Any]) ?? [:]
         guard (200..<300).contains(code) else {
+            // The sign-in ran out early (Google ended it, or another device's renewal replaced it): renew it once and
+            // ask again, rather than failing every listen until the kept one's time is up.
+            if code == 401, !retried {
+                Keychain.set(nil, for: "nest.access")
+                return try await call(method, path, body, timeout: timeout, retried: true)
+            }
             let e = json["error"] as? [String: Any]
             let status = e?["status"] as? String ?? "\(code)"
             if code == 409 { throw OAuthRelay.Failure.refused("ALREADY_EXISTS") }
@@ -288,7 +294,13 @@ final class NestAlerts {
             if !quiet { try? await Task.sleep(nanoseconds: 15_000_000_000) }
             let shown = await Self.alreadyShown(id: id, key: short)
             let file = await CameraEventMedia.fetch(camera: camera, eventID: event, clipURL: clip, key: short, timeout: shown ? 10 : 8)
-            if let file, let jpeg = await CameraEventMedia.still(file) {
+            // The widget's still, and (for an alert shown here) where who or what was seen is, from one decode.
+            var look: (still: Data?, focus: CGRect?) = (nil, nil)
+            if let file {
+                if shown { look.still = await CameraEventMedia.still(file) }
+                else { look = await CameraEventMedia.stillAndFocus(file, title: title) }
+            }
+            if let jpeg = look.still {
                 PhoneWidgetShare.saveCamera(id: camera, name: body, doorbell: doorbell, jpeg: jpeg)
                 WidgetCenter.shared.reloadTimelines(ofKind: PhoneWidgetShare.tvsCamerasKind); WidgetCenter.shared.reloadTimelines(ofKind: PhoneWidgetShare.doorbellKind)
             }
@@ -296,10 +308,12 @@ final class NestAlerts {
                 PushRelay.log.notice("alert for \(body, privacy: .public) already shown from the Mac (not shown twice)")
                 return
             }
-            if let file {
-                // Its small picture on who or what was seen; expanded, the whole scene.
-                let focus = await CameraEventMedia.focus(file, title: title)
-                if let a = CameraEventMedia.attachment(file, focus: focus) { c.attachments = [a] }
+            // Its small picture on who or what was seen; expanded, the whole scene.
+            if let file, let a = CameraEventMedia.attachment(file, focus: look.focus) { c.attachments = [a] }
+            // The Mac's push may have come during the fetch: not shown twice.
+            if await Self.alreadyShown(id: id, key: short) {
+                PushRelay.log.notice("alert for \(body, privacy: .public) came from the Mac meanwhile (not shown twice)")
+                return
             }
             Notifier.deliver(c, id: id)
         }

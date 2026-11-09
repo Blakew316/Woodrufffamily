@@ -46,8 +46,15 @@ enum SharedStore {
     /// Made once (it was made afresh on every save and load, several times a minute while anything played).
     static let defaults: UserDefaults? = groupID.flatMap { UserDefaults(suiteName: $0) }
 
+    /// Keys in a fixed order, so the same snapshot always makes the same bytes and an unchanged one isn't written again.
+    private static let encoder: JSONEncoder = {
+        let e = JSONEncoder()
+        e.outputFormatting = [.sortedKeys]
+        return e
+    }()
+
     static func save(_ s: Snapshot) {
-        guard let d = defaults, let data = try? JSONEncoder().encode(s) else { return }
+        guard let d = defaults, let data = try? encoder.encode(s) else { return }
         if d.data(forKey: "snapshot") != data { d.set(data, forKey: "snapshot") }
     }
 

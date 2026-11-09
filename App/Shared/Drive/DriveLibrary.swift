@@ -577,7 +577,7 @@ final class DriveLibrary: WatchSource {
         let genres = counts.sorted { $0.value != $1.value ? $0.value > $1.value : $0.key < $1.key }.map(\.key)
         let page = list.dropFirst(offset).prefix(max(1, min(120, limit)))
         return try decode(["state": "ready", "count": list.count, "offset": offset, "items": page.map(titleJSON),
-                           "genres": genres, "rated": (saved.movies + saved.shows).contains { $0.rating != nil }] as [String: Any])
+                           "genres": genres, "rated": saved.movies.contains { $0.rating != nil } || saved.shows.contains { $0.rating != nil }] as [String: Any])
     }
 
     /// A title's names for searching and sorting, worked out again only when its title changes.

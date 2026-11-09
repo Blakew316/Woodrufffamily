@@ -174,6 +174,8 @@ final class HomeLayout {
     }
 
     func reset() {
+        // Saved once, at the end (not once for each part as it's set).
+        applying = true
         sections = Self.allSections
         hiddenSections = []
         order = [:]
@@ -181,6 +183,8 @@ final class HomeLayout {
         groupByRoom = true
         boards = [:]
         spans = [:]
+        applying = false
+        save()
     }
 
     // MARK: Arranged tabs

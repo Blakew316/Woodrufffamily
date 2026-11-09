@@ -44,7 +44,8 @@ public struct TVConnection: Codable, Hashable, Sendable {
     /// `path` on this TV with `query`, plus the key (for URLs handed to image views and players).
     public func url(_ path: String, _ query: [String: String?] = [:], withKey: Bool = true) -> URL {
         var c = URLComponents(url: base, resolvingAgainstBaseURL: false)!
-        c.path = path
+        // With a host, a path that doesn't start with "/" makes `url` nil (and the force unwrap below crash).
+        c.path = path.isEmpty || path.hasPrefix("/") ? path : "/" + path
         var items = query.compactMap { k, v in v.map { URLQueryItem(name: k, value: $0) } }.sorted { $0.name < $1.name }
         if withKey { items.append(URLQueryItem(name: "k", value: key)) }
         c.queryItems = items.isEmpty ? nil : items
@@ -143,11 +144,6 @@ public struct TVTransport: Sendable {
     @discardableResult
     public func post(_ path: String, _ body: [String: Any?] = [:], timeout: TimeInterval = 10) async throws -> JSONValue {
         try await post(path, body, as: JSONValue.self, timeout: timeout)
-    }
-
-    public func text(_ path: String, _ query: [String: String?] = [:]) async throws -> String {
-        let (d, _) = try await data("GET", path, query: query)
-        return String(decoding: d, as: UTF8.self)
     }
 
     func decode<T: Decodable>(_ d: Data) throws -> T {

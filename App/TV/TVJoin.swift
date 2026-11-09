@@ -40,19 +40,46 @@ final class TVJoin {
         l.newConnectionHandler = { [weak self] c in
             Task { @MainActor in self?.serve(c) }
         }
-        l.stateUpdateHandler = { [weak self] state in
+        l.stateUpdateHandler = { [weak self, weak l] state in
             Task { @MainActor in
-                guard let self, case .ready = state, let port = self.listener?.port?.rawValue, let ip = Self.address() else { return }
-                self.base = "http://\(ip):\(port)"
-                var c = URLComponents()
-                c.scheme = "woodruff"; c.host = "join"
-                c.queryItems = [URLQueryItem(name: "u", value: self.base), URLQueryItem(name: "t", value: self.token)]
-                self.link = c.url
-                self.announce()
+                guard let self, let l, self.listener === l else { return }
+                switch state {
+                case .ready:
+                    self.ready()
+                case .failed:
+                    // The Wi‑Fi went away or the Apple TV slept: listen (and be announced) again a moment later,
+                    // instead of never again.
+                    l.cancel()
+                    self.listener = nil
+                    try? await Task.sleep(nanoseconds: 5_000_000_000)
+                    self.start()
+                default:
+                    break
+                }
             }
         }
         l.start(queue: .main)
         listener = l
+    }
+
+    /// The listener is up: its address for the QR code and the announcement. Without one yet (the Apple TV still
+    /// joining the Wi‑Fi at launch), looked for again every few seconds, so the QR code still comes.
+    private func ready(attempt: Int = 0) {
+        guard let port = listener?.port?.rawValue else { return }
+        guard let ip = Self.address() else {
+            guard attempt < 100 else { return }
+            Task {
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                self.ready(attempt: attempt + 1)
+            }
+            return
+        }
+        base = "http://\(ip):\(port)"
+        var c = URLComponents()
+        c.scheme = "woodruff"; c.host = "join"
+        c.queryItems = [URLQueryItem(name: "u", value: base), URLQueryItem(name: "t", value: token)]
+        link = c.url
+        announce()
     }
 
     /// Announced on the Wi‑Fi with what the apps show: its name, build, address, and which family it's in (the
@@ -220,6 +247,9 @@ struct ConnectPhoneCard: View {
         f.message = Data(text.utf8)
         f.correctionLevel = "M"
         guard let out = f.outputImage?.transformed(by: CGAffineTransform(scaleX: 10, y: 10)) else { return nil }
-        return CIContext().createCGImage(out, from: out.extent)
+        return context.createCGImage(out, from: out.extent)
     }
+
+    /// Made once: a Core Image context is costly to set up, and the card is drawn again whenever what it says changes.
+    private static let context = CIContext()
 }
