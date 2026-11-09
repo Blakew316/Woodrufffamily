@@ -185,12 +185,14 @@ final class HomeKitLights: NSObject, HMHomeManagerDelegate, HMHomeDelegate, HMAc
         }
     }
 
-    /// Several values arrive at once; show them together.
+    /// Several values arrive at once; show them together. Within 150 ms of the first, not of the last: an
+    /// accessory that reports all the time (a plug's power reading) used to put the showing off for as long as it
+    /// kept reporting, so nothing else changed on screen either.
     private func publishSoon() {
-        pending?.cancel()
+        guard pending == nil else { return }
         pending = Task {
             try? await Task.sleep(nanoseconds: 150_000_000)
-            guard !Task.isCancelled else { return }
+            pending = nil
             publish()
         }
     }

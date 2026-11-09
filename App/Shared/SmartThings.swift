@@ -86,14 +86,6 @@ final class SmartThings {
         } catch { self.error = error.localizedDescription }
     }
 
-    /// A Personal Access Token from account.smartthings.com/tokens (new ones last 24 hours; good for a try).
-    func useToken(_ token: String) async {
-        let t = token.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !t.isEmpty else { return }
-        Keychain.set(t, for: "st.token")
-        await refresh(full: true)
-    }
-
     func signOut() {
         for k in ["st.access", "st.refresh", "st.expires", "st.token"] { Keychain.set(nil, for: k) }
         devices = []
