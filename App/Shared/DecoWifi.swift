@@ -203,9 +203,12 @@ final class DecoWifi {
                 // The main Deco is restarting: it can't answer, and that's expected. Show every unit as down
                 // (the mesh goes with it) until it's back.
                 seenDown.insert(main.id)
-                for i in nodes.indices { nodes[i].online = false; nodes[i].clients = 0 }
-                clients = []
-                self.error = nil
+                // Written once, and only when it changes (each write redraws everything that shows the Wi‑Fi).
+                var down = nodes
+                for i in down.indices { down[i].online = false; down[i].clients = 0 }
+                if down != nodes { nodes = down }
+                if !clients.isEmpty { clients = [] }
+                if self.error != nil { self.error = nil }
             } else if Fleet.shared.atHome {
                 self.error = error.localizedDescription
             }
@@ -278,8 +281,10 @@ final class DecoWifi {
         error = nil
         restarts[node.id] = Date()
         seenDown = seenDown.subtracting([node.id])
-        if let i = nodes.firstIndex(where: { $0.id == node.id }) { nodes[i].online = false; nodes[i].clients = 0 }
-        if node.main { for i in nodes.indices { nodes[i].online = false } }
+        var down = nodes
+        if let i = down.firstIndex(where: { $0.id == node.id }) { down[i].online = false; down[i].clients = 0 }
+        if node.main { for i in down.indices { down[i].online = false } }
+        if down != nodes { nodes = down }
         // Look every 10 s while anything is restarting, so it shows coming back as soon as it does.
         if restartWatch == nil {
             restartWatch = Task { [weak self] in
@@ -527,8 +532,10 @@ struct WifiView: View {
                         }
                     }
                 }
+                // Each Deco's devices, sorted out once rather than the whole list again for each Deco.
+                let byNode = Dictionary(grouping: shownClients, by: { $0.node ?? "" })
                 ForEach(deco.nodes) { n in
-                    let list = shownClients.filter { $0.node == n.id }
+                    let list = byNode[n.id] ?? []
                     if !list.isEmpty {
                         Section("On \(n.name) · \(list.count)") {
                             ForEach(list) { c in

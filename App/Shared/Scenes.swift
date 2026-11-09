@@ -120,22 +120,23 @@ enum SceneRunner {
         let off = fleet.tvs.filter { tv in
             tv.online && !tv.isUnpaired && !s.tvsOn.contains(tv.id) && (s.allTVsOff || s.tvsOff.contains(tv.id))
         }
-        for tv in off {
-            if let p = await turnOff(tv) { problems.append(p) }
-        }
+        problems += await turnOffAll(off).problems
 
         // Lights
         if !s.lights.isEmpty {
             if home.lights.isEmpty { try? await Task.sleep(nanoseconds: 1_500_000_000) }   // just started: a moment to find them
+            // Every light's room worked out once (not looked up afresh for each light in each room).
+            let roomOf = home.roomIndex
             for (room, level) in s.lights.sorted(by: { $0.key < $1.key }) {
                 let list = room.isEmpty ? home.lights : home.lights.filter { l in
-                    home.room(of: l.id).map { $0.caseInsensitiveCompare(room) == .orderedSame } ?? false
+                    roomOf[l.id].map { $0.caseInsensitiveCompare(room) == .orderedSame } ?? false
                 }
                 for l in list where !l.isOffline {
                     if level <= 0 {
                         if l.on { home.setOn(l, false) }
                     } else {
-                        if !l.on { home.setOn(l, true) }
+                        // One change: a brightness turns a light that's off on at that level (a separate "on" first
+                        // raced it, and was a second command to every light).
                         home.setBrightness(l, min(100, level))
                     }
                 }
@@ -168,6 +169,23 @@ enum SceneRunner {
             await fleet.refresh()
         }
         return problems
+    }
+
+    /// Turns every one of [tvs] off at once (one after another, a house of TVs took seconds), in their order: the
+    /// names of those that went off, and what went wrong with the rest.
+    static func turnOffAll(_ tvs: [FleetTV]) async -> (done: [String], problems: [String]) {
+        var results: [Int: String?] = [:]
+        await withTaskGroup(of: (Int, String?).self) { group in
+            for (i, tv) in tvs.enumerated() {
+                group.addTask { (i, await turnOff(tv)) }
+            }
+            for await (i, p) in group { results[i] = p }
+        }
+        var done: [String] = [], problems: [String] = []
+        for (i, tv) in tvs.enumerated() {
+            if let p = results[i] ?? nil { problems.append(p) } else { done.append(tv.name) }
+        }
+        return (done, problems)
     }
 
     /// Turns [tv] off: LG TVs through their own remote connection, the others through the TV's server.
@@ -395,7 +413,8 @@ struct SceneEditor: View {
 
     /// The rooms that have lights, by name.
     private var rooms: [String] {
-        Array(Set(home.lights.compactMap { home.room(of: $0.id) })).sorted()
+        let roomOf = home.roomIndex
+        return Array(Set(home.lights.compactMap { roomOf[$0.id] })).sorted()
     }
 
     private func level(_ room: String) -> Binding<Int?> {
@@ -487,11 +506,7 @@ struct TurnOffTVsIntent: AppIntent {
         await fleet.refresh()
         let list = fleet.tvs.filter { t in !t.isUnpaired && (tv.map { $0.id == t.id } ?? t.online) }
         guard !list.isEmpty else { return .result(dialog: tv == nil ? "Every TV is already off." : "I can’t find \(tv?.name ?? "that TV").") }
-        var done: [String] = []
-        var problems: [String] = []
-        for t in list {
-            if let p = await SceneRunner.turnOff(t) { problems.append(p) } else { done.append(t.name) }
-        }
+        let (done, problems) = await SceneRunner.turnOffAll(list)
         var said: [String] = []
         if !done.isEmpty { said.append("Turned off \(done.joined(separator: ", ")).") }
         said += problems

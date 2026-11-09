@@ -25,13 +25,13 @@ final class AccessoryStore {
     // Each source's devices start as it last said (kept for the next launch), so Home shows every device at once and
     // is drawn once, rather than again as each source answers. The sources only set these when something changed.
     var fromHome: [HomeDevice] = SavedDevices.load(SavedDevices.home, signedIn: true) {
-        didSet { changed(SavedDevices.home, fromHome) }
+        didSet { changed(SavedDevices.home, fromHome, was: oldValue) }
     }
     var fromSmartThings: [HomeDevice] = SavedDevices.load(SavedDevices.smartThings, signedIn: Keychain.get("st.refresh") != nil || Keychain.get("st.token") != nil) {
-        didSet { changed(SavedDevices.smartThings, fromSmartThings) }
+        didSet { changed(SavedDevices.smartThings, fromSmartThings, was: oldValue) }
     }
     var fromDreo: [HomeDevice] = SavedDevices.load(SavedDevices.dreo, signedIn: Keychain.get("dreo.email") != nil && Keychain.get("dreo.password") != nil) {
-        didSet { changed(SavedDevices.dreo, fromDreo) }
+        didSet { changed(SavedDevices.dreo, fromDreo, was: oldValue) }
     }
     /// Carries out a change to an Apple Home accessory (set by the iPhone app).
     @ObservationIgnored var homeControl: ((HomeDevice, DeviceCommand) -> Void)?
@@ -107,9 +107,18 @@ final class AccessoryStore {
     /// day says when it was last seen instead of only "Not Responding".
     @ObservationIgnored private var seenAt: [String: Double] = Saved.load("deviceSeenAt", as: [String: Double].self) ?? [:]
     @ObservationIgnored private var seenSaved = Date.distantPast
+    /// The sources that have reported since the app opened (what came before was only kept from last time).
+    @ObservationIgnored private var heardFrom: Set<String> = []
 
-    private func noteSeen(_ list: [HomeDevice]) {
+    /// [was]: what the source said before this, which still held until now (a source only reports a change, so a
+    /// device that answered for days without changing was otherwise noted only days ago, and showed as "Last Seen"
+    /// days back the moment it dropped off).
+    private func noteSeen(_ key: String, _ list: [HomeDevice], was: [HomeDevice]) {
         let now = Date()
+        if heardFrom.contains(key) {
+            for d in was where d.reachable { seenAt[d.id] = now.timeIntervalSince1970 }
+        }
+        heardFrom.insert(key)
         for d in list where d.reachable { seenAt[d.id] = now.timeIntervalSince1970 }
         // Written now and then (a day is what matters, not the minute).
         if now.timeIntervalSince(seenSaved) > 600 {
@@ -133,8 +142,8 @@ final class AccessoryStore {
         return "Last Seen " + (week ? at.formatted(.dateTime.weekday(.wide)) : at.formatted(.dateTime.month(.abbreviated).day()))
     }
 
-    private func changed(_ key: String, _ list: [HomeDevice]) {
-        noteSeen(list)
+    private func changed(_ key: String, _ list: [HomeDevice], was: [HomeDevice]) {
+        noteSeen(key, list, was: was)
         make(SmartHome.shared.names)
         zones()
         guard kept[key] != list, !Demo.isOn else { return }

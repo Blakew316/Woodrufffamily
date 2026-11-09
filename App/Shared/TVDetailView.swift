@@ -339,11 +339,6 @@ struct TVDetailView: View {
         if let at = report?.at { return "Checked \(relative(at))" + (report?.via.map { " · via \($0)" } ?? "") }
         return "Asking \(tv.name)…"
     }
-    private func verdictSymbol(_ tv: FleetTV, _ n: Int) -> String {
-        if !tv.online && tv.link != "refused" { return "moon.zzz.fill" }
-        if tv.link == "refused" || n > 0 { return "exclamationmark.triangle.fill" }
-        return "checkmark.circle.fill"
-    }
     private func verdictColor(_ tv: FleetTV, _ n: Int) -> Color {
         if !tv.online && tv.link != "refused" { return .gray }
         if (tv.link == "refused" && !tv.alertsHidden) || n > 0 { return .orange }

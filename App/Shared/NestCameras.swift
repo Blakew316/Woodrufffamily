@@ -237,7 +237,19 @@ final class NestCameras {
         return json
     }
 
+    /// A look at Google's camera list already under way: everyone asking meanwhile waits for it (one request, not one
+    /// each from the launch, the five-minute look, a synced sign-in and a pull to refresh).
+    @ObservationIgnored private var loading: Task<Void, Never>?
+
     func load() async {
+        if let l = loading { await l.value; return }
+        let t = Task { await self.loadOnce() }
+        loading = t
+        await t.value
+        loading = nil
+    }
+
+    private func loadOnce() async {
         // Sign-ins can arrive from another device (settings sync): look again.
         let signedIn = Keychain.get("nest.refresh") != nil
         if connected != signedIn { connected = signedIn }
@@ -423,15 +435,31 @@ final class CameraStreams {
     @ObservationIgnored private var letGo = false
     /// iPhone: the tiles' streams paused while a camera is open over them.
     @ObservationIgnored private var heldBack: [String] = []
+    /// How many tiles and big views show each camera now (only those are started again on coming back).
+    @ObservationIgnored private var shownCount: [String: Int] = [:]
 
     /// Lets every stream go and forgets them (signed out).
     func reset() {
+        idle?.cancel(); idle = nil
+        #if os(macOS)
+        warming?.cancel(); warming = nil
+        warmed = []
+        // The off-screen window lets go of their pictures.
+        for id in pinned { stopKeeping(id) }
+        #endif
         for p in players.values { p.close() }
         players = [:]
         status = [:]
         watching = 0
+        shownCount = [:]
+        heldBack = []
+        askedAt = [:]
+        pinned = []
         expanded = nil
     }
+
+    /// Whether a tile or the big view shows [id] now.
+    private func isShown(_ id: String) -> Bool { (shownCount[id] ?? 0) > 0 }
 
     private static let stillsFolder: URL = {
         let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("CameraStills", isDirectory: true)
@@ -537,6 +565,7 @@ final class CameraStreams {
     func show(_ cam: NestCameras.Camera) {
         if status[cam.id] != "Live", askedAt[cam.id] == nil { askedAt[cam.id] = Date() }
         watching += 1
+        shownCount[cam.id, default: 0] += 1
         idle?.cancel(); idle = nil
         letGo = false
         let p = player(cam)
@@ -559,7 +588,7 @@ final class CameraStreams {
                 p.pause()
                 status[c.id] = "Offline"
             } else if !was {
-                if watching > 0 { p.start() } else { status[c.id] = "Paused" }
+                if isShown(c.id) || pinned.contains(c.id) { p.start() } else { status[c.id] = "Paused" }
             }
         }
     }
@@ -581,7 +610,7 @@ final class CameraStreams {
         let back = heldBack
         heldBack = []
         guard watching > 0 else { return }
-        for k in back { if let p = players[k], p.camera.online { p.start() } }
+        for k in back { if let p = players[k], p.camera.online, isShown(k) || pinned.contains(k) { p.start() } }
     }
 
     #if os(macOS)
@@ -663,8 +692,12 @@ final class CameraStreams {
     }
     #endif
 
-    /// One went off screen; if nothing is watched for two minutes, the streams are let go.
-    func hide() {
+    /// One went off screen ([id]: the camera it showed); if nothing is watched for two minutes, the streams are let go.
+    func hide(_ id: String? = nil) {
+        if let id {
+            let n = (shownCount[id] ?? 0) - 1
+            shownCount[id] = n > 0 ? n : nil
+        }
         watching = max(0, watching - 1)
         guard watching == 0 else { return }
         letGoSoon(after: 120)
@@ -684,9 +717,14 @@ final class CameraStreams {
         // Away more than a minute: iOS froze the streams, so start them fresh.
         let long = backgroundAt.map { $0.timeIntervalSinceNow < -60 } ?? false
         backgroundAt = nil
+        // Streams iOS froze that nothing shows now are let go, so each starts fresh when it's shown again.
+        if long { for (k, p) in players where p.isRunning && !pinned.contains(k) && !grabbing.contains(k) && !isShown(k) { p.pause() } }
         guard watching > 0 else { return }
-        // One Vehicle Alerts kept playing isn't interrupted.
-        for (k, p) in players where p.camera.online { if long && !pinned.contains(k) { p.restart() } else { p.start() } }
+        // Only the cameras on screen (not every stream opened since launch, nor the tiles paused behind an open
+        // camera); one Vehicle Alerts kept playing isn't interrupted.
+        for (k, p) in players where p.camera.online && !heldBack.contains(k) && (isShown(k) || pinned.contains(k)) {
+            if long && !pinned.contains(k) { p.restart() } else { p.start() }
+        }
     }
 
     private func letGoSoon(after seconds: Double) {
@@ -835,7 +873,7 @@ struct LiveCameraTile: View, Equatable {
         let wanted = appeared && ready && camera.webRTC && (!inBoard || visible || CameraStreams.isImportant(camera))
         guard wanted != watching else { return }
         watching = wanted
-        if wanted { streams.show(camera) } else { streams.hide() }
+        if wanted { streams.show(camera) } else { streams.hide(camera.id) }
     }
 
     /// What the tile says over its picture when it isn't simply live.
@@ -943,7 +981,7 @@ struct CameraLiveView: View {
             player.setMuted(true)
             if streams.replay?.camera == camera.id { streams.replay = nil }
             if streams.expanded == camera.id { streams.expanded = nil }
-            streams.hide()
+            streams.hide(camera.id)
             streams.unfocus()
         }
     }
@@ -1274,7 +1312,7 @@ final class LivePlayer: NSObject, WKNavigationDelegate {
         guard running else { return }
         running = false
         live = false
-        work?.cancel(); renew?.cancel(); nativeWatch?.cancel()
+        work?.cancel(); renew?.cancel(); nativeWatch?.cancel(); stills?.cancel()
         session = nil
         if usingNative { native.stop() } else { web.evaluateJavaScript("stop()") }
     }

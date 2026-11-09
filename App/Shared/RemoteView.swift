@@ -305,7 +305,8 @@ struct RemoteView: View {
         guard fleet.isActive else { return }
         while !Task.isCancelled {
             if !all, let t = tv, t.online, let c = fleet.client(for: t), let s = try? await c.typeField() {
-                withAnimation(.snappy) { field = s }
+                // Only a change redraws the remote (it's asked every 2 seconds).
+                if s != field { withAnimation(.snappy) { field = s } }
                 // A text box just opened on the TV: bring the keyboard up (once per text box).
                 let key = s.field.map { "\(t.id)-\($0.id)" }
                 if let key, key != lastFieldKey, !typing { typing = true; okTicks += 1 }
@@ -352,6 +353,9 @@ struct Clickpad: View {
     @State private var touch: CGPoint?
     @State private var swiped = false
     @State private var bumps = 0
+    /// A finger is on the pad. Back to false by itself when the system takes the touch away (a sheet, a call), which
+    /// never ends the gesture: the hold then stops, and the next touch starts clean.
+    @GestureState private var touching = false
 
     var body: some View {
         ZStack {
@@ -387,6 +391,7 @@ struct Clickpad: View {
         .contentShape(Circle())
         .gesture(
             DragGesture(minimumDistance: 0)
+                .updating($touching) { _, state, _ in state = true }
                 .onChanged { v in
                     withAnimation(.interactiveSpring(response: 0.18)) { touch = v.location }
                     if !began {
@@ -425,6 +430,16 @@ struct Clickpad: View {
                     }
                 }
         )
+        .onChange(of: touching) { _, now in
+            guard !now else { return }
+            // After the gesture's own end has had its turn: only a touch taken away is left to tidy up.
+            Task { @MainActor in
+                guard began else { return }
+                hold?.cancel()
+                withAnimation(.easeOut(duration: 0.25)) { touch = nil }
+                pressed = nil; began = false; held = false; swiped = false
+            }
+        }
         .onDisappear { hold?.cancel(); pressed = nil; began = false; held = false; swiped = false; touch = nil }
         .accessibilityElement()
         .accessibilityLabel("Clickpad")
@@ -544,6 +559,8 @@ struct RepeatPress<Label: View>: View {
     @ViewBuilder var label: Label
     @State private var task: Task<Void, Never>?
     @State private var down = false
+    /// Back to false by itself when the system takes the touch away (which never ends the gesture).
+    @GestureState private var touching = false
 
     var body: some View {
         label
@@ -552,6 +569,7 @@ struct RepeatPress<Label: View>: View {
             .scaleEffect(down ? 0.9 : 1)
             .animation(.spring(response: 0.2, dampingFraction: 0.6), value: down)
             .gesture(DragGesture(minimumDistance: 0)
+                .updating($touching) { _, state, _ in state = true }
                 .onChanged { _ in
                     guard !down else { return }
                     down = true
@@ -566,6 +584,15 @@ struct RepeatPress<Label: View>: View {
                     }
                 }
                 .onEnded { _ in down = false; task?.cancel() })
+            // A touch taken away: the repeating stops at once (not 8 seconds of volume later), and the next press works.
+            .onChange(of: touching) { _, now in
+                guard !now else { return }
+                Task { @MainActor in
+                    guard down else { return }
+                    down = false
+                    task?.cancel()
+                }
+            }
             .onDisappear { down = false; task?.cancel() }
             .accessibilityAddTraits(.isButton)
             .accessibilityAction { onPress(0) }
@@ -807,7 +834,7 @@ struct KeyboardSheet: View {
         guard fleet.isActive else { return }
         while !Task.isCancelled {
             if let s = try? await fleet.client(for: tv)?.typeField() {
-                state = s
+                if s != state { state = s }
                 let key = s.field.map { "\($0.id)" }
                 if key != fieldKey { fieldKey = key; text = s.field?.text ?? "" }
             }

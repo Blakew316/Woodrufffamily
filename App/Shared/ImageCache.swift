@@ -125,7 +125,11 @@ actor ImageStore {
     /// [url] at [size]: from its copy on disk when there is one, else downloaded (and kept on disk). Runs off the actor.
     private nonisolated func make(_ url: URL, key: String, size: Int, storeOnDisk: Bool) async -> PlatformImage? {
         let file = Self.folder.appendingPathComponent(Self.fileName(key))
-        if let data = try? Data(contentsOf: file, options: .mappedIfSafe), let img = Self.decode(data, size: size) { return img }
+        if let data = try? Data(contentsOf: file, options: .mappedIfSafe), let img = Self.decode(data, size: size) {
+            // Seen again: the disk copies are trimmed oldest first, so the pictures in use now stay.
+            try? FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: file.path)
+            return img
+        }
         guard !Task.isCancelled else { return nil }
         guard let data = await fetch(url, key: key, to: storeOnDisk ? file : nil), !Task.isCancelled else { return nil }
         return Self.decode(data, size: size)

@@ -29,12 +29,16 @@ final class AndroidTVRemote {
     ]
 
     private(set) var paired: [String: String]
+    /// The saved pairings as last read: every write to UserDefaults anywhere in the app says it changed, and only a
+    /// change to these is decoded again.
+    @ObservationIgnored private var pairedData: Data?
     @ObservationIgnored private var sessions: [String: ATVSession] = [:]
     /// Pairings under way: the TV is showing its code on this connection.
     @ObservationIgnored private var pairings: [String: ATVLink] = [:]
     @ObservationIgnored private var observer: NSObjectProtocol?
 
     private init() {
+        pairedData = UserDefaults.standard.data(forKey: Self.pairedKey)
         paired = Self.loadPaired()
         // A pairing made on another family device arrives through SettingsSync, straight into UserDefaults.
         observer = NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
@@ -182,6 +186,9 @@ final class AndroidTVRemote {
     }
 
     private func reloadPaired() {
+        let data = UserDefaults.standard.data(forKey: Self.pairedKey)
+        guard data != pairedData else { return }
+        pairedData = data
         let now = Self.loadPaired()
         guard now != paired else { return }
         paired = now
@@ -594,6 +601,9 @@ final class ATVSession {
     /// Sends on the open connection; once more on a new one if the old one had quietly died.
     private func sendKeyed(_ message: [UInt8]) async throws {
         if let until = failedUntil, Date() < until { throw lastError ?? ATVError.noAnswer }
+        // The TV pings every 5 seconds: silent for longer (this device was asleep, the TV dropped off the Wi‑Fi), the
+        // connection is likely dead, and a key sent on it would vanish without an error. A fresh one first.
+        if ready, link?.isOpen == true, Date().timeIntervalSince(lastHeard) > 11 { dropLink(ATVError.noAnswer) }
         let hadLink = ready && link?.isOpen == true
         let l = try await readyLink()
         do {

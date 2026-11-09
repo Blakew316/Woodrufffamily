@@ -48,6 +48,30 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(v["a"]?.array[0].int, 1)
     }
 
+    func testNumbersTooLargeForIntDontCrash() {
+        XCTAssertEqual(JSONValue.number(42).string, "42")
+        XCTAssertEqual(JSONValue.number(2.5).string, "2.5")
+        XCTAssertEqual(JSONValue.number(1e20).string, String(1e20))
+        XCTAssertEqual(JSONValue.number(-7.9).int, -7)
+        XCTAssertEqual(JSONValue.string("12").int, 12)
+        XCTAssertNil(JSONValue.number(1e20).int)
+        XCTAssertNil(JSONValue.string("nan").int)
+        XCTAssertNil(JSONValue.string("inf").int)
+    }
+
+    func testMemoryVersionNeverCrashes() {
+        func item(_ v: Double?) -> MemoryItem { MemoryItem(path: "/a.jpg", name: "a.jpg", video: false, taken: nil, size: nil, v: v) }
+        XCTAssertEqual(item(3).version, "3")
+        XCTAssertEqual(item(nil).version, "0")
+        XCTAssertEqual(item(1e30).version, "0")
+    }
+
+    func testURLWithoutLeadingSlash() {
+        let c = TVConnection(base: URL(string: "http://tv:8090")!, key: "abc")
+        XCTAssertEqual(c.url("api/status", withKey: false).absoluteString, "http://tv:8090/api/status")
+        XCTAssertEqual(c.url("/api/status", withKey: false).absoluteString, "http://tv:8090/api/status")
+    }
+
     func testLGManifestDecodes() {
         XCTAssertEqual(LGRemote.manifest["manifestVersion"]?.int, 1)
         XCTAssertFalse(LGRemote.manifest["signatures"]?.array.isEmpty ?? true)

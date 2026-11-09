@@ -53,20 +53,6 @@ extension View {
 
 // MARK: - Settings-style rows
 
-/// The coloured rounded square with a white symbol, as in iOS Settings.
-struct IconTile: View {
-    var symbol: String
-    var color: Color
-    var size: CGFloat = 29
-    var body: some View {
-        Image(systemName: symbol)
-            .font(.system(size: size * 0.52, weight: .semibold))
-            .foregroundStyle(.white)
-            .frame(width: size, height: size)
-            .background(color.gradient, in: RoundedRectangle(cornerRadius: size * 0.235, style: .continuous))
-    }
-}
-
 /// A row: icon tile, title (and subtitle), and a trailing value.
 struct IconRow: View {
     var symbol: String
@@ -402,14 +388,6 @@ extension View {
         return self.navigationBarTitleDisplayMode(.inline)
         #else
         return self
-        #endif
-    }
-
-    @ViewBuilder func haptic<T: Equatable>(_ trigger: T) -> some View {
-        #if os(iOS) || os(tvOS)
-        self.sensoryFeedback(.impact(weight: .light, intensity: 0.7), trigger: trigger)
-        #else
-        self
         #endif
     }
 }

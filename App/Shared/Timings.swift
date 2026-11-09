@@ -44,9 +44,8 @@ enum Timings {
         Saved.save(key, list)
         log.notice("\(name, privacy: .public): \(String(format: "%.2f", s), privacy: .public) s (\(e.build, privacy: .public))")
         let line = "\(ISO8601DateFormatter.plain.string(from: Date()))\t\(e.build)\t\(name)\t\(String(format: "%.3f", s))\n"
-        let file = logFile
         DispatchQueue.global(qos: .utility).async {
-            guard let file, let data = line.data(using: .utf8) else { return }
+            guard let file = logFile, let data = line.data(using: .utf8) else { return }
             if let h = try? FileHandle(forWritingTo: file) {
                 defer { try? h.close() }
                 _ = try? h.seekToEnd()
@@ -58,7 +57,7 @@ enum Timings {
     }
 
     /// The Mac: next to the updater's logs. The iPhone: in the app's caches.
-    private static var logFile: URL? {
+    nonisolated private static var logFile: URL? {
         #if os(macOS)
         guard let lib = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first else { return nil }
         let dir = lib.appendingPathComponent("Logs/Woodruff Family", isDirectory: true)

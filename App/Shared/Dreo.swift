@@ -104,7 +104,19 @@ final class Dreo {
 
     // MARK: Account
 
+    /// A sign-in on its way: everyone else waits for it (two at once would each get a key, and the socket opened
+    /// with the first one would be dropped).
+    @ObservationIgnored private var loggingIn: Task<Void, Error>?
+
     private func login() async throws {
+        if let running = loggingIn { return try await running.value }
+        let t = Task { try await self.loginNow() }
+        loggingIn = t
+        defer { loggingIn = nil }
+        try await t.value
+    }
+
+    private func loginNow() async throws {
         guard let email = Keychain.get("dreo.email"), let password = Keychain.get("dreo.password") else { throw OAuthRelay.Failure.refused("Sign in to Dreo.") }
         let hash = Insecure.MD5.hash(data: Data(password.utf8)).map { String(format: "%02x", $0) }.joined()
         func attempt() async throws -> [String: Any] {
@@ -160,7 +172,28 @@ final class Dreo {
 
     // MARK: Fans
 
+    @ObservationIgnored private var refreshing: Task<Void, Never>?
+    @ObservationIgnored private var refreshingFull = false
+
+    /// Reads the fans again. Only one runs at a time; anyone else waits for it (and a full one asked for while a
+    /// quick one runs goes after it).
     func refresh(full: Bool) async {
+        guard connected else { return }
+        if let running = refreshing {
+            let wasFull = refreshingFull
+            await running.value
+            if !full || wasFull { return }
+            // Another caller may have started the full one meanwhile.
+            if let again = refreshing, again != running { await again.value; return }
+        }
+        refreshingFull = full
+        let t = Task { await self.load(full: full) }
+        refreshing = t
+        await t.value
+        if refreshing == t { refreshing = nil }
+    }
+
+    private func load(full: Bool) async {
         guard connected else { return }
         do {
             if token.isEmpty { try await login() }

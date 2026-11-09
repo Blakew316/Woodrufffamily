@@ -16,14 +16,19 @@ enum StallMonitor {
         tick()
     }
 
-    private static func tick() {
-        queue.asyncAfter(deadline: .now() + 0.5) {
+    private static func tick(after delay: Double = 0.5) {
+        queue.asyncAfter(deadline: .now() + delay) {
             let asked = Date()
             DispatchQueue.main.async {
                 let late = Date().timeIntervalSince(asked)
                 // Only while the app is in use (a suspended app isn't stuttering), and not absurd gaps (the Mac asleep).
-                MainActor.assumeIsolated { if late > 0.25, late < 20, Fleet.shared.isActive { note(late) } }
-                tick()
+                let inUse: Bool = MainActor.assumeIsolated {
+                    let on = Fleet.shared.isActive
+                    if late > 0.25, late < 20, on { note(late) }
+                    return on
+                }
+                // Not in use (the Mac's window hidden): looked at now and then, not twice a second for nothing.
+                tick(after: inUse ? 0.5 : 5)
             }
         }
     }
@@ -39,9 +44,8 @@ enum StallMonitor {
         d.set(d.integer(forKey: "stalls.count") + 1, forKey: "stalls.count")
         if seconds > d.double(forKey: "stalls.worst") { d.set(seconds, forKey: "stalls.worst"); d.set(screen, forKey: "stalls.worstOn") }
         let line = "\(ISO8601DateFormatter.plain.string(from: Date()))\t\(AppBuild.label)\t\(screen)\t\(String(format: "%.2f", seconds))\n"
-        let file = logFile
         queue.async {
-            guard let file, let data = line.data(using: .utf8) else { return }
+            guard let file = logFile, let data = line.data(using: .utf8) else { return }
             if let h = try? FileHandle(forWritingTo: file) {
                 defer { try? h.close() }
                 _ = try? h.seekToEnd()
