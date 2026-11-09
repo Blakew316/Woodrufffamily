@@ -525,6 +525,8 @@ struct SpeakersListView: View {
     var home = SmartHome.shared
 
     var body: some View {
+        // Every room at once, rather than looked up through every list for each row.
+        let roomOf = home.roomIndex
         Form {
             Section {
                 if home.speakers.isEmpty {
@@ -534,7 +536,7 @@ struct SpeakersListView: View {
                     PageLink(r.name) { SpeakerDetailView(speakerID: r.id) } label: {
                         IconRow(symbol: "", color: .clear, title: r.name,
                                 subtitle: status(r),
-                                value: home.room(of: r.id))
+                                value: roomOf[r.id])
                     }
                 }
             } footer: {
@@ -563,6 +565,8 @@ struct LightsListView: View {
     @State private var address = ""
 
     var body: some View {
+        // Every room at once, rather than looked up through every list for each row.
+        let roomOf = home.roomIndex
         Form {
             Section {
                 if home.lights.isEmpty {
@@ -573,7 +577,7 @@ struct LightsListView: View {
                         HStack(spacing: 12) {
                             Circle().fill(l.isLit ? l.shade : Color.secondary.opacity(0.3)).frame(width: 12, height: 12)
                             IconRow(symbol: "", color: .clear, title: l.name,
-                                    subtitle: l.isOffline ? "Offline" : l.on ? "On · \(l.brightness)%" : "Off", value: home.room(of: l.id))
+                                    subtitle: l.isOffline ? "Offline" : l.on ? "On · \(l.brightness)%" : "Off", value: roomOf[l.id])
                         }
                     }
                     .swipeActions {

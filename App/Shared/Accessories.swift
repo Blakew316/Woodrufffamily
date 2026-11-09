@@ -353,6 +353,8 @@ struct DevicesListView: View {
     private let store = AccessoryStore.shared
 
     var body: some View {
+        // Every room at once, rather than looked up through every list for each row.
+        let roomOf = SmartHome.shared.roomIndex
         Form {
             Section {
                 if let problem = store.homeProblem { Text(problem).font(.footnote).foregroundStyle(Palette.attention) }
@@ -360,7 +362,7 @@ struct DevicesListView: View {
                 ForEach(store.all) { d in
                     PageLink(d.name) { DeviceDetailView(deviceID: d.id) } label: {
                         IconRow(symbol: "", color: .clear, title: d.name, subtitle: "\(d.sourceName) · \(d.reachable ? d.status : "Not Responding")",
-                                value: SmartHome.shared.room(of: d.id))
+                                value: roomOf[d.id])
                     }
                 }
             } footer: {
