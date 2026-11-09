@@ -208,7 +208,8 @@ final class NestCameras {
 
     private func call(_ method: String, _ path: String, _ body: [String: Any]? = nil, retried: Bool = false) async throws -> [String: Any] {
         guard let url = URL(string: Self.sdm + path) else { throw OAuthRelay.Failure.refused("Google answered oddly.") }
-        var r = URLRequest(url: url, timeoutInterval: 20)
+        // A camera command answers in a second or two: one that hangs is given up on sooner, and the player tries again.
+        var r = URLRequest(url: url, timeoutInterval: path.hasSuffix(":executeCommand") ? 10 : 20)
         r.httpMethod = method
         r.setValue("Bearer \(try await token())", forHTTPHeaderField: "Authorization")
         if let body {
@@ -307,7 +308,7 @@ final class NestCameras {
             try Task.checkCancellation()
             // The camera that's open goes first: it doesn't wait behind the tiles' starts and renewals (only its own
             // turn, and Google's wait after a refusal).
-            let open = CameraStreams.shared.expanded == cam || CameraStreams.shared.full == cam
+            let open = CameraStreams.shared.expanded == cam || CameraStreams.shared.full == cam || CameraStreams.shared.opening == cam
             let wait = max(open ? .distantPast : nextAny, nextFor[cam] ?? .distantPast).timeIntervalSinceNow
             if wait > 0 { try await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000)) ; continue }
             // Half a second between any two (a refusal is retried in seconds), longer for the same camera.
@@ -423,6 +424,13 @@ final class CameraStreams {
     var full: String?
     /// The alert a camera was opened from: its clip or snapshot replays above the live view.
     var replay: CameraReplay?
+    /// A camera being opened from a tapped alert, before its view is up: its stream goes first, and the tiles wait.
+    @ObservationIgnored private(set) var opening: String?
+    @ObservationIgnored private var openingEnds: Task<Void, Never>?
+    /// When a tapped alert last opened a camera (the app's launch holds its other starts back a moment for it).
+    @ObservationIgnored private(set) var openedFromAlertAt: Date?
+    /// Streams started ahead of their view (`warm`), each let go again if nothing shows it in time.
+    @ObservationIgnored private var warmEnds: [String: Task<Void, Never>] = [:]
     @ObservationIgnored private var players: [String: LivePlayer] = [:]
     @ObservationIgnored private var watching = 0
     @ObservationIgnored private var idle: Task<Void, Never>?
@@ -493,6 +501,57 @@ final class CameraStreams {
                     }
                 }
             }
+        }
+    }
+
+    /// A camera alert was tapped: that camera's stream starts now, before its view is up (on a cold launch, before
+    /// anything else the app starts), and it goes first until the view is there.
+    func openFromAlert(_ id: String) {
+        opening = id
+        openedFromAlertAt = Date()
+        openingEnds?.cancel()
+        openingEnds = Task { [weak self] in
+            // The view says it's up (`opened`); if it never comes, the tiles aren't held back for long.
+            try? await Task.sleep(nanoseconds: 6_000_000_000)
+            guard let self, !Task.isCancelled, self.opening == id else { return }
+            self.opening = nil
+        }
+        #if !os(tvOS)
+        if LivePlayer.nativeEnabled { NativeRTC.prewarm() }
+        #endif
+        warm(id)
+    }
+
+    /// The camera's view is up (it starts and focuses its own stream).
+    func opened(_ id: String) {
+        guard opening != nil else { return }
+        opening = nil
+        openingEnds?.cancel(); openingEnds = nil
+    }
+
+    /// Starts [id]'s stream ahead of its view (a tapped alert, or one arriving while the app is open), so its live
+    /// picture is ready the moment it's wanted. Let go again after [seconds] if nothing has shown it by then.
+    func warm(_ id: String, letGoAfter seconds: Double = 60) {
+        guard NestCameras.shared.connected, !Demo.isOn else { return }
+        // Another camera is open: it keeps the bandwidth (unless this one's alert was just tapped).
+        if let e = expanded ?? full, e != id, opening != id { return }
+        let cam = NestCameras.shared.cameras.first { $0.id == id }
+            ?? NestCameras.Camera(id: id, name: "Camera", room: nil, doorbell: false, webRTC: true)
+        guard cam.webRTC, cam.online else { return }
+        let p = player(cam)
+        if !p.isRunning {
+            if status[id] != "Live", askedAt[id] == nil { askedAt[id] = Date() }
+            p.start()
+        }
+        warmEnds[id]?.cancel()
+        warmEnds[id] = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            guard let self, !Task.isCancelled else { return }
+            self.warmEnds[id] = nil
+            guard let p = self.players[id], p.isRunning, !self.isShown(id), !self.pinned.contains(id),
+                  !self.grabbing.contains(id), self.expanded != id, self.full != id, self.opening != id else { return }
+            p.pause()
+            if self.status[id] != "Offline" { self.status[id] = "Paused" }
         }
     }
 
@@ -579,6 +638,16 @@ final class CameraStreams {
         letGo = false
         let p = player(cam)
         p.camera = cam
+        #if os(iOS) || os(tvOS)
+        // A tile coming on screen behind a camera that's open (or being opened from an alert) waits, as `focus` has
+        // the others wait: the open camera has the phone's bandwidth and Google's commands to itself.
+        if let f = expanded ?? opening, f != cam.id, cam.online {
+            if p.isRunning { p.pause() }
+            if !heldBack.contains(cam.id) { heldBack.append(cam.id) }
+            if status[cam.id] != "Offline" { status[cam.id] = "Paused" }
+            return
+        }
+        #endif
         if cam.online { p.start() } else { p.pause(); status[cam.id] = "Offline" }
     }
 
@@ -724,15 +793,19 @@ final class CameraStreams {
         idle?.cancel(); idle = nil
         letGo = false
         // Away more than a minute: iOS froze the streams, so start them fresh.
-        let long = backgroundAt.map { $0.timeIntervalSinceNow < -60 } ?? false
+        let away = backgroundAt
+        let long = away.map { $0.timeIntervalSinceNow < -60 } ?? false
         backgroundAt = nil
+        // A stream started since then (a tapped alert opens its camera as the app comes back) isn't frozen: starting
+        // it over would throw away its connection and wait out Google's pause between two commands for one camera.
+        func fresh(_ p: LivePlayer) -> Bool { p.lastStart.map { s in away.map { s > $0 } ?? false } ?? false }
         // Streams iOS froze that nothing shows now are let go, so each starts fresh when it's shown again.
-        if long { for (k, p) in players where p.isRunning && !pinned.contains(k) && !grabbing.contains(k) && !isShown(k) { p.pause() } }
+        if long { for (k, p) in players where p.isRunning && !pinned.contains(k) && !grabbing.contains(k) && !isShown(k) && !fresh(p) && warmEnds[k] == nil { p.pause() } }
         guard watching > 0 else { return }
         // Only the cameras on screen (not every stream opened since launch, nor the tiles paused behind an open
         // camera); one Vehicle Alerts kept playing isn't interrupted.
         for (k, p) in players where p.camera.online && !heldBack.contains(k) && (isShown(k) || pinned.contains(k)) {
-            if long && !pinned.contains(k) { p.restart() } else { p.start() }
+            if long && !pinned.contains(k) && !fresh(p) { p.restart() } else { p.start() }
         }
     }
 
@@ -985,7 +1058,7 @@ struct CameraLiveView: View {
             phoneBody(player)
             #endif
         }
-        .onAppear { streams.expanded = camera.id; streams.focus(camera.id); streams.show(camera) }
+        .onAppear { streams.expanded = camera.id; streams.opened(camera.id); streams.focus(camera.id); streams.show(camera) }
         .onDisappear {
             player.setMuted(true)
             if streams.replay?.camera == camera.id { streams.replay = nil }
@@ -1071,7 +1144,11 @@ struct CameraLiveView: View {
         ZStack {
             // One picture: opened from an alert, the event first (its clip or picture); with nothing to replay, live.
             if let r = replay, !showLive {
-                EventReplayView(replay: r) { withAnimation(.smooth(duration: 0.25)) { showLive = true } }
+                ZStack {
+                    // The live picture connects underneath meanwhile (hidden by the replay), so Live is ready at once.
+                    LiveWebView(player: player).id(reattach)
+                    EventReplayView(replay: r) { withAnimation(.smooth(duration: 0.25)) { showLive = true } }
+                }
             } else if fullScreen {
                 Color.black
             } else {
@@ -1176,6 +1253,8 @@ final class LivePlayer: NSObject, WKNavigationDelegate {
     private var startedAt: Date?
     private static let log = Logger(subsystem: "com.woodruff.family", category: "camera")
     var isRunning: Bool { running }
+    /// When the stream last started.
+    var lastStart: Date? { startedAt }
 
     /// When each step of the current start happened (for the breakdown of the first camera each launch).
     private var marks: [String: Date] = [:]
@@ -1720,6 +1799,23 @@ struct CameraPresenter: ViewModifier {
         withTransaction(t) { shown = cam }
     }
 
+    #if os(iOS) || os(tvOS)
+    /// A cover asked for while the app is still starting (a tapped alert opening it) can be dropped by the system: if
+    /// the camera's view isn't up a moment later, it's asked for again (twice at most).
+    private func confirm(_ id: String?, tries: Int = 2) {
+        guard let id, tries > 0 else { return }
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 1_200_000_000)
+            guard let cam = shown, cam.id == id, CameraStreams.shared.expanded != id else { return }
+            show(nil)
+            try? await Task.sleep(nanoseconds: 60_000_000)
+            guard camera?.id == id else { return }
+            show(cam)
+            confirm(id, tries: tries - 1)
+        }
+    }
+    #endif
+
     func body(content: Content) -> some View {
         #if os(macOS)
         content.onChange(of: camera?.id, initial: true) { _, id in
@@ -1730,7 +1826,7 @@ struct CameraPresenter: ViewModifier {
         #else
         // Over the whole screen, without the cover's slide: the camera floats in by itself.
         content
-            .onChange(of: camera?.id, initial: true) { _, _ in show(camera) }
+            .onChange(of: camera?.id, initial: true) { _, _ in show(camera); confirm(camera?.id) }
             .fullScreenCover(item: Binding(get: { shown }, set: { v in show(v); if v == nil { camera = nil } })) { cam in
                 CameraLiveView(camera: cam, onClose: { show(nil); camera = nil })
             }
@@ -1755,72 +1851,147 @@ struct CameraReplay: Equatable {
 
 #if os(iOS) || os(tvOS)
 /// The alert's moment filling the camera's picture box: its clip looping (muted) or its picture. Shows at once what's
-/// already on this device (what the alert itself showed, what the notification extension kept, else the Mac's small
-/// picture from the push), then Google's clip or snapshot when that comes; with none of them it hands over to live
-/// ([none]).
+/// already on this device (the clip or picture the notification extension kept, what the alert itself showed, else the
+/// Mac's small picture from the push), then Google's clip when that comes: played straight from Google while it's
+/// still downloading, and from the file once it's here. With none of them it hands over to live ([none]); a clip that
+/// doesn't come leaves the picture up with Retry.
 struct EventReplayView: View {
     let replay: CameraReplay
     var none: () -> Void
     @State private var file: URL?
     @State private var image: UIImage?
+    /// Google's clip, playing from Google while the file downloads.
+    @State private var remote: AVURLAsset?
+    /// The clip's first frame is on screen (the picture under it can go).
+    @State private var clipReady = false
+    /// Google's clip (or snapshot) didn't come in time: the picture stays, with Retry.
+    @State private var failed = false
+    @State private var attempt = 0
+
+    /// How long Google's clip is waited for before Retry shows (a picture stays up meanwhile).
+    private static let wait: Double = 8
 
     var body: some View {
         ZStack {
             Color.black
-            if let file, file.pathExtension == "mp4" {
-                LoopingClip(url: file)
-            } else if let image {
+            // The picture stays under the clip until the clip's first frame is up (no black flash between them).
+            if let image, !clipReady {
                 Image(uiImage: image).resizable().scaledToFit()
-            } else {
+            }
+            if let file, file.pathExtension == "mp4" {
+                LoopingClip(asset: AVURLAsset(url: file)) { clipReady = true }.id(file)
+            } else if let remote {
+                LoopingClip(asset: remote) { clipReady = true }.id(ObjectIdentifier(remote))
+            } else if image == nil {
                 ProgressView().tint(.white)
             }
         }
-        .task(id: replay.key) {
-            // Nothing waits before the first picture: no sign-in, no network.
-            let kept = replay.media.flatMap { FileManager.default.fileExists(atPath: $0.path) ? $0 : nil }
-                ?? CameraEventMedia.cached(replay.key)
-            if let kept {
-                show(kept)
-                // A clip is the best there is; a picture is replaced by Google's clip if one comes.
-                if kept.pathExtension == "mp4" { return }
-            } else if let t = replay.thumb, let d = Data(base64Encoded: t), let small = UIImage(data: d) {
-                image = small
+        .overlay(alignment: .bottomLeading) {
+            if failed {
+                Button("Retry") { failed = false; attempt += 1 }
+                    .font(.caption.weight(.semibold))
+                    .buttonStyle(.glass)
+                    .padding(10)
             }
-            if let f = await CameraEventMedia.fetch(camera: replay.camera, eventID: replay.event, clipURL: replay.clip, key: replay.key, timeout: 6) {
-                if f != kept { show(f) }
+        }
+        .task(id: "\(replay.key)#\(attempt)") { await load() }
+    }
+
+    private func load() async {
+        failed = false
+        // Nothing waits before the first picture: no sign-in, no network. A clip kept here is the best there is.
+        let here = [CameraEventMedia.cached(replay.key), replay.media].compactMap { $0 }
+            .filter { FileManager.default.fileExists(atPath: $0.path) }
+        let kept = here.first { $0.pathExtension == "mp4" } ?? here.first
+        if let kept, kept.pathExtension == "mp4" { file = kept; return }
+        if image == nil, let t = replay.thumb, let d = Data(base64Encoded: t) { image = await Self.decode(d) }
+        if let kept { await show(kept) }
+        guard !Task.isCancelled else { return }
+        // Google's clip while it downloads (it plays as it comes in), and the whole file at the same time: whichever
+        // shows first. A picture kept is replaced only by the clip.
+        let clipURL = replay.clip.flatMap { $0.isEmpty ? nil : URL(string: $0) }
+        let streaming: Task<Void, Never>? = clipURL.map { u in Task { await stream(u) } }
+        let waited = file == nil && image == nil ? 5 : Self.wait
+        let got = await CameraEventMedia.fetch(camera: replay.camera, eventID: replay.event, clipURL: replay.clip,
+                                               key: replay.key, timeout: waited)
+        streaming?.cancel()
+        guard !Task.isCancelled else { return }
+        if let got, got != kept {
+            // Already playing from Google: kept on this device for next time, the clip on screen isn't started over.
+            if got.pathExtension == "mp4" { if remote == nil { file = got } } else { await show(got) }
+            return
+        }
+        if remote != nil || file?.pathExtension == "mp4" { return }
+        if file == nil && image == nil { none(); return }
+        // Only a picture: if a clip (or Google's snapshot) was to come, it can be asked for again.
+        failed = clipURL != nil || (file == nil && replay.event != nil)
+    }
+
+    /// Google's clip played from Google, as soon as it's there (it's made a few seconds after the event), with the
+    /// sign-in the download uses. Asked again every second or so until the file download ends.
+    private func stream(_ u: URL) async {
+        let tokenJob: @Sendable () async -> String? = { await CameraEventMedia.token() }
+        guard let token = await FirstOf<String>(1).run([tokenJob], deadline: Date().addingTimeInterval(3)) else { return }
+        while !Task.isCancelled, remote == nil {
+            let asset = AVURLAsset(url: u, options: ["AVURLAssetHTTPHeaderFieldsKey": ["Authorization": "Bearer \(token)"]])
+            let check: @Sendable () async -> Bool? = { ((try? await asset.load(.isPlayable)) ?? false) ? true : nil }
+            if await FirstOf<Bool>(1).run([check], deadline: Date().addingTimeInterval(3)) == true {
+                guard !Task.isCancelled, file?.pathExtension != "mp4" else { return }
+                remote = asset
                 return
             }
-            if file == nil && image == nil { none() }
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
         }
     }
 
-    private func show(_ f: URL) {
-        if f.pathExtension == "mp4" {
-            file = f
-        } else if let img = UIImage(contentsOfFile: f.path) {
-            file = f
-            image = img
-        }
+    private func show(_ f: URL) async {
+        if f.pathExtension == "mp4" { file = f; return }
+        let path = f.path
+        let img = await Task.detached(priority: .userInitiated) { () -> UIImage? in
+            guard let i = UIImage(contentsOfFile: path) else { return nil }
+            return i.preparingForDisplay() ?? i
+        }.value
+        if let img { file = f; image = img }
+    }
+
+    /// The push's small picture, decoded off the main thread.
+    private static func decode(_ d: Data) async -> UIImage? {
+        await Task.detached(priority: .userInitiated) { () -> UIImage? in
+            guard let i = UIImage(data: d) else { return nil }
+            return i.preparingForDisplay() ?? i
+        }.value
     }
 }
 
-/// A short clip playing on a loop, muted, filling its frame.
+/// A short clip playing on a loop, muted, filling its frame: a file on this device, or Google's clip as it streams in.
 private struct LoopingClip: UIViewRepresentable {
-    let url: URL
+    let asset: AVAsset
+    /// Its first frame is on screen.
+    var onReady: () -> Void = {}
 
     final class ClipView: UIView {
         override class var layerClass: AnyClass { AVPlayerLayer.self }
         var playerLayer: AVPlayerLayer { layer as! AVPlayerLayer }
         var looper: AVPlayerLooper?
+        var ready: NSKeyValueObservation?
     }
 
     func makeUIView(context: Context) -> ClipView {
         let v = ClipView()
         let player = AVQueuePlayer()
         player.isMuted = true
-        v.looper = AVPlayerLooper(player: player, templateItem: AVPlayerItem(url: url))
+        // Plays as soon as there's a frame, rather than waiting to buffer more (a few seconds of clip).
+        player.automaticallyWaitsToMinimizeStalling = false
+        let item = AVPlayerItem(asset: asset)
+        item.preferredForwardBufferDuration = 1
+        v.looper = AVPlayerLooper(player: player, templateItem: item)
         v.playerLayer.player = player
         v.playerLayer.videoGravity = .resizeAspect
+        let ready = onReady
+        v.ready = v.playerLayer.observe(\.isReadyForDisplay, options: [.initial, .new]) { layer, _ in
+            guard layer.isReadyForDisplay else { return }
+            DispatchQueue.main.async { ready() }
+        }
         player.play()
         return v
     }
@@ -1828,6 +1999,7 @@ private struct LoopingClip: UIViewRepresentable {
     func updateUIView(_ v: ClipView, context: Context) {}
 
     static func dismantleUIView(_ v: ClipView, coordinator: ()) {
+        v.ready?.invalidate(); v.ready = nil
         v.playerLayer.player?.pause()
         v.looper = nil
     }

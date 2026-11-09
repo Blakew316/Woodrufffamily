@@ -109,6 +109,8 @@ final class LivePlayer: NSObject {
     private var lastJPEG: Data?
     var isRunning: Bool { feed != nil }
     var isLive: Bool { live }
+    /// When the feed last started.
+    private(set) var lastStart: Date?
 
     init(camera: NestCameras.Camera) {
         self.camera = camera
@@ -120,6 +122,7 @@ final class LivePlayer: NSObject {
         guard feed == nil else { return }
         onStatus?("Starting…")
         misses = 0
+        lastStart = Date()
         feed = Task { [weak self] in
             while !Task.isCancelled {
                 // The player isn't held while it waits, so one let go stops here.

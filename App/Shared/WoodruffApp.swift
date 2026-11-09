@@ -38,7 +38,9 @@ struct WoodruffApp: App {
     init() {
         // The saved sign-ins and keys the settings sync reads before the TVs are first asked, read now in the
         // background (each Keychain read is slow), so by then they're at hand instead of holding up the main thread.
-        let keys = SettingsSync.keychainKeys + Fleet.shared.tvs.map { "lg.\($0.id)" }
+        // The cameras' sign-in first: a tapped camera alert that opened the app needs it straight away.
+        let keys = ["nest.refresh", "nest.scopes", "nest.access", "nest.expires", "nest.project", "nest.client", "nest.secret"]
+            + SettingsSync.keychainKeys + Fleet.shared.tvs.map { "lg.\($0.id)" }
         Task.detached(priority: .userInitiated) { for k in keys { _ = Keychain.read(k) } }
         // Before launch finishes, as Apple asks: a tapped doorbell or camera alert that opened the app (Woodruff
         // wasn't running) still arrives here and opens that camera live, instead of being dropped.
@@ -100,6 +102,14 @@ struct WoodruffApp: App {
                     // 2. A moment later, what Home shows besides the TVs: speakers and lights, Samsung, the fans, the
                     //    cameras and Apple Home.
                     try? await Task.sleep(nanoseconds: 150_000_000)
+                    // Opened by a tapped camera alert: the cameras first, and the rest a moment later, once the
+                    // camera's picture is up and its stream has the network to itself.
+                    let forCamera = CameraStreams.shared.requested != nil
+                        || (CameraStreams.shared.openedFromAlertAt.map { $0.timeIntervalSinceNow > -5 } ?? false)
+                    if forCamera {
+                        NestCameras.shared.start()
+                        try? await Task.sleep(nanoseconds: 1_500_000_000)
+                    }
                     SmartHome.shared.start()
                     SmartThings.shared.start()
                     Dreo.shared.start()
@@ -107,7 +117,7 @@ struct WoodruffApp: App {
                     #if os(iOS) || os(tvOS)
                     DriveDownloads.shared.start()   // the Mac's starts with Watch's pictures, below
                     #endif
-                    NestCameras.shared.start()
+                    if !forCamera { NestCameras.shared.start() }
                     #if os(iOS) || os(tvOS)
                     HomeKitLights.shared.start()
                     #else
@@ -512,7 +522,12 @@ struct MacRoot: View {
 
     /// The camera filling everything right of the sidebar (one that's still in the camera list).
     private var fullCamera: NestCameras.Camera? {
-        CameraStreams.shared.full.flatMap { id in NestCameras.shared.cameras.first { $0.id == id } }
+        // One not in the list yet (the app just opened by its alert, before the list is read) still opens: the live
+        // view then says what's missing, instead of the click doing nothing (as on iPhone).
+        CameraStreams.shared.full.flatMap { id in
+            NestCameras.shared.cameras.first { $0.id == id }
+                ?? NestCameras.Camera(id: id, name: "Camera", room: nil, doorbell: false, webRTC: true)
+        }
     }
 
     /// Home's own first page (no TV or speaker picked, no search, nothing opened on top): Edit Home belongs here.

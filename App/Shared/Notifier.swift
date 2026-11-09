@@ -86,9 +86,15 @@ final class NotificationHandler: NSObject, UNUserNotificationCenterDelegate, @un
                                 withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
         // Kept in Notification Center too: an alert that arrives while Woodruff is open was only a passing banner.
         let key = notification.request.content.userInfo["key"] as? String
+        let camera = (notification.request.content.userInfo["camera"] as? String).flatMap { $0.isEmpty ? nil : $0 }
         DispatchQueue.main.async {
             if let key { MainActor.assumeIsolated { _ = Self.presentedKeys.insert(key) } }
             completionHandler([.banner, .list, .sound])
+            #if os(iOS)
+            // A camera alert while Woodruff is open: its camera starts connecting now, so a tap on the banner opens it
+            // already live (let go again in a minute if it isn't tapped).
+            if let camera { MainActor.assumeIsolated { CameraStreams.shared.warm(camera) } }
+            #endif
         }
     }
 
@@ -103,7 +109,8 @@ final class NotificationHandler: NSObject, UNUserNotificationCenterDelegate, @un
     /// The picture or clip the alert itself carried (what the notification extension attached), copied out of the
     /// notification's store so the camera view can show the very same moment.
     private static func attachedMedia(_ content: UNNotificationContent) -> URL? {
-        guard let a = content.attachments.first else { return nil }
+        // The clip when it carried one (its still is for Apple Watch).
+        guard let a = content.attachments.first(where: { $0.url.pathExtension == "mp4" }) ?? content.attachments.first else { return nil }
         let url = a.url
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
@@ -126,13 +133,17 @@ final class NotificationHandler: NSObject, UNUserNotificationCenterDelegate, @un
                 let key = text("key") ?? response.notification.request.identifier
                 // The clip or snapshot the notification extension (or this device) already fetched and kept for this
                 // event, else a copy of the alert's own attachment: shown the moment the camera opens, never fetched again.
+                let kept = CameraEventMedia.cached(key)
                 CameraStreams.shared.replay = CameraReplay(camera: cameraID, key: key,
                                                            event: text("event"), clip: text("clip"),
                                                            title: response.notification.request.content.title,
                                                            at: response.notification.date,
-                                                           media: CameraEventMedia.cached(key) ?? Self.attachedMedia(response.notification.request.content),
+                                                           media: kept?.pathExtension == "mp4" ? kept : (Self.attachedMedia(response.notification.request.content) ?? kept),
                                                            thumb: text("thumb"))
                 CameraStreams.shared.requested = cameraID
+                // Its live picture starts connecting now, before the camera's view is up and ahead of anything else
+                // the app is starting.
+                CameraStreams.shared.openFromAlert(cameraID)
                 #if os(macOS)
                 // The camera opens in Woodruff's window: bring it forward if it's tucked away in the Dock.
                 if let w = MainWindow.current {
