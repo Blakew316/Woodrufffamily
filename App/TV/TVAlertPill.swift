@@ -317,7 +317,7 @@ struct TVAlertPill: View {
     let alert: TVAlerts.Item
 
     var body: some View {
-        HStack(spacing: 22) {
+        HStack(spacing: 11) {
             Group {
                 if let t = alert.thumb {
                     Image(uiImage: t).resizable().scaledToFill()
@@ -325,24 +325,24 @@ struct TVAlertPill: View {
                     Color.white.opacity(0.15)
                 }
             }
-            .frame(width: 96, height: 96)
+            .frame(width: 48, height: 48)
             .clipShape(Circle())
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 2) {
                 Text(alert.title)
-                    .font(.system(size: 34, weight: .bold))
+                    .font(.system(size: 19, weight: .bold))
                     .foregroundStyle(.white)
                 TimelineView(.periodic(from: .now, by: 15)) { ctx in
                     Text("\(alert.name) · \(Self.ago(alert.at, now: ctx.date))")
-                        .font(.system(size: 26, weight: .medium))
+                        .font(.system(size: 15, weight: .medium))
                         .foregroundStyle(.white.opacity(0.8))
                 }
             }
             .lineLimit(1)
             Spacer(minLength: 0)
         }
-        .padding(.leading, 16)
-        .padding(.trailing, 36)
-        .frame(width: 640, height: 128)
+        .padding(.leading, 8)
+        .padding(.trailing, 18)
+        .frame(width: 320, height: 64)
         .glassEffect(.regular, in: Capsule())
         .accessibilityElement(children: .combine)
     }
