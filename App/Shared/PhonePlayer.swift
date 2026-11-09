@@ -150,6 +150,10 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
     private var displayWatch: NSKeyValueObservation?
     /// Started playing (the resume point found, Play pressed on the player).
     private var begun = false
+    /// The file is open, waiting for the player to be on screen.
+    private var fileReady = false
+    /// The player has finished coming on screen (on Apple TV, the TV has switched to the film's picture mode).
+    private var onScreen = false
     /// Why it can't play, found before the player was on screen (said once it is).
     private var pendingFailure: String?
     /// Says so when it hasn't started in time.
@@ -197,6 +201,8 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
         if let old, old.presentingViewController != nil { old.dismiss(animated: false) }
         inPictureInPicture = false
         begun = false
+        fileReady = false
+        onScreen = false
         pendingFailure = nil
         let audio = AVAudioSession.sharedInstance()
         try? audio.setCategory(.playback, mode: .moviePlayback)
@@ -266,8 +272,11 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
     }
 
     /// The file is open: to the resume point and playing (whether or not the player is on screen yet).
+    /// Playing starts only once the player is on screen: started under the sliding-in player (and, on Apple TV,
+    /// before the TV switches to the film's 4K or HDR mode) its first seconds stuttered.
     private func ready(_ p: AVPlayer, _ play: PhonePlay) {
-        guard !begun else { return }
+        fileReady = true
+        guard !begun, onScreen else { return }
         begun = true
         if directID != nil { renewSignIn(p, play) }
         Task { @MainActor in await PhonePlayback.begin(p, play) }
@@ -287,9 +296,18 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
             }
             return
         }
-        top?.present(c, animated: true) { [weak self] in
+        guard let top else {
+            // Nowhere to show it: play anyway, as before.
+            onScreen = true
+            if fileReady, let p = player, let play = current { ready(p, play) }
+            return
+        }
+        top.present(c, animated: true) { [weak self] in
             MainActor.assumeIsolated {
-                guard let self, self.controller === c, let words = self.pendingFailure else { return }
+                guard let self, self.controller === c else { return }
+                self.onScreen = true
+                if self.fileReady, let p = self.player, let play = self.current { self.ready(p, play) }
+                guard let words = self.pendingFailure else { return }
                 self.pendingFailure = nil
                 self.failed(words)
             }
