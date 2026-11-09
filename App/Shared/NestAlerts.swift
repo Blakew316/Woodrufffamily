@@ -308,7 +308,7 @@ final class NestAlerts {
         let tag = title.localizedCaseInsensitiveContains("person") ? "Person"
             : title.localizedCaseInsensitiveContains("motion") ? "Motion" : title.localizedCaseInsensitiveContains("ring") || title.localizedCaseInsensitiveContains("door") ? "Ring" : "Event"
         if PhoneWidgetShare.saveCamera(id: camera, name: body, doorbell: doorbell, event: tag) {
-            WidgetCenter.shared.reloadTimelines(ofKind: PhoneWidgetShare.tvsCamerasKind); WidgetCenter.shared.reloadTimelines(ofKind: PhoneWidgetShare.doorbellKind)
+            PhoneWidgetShare.reloadWidgets(showing: camera)
         }
         // Where the extension (and this) can ask the Mac Studio for its picture of the event.
         CameraEventMedia.keepShare(token: CameraShareKey.token(), hosts: UserDefaults.standard.string(forKey: CameraShareKey.hostsKey))
@@ -343,7 +343,7 @@ final class NestAlerts {
             }
             if let jpeg = look.still {
                 PhoneWidgetShare.saveCamera(id: camera, name: body, doorbell: doorbell, jpeg: jpeg)
-                WidgetCenter.shared.reloadTimelines(ofKind: PhoneWidgetShare.tvsCamerasKind); WidgetCenter.shared.reloadTimelines(ofKind: PhoneWidgetShare.doorbellKind)
+                PhoneWidgetShare.reloadWidgets(showing: camera)
             }
             if shown {
                 PushRelay.log.notice("alert for \(body, privacy: .public) already shown from the Mac (not shown twice)")

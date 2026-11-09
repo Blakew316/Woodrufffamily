@@ -156,12 +156,12 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
     }
 
     /// The TVs & Cameras and doorbell widgets, even with Woodruff closed: the alert's picture as the camera's latest
-    /// still when a better one than the push's came (the push's, and the red tag, went in when it arrived), and both
-    /// reload.
+    /// still when a better one than the push's came (the push's, and the red tag, went in when it arrived), and only
+    /// the widgets showing this camera reload (the Mac Studio's push reloads them again shortly, in case iOS put this
+    /// reload off).
     private static func updateWidgets(_ line: WidgetLine, still: Data?) {
         if let still { PhoneWidgetShare.saveCamera(id: line.camera, name: line.name, doorbell: line.doorbell, jpeg: still) }
-        WidgetCenter.shared.reloadTimelines(ofKind: PhoneWidgetShare.tvsCamerasKind)
-        WidgetCenter.shared.reloadTimelines(ofKind: PhoneWidgetShare.doorbellKind)
+        PhoneWidgetShare.reloadWidgets(showing: line.camera)
     }
 
     /// Out of time: shown with the picture it has (the Mac's small one at least, when the push had it).

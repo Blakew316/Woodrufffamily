@@ -167,6 +167,12 @@ with `group.com.woodruff.family` on its identifier at developer.apple.com (Ident
 Configure). Without it the build leaves the group off the extension alone: alerts then show the small picture the
 Mac puts in the push, but can't fetch the full clip.
 
+The widgets (`com.blakew316.woodruff.widgets`) need Push Notifications on their identifier, which Xcode's signing on
+the Mac Studio normally turns on by itself (else at developer.apple.com: Identifiers, the id, Push Notifications). A
+moment after an alert from a camera they show (the doorbell and the driveway), the Mac Studio then sends a push that
+has iOS reload the camera widgets, even with Woodruff closed. Without it the build leaves push off the widgets alone:
+they then update from the alert itself, which iOS can put off once a widget has used its reloads for the day.
+
 Until the app exists in App Store Connect the upload says "Not Set Up" in the Mac app's Settings > General and is
 tried again every 6 hours (or at Check for Updates Now). To turn uploads off, add `"testflight": false` to the
 updater's `config.json`. TestFlight builds use Apple's production push service, so Instant iPhone Alerts need a push

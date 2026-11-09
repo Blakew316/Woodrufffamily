@@ -108,8 +108,9 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: $(WOODRUFF_BUNDLE_ID).widgets
         PRODUCT_NAME: WoodruffWidgets
         TARGETED_DEVICE_FAMILY: "1,2"
-        # The app group shared with the app (empty: none).
-        WOODRUFF_WIDGET_ENTITLEMENTS: App/Widgets/WoodruffWidgets.entitlements
+        # The app group shared with the app, and push for the camera widgets (the Mac Studio's push after an alert from
+        # a camera they show). App/Widgets/WoodruffWidgets.entitlements: the app group alone; empty: none.
+        WOODRUFF_WIDGET_ENTITLEMENTS: App/Widgets/WoodruffWidgetsPush.entitlements
         CODE_SIGN_ENTITLEMENTS: $(WOODRUFF_WIDGET_ENTITLEMENTS)
         SKIP_INSTALL: YES
     info:

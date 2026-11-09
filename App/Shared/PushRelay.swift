@@ -33,6 +33,16 @@ final class PushRelay {
         var at: Double
         /// iPhone: its address for starting the doorbell's Live Activity (hex), when it has one.
         var start: String? = nil
+        /// iPhone: its camera widgets' push address (hex), when one of them is on its Home Screen or Lock Screen.
+        var widgets: String? = nil
+        /// iPhone: the cameras those widgets show (nil or empty: not known yet).
+        var widgetCameras: [String]? = nil
+
+        /// Its camera widgets show one of [cameras] (any, while it hasn't said which).
+        func widgetsShow(_ cameras: Set<String>) -> Bool {
+            guard let shown = widgetCameras, !shown.isEmpty else { return true }
+            return shown.contains { cameras.contains($0) }
+        }
     }
 
     private(set) var lastSent: Date?
@@ -180,7 +190,9 @@ final class PushRelay {
             return
         }
         all[DeviceID.value] = Token(token: hex, env: env, topic: topic, name: name, at: Date().timeIntervalSince1970,
-                                    start: all[DeviceID.value]?.start ?? pendingStart)
+                                    start: all[DeviceID.value]?.start ?? pendingStart,
+                                    widgets: all[DeviceID.value]?.widgets ?? pendingWidgets,
+                                    widgetCameras: all[DeviceID.value]?.widgetCameras ?? pendingWidgetCameras)
         tokens = all
         Saved.save(Self.tokensKey, all)
     }
@@ -198,6 +210,24 @@ final class PushRelay {
         all[DeviceID.value] = mine
         tokens = all
         Saved.save(Self.tokensKey, all)
+    }
+
+    /// iPhone: the address the Mac Studio reloads this iPhone's camera widgets with (WidgetKit's), nil when none of
+    /// them is set up, and the cameras they show: the push goes only for those cameras' alerts (kept until this
+    /// iPhone has signed up).
+    @ObservationIgnored private var pendingWidgets: String?
+    @ObservationIgnored private var pendingWidgetCameras: [String]?
+    func setWidgetToken(_ hex: String?, cameras: [String]) {
+        pendingWidgets = hex
+        pendingWidgetCameras = cameras
+        var all = Saved.load(Self.tokensKey, as: [String: Token].self) ?? [:]
+        guard var mine = all[DeviceID.value], mine.widgets != hex || mine.widgetCameras != cameras else { return }
+        mine.widgets = hex
+        mine.widgetCameras = cameras
+        all[DeviceID.value] = mine
+        tokens = all
+        Saved.save(Self.tokensKey, all)
+        Self.log.notice("camera widgets' push address \(hex == nil ? "cleared (none of them set up)" : "handed to the Macs", privacy: .public)")
     }
 
     /// What the setup page shows under it (a key file that couldn't be read).
@@ -355,6 +385,9 @@ final class PushRelay {
         }
         if anySent { lastSent = Date() }
         lastError = failure
+        // A camera alert: the camera widgets of the iPhones that show that camera are reloaded by a push once it has
+        // been kept for them.
+        if anySent, let camera = userInfo["camera"] { widgetsChanged(camera: camera) }
         // The doorbell rang: its Live Activity on each iPhone that can show one.
         if userInfo["ring"] == "1", let camera = userInfo["camera"] {
             await startDoorbell(camera: camera, name: body, thumb: userInfo["thumb"], auth: auth)
@@ -404,11 +437,75 @@ final class PushRelay {
         }
     }
 
+    // MARK: Mac: the iPhones' camera widgets
+
+    /// How long after a camera alert the widgets' push goes: each iPhone's alert add-on has up to 20 seconds, and a
+    /// moment more to frame the picture, to keep the event and its picture for the widgets, and the push should find
+    /// them there.
+    private static let widgetsWait: TimeInterval = 25
+    /// The widgets' push waiting to go, when it's due, and the cameras it's for.
+    @ObservationIgnored private var widgetsPush: Task<Void, Never>?
+    @ObservationIgnored private var widgetsDue: Date?
+    @ObservationIgnored private var widgetsCameras: Set<String> = []
+
+    /// A camera alert from [camera] just went to the iPhones: a moment later a WidgetKit push to the camera widgets of
+    /// each one that shows that camera has iOS reload them, even with Woodruff closed there (the add-on's own reload
+    /// waits once iOS's daily allowance for the widget is used up). Each push reloads all of an iPhone's camera
+    /// widgets and uses up their reloads too: so none goes for a camera they don't show, and alerts close together
+    /// share one, as Apple asks.
+    private func widgetsChanged(camera: String) {
+        guard tokens.values.contains(where: { !($0.widgets ?? "").isEmpty && $0.widgetsShow([camera]) }) else { return }
+        widgetsCameras.insert(camera)
+        // Every alert of a burst is in it, and it goes only once the latest one's add-on is done too.
+        widgetsDue = Date().addingTimeInterval(Self.widgetsWait)
+        guard widgetsPush == nil else { return }
+        widgetsPush = Task { [weak self] in
+            while let due = self?.widgetsDue, due > Date() {
+                try? await Task.sleep(nanoseconds: UInt64(max(0.1, due.timeIntervalSinceNow) * 1_000_000_000))
+            }
+            guard let self else { return }
+            let cameras = self.widgetsCameras
+            self.widgetsPush = nil
+            self.widgetsDue = nil
+            self.widgetsCameras = []
+            await self.pushWidgets(showing: cameras)
+        }
+    }
+
+    /// The widgets' push to every iPhone whose camera widgets show one of [cameras]. An address Apple no longer takes
+    /// is dropped (the iPhone hands over its new one when Woodruff next opens there).
+    private func pushWidgets(showing cameras: Set<String>) async {
+        guard let auth = token() else { return }
+        // Nothing to show: it only says the widgets' content changed.
+        let message = Data(#"{"aps":{"content-changed":true}}"#.utf8)
+        var gone: [String] = []
+        for (device, t) in tokens {
+            guard let widgets = t.widgets, !widgets.isEmpty, widgets.allSatisfy(\.isHexDigit), t.widgetsShow(cameras) else { continue }
+            var env = t.env == "production" ? "production" : "development"
+            var (code, reason) = await post(message, token: t, env: env, id: "widgets", auth: auth, widgets: widgets)
+            // The other push service, as for the alerts (an iPhone that signed up with the wrong one).
+            if reason == "BadDeviceToken" {
+                let other = env == "production" ? "development" : "production"
+                let (c2, r2) = await post(message, token: t, env: other, id: "widgets", auth: auth, widgets: widgets)
+                if c2 == 200 || r2 != "BadDeviceToken" { code = c2; reason = r2; env = other }
+            }
+            Self.log.notice("widgets push to \(t.name, privacy: .public) (\(env, privacy: .public)): \(code) \(reason, privacy: .public)")
+            if code == 410 || reason == "BadDeviceToken" || reason == "Unregistered" { gone.append(device) }
+        }
+        guard !gone.isEmpty else { return }
+        var all = Saved.load(Self.tokensKey, as: [String: Token].self) ?? [:]
+        for g in gone { all[g]?.widgets = nil }
+        tokens = all
+        Saved.save(Self.tokensKey, all)
+    }
+
     /// One push to one iPhone on one of Apple's two services: the status code and Apple's reason ("OK" when sent;
-    /// the error itself when it didn't get there, with code 0).
-    private func post(_ data: Data, token t: Token, env: String, id: String, auth: String, liveActivity: String? = nil) async -> (Int, String) {
+    /// the error itself when it didn't get there, with code 0). [liveActivity] and [widgets]: that address instead of
+    /// the alerts', for the doorbell's Live Activity or the camera widgets.
+    private func post(_ data: Data, token t: Token, env: String, id: String, auth: String, liveActivity: String? = nil,
+                      widgets: String? = nil) async -> (Int, String) {
         let host = env == "production" ? "api.push.apple.com" : "api.sandbox.push.apple.com"
-        guard let url = URL(string: "https://\(host)/3/device/\(liveActivity ?? t.token)") else { return (0, "bad address") }
+        guard let url = URL(string: "https://\(host)/3/device/\(liveActivity ?? widgets ?? t.token)") else { return (0, "bad address") }
         var r = URLRequest(url: url, timeoutInterval: 20)
         r.httpMethod = "POST"
         r.httpBody = data
@@ -416,14 +513,20 @@ final class PushRelay {
         if liveActivity != nil {
             r.setValue(t.topic + ".push-type.liveactivity", forHTTPHeaderField: "apns-topic")
             r.setValue("liveactivity", forHTTPHeaderField: "apns-push-type")
+        } else if widgets != nil {
+            // WidgetKit's push: the app's id with WidgetKit's ending, and iOS reloads the widgets that take one.
+            r.setValue(t.topic + ".push-type.widgets", forHTTPHeaderField: "apns-topic")
+            r.setValue("widgets", forHTTPHeaderField: "apns-push-type")
         } else {
             r.setValue(t.topic, forHTTPHeaderField: "apns-topic")
             r.setValue("alert", forHTTPHeaderField: "apns-push-type")
         }
         r.setValue("10", forHTTPHeaderField: "apns-priority")
         // Same ID as the alert itself: a repeat (from a second Mac, or the iPhone's own) replaces it.
-        if liveActivity == nil { r.setValue(String(id.prefix(64)), forHTTPHeaderField: "apns-collapse-id") }
-        r.setValue(String(Int(Date().timeIntervalSince1970) + 3600), forHTTPHeaderField: "apns-expiration")
+        if liveActivity == nil, widgets == nil { r.setValue(String(id.prefix(64)), forHTTPHeaderField: "apns-collapse-id") }
+        // The widgets' push isn't kept for an iPhone that's switched off or out of reach: Apple keeps only one push per
+        // app for it, which has to stay the alert (the alert's add-on reloads the widgets when it does arrive).
+        r.setValue(widgets != nil ? "0" : String(Int(Date().timeIntervalSince1970) + 3600), forHTTPHeaderField: "apns-expiration")
         do {
             let (d, resp) = try await URLSession.shared.data(for: r)
             let code = (resp as? HTTPURLResponse)?.statusCode ?? 0

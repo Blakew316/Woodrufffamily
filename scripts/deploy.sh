@@ -1089,7 +1089,7 @@ deploy_iphone() {
   local -a targets usable sign
   local udid name i status identity identity_name cert_expires cert_days app_profile app_uuid app_expires app_days
   local widgets_profile widgets_uuid widgets_expires widgets_days log product copy appex slog vlog
-  local bid item ilog llog installed=0 kept why variant ents
+  local bid item ilog llog installed=0 kept why variant ents wents nents
 
   step "iPhone: the iPhones paired with this Mac"
   if ! signing devices >"$devs" 2>"$LOGDIR/iphones.log"; then
@@ -1206,29 +1206,32 @@ deploy_iphone() {
     ${VERSION_SETTINGS[@]+"${VERSION_SETTINGS[@]}"} build </dev/null >"$log" 2>&1
   status=$?
   show_build "$log"
-  # Xcode couldn't sign with everything: drop only what Apple refused, so the iPhones still update. First without
-  # the widgets' app group (not registered on the account yet; the Home Screen widgets then say to open the app)
-  # but with push, then with neither.
-  # Xcode couldn't sign with everything: drop only what Apple refused, so the iPhones still update. First the camera
-  # add-on's app group alone (its App ID may lack the group; it then shows the picture the Mac puts in the push),
-  # then the app group everywhere (the Home Screen widgets then say to open the app) but with push, then neither.
-  for variant in notify push basic; do
+  # Xcode couldn't sign with everything: drop only what Apple refused, so the iPhones still update. First the widgets'
+  # push alone (their App ID may lack Push Notifications; the alerts and the app still reload them), then the camera
+  # add-on's app group alone (its App ID may lack the group; it then shows the picture the Mac puts in the push), then
+  # both, then the app group everywhere (the Home Screen widgets then say to open the app) but with push, then neither.
+  for variant in widgets notify both push basic; do
     if [ "$XCODE_SIGNING" -ne 1 ] || build_succeeded "$status" "$log" "$product"; then break; fi
     case "$variant" in
-      notify) warn "the iPhone build failed; building it again without the camera add-on's app group" ;;
+      widgets) warn "the iPhone build failed; building it again without the widgets' push" ;;
+      notify) warn "building it again without the camera add-on's app group instead" ;;
+      both) warn "building it again without either" ;;
       push) warn "the iPhone build with the widgets' app group failed; building it again without the app group" ;;
       basic) warn "the iPhone build with push failed too; building it again without push" ;;
     esac
     case "$variant" in
-      notify) ents=App/iOS/WoodruffFamily.entitlements; wents=App/Widgets/WoodruffWidgets.entitlements ;;
-      push) ents=App/iOS/WoodruffFamilyPush.entitlements; wents= ;;
-      basic) ents=App/iOS/WoodruffFamilyBasic.entitlements; wents= ;;
+      widgets) ents=App/iOS/WoodruffFamily.entitlements; wents=App/Widgets/WoodruffWidgets.entitlements
+        nents=App/NotificationService/WoodruffNotifications.entitlements ;;
+      notify) ents=App/iOS/WoodruffFamily.entitlements; wents=App/Widgets/WoodruffWidgetsPush.entitlements; nents= ;;
+      both) ents=App/iOS/WoodruffFamily.entitlements; wents=App/Widgets/WoodruffWidgets.entitlements; nents= ;;
+      push) ents=App/iOS/WoodruffFamilyPush.entitlements; wents=; nents= ;;
+      basic) ents=App/iOS/WoodruffFamilyBasic.entitlements; wents=; nents= ;;
     esac
     log="$LOGDIR/iphone-build-$variant.log"
     xcodebuild -project WoodruffFamily.xcodeproj -scheme WoodruffFamily -destination 'generic/platform=iOS' \
       -configuration Release -derivedDataPath build DEVELOPMENT_TEAM="$TEAM" \
       WOODRUFF_BUNDLE_ID="$IPHONE_BUNDLE_ID" "${sign[@]}" \
-      WOODRUFF_ENTITLEMENTS="$ents" WOODRUFF_WIDGET_ENTITLEMENTS="$wents" WOODRUFF_NOTIFY_ENTITLEMENTS= \
+      WOODRUFF_ENTITLEMENTS="$ents" WOODRUFF_WIDGET_ENTITLEMENTS="$wents" WOODRUFF_NOTIFY_ENTITLEMENTS="$nents" \
       ${VERSION_SETTINGS[@]+"${VERSION_SETTINGS[@]}"} build </dev/null >"$log" 2>&1
     status=$?
     show_build "$log"
@@ -1408,11 +1411,18 @@ first_errors() {  # $1 = log
   grep -E '(error|Error|ERROR)[: ]' "$1" 2>/dev/null | grep -v '^ *warning' | head -n 3 | tr '\n' ' ' | cut -c1-400
 }
 
+# Apple wouldn't sign push for the widgets: an error line about push that names them. The log prints every target's
+# entitlements, and the app's own carry push too, so a mention of push alone says nothing.
+widgets_push_refused() {  # $1 = log
+  grep -E 'error:.*(aps-environment|Push Notifications)' "$1" 2>/dev/null | grep -qi 'widgets'
+}
+
 # Archive the iPhone app (with its widgets and notification extension) and upload it to TestFlight. The build number
 # is the commit count, as on every build, so each upload is newer than the last.
 deploy_testflight() {
   local archive="$LOGDIR/Woodruff Family.xcarchive" options="$LOGDIR/ExportOptions.plist" export="$LOGDIR/export"
   local log="$LOGDIR/testflight-archive.log" ulog="$LOGDIR/testflight-upload.log" status why
+  local wents=App/Widgets/WoodruffWidgetsPush.entitlements
   local -a sign
 
   step "TestFlight: archiving the iPhone app (Release, signed by Xcode's account, team $TEAM)"
@@ -1424,6 +1434,20 @@ deploy_testflight() {
     ${VERSION_SETTINGS[@]+"${VERSION_SETTINGS[@]}"} archive </dev/null >"$log" 2>&1
   status=$?
   show_build "$log"
+  if { [ "$status" -ne 0 ] || [ ! -d "$archive" ]; } && widgets_push_refused "$log"; then
+    # Apple wouldn't sign push for the widgets (their App ID lacks Push Notifications): archive without it (the
+    # alerts and the app still reload them). Any other failure keeps it for the retries below.
+    warn "the archive with the widgets' push failed; archiving again without it"
+    wents=App/Widgets/WoodruffWidgets.entitlements
+    log="$LOGDIR/testflight-archive-widgets.log"
+    rm -rf "$archive"
+    xcodebuild -project WoodruffFamily.xcodeproj -scheme WoodruffFamily -destination 'generic/platform=iOS' \
+      -configuration Release -derivedDataPath build -archivePath "$archive" DEVELOPMENT_TEAM="$TEAM" \
+      WOODRUFF_BUNDLE_ID="$IPHONE_BUNDLE_ID" "${sign[@]}" \
+      WOODRUFF_WIDGET_ENTITLEMENTS="$wents" ${VERSION_SETTINGS[@]+"${VERSION_SETTINGS[@]}"} archive </dev/null >"$log" 2>&1
+    status=$?
+    show_build "$log"
+  fi
   if { [ "$status" -ne 0 ] || [ ! -d "$archive" ]; } && grep -q 'application-groups' "$log" 2>/dev/null; then
     # Apple wouldn't sign the app group: archive without it (the widgets then ask to open the app; camera alerts
     # still show the picture the Mac puts in the push).
@@ -1432,7 +1456,7 @@ deploy_testflight() {
     rm -rf "$archive"
     xcodebuild -project WoodruffFamily.xcodeproj -scheme WoodruffFamily -destination 'generic/platform=iOS' \
       -configuration Release -derivedDataPath build -archivePath "$archive" DEVELOPMENT_TEAM="$TEAM" \
-      WOODRUFF_BUNDLE_ID="$IPHONE_BUNDLE_ID" "${sign[@]}" \
+      WOODRUFF_BUNDLE_ID="$IPHONE_BUNDLE_ID" "${sign[@]}" WOODRUFF_WIDGET_ENTITLEMENTS="$wents" \
       WOODRUFF_NOTIFY_ENTITLEMENTS= ${VERSION_SETTINGS[@]+"${VERSION_SETTINGS[@]}"} archive </dev/null >"$log" 2>&1
     status=$?
     show_build "$log"

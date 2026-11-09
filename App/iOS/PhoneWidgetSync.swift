@@ -8,9 +8,9 @@ import WoodruffKit
 
 /// Keeps the iPhone's Home Screen widgets in step with the app: what the remote's TV is playing, the weather and the
 /// thermostat. Changes are gathered for a couple of seconds (a burst that keeps going still writes within about six),
-/// and the widgets reload only when what they show has changed. Going into the background writes at once (a write
-/// still waiting would otherwise wait until the app is next opened), and coming back after a while brings the
-/// cameras' pictures up to date straight away.
+/// and only the widgets whose part changed reload. Going into the background writes at once (a write still waiting
+/// would otherwise wait until the app is next opened), and coming back after a while brings the cameras' pictures up
+/// to date straight away.
 @MainActor
 enum PhoneWidgetSync {
     private static var pending: Task<Void, Never>?
@@ -61,13 +61,93 @@ enum PhoneWidgetSync {
         }
     }
 
-    /// The camera widgets reload now.
+    /// The camera widgets reload now (in the background, for newer pictures only when their time has come).
     static func reloadCameras() {
         cameraReload?.cancel()
         cameraReload = nil
         lastCameraReload = Date()
-        WidgetCenter.shared.reloadTimelines(ofKind: PhoneWidgetShare.tvsCamerasKind)
-        WidgetCenter.shared.reloadTimelines(ofKind: PhoneWidgetShare.doorbellKind)
+        reload([PhoneWidgetShare.tvsCamerasKind: .pictures, PhoneWidgetShare.doorbellKind: .pictures])
+    }
+
+    /// What a widget reloads for, which decides how soon a camera widget's reload goes while Woodruff is in the
+    /// background. There each reload counts against the widget's daily allowance from iOS (in front they're free), and
+    /// the camera widgets need theirs for the camera alerts, which reload them the moment they come (the alert's
+    /// add-on, then the Mac Studio's push).
+    enum Why: Int {
+        /// Only newer pictures from the cameras: a camera widget at most every two hours (it reads the newest by
+        /// itself every few hours, and each alert brings its own).
+        case pictures
+        /// Only how far through the TVs are and their time left (every minute while something plays): at most every
+        /// half hour.
+        case times
+        /// What the family would notice (a new title, play or pause, a TV going off, the remote's TV), or a button
+        /// they pressed: at once.
+        case change
+
+        /// The least time from a camera widget's last reload in the background to one for this.
+        var gap: TimeInterval {
+            switch self {
+            case .pictures: return 2 * 3600
+            case .times: return 30 * 60
+            case .change: return 0
+            }
+        }
+    }
+
+    /// Reloads these widgets, each for what changed in it. In the background a camera widget reloads at once only for
+    /// a change the family would notice; for newer pictures or TV times alone it waits until that one's gap since its
+    /// last reload there is up. One put off then goes when its time comes: from a timer while the app is still
+    /// running, else at the next background refresh (asked for by then), or as soon as Woodruff is in front.
+    static func reload(_ kinds: [String: Why]) {
+        let d = UserDefaults.standard
+        let owed = d.dictionary(forKey: owedKey) as? [String: Double] ?? [:]
+        let away = UIApplication.shared.applicationState == .background
+        let now = Date().timeIntervalSince1970
+        var stillOwed: [String: Double] = [:]
+        for kind in Set(kinds.keys).union(owed.keys) {
+            if away, kind == PhoneWidgetShare.tvsCamerasKind || kind == PhoneWidgetShare.doorbellKind {
+                let key = "widgets.reloadedAway." + kind
+                if kinds[kind] != .change {
+                    // Due once its gap after the last reload out here is up, or when one put off before is due.
+                    let last = min(d.double(forKey: key), now)
+                    let due = min(owed[kind] ?? .infinity, kinds[kind].map { last + $0.gap } ?? .infinity)
+                    if now < due { stillOwed[kind] = due; continue }
+                }
+                d.set(now, forKey: key)
+            }
+            WidgetCenter.shared.reloadTimelines(ofKind: kind)
+        }
+        if stillOwed != owed { d.set(stillOwed, forKey: owedKey) }
+        if let first = stillOwed.values.min() { remind(at: first) }
+    }
+
+    /// The camera widgets whose reload was put off, with when each is due.
+    private static let owedKey = "widgets.owedReloads"
+
+    /// When the first camera widget reload put off in the background is due, if one is.
+    static var owedDue: Date? {
+        (UserDefaults.standard.dictionary(forKey: owedKey) as? [String: Double])?.values.min().map { Date(timeIntervalSince1970: $0) }
+    }
+
+    /// The timer for a reload put off, and when it fires.
+    private static var reminder: Task<Void, Never>?
+    private static var reminderAt: Double?
+
+    /// A camera widget's reload is put off until [due]: a timer for then while the app still runs (iOS suspends it
+    /// with the app), and the background refresh asked for by then.
+    private static func remind(at due: Double) {
+        guard reminderAt != due else { return }
+        reminderAt = due
+        reminder?.cancel()
+        reminder = Task { @MainActor in
+            let wait = min(max(1, due - Date().timeIntervalSince1970), 3 * 3600)
+            try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            PhoneWidgetSync.reminder = nil
+            PhoneWidgetSync.reminderAt = nil
+            reload([:])
+        }
+        WidgetRefresh.schedule()
     }
 
     // MARK: Background and back
@@ -81,6 +161,13 @@ enum PhoneWidgetSync {
         observers.append(c.addObserver(forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main) { _ in
             MainActor.assumeIsolated { PhoneWidgetSync.returning() }
         })
+        // In front: a camera widget reload put off in the background goes now (free in front).
+        observers.append(c.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated { PhoneWidgetSync.reload([:]) }
+        })
+        // The camera widgets' push address to the Macs (it can change while Woodruff is closed).
+        WidgetPushToken.check()
+        reload([:])
     }
 
     /// Into the background: what's waiting is written now, with a little time asked for to finish.
@@ -111,32 +198,42 @@ enum PhoneWidgetSync {
     /// Back after more than a minute away: the cameras' latest pictures, from the Mac Studio, straight away (the
     /// tiles show them while their streams reconnect, and the widgets get them too).
     private static func returning() {
+        WidgetPushToken.check()
         let away = awayAt.map { Date().timeIntervalSince($0) } ?? 0
         awayAt = nil
         guard away > 60 else { return }
         Task { @MainActor in
-            if await CameraStillPull.run() > 0 { reloadCameras() }
+            let fresh = await CameraStillPull.run()
+            if !fresh.isEmpty { reloadCameras() }
         }
     }
 
     /// The write going now, if any: writes go one after another (one clearing out old pictures could otherwise delete
     /// one another has just saved but not yet handed over).
-    private static var writing: Task<Void, Never>?
+    private static var writing: Task<[String: Why], Never>?
 
-    /// Writes it now (a widget's or the Lock Screen's button has just changed what's playing).
-    static func write(_ fleet: Fleet) async {
-        guard PhoneWidgetShare.container != nil else { return }
-        let previous = writing
-        let task = Task { @MainActor in
-            await previous?.value
-            await writeNow(fleet)
-        }
-        writing = task
-        await task.value
-        if writing == task { writing = nil }
+    /// Writes it now and reloads the widgets whose part changed. [now]: a button the family pressed (a widget's or the
+    /// Lock Screen's) has just changed what's playing, so they show it at once, with Woodruff in the background too.
+    static func write(_ fleet: Fleet, now: Bool = false) async {
+        let kinds = await written(fleet)
+        reload(now ? kinds.mapValues { _ in Why.change } : kinds)
     }
 
-    private static func writeNow(_ fleet: Fleet) async {
+    /// Writes it now and gives the widgets whose part changed, with what for, for the caller to reload.
+    static func written(_ fleet: Fleet) async -> [String: Why] {
+        guard PhoneWidgetShare.container != nil else { return [:] }
+        let previous = writing
+        let task = Task { @MainActor () -> [String: Why] in
+            _ = await previous?.value
+            return await writeNow(fleet)
+        }
+        writing = task
+        let kinds = await task.value
+        if writing == task { writing = nil }
+        return kinds
+    }
+
+    private static func writeNow(_ fleet: Fleet) async -> [String: Why] {
         var s = PhoneWidgetShare.Snapshot()
         if let tv = fleet.selected {
             s.tvName = tv.name
@@ -181,12 +278,12 @@ enum PhoneWidgetSync {
             s.thermostatSet = t.thermostatMode == "off" ? "Off" : set.map(temperatureText)
             s.thermostatAction = t.thermostatMode == "off" ? "off" : t.action
         }
-        // Only the widgets that show any of it (the doorbell's shows only its camera, reloaded with the cameras).
-        if PhoneWidgetShare.save(s) {
-            WidgetCenter.shared.reloadTimelines(ofKind: PhoneWidgetShare.nowPlayingKind)
-            WidgetCenter.shared.reloadTimelines(ofKind: PhoneWidgetShare.homeKind)
-            WidgetCenter.shared.reloadTimelines(ofKind: PhoneWidgetShare.tvsCamerasKind)
-        }
+        // Only the widgets whose part changed (the doorbell's shows only its camera, reloaded with the cameras).
+        let saved = PhoneWidgetShare.save(s)
+        var kinds: [String: Why] = [:]
+        for kind in saved.timesOnly { kinds[kind] = .times }
+        for kind in saved.changed { kinds[kind] = .change }
+        return kinds
     }
 
     /// Saves a small copy of the title's picture in the app group (once per title) and gives its name.
@@ -214,15 +311,15 @@ enum CameraStillPull {
     private static var good: String?
     private static var running = false
 
-    /// How many cameras got a new picture.
+    /// The cameras that got a new picture.
     @discardableResult
-    static func run() async -> Int {
-        guard !running, !Demo.isOn, NestCameras.shared.connected, let token = CameraShareKey.token() else { return 0 }
+    static func run() async -> Set<String> {
+        guard !running, !Demo.isOn, NestCameras.shared.connected, let token = CameraShareKey.token() else { return [] }
         let hosts = (UserDefaults.standard.string(forKey: CameraShareKey.hostsKey) ?? "").split(separator: ",").map(String.init).filter { !$0.isEmpty }
         // The notification extension asks the Mac Studio for each alert's picture with these too.
         CameraEventMedia.keepShare(token: token, hosts: hosts.joined(separator: ","))
         let cams = NestCameras.shared.cameras.filter { $0.online }
-        guard !hosts.isEmpty, let first = cams.first else { return 0 }
+        guard !hosts.isEmpty, let first = cams.first else { return [] }
         running = true
         defer { running = false }
         // The first camera finds the address that answers (home, or Tailscale away from home); the rest go at once.
@@ -232,21 +329,21 @@ enum CameraStillPull {
         for h in order {
             if let d = await fetch(h, first.id, token) { host = h; got[first.id] = d; break }
         }
-        guard let host else { return 0 }
+        guard let host else { return [] }
         good = host
         let rest = cams.dropFirst().map(\.id)
         await withTaskGroup(of: (String, Data?).self) { g in
             for id in rest { g.addTask { (id, await CameraStillPull.fetch(host, id, token)) } }
             for await pair in g { if let d = pair.1 { got[pair.0] = d } }
         }
-        var count = 0
+        var fresh: Set<String> = []
         for cam in cams {
             guard let jpeg = got[cam.id] else { continue }
             CameraStreams.shared.keepStill(cam, jpeg)
             PhoneWidgetShare.saveCamera(id: cam.id, name: cam.name, doorbell: cam.doorbell, jpeg: jpeg)
-            count += 1
+            fresh.insert(cam.id)
         }
-        return count
+        return fresh
     }
 
     /// [id]'s picture now from the Mac Studio at [host], made at most 480 pixels across (as the iPhone's own are).
@@ -276,26 +373,55 @@ enum CameraStillPull {
     }
 }
 
-/// Closed a while: iOS wakes the app now and then (about every quarter hour at most, as it sees fit) to bring the
-/// widgets up to date: what the TVs are doing and the cameras' latest pictures.
+/// Closed a while: iOS wakes the app now and then (about every quarter hour at most, as it sees fit, or sooner for a
+/// camera widget's reload put off until then) to bring the widgets up to date: what the TVs are doing and the cameras'
+/// latest pictures.
 @MainActor
 enum WidgetRefresh {
     static let id = "com.woodruff.family.widgets"
 
     static func schedule() {
         let r = BGAppRefreshTaskRequest(identifier: id)
-        r.earliestBeginDate = Date(timeIntervalSinceNow: 15 * 60)
+        // In a quarter of an hour at the earliest, or sooner when a camera widget's reload put off is due by then.
+        let next = Date(timeIntervalSinceNow: 15 * 60)
+        r.earliestBeginDate = PhoneWidgetSync.owedDue.map { min(next, max($0, Date())) } ?? next
         try? BGTaskScheduler.shared.submit(r)
     }
 
     static func run() async {
         guard !Demo.isOn, PhoneWidgetShare.container != nil else { return }
+        WidgetPushToken.check()
         let fleet = Fleet.shared
-        if await CameraStillPull.run() > 0 { PhoneWidgetSync.reloadCameras() }
+        // The cameras' pictures and the TVs first, then one reload of each widget whose part changed (two in a row
+        // would use up two of its reloads). For newer pictures, only the widgets that show those cameras.
+        var kinds: [String: PhoneWidgetSync.Why] = [:]
+        let fresh = await CameraStillPull.run()
+        for kind in PhoneWidgetShare.widgets(showing: fresh) { kinds[kind] = .pictures }
         // Only with the TVs at hand (a launch into the background with the phone locked may not have them yet):
         // never an empty list over what the widgets show.
-        guard !fleet.hubs.isEmpty, !fleet.tvs.isEmpty else { return }
-        await fleet.refresh()
-        await PhoneWidgetSync.write(fleet)
+        if !fleet.hubs.isEmpty, !fleet.tvs.isEmpty {
+            await fleet.refresh()
+            let tvs = await PhoneWidgetSync.written(fleet)
+            kinds.merge(tvs) { $0.rawValue >= $1.rawValue ? $0 : $1 }
+        }
+        PhoneWidgetSync.reload(kinds)
+    }
+}
+
+/// The camera widgets' push address (WidgetKit's), handed to the Macs with this iPhone's alert address (the synced
+/// settings carry both), with the cameras those widgets show: a moment after an alert from one of them the Mac Studio
+/// sends a push to it, and iOS reloads the camera widgets then, with the event and its picture already saved for them
+/// by the alert's add-on, even with Woodruff closed. Looked at on launch, on coming back and at each background
+/// refresh (the widgets keep the newest address in the app group meanwhile).
+@MainActor
+enum WidgetPushToken {
+    static func check() {
+        guard !Demo.isOn, PhoneWidgetShare.container != nil else { return }
+        Task { @MainActor in
+            // WidgetKit's own copy first: none until it has made one, or with no camera widget set up.
+            let current = await WidgetCenter.shared.currentPushInfo?.token
+            PushRelay.shared.setWidgetToken(current.map(PhoneWidgetShare.hex) ?? PhoneWidgetShare.widgetPushToken(),
+                                            cameras: PhoneWidgetShare.camerasOnWidgets())
+        }
     }
 }

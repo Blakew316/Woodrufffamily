@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Shared with the app: what the Home Screen widgets show. -->
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>group.com.woodruff.family</string>
+	</array>
+	<!-- The Mac Studio's push after an alert from a camera they show reloads the camera widgets (WidgetKit push).
+	     Without it (WoodruffWidgets.entitlements, which deploy.sh falls back to) they reload only from the alerts
+	     and the app. -->
+	<key>aps-environment</key>
+	<string>development</string>
+</dict>
+</plist>

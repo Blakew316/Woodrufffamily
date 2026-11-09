@@ -1,8 +1,12 @@
 import Foundation
+import WidgetKit
 
 /// What the iPhone app hands its Home Screen and Lock Screen widgets, through the app group: what's playing (and
 /// its picture), the weather and the thermostat. Without the app group (signing that doesn't carry it yet) there
 /// is no container, nothing is written, and the widgets say to open the app.
+///
+/// iOS allows each widget only so many reloads a day (about 40 to 70) while Woodruff isn't in front, and a camera
+/// alert needs one to show on the widget: so a widget is reloaded only when something it shows has changed.
 enum PhoneWidgetShare {
     static let groupID = "group.com.woodruff.family"
     static let nowPlayingKind = "com.woodruff.family.widget.nowplaying"
@@ -34,14 +38,24 @@ enum PhoneWidgetShare {
         /// The TV the remote is on.
         var selectedTV: String? = nil
 
-        static func == (a: Snapshot, b: Snapshot) -> Bool { a.sameContent(b) }
+        static func == (a: Snapshot, b: Snapshot) -> Bool { a.sameTVs(b) && a.sameHome(b) }
 
-        private func sameContent(_ o: Snapshot) -> Bool {
-            tvName == o.tvName && title == o.title && detail == o.detail && isPlaying == o.isPlaying && art == o.art
-                && weatherTemp == o.weatherTemp && weatherSymbol == o.weatherSymbol && weatherWords == o.weatherWords
+        /// What the TVs and TVs & Cameras widgets show of it is the same.
+        func sameTVs(_ o: Snapshot) -> Bool { sameTVsButTimes(o) && tvs == o.tvs }
+
+        /// The same, but perhaps for how far through each TV is and its time left: those change every minute while
+        /// something plays, and only TVs & Cameras shows them.
+        func sameTVsButTimes(_ o: Snapshot) -> Bool {
+            func untimed(_ lines: [TVLine]?) -> [TVLine]? { lines?.map { var t = $0; t.progress = nil; t.left = nil; return t } }
+            return tvName == o.tvName && title == o.title && detail == o.detail && isPlaying == o.isPlaying && art == o.art
+                && untimed(tvs) == untimed(o.tvs) && selectedTV == o.selectedTV
+        }
+
+        /// What the Home widget shows of it (the weather and the thermostat) is the same.
+        func sameHome(_ o: Snapshot) -> Bool {
+            weatherTemp == o.weatherTemp && weatherSymbol == o.weatherSymbol && weatherWords == o.weatherWords
                 && highLow == o.highLow && thermostatName == o.thermostatName && thermostatTemp == o.thermostatTemp
-                && thermostatSet == o.thermostatSet && thermostatAction == o.thermostatAction && tvs == o.tvs
-                && selectedTV == o.selectedTV
+                && thermostatSet == o.thermostatSet && thermostatAction == o.thermostatAction
         }
 
         /// What the TVs were doing is too old to show as now: the app hasn't run for a while (it only writes this while
@@ -87,6 +101,45 @@ enum PhoneWidgetShare {
         return (try? JSONDecoder().decode([CameraLine].self, from: data)) ?? []
     }
 
+    /// The two cameras the TVs & Cameras widget shows: the doorbell, then the driveway (by name), else the first two.
+    static func shownCameras(_ cameras: [CameraLine]) -> [CameraLine] {
+        let door = doorbell(cameras)
+        let drive = cameras.first { $0.name.localizedCaseInsensitiveContains("drive") && $0.id != door?.id }
+        var out = [door, drive].compactMap { $0 }
+        for c in cameras where out.count < 2 && !out.contains(where: { $0.id == c.id }) { out.append(c) }
+        return out
+    }
+
+    /// The doorbell, which the Lock Screen's doorbell widget shows (else the first camera named for a door).
+    static func doorbell(_ cameras: [CameraLine]) -> CameraLine? {
+        cameras.first { $0.doorbell } ?? cameras.first { $0.name.localizedCaseInsensitiveContains("door") }
+    }
+
+    /// The camera widgets that show any of [cameras]: TVs & Cameras its two, the Lock Screen's the doorbell.
+    static func widgets(showing cameras: Set<String>) -> Set<String> {
+        guard !cameras.isEmpty else { return [] }
+        let all = loadCameras()
+        var kinds: Set<String> = []
+        if shownCameras(all).contains(where: { cameras.contains($0.id) }) { kinds.insert(tvsCamerasKind) }
+        if let door = doorbell(all), cameras.contains(door.id) { kinds.insert(doorbellKind) }
+        return kinds
+    }
+
+    /// The cameras the camera widgets show, which the Mac Studio's push after an alert goes for (an alert from any
+    /// other changes nothing on them, and each push uses up their reloads).
+    static func camerasOnWidgets() -> [String] {
+        let all = loadCameras()
+        var ids = shownCameras(all).map(\.id)
+        if let door = doorbell(all), !ids.contains(door.id) { ids.append(door.id) }
+        return ids
+    }
+
+    /// An alert's tag or picture for [camera] was saved: only the widgets that show that camera reload for it (an
+    /// alert from a camera neither shows would use up their reloads for nothing).
+    static func reloadWidgets(showing camera: String) {
+        for kind in widgets(showing: [camera]) { WidgetCenter.shared.reloadTimelines(ofKind: kind) }
+    }
+
     /// Keeps a camera's latest still ([jpeg]) and/or its latest event for the widget. True when the widget should
     /// reload (an event, or a still and the last reload for stills was over a minute ago).
     @discardableResult
@@ -112,8 +165,9 @@ enum PhoneWidgetShare {
                 line.event = event
                 line.eventAt = Date()
             }
-            all.removeAll { $0.id == id }
-            all.append(line)
+            // In its place: past the doorbell and the driveway the widget shows the first cameras in the list, so a
+            // save never changes which ones (an alert from a camera it doesn't show then never needs a reload).
+            if let i = all.firstIndex(where: { $0.id == id }) { all[i] = line } else { all.append(line) }
             guard let data = try? JSONEncoder().encode(all), (try? data.write(to: list, options: .atomic)) != nil else { return }
             saved = true
         }
@@ -134,22 +188,56 @@ enum PhoneWidgetShare {
         return try? JSONDecoder().decode(Snapshot.self, from: data)
     }
 
-    /// Writes it (with the time, so the widgets know how fresh it is); false when nothing they show changed (or
-    /// there's no app group), so the widgets needn't reload.
-    @discardableResult
-    static func save(_ s: Snapshot) -> Bool {
-        guard let url = container?.appendingPathComponent("widgets.json") else { return false }
+    /// Writes it (with the time, so the widgets know how fresh it is) and gives the widgets to reload: [changed], those
+    /// whose part of it changed (the TVs for the TVs and TVs & Cameras widgets, the weather and the thermostat for
+    /// Home), and [timesOnly], TVs & Cameras when all that changed is how far through the TVs are and their time left,
+    /// which can wait (the TVs widget doesn't show them). Neither when nothing they show changed, or there's no app
+    /// group.
+    static func save(_ s: Snapshot) -> (changed: Set<String>, timesOnly: Set<String>) {
+        guard let url = container?.appendingPathComponent("widgets.json") else { return ([], []) }
         var s = s
-        s.savedAt = Date()
+        let now = Date()
+        s.savedAt = now
         let old = load()
-        // Unchanged: only the time is brought up to date, and only now and then (no reload needed for it).
-        if let old, old == s, let at = old.savedAt, Date().timeIntervalSince(at) < 600 { return false }
-        guard let data = try? JSONEncoder().encode(s) else { return false }
-        let wrote = (try? data.write(to: url, options: .atomic)) != nil
-        // An older entry that had gone stale (or had no time) is fresh again: the widgets reload for that too.
-        let wasStale = old.map { $0.savedAt == nil || $0.tvsStale(at: Date()) } ?? true
-        return wrote && (old != s || wasStale)
+        // Unchanged: only the time is brought up to date, and only now and then. No reload for it: the widgets read it
+        // again by themselves a few minutes before what they last read would be too old to show.
+        if let old, old == s, let at = old.savedAt, now.timeIntervalSince(at) < 600 { return ([], []) }
+        guard let data = try? JSONEncoder().encode(s), (try? data.write(to: url, options: .atomic)) != nil else { return ([], []) }
+        guard let old else { return ([nowPlayingKind, homeKind, tvsCamerasKind], []) }
+        var changed: Set<String> = []
+        var timesOnly: Set<String> = []
+        // An older entry that had gone stale (or had no time) is fresh again: the TV widgets reload for that too.
+        if !old.sameTVsButTimes(s) || old.savedAt == nil || old.tvsStale(at: now) {
+            changed.formUnion([nowPlayingKind, tvsCamerasKind])
+        } else if old.tvs != s.tvs {
+            timesOnly.insert(tvsCamerasKind)
+        }
+        if !old.sameHome(s) { changed.insert(homeKind) }
+        return (changed, timesOnly)
     }
+
+    // MARK: The camera widgets' push address
+
+    /// Kept by the camera widgets' push handler (WidgetKit gives it to the widgets, not the app): the app hands it to
+    /// the Macs, and the Mac Studio reloads the camera widgets with a push a moment after each alert from a camera
+    /// they show. Nil when none of them is on the Home Screen or Lock Screen.
+    static func saveWidgetPushToken(_ token: Data?) {
+        guard let url = container?.appendingPathComponent("widget-push.txt") else { return }
+        if let token, !token.isEmpty {
+            try? Data(hex(token).utf8).write(to: url, options: .atomic)
+        } else {
+            try? FileManager.default.removeItem(at: url)
+        }
+    }
+
+    /// The camera widgets' push address as kept, in hex (as the Macs send to it).
+    static func widgetPushToken() -> String? {
+        guard let url = container?.appendingPathComponent("widget-push.txt"), let data = try? Data(contentsOf: url),
+              let text = String(data: data, encoding: .utf8), !text.isEmpty, text.allSatisfy(\.isHexDigit) else { return nil }
+        return text
+    }
+
+    static func hex(_ data: Data) -> String { data.map { String(format: "%02x", $0) }.joined() }
 
     /// What a widget says before it has anything: without the app group there is nothing opening the app would fix.
     static var emptyText: String { container == nil ? "Ready after the next update" : "Open Woodruff once" }

@@ -21,6 +21,8 @@ struct TVsCamerasWidget: Widget {
         .description("What the TVs are playing, with the doorbell and driveway beside them.")
         .supportedFamilies([.systemMedium])
         .contentMarginsDisabled()
+        // Reloaded by the Mac Studio's push a moment after each alert from a camera it shows.
+        .pushHandler(CameraWidgetsPushHandler.self)
     }
 }
 
@@ -42,14 +44,9 @@ struct TVsCamerasView: View {
         return stale ? out.map { var t = $0; t.title = nil; t.isPlaying = false; t.progress = nil; t.left = nil; return t } : out
     }
 
-    /// The doorbell, then the driveway (by name), else the first two cameras.
-    private var cams: [PhoneWidgetShare.CameraLine] {
-        let door = cameras.first { $0.doorbell } ?? cameras.first { $0.name.localizedCaseInsensitiveContains("door") }
-        let drive = cameras.first { $0.name.localizedCaseInsensitiveContains("drive") && $0.id != door?.id }
-        var out = [door, drive].compactMap { $0 }
-        for c in cameras where out.count < 2 && !out.contains(where: { $0.id == c.id }) { out.append(c) }
-        return out
-    }
+    /// The doorbell, then the driveway (by name), else the first two cameras (the same choice decides which alerts
+    /// reload this widget).
+    private var cams: [PhoneWidgetShare.CameraLine] { PhoneWidgetShare.shownCameras(cameras) }
 
     var body: some View {
         HStack(spacing: 9) {
@@ -198,10 +195,11 @@ struct DoorbellLockWidget: Widget {
         .configurationDisplayName("Doorbell")
         .description("The doorbell's latest picture and alert.")
         .supportedFamilies([.accessoryRectangular])
+        .pushHandler(CameraWidgetsPushHandler.self)
     }
 
     static func doorbell(_ cameras: [PhoneWidgetShare.CameraLine]) -> PhoneWidgetShare.CameraLine? {
-        cameras.first { $0.doorbell } ?? cameras.first { $0.name.localizedCaseInsensitiveContains("door") }
+        PhoneWidgetShare.doorbell(cameras)
     }
 }
 

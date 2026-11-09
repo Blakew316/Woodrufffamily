@@ -1,6 +1,8 @@
 """Runs scripts/deploy.sh with /bin/bash (macOS's bash 3.2 on CI) against stand-in tools, for its options and
---results lines on the way that ends before anything is built. Nothing real is built, signed or installed:
-every tool it would call first in PATH is a stand-in in a temporary folder, and the checkout is a copy.
+--results lines on the way that ends before anything is built, and for the iPhone build's and the TestFlight
+archive's retries when Apple refuses an entitlement (a stand-in xcodebuild that refuses the one asked). Nothing real
+is built, signed or installed: every tool it would call first in PATH is a stand-in in a temporary folder, and the
+checkout is a copy.
 
 Run from the repository root: python3 -m unittest discover -s scripts/tests -p 'test_*.py'
 """
@@ -43,8 +45,9 @@ esac
 STUBS = ("xcodebuild", "codesign", "ditto", "osascript", "pgrep", "open", "xcrun", "xcodegen", "notifyutil", "pkill")
 
 
-@unittest.skipUnless(os.path.exists(BASH), "needs " + BASH)
-class DeployOptions(unittest.TestCase):
+class DeployHarness(unittest.TestCase):
+    """The stand-in tools and the copy of the checkout, for the tests below (it has none of its own)."""
+
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="deploy-test.")
         self.repo = os.path.join(self.tmp, "repo")
@@ -95,6 +98,9 @@ class DeployOptions(unittest.TestCase):
         with open(path, encoding="utf-8") as handle:
             return [line.rstrip("\n").split("\t") for line in handle if line.strip()]
 
+
+@unittest.skipUnless(os.path.exists(BASH), "needs " + BASH)
+class DeployOptions(DeployHarness):
     def test_branch_origin_doesnt_have(self):
         results = os.path.join(self.tmp, "results.tsv")
         status, out = self.deploy("--branch", "release", "--expect", WANT, "mac", "share", "iphone", "--keep-iphone",
@@ -147,6 +153,162 @@ class DeployOptions(unittest.TestCase):
         proc = subprocess.run([BASH, "-n", os.path.join(SCRIPTS, "deploy.sh")], stdout=subprocess.PIPE,
                               stderr=subprocess.STDOUT)
         self.assertEqual(proc.returncode, 0, proc.stdout)
+
+
+APP = "App/iOS/WoodruffFamily.entitlements"
+WIDGETS = "App/Widgets/WoodruffWidgets.entitlements"
+WIDGETS_PUSH = "App/Widgets/WoodruffWidgetsPush.entitlements"
+NOTIFY = "App/NotificationService/WoodruffNotifications.entitlements"
+UDID = "00008110-001A2B3C4D5E801E"
+
+# Builds and archives like xcodebuild, signing with the entitlements files it's given (else project.yml's) and refusing
+# what $FAKE/refuse names: "widgets-push" (push in the widgets' entitlements), "notify-group" (the notification
+# extension's app group). Like xcodebuild, it prints every target's entitlements, so push and the app group are named
+# in every log.
+XCODEBUILD = LOG + r'''
+ents=App/iOS/WoodruffFamily.entitlements
+wents=App/Widgets/WoodruffWidgetsPush.entitlements
+nents=App/NotificationService/WoodruffNotifications.entitlements
+action=build
+archive=""
+prev=""
+for a in "$@"; do
+  case "$a" in
+    WOODRUFF_ENTITLEMENTS=*) ents=${a#*=} ;;
+    WOODRUFF_WIDGET_ENTITLEMENTS=*) wents=${a#*=} ;;
+    WOODRUFF_NOTIFY_ENTITLEMENTS=*) nents=${a#*=} ;;
+    archive) action=archive ;;
+    -exportArchive) action=export ;;
+  esac
+  if [ "$prev" = -archivePath ]; then archive=$a; fi
+  prev=$a
+done
+if [ "$action" = export ]; then echo "** EXPORT SUCCEEDED **"; exit 0; fi
+echo "ProcessProductPackaging $ents"
+echo 'Entitlements:'
+echo '    "aps-environment" = development;'
+echo '    "com.apple.security.application-groups" = ("group.com.woodruff.family");'
+refused=""
+if grep -q widgets-push "$FAKE/refuse" 2>/dev/null && [ "$wents" = App/Widgets/WoodruffWidgetsPush.entitlements ]; then
+  echo "error: Provisioning profile \"iOS Team Provisioning Profile: com.blakew316.woodruff.widgets\" doesn't include the aps-environment entitlement. (in target 'WoodruffWidgets' from project 'WoodruffFamily')"
+  refused=1
+fi
+if grep -q notify-group "$FAKE/refuse" 2>/dev/null && [ -n "$nents" ]; then
+  echo "error: Provisioning profile \"iOS Team Provisioning Profile: com.blakew316.woodruff.notifications\" doesn't include the com.apple.security.application-groups entitlement. (in target 'WoodruffNotifications' from project 'WoodruffFamily')"
+  refused=1
+fi
+word=BUILD
+if [ "$action" = archive ]; then word=ARCHIVE; fi
+if [ -n "$refused" ]; then echo "** $word FAILED **"; exit 65; fi
+if [ "$action" = archive ]; then mkdir -p "$archive"; else mkdir -p "build/Build/Products/Release-iphoneos/Woodruff Family.app"; fi
+echo "** $word SUCCEEDED **"
+'''
+
+# One iPhone paired, and every install works.
+XCRUN = LOG + r'''
+case "$1 $2 $3" in
+  "devicectl list devices")
+    out=""
+    prev=""
+    for a in "$@"; do
+      if [ "$prev" = --json-output ]; then out=$a; fi
+      prev=$a
+    done
+    printf '%s\n' '{"result": {"devices": [{"hardwareProperties": {"udid": "''' + UDID + r'''", "platform": "iOS", "reality": "physical"}, "deviceProperties": {"name": "Family iPhone"}, "connectionProperties": {}}]}}' >"$out"
+    ;;
+  "devicectl device install") ;;
+  *) echo "unexpected xcrun $*" >&2; exit 99 ;;
+esac
+'''
+
+
+@unittest.skipUnless(os.path.exists(BASH), "needs " + BASH)
+class SigningRetries(DeployHarness):
+    """With --xcode-signing, a build or archive Apple won't sign with everything is tried again without only what it
+    refused: the widgets' push, the notification extension's app group, or both."""
+
+    def setUp(self):
+        super().setUp()
+        open(os.path.join(self.fake, "has-branch"), "w").close()
+        self.tool("xcodebuild", XCODEBUILD)
+        self.tool("xcrun", XCRUN)
+        self.tool("xcodegen", LOG)
+        self.tool("codesign", LOG)
+        webrtc = os.path.join(self.repo, "scripts", "fetch_webrtc.sh")
+        with open(webrtc, "w") as handle:
+            handle.write('#!/bin/sh\necho "WebRTC already here"\n')
+        os.chmod(webrtc, 0o755)
+        self.results = os.path.join(self.tmp, "results.tsv")
+
+    def refuse(self, *what):
+        with open(os.path.join(self.fake, "refuse"), "w") as handle:
+            handle.write("\n".join(what) + "\n")
+
+    def xcodebuilds(self):
+        """Each xcodebuild run: what it did, and the app's, the widgets' and the notification extension's
+        entitlements it was given (None: project.yml's)."""
+        out = []
+        for line in self.calls():
+            if not line.startswith("xcodebuild "):
+                continue
+            args = line[len("xcodebuild "):][1:-1].split("] [")
+            given = dict(a.split("=", 1) for a in args if a.startswith("WOODRUFF_") and "=" in a)
+            action = "export" if "-exportArchive" in args else args[-1]
+            out.append((action, given.get("WOODRUFF_ENTITLEMENTS"), given.get("WOODRUFF_WIDGET_ENTITLEMENTS"),
+                        given.get("WOODRUFF_NOTIFY_ENTITLEMENTS")))
+        return out
+
+    def iphone(self):
+        status, out = self.deploy("--branch", "release", "--xcode-signing", "iphone", "--no-launch",
+                                  "--results", self.results)
+        self.assertEqual(status, 0, out)
+        self.assertEqual([r[:3] for r in self.rows(self.results)], [["iphone-build", "ok", HEAD],
+                                                                    ["iphone", "installed", UDID]])
+        return out
+
+    def upload(self):
+        status, out = self.deploy("--branch", "release", "--xcode-signing", "testflight", "--results", self.results)
+        self.assertEqual(status, 0, out)
+        self.assertEqual([r[:2] for r in self.rows(self.results)], [["testflight", "ok"]])
+        return out
+
+    def test_iphone_without_the_widgets_push(self):
+        self.refuse("widgets-push")
+        self.iphone()
+        self.assertEqual(self.xcodebuilds(), [("build", None, None, None), ("build", APP, WIDGETS, NOTIFY)])
+
+    def test_iphone_without_the_notification_group_keeps_the_widgets_push(self):
+        self.refuse("notify-group")
+        self.iphone()
+        self.assertEqual(self.xcodebuilds(), [("build", None, None, None), ("build", APP, WIDGETS, NOTIFY),
+                                              ("build", APP, WIDGETS_PUSH, "")])
+
+    def test_iphone_without_either(self):
+        self.refuse("widgets-push", "notify-group")
+        self.iphone()
+        self.assertEqual(self.xcodebuilds(), [("build", None, None, None), ("build", APP, WIDGETS, NOTIFY),
+                                              ("build", APP, WIDGETS_PUSH, ""), ("build", APP, WIDGETS, "")])
+
+    def test_testflight_without_the_widgets_push(self):
+        self.refuse("widgets-push")
+        out = self.upload()
+        self.assertIn("archiving again without it", out)
+        self.assertEqual(self.xcodebuilds(), [("archive", None, None, None), ("archive", None, WIDGETS, None),
+                                              ("export", None, None, None)])
+
+    def test_testflight_without_the_notification_group_keeps_the_widgets_push(self):
+        # Every log names aps-environment (the entitlements it prints): only an error about the widgets' push counts.
+        self.refuse("notify-group")
+        out = self.upload()
+        self.assertNotIn("archiving again without it", out)
+        self.assertEqual(self.xcodebuilds(), [("archive", None, None, None), ("archive", None, WIDGETS_PUSH, ""),
+                                              ("export", None, None, None)])
+
+    def test_testflight_without_either(self):
+        self.refuse("widgets-push", "notify-group")
+        self.upload()
+        self.assertEqual(self.xcodebuilds(), [("archive", None, None, None), ("archive", None, WIDGETS, None),
+                                              ("archive", None, WIDGETS, ""), ("export", None, None, None)])
 
 
 if __name__ == "__main__":

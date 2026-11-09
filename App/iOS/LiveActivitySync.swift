@@ -31,7 +31,8 @@ final class LiveActivitySync {
     func syncAndWait(_ fleet: Fleet) async {
         sync(fleet, endAtOnce: true)
         await pending?.value
-        await PhoneWidgetSync.write(fleet)
+        // A button the family pressed: the widgets show what it changed at once, even with Woodruff in the background.
+        await PhoneWidgetSync.write(fleet, now: true)
     }
 
     /// [endAtOnce]: when the remote's TV has nothing to show, end now instead of in a moment. Otherwise a TV that only

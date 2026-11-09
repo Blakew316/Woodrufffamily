@@ -26,9 +26,14 @@ struct ShareProvider: TimelineProvider {
         completion(context.isPreview ? placeholder(in: context) : ShareEntry(date: Date(), s: PhoneWidgetShare.load()))
     }
     func getTimeline(in context: Context, completion: @escaping (Timeline<ShareEntry>) -> Void) {
-        // The app reloads the widgets when anything changes (and in the background now and then); this is only a
-        // fallback, every quarter hour (what this reads is on the phone, so it costs nothing but the widget's budget),
-        // for anything written without a reload.
+        // The app, the camera alerts' add-on and the Mac Studio's push reload the widgets when what they show changes;
+        // a reload of their own is only a fallback, every few hours. iOS allows each widget about 40 to 70 reloads a
+        // day: one every quarter hour used them all up re-reading the same files, so a camera alert's reload was put
+        // off and the widget showed it only much later.
+        //
+        // That fallback comes a few minutes before what the TVs were doing would count as too old to show: when
+        // nothing they show has changed, the app brings only the time up to date, without a reload, and this reads
+        // it in time.
         let now = Date()
         let s = PhoneWidgetShare.load()
         var changes: Set<Date> = []
@@ -45,7 +50,11 @@ struct ShareProvider: TimelineProvider {
             }
         }
         let entries = [ShareEntry(date: now, s: s)] + changes.sorted().map { ShareEntry(date: $0, s: s) }
-        completion(Timeline(entries: entries, policy: .after(now.addingTimeInterval(900))))
+        var next = now.addingTimeInterval(3 * 3600)
+        if let at = s?.savedAt, at.addingTimeInterval(PhoneWidgetShare.staleAfter - 300) > now {
+            next = at.addingTimeInterval(PhoneWidgetShare.staleAfter - 300)
+        }
+        completion(Timeline(entries: entries, policy: .after(next)))
     }
 }
 
