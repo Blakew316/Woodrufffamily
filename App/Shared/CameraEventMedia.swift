@@ -18,9 +18,16 @@ enum CameraEventMedia {
     private static var store: UserDefaults? { UserDefaults(suiteName: group) }
 
     static var folder: URL? {
-        // The Mac app has no app group: its own temporary folder (it only needs the file for a moment).
+        #if os(macOS)
+        // The Mac app isn't in this app group (its own is the team's), so its own temporary folder. Asked for this
+        // group's folder, macOS gives the path anyway and then guards it, asking whether to allow access to other
+        // apps' data: with nobody at the locked Mac Studio to answer, every alert's picture failed to be written and
+        // the alerts went out without one.
+        let base = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        #else
         let base = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: group)
             ?? URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        #endif
         let f = base.appendingPathComponent("CameraEvents", isDirectory: true)
         try? FileManager.default.createDirectory(at: f, withIntermediateDirectories: true)
         return f

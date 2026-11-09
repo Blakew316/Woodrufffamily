@@ -157,6 +157,10 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
     private var fileReady = false
     /// The player has finished coming on screen (on Apple TV, the TV has switched to the film's picture mode).
     private var onScreen = false
+    /// Starts the film if the player hasn't reported being on screen soon after the file opened.
+    private var startAnyway: Task<Void, Never>?
+    /// Times the player has been put on screen for this film (tried again if one didn't take).
+    private var presentAttempts = 0
     /// Why it can't play, found before the player was on screen (said once it is).
     private var pendingFailure: String?
     /// Says so when it hasn't started in time.
@@ -211,6 +215,7 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
         begun = false
         fileReady = false
         onScreen = false
+        presentAttempts = 0
         pendingFailure = nil
         let audio = AVAudioSession.sharedInstance()
         try? audio.setCategory(.playback, mode: .moviePlayback)
@@ -343,7 +348,21 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
     /// before the TV switches to the film's 4K or HDR mode) its first seconds stuttered.
     private func ready(_ p: AVPlayer, _ play: PhonePlay) {
         fileReady = true
-        guard !begun, onScreen else { return }
+        guard !begun else { return }
+        guard onScreen else {
+            // The player not reported on screen yet: two seconds at most, then it plays anyway (a presentation that
+            // never reports back must never keep the film from starting).
+            startAnyway?.cancel()
+            startAnyway = Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                guard let self, !Task.isCancelled, self.player === p, !self.begun else { return }
+                self.onScreen = true
+                self.ready(p, play)
+            }
+            return
+        }
+        startAnyway?.cancel()
+        startAnyway = nil
         begun = true
         if directID != nil { renewSignIn(p, play) }
         Task { @MainActor in await PhonePlayback.begin(p, play) }
@@ -368,6 +387,16 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
             onScreen = true
             if fileReady, let p = player, let play = current { ready(p, play) }
             return
+        }
+        presentAttempts += 1
+        let attempt = presentAttempts
+        // UIKit refuses a presentation silently (the screen under it still changing): looked at a second later, and
+        // put up again over whatever is on top then (a few times at most).
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            guard let self, self.controller === c, c.presentingViewController == nil, !self.inPictureInPicture,
+                  self.presentAttempts == attempt, attempt < 4 else { return }
+            self.show(c, tries: 40)
         }
         top.present(c, animated: true) { [weak self] in
             MainActor.assumeIsolated {
@@ -454,6 +483,8 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
         displayWatch = nil
         watchdog?.cancel()
         watchdog = nil
+        startAnyway?.cancel()
+        startAnyway = nil
         pendingFailure = nil
         player?.pause()
         player?.replaceCurrentItem(with: nil)

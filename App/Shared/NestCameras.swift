@@ -573,6 +573,11 @@ final class CameraStreams {
     func keepWarm(_ on: Bool) {
         let always = PushRelay.shared.isSender
         if on || always {
+            // A kept stream that's been "running" for over a minute without being live (dropped, its reconnects
+            // refused) is started over: an alert's picture comes from it.
+            for c in NestCameras.shared.cameras where warmed.contains(c.id) && c.online {
+                if let p = players[c.id], p.isRunning, !p.isLive, let s = p.lastStart, Date().timeIntervalSince(s) > 60 { p.restart() }
+            }
             let due = NestCameras.shared.cameras.filter { c in
                 c.webRTC && c.online && (always || Self.isImportant(c)) && !(warmed.contains(c.id) && players[c.id]?.isRunning == true)
             }
@@ -715,6 +720,9 @@ final class CameraStreams {
 
     func grabFrame(_ cam: NestCameras.Camera, timeout: Double = 20) async -> Data? {
         let p = player(cam)
+        // Kept running but not live for a while (dropped and never came back): started again for this picture,
+        // rather than waited on.
+        if p.isRunning, !p.isLive, let s = p.lastStart, Date().timeIntervalSince(s) > 20 { p.restart() }
         let started = !p.isRunning
         grabbing.insert(cam.id)
         var borrowed = false

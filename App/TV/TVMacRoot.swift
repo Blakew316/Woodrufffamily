@@ -10,6 +10,10 @@ struct TVMacRoot: View {
     @AppStorage("tv.tab") private var tab = "home"
     @AppStorage("watch.section") private var watchSection = "movies"
     @State private var query = ""
+    /// The title opened from Search (its card over the results).
+    @State private var searchTitle: String?
+    /// Search asked again (a result was marked watched on its card).
+    @State private var searchAgain = 0
     /// Settings' open pages: closed whenever another part of the app is picked, so coming back starts at its list.
     @State private var settingsPath = NavigationPath()
 
@@ -17,9 +21,14 @@ struct TVMacRoot: View {
         TabView(selection: $tab) {
             Tab(value: "search", role: .search) {
                 NavigationStack {
-                    ScrollView { WatchSearchResults(query: query).padding(.horizontal, 60) }
+                    ScrollView { WatchSearchResults(query: query, again: searchAgain).padding(.horizontal, 60) }
                         .searchable(text: $query, prompt: "Movies and TV Shows")
                 }
+                // A result opens its title's card, as everywhere else in Watch (without these, choosing one did
+                // nothing).
+                .environment(\.openTitle, OpenTitleAction { searchTitle = $0 })
+                .environment(\.watchChanged, WatchChanged { _ in searchAgain += 1 })
+                .titleSheet(Binding(get: { searchTitle.map { TitleRef(id: $0) } }, set: { searchTitle = $0?.id })) { TitleSheet(id: $0.id) }
             }
             Tab("Home", systemImage: "house", value: "home") {
                 NavigationStack {

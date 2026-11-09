@@ -12,10 +12,19 @@ final class AlertWatchdog {
     /// Said in Needs Attention while listening hasn't come back.
     private(set) var problem: String?
     private var loop: Task<Void, Never>?
+    private var warm: Task<Void, Never>?
     private var firstMiss: Date?
 
     func start() {
         guard loop == nil, !Demo.isOn else { return }
+        // The sending Mac's cameras looked at every minute (not every 15): one that dropped is live again before the
+        // next alert needs its picture.
+        warm = Task {
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 60_000_000_000)
+                if PushRelay.shared.isSender { CameraStreams.shared.keepWarm(true) }
+            }
+        }
         loop = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 15 * 60 * 1_000_000_000)
