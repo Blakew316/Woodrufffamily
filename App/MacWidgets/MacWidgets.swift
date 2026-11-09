@@ -84,10 +84,10 @@ struct TVsProvider: TimelineProvider {
         Task {
             let e = await load()
             // While something plays, again in five minutes (the bars move by themselves, and the app reloads these the
-            // moment a TV changes while it runs); otherwise every fifteen. Sooner when a note about a button that
+            // moment a TV changes while it runs); otherwise every ten. Sooner when a note about a button that
             // didn't work is showing, so it goes once it's old.
             let playing = e.tvs.contains { $0.playing?.isPlaying == true }
-            let next: TimeInterval = e.problem != nil ? WidgetProblem.lasts + 5 : (playing ? 300 : 900)
+            let next: TimeInterval = e.problem != nil ? WidgetProblem.lasts + 5 : (playing ? 300 : 600)
             completion(Timeline(entries: [e], policy: .after(.now.addingTimeInterval(next))))
         }
     }
@@ -450,7 +450,7 @@ struct HomeProvider: TimelineProvider {
     func getTimeline(in context: Context, completion: @escaping (Timeline<HomeEntry>) -> Void) {
         Task {
             let e = await load()
-            let next: TimeInterval = e.problem != nil ? WidgetProblem.lasts + 5 : (e.speaker?.isPlaying == true ? 300 : 900)
+            let next: TimeInterval = e.problem != nil ? WidgetProblem.lasts + 5 : (e.speaker?.isPlaying == true ? 300 : 600)
             completion(Timeline(entries: [e], policy: .after(.now.addingTimeInterval(next))))
         }
     }

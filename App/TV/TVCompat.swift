@@ -65,6 +65,15 @@ final class WidgetCenter {
 
 @MainActor enum PhoneWidgetSync {
     static func update(_ fleet: Fleet) {}
+    static func camerasChanged() {}
+    static func reloadCameras() {}
+}
+
+/// The iPhone's background refresh for its widgets (no widgets here).
+@MainActor enum WidgetRefresh {
+    static let id = "com.woodruff.family.widgets"
+    static func schedule() {}
+    static func run() async {}
 }
 
 @MainActor final class HomeKitLights {

@@ -204,6 +204,7 @@ struct WoodruffApp: App {
                 DriveLibrary.shared.flush()
                 #if os(iOS) || os(tvOS)
                 AlertsRefresh.schedule()
+                WidgetRefresh.schedule()
                 // A smaller app in the background is less likely to be closed by iOS (so it opens at once): pictures
                 // not on screen are let go (they're on disk; the ones shown are kept by their views).
                 ImageStore.shared.memory.empty()
@@ -244,6 +245,11 @@ struct WoodruffApp: App {
         .backgroundTask(.appRefresh(AlertsRefresh.id)) {
             await NestAlerts.shared.pullOnce(timeout: 15)
             await AlertsRefresh.schedule()
+        }
+        // Now and then: the cameras' latest pictures and the TVs' state, for the widgets.
+        .backgroundTask(.appRefresh(WidgetRefresh.id)) {
+            await WidgetRefresh.run()
+            await WidgetRefresh.schedule()
         }
         #endif
         #if os(macOS)

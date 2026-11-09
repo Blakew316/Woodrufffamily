@@ -1328,8 +1328,12 @@ final class LivePlayer: NSObject, WKNavigationDelegate {
             guard let jpeg = await frameJPEG() else { return }
             CameraStreams.shared.keepStill(cam, jpeg)
             #if os(iOS) || os(tvOS)
+            // The camera widgets reload now if they haven't for a minute, otherwise a moment later (so the latest
+            // picture always gets there).
             if PhoneWidgetShare.saveCamera(id: cam.id, name: cam.name, doorbell: cam.doorbell, jpeg: jpeg) {
-                WidgetCenter.shared.reloadTimelines(ofKind: PhoneWidgetShare.tvsCamerasKind); WidgetCenter.shared.reloadTimelines(ofKind: PhoneWidgetShare.doorbellKind)
+                PhoneWidgetSync.reloadCameras()
+            } else {
+                PhoneWidgetSync.camerasChanged()
             }
             #endif
         }
@@ -1667,38 +1671,52 @@ struct CameraReplay: Equatable {
 }
 
 #if os(iOS) || os(tvOS)
-/// The alert's moment filling the camera's picture box: its clip looping (muted) or its picture. Tries what the alert
-/// itself showed, then Google, then the Mac's small picture; with none of them it hands over to live ([none]).
+/// The alert's moment filling the camera's picture box: its clip looping (muted) or its picture. Shows at once what's
+/// already on this device (what the alert itself showed, what the notification extension kept, else the Mac's small
+/// picture from the push), then Google's clip or snapshot when that comes; with none of them it hands over to live
+/// ([none]).
 struct EventReplayView: View {
     let replay: CameraReplay
     var none: () -> Void
     @State private var file: URL?
+    @State private var image: UIImage?
 
     var body: some View {
         ZStack {
             Color.black
-            if let file {
-                if file.pathExtension == "mp4" {
-                    LoopingClip(url: file)
-                } else if let image = UIImage(contentsOfFile: file.path) {
-                    Image(uiImage: image).resizable().scaledToFit()
-                }
+            if let file, file.pathExtension == "mp4" {
+                LoopingClip(url: file)
+            } else if let image {
+                Image(uiImage: image).resizable().scaledToFit()
             } else {
                 ProgressView().tint(.white)
             }
         }
         .task(id: replay.key) {
-            if let m = replay.media, FileManager.default.fileExists(atPath: m.path) {
-                file = m
-                // The alert's own picture shows at once; Google's clip replaces it when it comes.
-                if m.pathExtension == "mp4" { return }
+            // Nothing waits before the first picture: no sign-in, no network.
+            let kept = replay.media.flatMap { FileManager.default.fileExists(atPath: $0.path) ? $0 : nil }
+                ?? CameraEventMedia.cached(replay.key)
+            if let kept {
+                show(kept)
+                // A clip is the best there is; a picture is replaced by Google's clip if one comes.
+                if kept.pathExtension == "mp4" { return }
+            } else if let t = replay.thumb, let d = Data(base64Encoded: t), let small = UIImage(data: d) {
+                image = small
             }
             if let f = await CameraEventMedia.fetch(camera: replay.camera, eventID: replay.event, clipURL: replay.clip, key: replay.key, timeout: 6) {
-                file = f
+                if f != kept { show(f) }
                 return
             }
-            if file == nil, let t = replay.thumb, let f = CameraEventMedia.thumbnailFile(t) { file = f }
-            if file == nil { none() }
+            if file == nil && image == nil { none() }
+        }
+    }
+
+    private func show(_ f: URL) {
+        if f.pathExtension == "mp4" {
+            file = f
+        } else if let img = UIImage(contentsOfFile: f.path) {
+            file = f
+            image = img
         }
     }
 }

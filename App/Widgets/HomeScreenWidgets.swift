@@ -26,7 +26,9 @@ struct ShareProvider: TimelineProvider {
         completion(context.isPreview ? placeholder(in: context) : ShareEntry(date: Date(), s: PhoneWidgetShare.load()))
     }
     func getTimeline(in context: Context, completion: @escaping (Timeline<ShareEntry>) -> Void) {
-        // The app reloads the widgets when anything changes; this is only a fallback.
+        // The app reloads the widgets when anything changes (and in the background now and then); this is only a
+        // fallback, every quarter hour (what this reads is on the phone, so it costs nothing but the widget's budget),
+        // for anything written without a reload.
         let now = Date()
         let s = PhoneWidgetShare.load()
         var entries = [ShareEntry(date: now, s: s)]
@@ -34,7 +36,7 @@ struct ShareProvider: TimelineProvider {
         if let at = s?.savedAt, !(s?.tvsStale(at: now) ?? true) {
             entries.append(ShareEntry(date: at.addingTimeInterval(PhoneWidgetShare.staleAfter + 1), s: s))
         }
-        completion(Timeline(entries: entries, policy: .after(now.addingTimeInterval(1800))))
+        completion(Timeline(entries: entries, policy: .after(now.addingTimeInterval(900))))
     }
 }
 
