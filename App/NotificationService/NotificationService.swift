@@ -2,65 +2,89 @@ import UserNotifications
 import CoreGraphics
 import WidgetKit
 
-/// Runs the moment a camera or doorbell push arrives (Woodruff can be closed): fetches the event's clip or snapshot
-/// from Google and puts it in the notification, so it plays when the notification is expanded. Anything else, or
-/// nothing from Google in time, shows as it came.
+/// Runs the moment a camera or doorbell push arrives (Woodruff can be closed): puts the picture of the event in the
+/// notification, as Google Home does. The small picture the Mac sent in the push goes in at once, so the alert always
+/// has one; then, at the same time, Google's clip or snapshot and the Mac Studio's full-size picture of the event are
+/// asked for, and the first to come replaces it. Twenty seconds at most: the alert never waits longer than that.
 final class NotificationService: UNNotificationServiceExtension, @unchecked Sendable {
     private let lock = NSLock()
     private var handler: ((UNNotificationContent) -> Void)?
     private var content: UNMutableNotificationContent?
+    /// What the alert's picture is now (for Camera Alerts' "Last alert from the Mac").
+    private var what = "No picture came in time"
+
+    /// How long the full picture is waited for (iOS allows about 30 seconds in all).
+    private static let budget: TimeInterval = 20
 
     override func didReceive(_ request: UNNotificationRequest, withContentHandler contentHandler: @escaping (UNNotificationContent) -> Void) {
         let c = (request.content.mutableCopy() as? UNMutableNotificationContent) ?? UNMutableNotificationContent()
         lock.lock(); handler = contentHandler; content = c; lock.unlock()
         let info = request.content.userInfo
-        guard let camera = info["camera"] as? String, !camera.isEmpty else { finish(); return }
-        let event = (info["event"] as? String).flatMap { $0.isEmpty ? nil : $0 }
-        let clip = (info["clip"] as? String).flatMap { $0.isEmpty ? nil : $0 }
-        let key = (info["key"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? request.identifier
-        let thumb = (info["thumb"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+        guard let camera = info["camera"] as? String, !camera.isEmpty else { finish(noting: false); return }
+        func text(_ k: String) -> String? { (info[k] as? String).flatMap { $0.isEmpty ? nil : $0 } }
+        let event = text("event"), clip = text("clip"), thumb = text("thumb")
+        let key = text("key") ?? request.identifier
+        let macFocus = CameraEventMedia.focus(text("f"))
+        let title = request.content.title
+        let deadline = Date().addingTimeInterval(Self.budget)
+
+        // The Mac's small picture first: whatever happens next, the alert has it.
+        var thumbStill: Data?
+        if let thumb, let file = CameraEventMedia.thumbnailFile(thumb) {
+            if let a = CameraEventMedia.attachment(file) {
+                set([a], "The Mac’s small picture attached")
+                thumbStill = try? Data(contentsOf: file)
+            }
+            // The attachment is a copy of it: this one isn't needed after.
+            try? FileManager.default.removeItem(at: file)
+        } else if thumb != nil {
+            what = "No picture: the Mac’s small picture couldn’t be read"
+        }
+        // The hard stop: the alert goes with what it has.
+        DispatchQueue.global().asyncAfter(deadline: .now() + Self.budget + 1) { [weak self] in self?.finish() }
+
         Task {
-            // The full clip or snapshot when Google gives it quickly; else the small picture the Mac sent in the push.
-            // Kept short: the alert waits for this, and the Mac's quiet update brings the picture if it's late.
-            // The widget's picture of the moment (a small JPEG).
-            var still: Data?
-            let fetched = await CameraEventMedia.fetch(camera: camera, eventID: event, clipURL: clip, key: key, timeout: thumb == nil ? 5 : 4)
-            // The picture is decoded once, for both the widget's still and where the subject is (Vision).
-            var look: (still: Data?, focus: CGRect?) = (nil, nil)
-            if let fetched { look = await CameraEventMedia.stillAndFocus(fetched, title: request.content.title) }
-            if let file = fetched, let a = CameraEventMedia.attachment(file, focus: look.focus) {
-                // The alert's small picture shows who or what was seen (Vision finds it); expanded, the whole scene.
-                c.attachments = [a]
-                // A clip also carries a still of it: Apple Watch shows a picture with the alert, never a video.
-                if file.pathExtension == "mp4", let jpeg = look.still {
-                    let stillFile = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".jpg")
-                    if (try? jpeg.write(to: stillFile)) != nil, let s = CameraEventMedia.attachment(stillFile, focus: look.focus, identifier: "still") {
-                        c.attachments.append(s)
-                    }
-                    try? FileManager.default.removeItem(at: stillFile)
-                }
-                still = look.still
-                CameraEventMedia.noteLastPush(file.pathExtension == "mp4" ? "Clip attached" : "Snapshot attached")
-            } else if let thumb, let file = CameraEventMedia.thumbnailFile(thumb) {
-                let a = CameraEventMedia.attachment(file)
-                // The attachment is a copy of it: this one isn't needed after.
-                try? FileManager.default.removeItem(at: file)
-                if let a {
-                    c.attachments = [a]
-                    still = Data(base64Encoded: thumb)
-                    CameraEventMedia.noteLastPush("The Mac’s picture attached")
+            // Google's clip or snapshot, or the Mac Studio's full picture of the event: the first to come.
+            let got = await CameraEventMedia.firstPicture(camera: camera, eventID: event, clipURL: clip, key: key, deadline: deadline)
+            var still = thumbStill
+            if let got {
+                let file = got.file
+                // Where who or what was seen is (the Mac says for its own picture; Vision finds it in Google's), and the
+                // widget's still, from one decode. Motion: the whole picture.
+                var look: (still: Data?, focus: CGRect?) = (nil, nil)
+                if got.fromMac {
+                    look = (await CameraEventMedia.still(file), macFocus)
                 } else {
-                    CameraEventMedia.noteLastPush("No picture: the Mac’s picture couldn’t be read")
+                    look = await CameraEventMedia.stillAndFocus(file, title: title)
                 }
-            } else {
-                CameraEventMedia.noteLastPush(thumb == nil
-                    ? (clip == nil ? "No picture yet: Google sends the clip a few seconds later" : "No picture: the clip didn’t come in time")
-                    : "No picture: the Mac’s picture couldn’t be read")
+                if let a = CameraEventMedia.attachment(file, focus: look.focus) {
+                    var all = [a]
+                    // A clip also carries a still of it: Apple Watch shows a picture with the alert, never a video.
+                    if file.pathExtension == "mp4", let jpeg = look.still {
+                        let stillFile = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".jpg")
+                        if (try? jpeg.write(to: stillFile)) != nil, let s = CameraEventMedia.attachment(stillFile, focus: look.focus, identifier: "still") {
+                            all.append(s)
+                        }
+                        try? FileManager.default.removeItem(at: stillFile)
+                    }
+                    self.set(all, got.fromMac ? "The Mac’s full picture attached" : file.pathExtension == "mp4" ? "Clip attached" : "Snapshot attached")
+                    if let s = look.still { still = s }
+                }
             }
             // Before handing the alert back: the extension can be stopped right after.
-            Self.updateWidget(camera: camera, name: request.content.body, title: request.content.title, jpeg: still)
+            Self.updateWidget(camera: camera, name: request.content.body, title: title, jpeg: still)
             self.finish()
         }
+    }
+
+    /// The alert's picture, unless it has already gone.
+    private func set(_ attachments: [UNNotificationAttachment], _ note: String) {
+        lock.lock()
+        if handler != nil, let c = content {
+            c.attachments = attachments
+            what = note
+        }
+        lock.unlock()
     }
 
     /// The TVs & Cameras widget, even with Woodruff closed: the camera's red tag for the event, and the alert's
@@ -75,17 +99,19 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
         WidgetCenter.shared.reloadTimelines(ofKind: PhoneWidgetShare.tvsCamerasKind); WidgetCenter.shared.reloadTimelines(ofKind: PhoneWidgetShare.doorbellKind)
     }
 
-    /// Out of time: shown as it is.
+    /// Out of time: shown with the picture it has (the Mac's small one at least, when the push had it).
     override func serviceExtensionTimeWillExpire() {
-        CameraEventMedia.noteLastPush("No picture: ran out of time")
         finish()
     }
 
-    private func finish() {
+    /// [noting]: a camera's alert (Camera Alerts says what picture it had).
+    private func finish(noting: Bool = true) {
         lock.lock()
-        let h = handler, c = content
+        let h = handler, c = content, note = what
         handler = nil
         lock.unlock()
-        if let h, let c { h(c) }
+        guard let h, let c else { return }
+        if noting { CameraEventMedia.noteLastPush(note) }
+        h(c)
     }
 }

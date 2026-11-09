@@ -371,14 +371,23 @@ final class NestAlerts {
             // and the alerts' small picture shows it (motion: the whole picture).
             var focus: CGRect?
             var shown: URL?
-            if let got, let made = await CameraEventMedia.keepEventPicture(got.file, key: short, title: title) {
+            var made: (file: URL, focus: CGRect?, image: CGImage, still: Data?)?
+            if let got { made = await CameraEventMedia.keepEventPicture(got.file, key: short, title: title) }
+            // What came couldn't be read (a clip cut short): the camera's latest picture instead.
+            if made == nil, let jpeg = CameraStreams.shared.latestStill(camera), let u = CameraEventMedia.jpegFile(jpeg, name: "frame-kept-\(short)") {
+                made = await CameraEventMedia.keepEventPicture(u, key: short, title: title)
+                if made != nil { PushRelay.log.notice("picture for \(body, privacy: .public): \(got == nil ? "none came" : "it couldn’t be read", privacy: .public), the camera’s latest picture instead") }
+            }
+            if let made {
                 focus = made.focus; still = made.still; shown = made.file
                 // A clip that came meanwhile goes in the push too.
                 if let later = race.clip, !later.isEmpty { c.userInfo["clip"] = later }
                 if let focus { c.userInfo["f"] = CameraEventMedia.focusText(focus) }
                 let info = c.userInfo.reduce(into: [String: String]()) { out, kv in if let k = kv.key as? String, let v = kv.value as? String { out[k] = v } }
                 let budget = PushRelay.thumbnailBudget(id: id, title: c.title, body: c.body, userInfo: info, sound: c.sound != nil)
-                thumb = CameraEventMedia.pushThumbnail(made.image, focus: focus, budget: budget)
+                // Many small encodes to find the biggest that fits: off the main thread.
+                let image = made.image, framing = focus
+                thumb = await Task.detached(priority: .userInitiated) { CameraEventMedia.pushThumbnail(image, focus: framing, budget: budget) }.value
             }
             if let still, MacCameraShare.save(id: camera, name: macCam?.name ?? body, doorbell: macCam?.doorbell ?? false, jpeg: still) {
                 WidgetCenter.shared.reloadTimelines(ofKind: MacCameraShare.kind); WidgetCenter.shared.reloadTimelines(ofKind: "com.woodruff.family.widget.tvs")

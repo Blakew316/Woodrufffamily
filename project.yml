@@ -153,6 +153,11 @@ targets:
         NSExtension:
           NSExtensionPointIdentifier: com.apple.usernotifications.service
           NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).NotificationService
+        # The Mac Studio's full picture of each event, over plain HTTP on its home or Tailscale address.
+        NSLocalNetworkUsageDescription: Woodruff gets each camera alert's picture from the family's Mac on your Wi-Fi.
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
+          NSAllowsLocalNetworking: true
 
   # Apple TV: its own screens for the Siri Remote, on the shared WoodruffKit (no iPhone or Mac code).
   WoodruffFamilyTV:
