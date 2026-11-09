@@ -266,30 +266,32 @@ struct LightTile: View {
         // Unreachable (unplugged, off at the wall): never shown lit, and tapping opens its page rather than
         // sending a change that can't arrive.
         let lit = light.isLit
+        // Worked out once for the drawing (it looks up the scene's colour each time it's asked).
+        let shade = light.shade
         // Compact, like the Home app: the light's colour on the left, its name and state beside it.
         HStack(spacing: 10) {
             Group {
             if light.isFloorLamp {
                 // The lamp as on All Devices: its pole lit from the base up to the brightness.
-                FloorLampPicture(level: Double(light.brightness) / 100, lit: lit, color: light.shade)
+                FloorLampPicture(level: Double(light.brightness) / 100, lit: lit, color: shade)
                     .frame(width: 24, height: 44)
             } else if light.isTableLamp {
-                TableLampPicture(level: Double(light.brightness) / 100, lit: lit, color: light.shade)
+                TableLampPicture(level: Double(light.brightness) / 100, lit: lit, color: shade)
                     .frame(width: 30, height: 42)
             } else if light.isStringLights {
-                StringLightsPicture(level: Double(light.brightness) / 100, lit: lit, color: light.shade)
+                StringLightsPicture(level: Double(light.brightness) / 100, lit: lit, color: shade)
                     .frame(width: 58, height: 40)
             } else if light.isUnderShelf {
-                UnderShelfPicture(level: Double(light.brightness) / 100, lit: lit, color: light.shade)
+                UnderShelfPicture(level: Double(light.brightness) / 100, lit: lit, color: shade)
                     .frame(width: 50, height: 42)
             } else if light.isHexPanels {
-                HexPanelsPicture(level: Double(light.brightness) / 100, lit: lit, color: light.shade)
+                HexPanelsPicture(level: Double(light.brightness) / 100, lit: lit, color: shade)
                     .frame(width: 54, height: 42)
             } else {
             Circle()
-                .fill(lit ? light.shade : .white.opacity(0.18))
+                .fill(lit ? shade : .white.opacity(0.18))
                 .frame(width: 24, height: 24)
-                .shadow(color: lit ? light.shade.opacity(0.9) : .clear, radius: 8)
+                .shadow(color: lit ? shade.opacity(0.9) : .clear, radius: 8)
                 .overlay {
                     if light.isOffline { Image(systemName: "wifi.slash").font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary) }
                 }
@@ -310,7 +312,7 @@ struct LightTile: View {
         .background {
             if lit {
                 RoundedRectangle(cornerRadius: 20, style: .continuous)
-                    .fill(LinearGradient(colors: [.white.opacity(0.96), light.shade.opacity(0.55).mix(with: .white, by: 0.5)],
+                    .fill(LinearGradient(colors: [.white.opacity(0.96), shade.opacity(0.55).mix(with: .white, by: 0.5)],
                                          startPoint: .topLeading, endPoint: .bottomTrailing))
             }
         }
