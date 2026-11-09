@@ -410,8 +410,10 @@ final class DriveLibrary: WatchSource {
     func played(_ key: String, title: String, pos: Double, dur: Double) {
         guard key.hasPrefix("drive:") else { return }
         var s = saved.spots[key] ?? context[key] ?? Spot(title: title, pos: 0, dur: 0, at: 0)
-        s.pos = pos; s.dur = dur; s.at = nowMS; s.next = false
-        if dur > 0 && (dur - pos < 5_000 || pos >= 0.95 * dur) {
+        // A length not known this time (the player hadn't read it) keeps the one known before.
+        s.pos = pos; s.at = nowMS; s.next = false
+        if dur > 0 { s.dur = dur }
+        if s.dur > 0 && (s.dur - pos < 5_000 || pos >= 0.95 * s.dur) {
             saved.spots[key] = nil
             saved.gone[key] = nowMS
             saved.watched[key] = nowMS
@@ -479,12 +481,16 @@ final class DriveLibrary: WatchSource {
     }
 
     /// A film's Play: from where it was left off (unless nearly done).
+    /// Part watched: in Continue Watching, and Resume with Start Over on its title's page. One rule for both (a spot
+    /// whose length isn't known yet counts: Continue Watching showed it while its page offered only Play).
+    private func resumable(_ pos: Double, _ dur: Double) -> Bool { pos > 10_000 && (dur <= 0 || pos / dur < 0.95) }
+
     private func filmPlay(_ e: Entry) -> [String: Any]? {
         guard let f = e.file else { return nil }
         let key = "drive:\(f)"
         context[key] = Spot(title: e.title, pos: 0, dur: 0, at: 0, titleId: e.id, kind: "movie", name: e.title, poster: e.poster)
         let (pos, dur) = progress(key)
-        let resume = dur > 0 && pos > 60_000 && pos / dur < 0.95
+        let resume = resumable(pos, dur)
         var p: [String: Any] = ["key": key, "title": e.title, "position": resume ? pos : 0,
                                 "label": resume ? "Resume from \(duration(pos))" : "Play", "resume": true]
         if dur > 0 { p["duration"] = dur }
@@ -518,7 +524,7 @@ final class DriveLibrary: WatchSource {
         if s.kind == "show" {
             p["label"] = s.next ? (s.code.map { "Play \($0)" } ?? "Play Next Episode") : (s.code.map { "Resume \($0)" } ?? "Resume")
         } else {
-            p["label"] = s.pos > 60_000 ? "Resume from \(duration(s.pos))" : "Play"
+            p["label"] = s.pos > 10_000 ? "Resume from \(duration(s.pos))" : "Play"
         }
         return p
     }
@@ -526,7 +532,7 @@ final class DriveLibrary: WatchSource {
     private func continueItems() -> [[String: Any]] {
         var seen = Set<String>()
         var out: [[String: Any]] = []
-        let live = saved.spots.filter { $0.value.next || ($0.value.pos > 10_000 && ($0.value.dur <= 0 || $0.value.pos / $0.value.dur < 0.95)) }
+        let live = saved.spots.filter { $0.value.next || resumable($0.value.pos, $0.value.dur) }
         for (key, s) in live.sorted(by: { $0.value.at > $1.value.at }) {
             let group = s.titleId ?? key
             guard seen.insert(group).inserted, let play = continuePlay(key, s) else { continue }
@@ -536,7 +542,7 @@ final class DriveLibrary: WatchSource {
             if let v = s.code { c["code"] = v }
             if let v = s.episode { c["episode"] = v }
             if let v = s.poster ?? s.titleId.flatMap({ entry($0)?.poster }) { c["poster"] = v }
-            if s.kind != "show", s.pos > 60_000 {
+            if s.kind != "show", s.pos > 10_000 {
                 var r = play; r["position"] = 0; r["label"] = "Start Over"; r["resume"] = nil
                 c["restart"] = r
             }

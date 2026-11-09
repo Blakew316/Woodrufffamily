@@ -469,7 +469,8 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
     }
 
     private func report() {
-        guard let p = player, let play = current else { return }
+        // Only once it has played: a film that never started (it failed to open) leaves where it was left off alone.
+        guard begun, let p = player, let play = current else { return }
         let pos = p.currentTime().seconds, dur = p.currentItem?.duration.seconds ?? 0
         guard pos.isFinite, pos > 0 else { return }
         DriveLibrary.shared.played(play.key, title: play.title, pos: pos * 1000, dur: dur.isFinite ? dur * 1000 : 0)
