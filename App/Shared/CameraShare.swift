@@ -1,5 +1,6 @@
 import Foundation
 import Network
+import CryptoKit
 import WoodruffKit
 
 /// The Apple TV's cameras: an Apple TV can't play Google's live stream itself (no WebRTC there), but the Mac Studio
@@ -16,6 +17,44 @@ enum CameraShareKey {
         guard let code = FamilyCode.load().record?.code else { return nil }
         let k = FamilyCode.derive(FamilyCode.key(code), "woodruff-camera-share")
         return k.withUnsafeBytes { Data($0) }.prefix(16).map { String(format: "%02x", $0) }.joined()
+    }
+}
+
+/// A Google Drive sign-in handed from the Mac Studio to an Apple TV (GET /drivetoken on the camera share): an Apple TV
+/// away from home couldn't renew its own (Google's sign-in service timed out from there, and Drive refused the old
+/// one, so no film would play). Sealed with a key made from the family code, so only the family's devices can open it.
+enum DriveTokenRelay {
+    private static func key() -> SymmetricKey? {
+        FamilyCode.savedKey().map { FamilyCode.derive($0, "woodruff-drive-token") }
+    }
+
+    static func seal(token: String, expires: Double) -> Data? {
+        guard let k = key(), let plain = try? JSONEncoder().encode(["t": token, "e": String(expires)]) else { return nil }
+        return try? AES.GCM.seal(plain, using: k).combined
+    }
+
+    static func open(_ data: Data) -> (token: String, expires: Double)? {
+        guard let k = key(), let box = try? AES.GCM.SealedBox(combined: data), let plain = try? AES.GCM.open(box, using: k),
+              let d = try? JSONDecoder().decode([String: String].self, from: plain),
+              let t = d["t"], !t.isEmpty, let e = Double(d["e"] ?? "") else { return nil }
+        return (t, e)
+    }
+
+    /// The Mac Studio's current sign-in, asked for at each of its addresses (a few seconds each), nil when none answers.
+    static func fromMac() async -> (token: String, expires: Double)? {
+        guard let k = CameraShareKey.token() else { return nil }
+        let hosts = (UserDefaults.standard.string(forKey: CameraShareKey.hostsKey) ?? "").split(separator: ",").map(String.init).filter { !$0.isEmpty }
+        for h in hosts {
+            var c = URLComponents()
+            c.scheme = "http"; c.host = h; c.port = Int(CameraShareKey.port); c.path = "/drivetoken"
+            c.queryItems = [URLQueryItem(name: "k", value: k)]
+            guard let u = c.url else { continue }
+            var r = URLRequest(url: u, timeoutInterval: 5)
+            r.cachePolicy = .reloadIgnoringLocalCacheData
+            if let (d, resp) = try? await URLSession.shared.data(for: r), (resp as? HTTPURLResponse)?.statusCode == 200,
+               let got = open(d) { return got }
+        }
+        return nil
     }
 }
 
@@ -156,7 +195,7 @@ final class CameraShare {
         let line = request.components(separatedBy: "\r\n").first ?? ""
         let parts = line.split(separator: " ")
         guard parts.count >= 2, let url = URLComponents(string: "http://x" + parts[1]),
-              ["/still", "/event", "/events", "/diag"].contains(url.path) else {
+              ["/still", "/event", "/events", "/diag", "/drivetoken"].contains(url.path) else {
             return reply(c, "404 Not Found", nil)
         }
         let q = Dictionary((url.queryItems ?? []).map { ($0.name, $0.value ?? "") }, uniquingKeysWith: { a, _ in a })
@@ -167,6 +206,13 @@ final class CameraShare {
         if url.path == "/diag" {
             Diagnostics.shared.noteRemote(device: q["n"] ?? "Apple TV", build: q["b"] ?? "", kind: q["t"] ?? "", detail: q["d"] ?? "")
             return reply(c, "204 No Content", nil)
+        }
+        // GET /drivetoken?k=<key>: this Mac's current Google Drive sign-in, sealed with the family code, for an Apple TV
+        // that can't renew its own from where it is.
+        if url.path == "/drivetoken" {
+            guard let t = try? await GoogleDrive.token(minLife: 1800),
+                  let sealed = DriveTokenRelay.seal(token: t, expires: GoogleDrive.keptExpiry) else { return reply(c, "503 Service Unavailable", nil) }
+            return reply(c, "200 OK", sealed, type: "application/octet-stream")
         }
         // GET /events?since=<ms>&k=<key>: the alerts sent after `since` (the Apple TVs' own alerts).
         if url.path == "/events" {

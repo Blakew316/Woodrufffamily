@@ -148,6 +148,16 @@ enum GoogleDrive {
             memo.set(a, expires: expires)
             return a
         }
+        #if os(tvOS)
+        // The Apple TV away from home couldn't renew its own sign-in (Google's sign-in service timed out from there and
+        // Drive refused the old one): the Mac Studio's current one first, over the camera share.
+        if let got = await DriveTokenRelay.fromMac(), got.expires - Date().timeIntervalSince1970 > minLife {
+            Keychain.set(got.token, for: "gdrive.access")
+            Keychain.set(String(got.expires), for: "gdrive.expires")
+            memo.set(got.token, expires: got.expires)
+            return got.token
+        }
+        #endif
         guard let refresh = Keychain.get("gdrive.refresh"), !refresh.isEmpty else { throw Failure("Sign in to Google Drive in Settings.") }
         if let t = refreshing { return try await t.value }
         let t = Task { () throws -> String in
@@ -162,6 +172,9 @@ enum GoogleDrive {
         return try await t.value
     }
     private static var refreshing: Task<String, Error>?
+
+    /// When the kept sign-in runs out (seconds since 1970; 0 when unknown).
+    static var keptExpiry: Double { Double(Keychain.get("gdrive.expires") ?? "") ?? 0 }
 
     /// The kept token as rejected: the next request gets a fresh one.
     static func dropToken() {

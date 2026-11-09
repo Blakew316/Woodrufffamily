@@ -107,6 +107,22 @@ final class PhonePlayback {
         return PhonePlay(source: .url(c.streamURL(a.key)), key: a.key, title: a.title, start: start)
     }
 
+    /// Everything the player said about a failure, for the diagnostics: each error and the one under it, and its error
+    /// log's last line (an HTTP status, say).
+    nonisolated static func errorTrail(_ item: AVPlayerItem) -> String {
+        var parts: [String] = []
+        var e = item.error as NSError?
+        for _ in 0..<4 {
+            guard let x = e else { break }
+            parts.append("\(x.domain) \(x.code)")
+            e = x.userInfo[NSUnderlyingErrorKey] as? NSError
+        }
+        if let ev = item.errorLog()?.events.last {
+            parts.append("log \(ev.errorDomain) \(ev.errorStatusCode)" + (ev.errorComment.map { " \($0)" } ?? ""))
+        }
+        return parts.isEmpty ? "no error" : parts.joined(separator: " < ")
+    }
+
     /// Why [play] stopped, in words someone can act on: Google Drive's own reason when it gave one (a sign-in that
     /// ended, its daily limit), else what's most likely for where it came from.
     nonisolated static func failure(_ error: Error?, _ play: PhonePlay) -> String {
@@ -288,7 +304,7 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
             let status = item.status
             guard status != .unknown else { return }
             let words = status == .failed ? PhonePlayback.failure(item.error, play) : nil
-            let code = (item.error as NSError?).map { "\($0.domain) \($0.code)" } ?? "no error"
+            let code = PhonePlayback.errorTrail(item)
             Task { @MainActor in
                 guard let self, self.player === p, let now = self.item, ObjectIdentifier(now) == which else { return }
                 if let words {

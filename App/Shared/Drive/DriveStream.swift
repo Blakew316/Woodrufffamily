@@ -354,6 +354,8 @@ private final class Loader: NSObject, AVAssetResourceLoaderDelegate, StreamTask 
                 let token = try await GoogleDrive.token()
                 streamQueue.async { self.send(req, token: token, retried: retried) }
             } catch {
+                let ns = error as NSError
+                await MainActor.run { Diagnostics.shared.notePlayback("Drive sign-in couldn’t be renewed (\(ns.domain) \(ns.code))") }
                 streamQueue.async {
                     if !req.isCancelled && !req.isFinished { req.finishLoading(with: error) }
                 }
@@ -388,6 +390,8 @@ private final class Loader: NSObject, AVAssetResourceLoaderDelegate, StreamTask 
         guard code == 200 || code == 206 else {
             loads[dataTask.taskIdentifier] = nil
             answer(.cancel)
+            let host = response.url?.host ?? "?"
+            Task { @MainActor in Diagnostics.shared.notePlayback("Drive answered \(code) from \(host)") }
             if code == 401 && !load.retried {
                 fetch(load.request, retried: true)
             } else if [429, 500, 502, 503, 504].contains(code), load.attempts < 3 {
