@@ -235,7 +235,7 @@ extension CameraShare {
         while !Task.isCancelled {
             let now = Date()
             for (id, at) in askedAt {
-                let fps = streamFPS.values.filter { $0.id == id }.map(\.fps).max()
+                let fps = streamFPS.values.filter { $0.id == id }.map { $0.fps }.max()
                 if fps == nil, now.timeIntervalSince(at) > Self.warmFor {
                     askedAt[id] = nil
                     letGo(id)
@@ -285,6 +285,9 @@ extension CameraShare {
         }
         let head = "HTTP/1.1 200 OK\r\nContent-Type: multipart/x-mixed-replace; boundary=frame\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n"
         c.send(content: Data(head.utf8), completion: .contentProcessed { _ in })
+        // Never longer than its ten minutes, even to an Apple TV that went away without a word (a send waiting on it
+        // ends with the connection).
+        DispatchQueue.main.asyncAfter(deadline: .now() + 610) { c.cancel() }
         Task { await self.pump(c, key, id, fps) }
     }
 
