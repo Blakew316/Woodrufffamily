@@ -123,7 +123,10 @@ final class PhonePlayback {
         }
         switch play.source {
         case .drive:
-            return "Apple’s player can’t open this file (it may be MKV or AVI). Play it on a TV instead."
+            // What Apple's player said (not a guess at the file's kind: an MP4 can fail too).
+            let ns = (e ?? error) as NSError?
+            let said = ns?.localizedFailureReason ?? ns?.localizedDescription
+            return "Apple’s player couldn’t play it" + (said.map { " (\($0))" } ?? "") + ". Try again, or play it on a TV."
         case .url(let u) where u.isFileURL:
             return "The downloaded copy can’t be played. Remove it in Settings → Watch → Downloads and download it again."
         case .url:
@@ -161,6 +164,10 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
     /// Playing Drive's address directly: its file, and the task that renews the sign-in before it runs out.
     private var directID: String?
     private var renew: Task<Void, Never>?
+    /// The type the player is told Drive's file is (Drive's address has no extension to go by).
+    private var directMIME = "video/mp4"
+    /// The item playing now (it changes when Drive's address fails and the file is read request by request).
+    private var item: AVPlayerItem?
 
     private static func titleItem(_ title: String) -> AVMetadataItem {
         let t = AVMutableMetadataItem()
@@ -179,12 +186,13 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
                 try? await Task.sleep(nanoseconds: 40 * 60 * 1_000_000_000)
                 guard let self, self.player === p, let id = self.directID else { return }
                 guard (try? await GoogleDrive.token(minLife: 1800)) != nil,
-                      let a = DriveStream.directAsset(fileID: id, minLife: 1800) else { continue }
+                      let a = DriveStream.directAsset(fileID: id, mime: self.directMIME, minLife: 1800) else { continue }
                 let at = p.currentTime()
                 let wasPlaying = p.rate > 0
                 let fresh = AVPlayerItem(asset: a)
                 fresh.externalMetadata = [Self.titleItem(play.title)]
                 fresh.seek(to: at, toleranceBefore: .zero, toleranceAfter: .zero, completionHandler: nil)
+                self.watch(fresh, p, play)
                 p.replaceCurrentItem(with: fresh)
                 if wasPlaying { p.play() }
             }
@@ -214,10 +222,14 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
             item = AVPlayerItem(url: u)
         case .drive(let id):
             // Drive's address straight to the player when the sign-in is fresh: the player's own fetching and
-            // buffering, smooth on big films. Else answered request by request (DriveStream).
-            if let a = DriveStream.directAsset(fileID: id) {
+            // buffering, smooth on big films. Else (or a kind of file Apple's player can't open, said precisely by
+            // the other way) answered request by request (DriveStream).
+            let listed = DriveLibrary.shared.listedFile(id)
+            let mime = DriveStream.playerMIME(name: listed?.name, mime: listed?.mimeType)
+            if DriveStream.unplayable(listed?.mimeType) == nil, let a = DriveStream.directAsset(fileID: id, mime: mime) {
                 item = AVPlayerItem(asset: a)
                 directID = id
+                directMIME = mime
             } else {
                 let s = DriveStream(fileID: id)
                 stream = s
@@ -233,15 +245,7 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
         current = play
         // The file starts loading now, while the title's page closes and the player comes up.
         PhonePlayback.seekAhead(p, play)
-        statusWatch = item.observe(\.status, options: [.initial, .new]) { [weak self] item, _ in
-            let status = item.status
-            guard status != .unknown else { return }
-            let words = status == .failed ? PhonePlayback.failure(item.error, play) : nil
-            Task { @MainActor in
-                guard let self, self.player === p else { return }
-                if let words { self.failed(words) } else { self.ready(p, play) }
-            }
-        }
+        watch(item, p, play)
         let c = PlayerController()
         c.player = p
         c.delegate = self
@@ -262,8 +266,9 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
             for _ in 0..<(PhonePlayback.startLimit * 10) {
                 try? await Task.sleep(nanoseconds: 100_000_000)
                 guard let self, self.player === p else { return }
-                if p.timeControlStatus == .playing { PhonePlayback.playing(item); return }
-                if item.status == .failed { return }
+                if p.timeControlStatus == .playing { PhonePlayback.playing(self.item ?? item); return }
+                // Said why (Drive's address failing isn't: the other way is tried, and waited for here).
+                if (self.item ?? item).status == .failed, self.directID == nil { return }
             }
             guard let self, self.player === p else { return }
             self.failed(PhonePlayback.tooSlow)
@@ -271,7 +276,69 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
         show(c, tries: 0)
     }
 
-    /// The file is open: to the resume point and playing (whether or not the player is on screen yet).
+    /// The file opening, or failing. Drive's address failing (a file Google labels with no video type, a sign-in it
+    /// turned down, the connection to it lost) isn't said: the same file is read request by request instead, the
+    /// way it always opened.
+    private func watch(_ item: AVPlayerItem, _ p: AVPlayer, _ play: PhonePlay) {
+        self.item = item
+        statusWatch?.invalidate()
+        let which = ObjectIdentifier(item)
+        statusWatch = item.observe(\.status, options: [.initial, .new]) { [weak self] item, _ in
+            let status = item.status
+            guard status != .unknown else { return }
+            let words = status == .failed ? PhonePlayback.failure(item.error, play) : nil
+            let code = (item.error as NSError?).map { "\($0.domain) \($0.code)" } ?? "no error"
+            Task { @MainActor in
+                guard let self, self.player === p, let now = self.item, ObjectIdentifier(now) == which else { return }
+                if let words {
+                    if let id = self.directID { self.fallBack(p, play, id: id, why: code); return }
+                    Diagnostics.shared.notePlayback("\(play.title): couldn’t play (\(code))")
+                    self.failed(words)
+                } else {
+                    self.ready(p, play)
+                }
+            }
+        }
+    }
+
+    /// Drive's address didn't open or stopped: the same file from DriveStream, from where it was.
+    private func fallBack(_ p: AVPlayer, _ play: PhonePlay, id: String, why: String) {
+        Diagnostics.shared.notePlayback("\(play.title): Drive’s address failed (\(why)), read request by request instead")
+        directID = nil
+        renew?.cancel()
+        renew = nil
+        let at = p.currentTime()
+        let s = DriveStream(fileID: id)
+        stream = s
+        let fresh = AVPlayerItem(asset: s.asset())
+        fresh.externalMetadata = [Self.titleItem(play.title)]
+        PhonePlayback.quickStart(fresh)
+        watch(fresh, p, play)
+        p.replaceCurrentItem(with: fresh)
+        if begun {
+            // It had been playing: on from the same place.
+            if at.isValid, at.seconds > 1 {
+                p.seek(to: at, toleranceBefore: PhonePlayback.nearEnough, toleranceAfter: PhonePlayback.nearEnough)
+            }
+            p.play()
+        } else {
+            PhonePlayback.seekAhead(p, play)
+        }
+    }
+
+    /// How it went, for the Macs' diagnostics log: which way it was read, how long it took to start, stalls,
+    /// dropped frames and how fast Drive sent it.
+    private func notePlayback(_ p: AVPlayer, _ play: PhonePlay) {
+        guard let events = p.currentItem?.accessLog()?.events, !events.isEmpty else { return }
+        let stalls = events.reduce(0) { $0 + max(0, $1.numberOfStalls) }
+        let dropped = events.reduce(0) { $0 + max(0, $1.numberOfDroppedVideoFrames) }
+        let speed = events.last.map { max(0, $0.observedBitrate) / 1_000_000 } ?? 0
+        let start = events.first.map { max(0, $0.startupTime) } ?? 0
+        let via = directID != nil ? "Drive’s address" : stream != nil ? "request by request" : "a download or the TV"
+        Diagnostics.shared.notePlayback("\(play.title) via \(via): started in \(String(format: "%.1f", start)) s, \(stalls) stalls, \(dropped) dropped frames, \(String(format: "%.0f", speed)) Mb/s")
+    }
+
+    /// The file is open: to the resume point and playing.
     /// Playing starts only once the player is on screen: started under the sliding-in player (and, on Apple TV,
     /// before the TV switches to the film's 4K or HDR mode) its first seconds stuttered.
     private func ready(_ p: AVPlayer, _ play: PhonePlay) {
@@ -376,6 +443,7 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
     private func finish() {
         guard player != nil else { return }
         report()
+        if let p = player, let play = current, begun { notePlayback(p, play) }
         DriveLibrary.shared.flush()
         Task { await DriveLibrary.shared.sync() }
         if let t = ticker { player?.removeTimeObserver(t) }
@@ -392,6 +460,7 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
         player = nil
         stream = nil
         directID = nil
+        item = nil
         renew?.cancel()
         renew = nil
         current = nil

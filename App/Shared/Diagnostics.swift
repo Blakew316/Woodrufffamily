@@ -14,7 +14,7 @@ final class Diagnostics: NSObject {
 
     /// The synced settings item: device id → that device's latest summaries (newest first, a few).
     static let key = "diagnostics"
-    private static let keptPerDevice = 6
+    private static let keptPerDevice = 12
 
     struct Report: Codable, Equatable {
         var at: Double
@@ -70,6 +70,11 @@ final class Diagnostics: NSObject {
     func noteStall(seconds: Double, screen: String) {
         add([Report(at: Date().timeIntervalSince1970, kind: "Stall", build: AppBuild.label,
                     detail: String(format: "%.1f s frozen on %@", seconds, screen))])
+    }
+
+    /// How a film played here (or why it didn't), for the Macs' log.
+    func notePlayback(_ detail: String) {
+        add([Report(at: Date().timeIntervalSince1970, kind: "Playback", build: AppBuild.label, detail: detail)])
     }
 
     /// A timing worth reading from the Macs (the first camera each launch, step by step).

@@ -382,6 +382,14 @@ final class DriveLibrary: WatchSource {
         return saved.folders[id] ?? []
     }
 
+    /// Drive's file [id] as it was last listed (its name and type), when it was.
+    func listedFile(_ id: String) -> GoogleDrive.File? {
+        for files in saved.folders.values {
+            if let f = files.first(where: { $0.id == id }) { return f }
+        }
+        return nil
+    }
+
     private func entry(_ id: String) -> Entry? { saved.movies.first(where: { $0.id == id }) ?? saved.shows.first(where: { $0.id == id }) }
 
     /// A title's story as TMDB told it (nil until it's been looked up).

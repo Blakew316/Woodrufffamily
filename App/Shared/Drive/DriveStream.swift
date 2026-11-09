@@ -49,10 +49,24 @@ final class DriveStream: NSObject {
     /// Drive's own address with the sign-in in the request's header, for the player to fetch and buffer itself:
     /// far faster for big films than answering its requests one by one (as the Android TVs' player does). Nil
     /// without a kept token lasting at least [minLife] seconds (then the asset above is used).
-    nonisolated static func directAsset(fileID: String, minLife: Double = 900) -> AVURLAsset? {
+    /// [mime]: what the file is. Drive's address has no extension, and Google labels some videos with no video type
+    /// at all, so the player is told rather than left to refuse an MP4 it can't identify.
+    nonisolated static func directAsset(fileID: String, mime: String = "video/mp4", minLife: Double = 900) -> AVURLAsset? {
         guard let token = GoogleDrive.cachedToken(minLife: minLife) else { return nil }
         return AVURLAsset(url: GoogleDrive.mediaURL(fileID),
-                          options: ["AVURLAssetHTTPHeaderFieldsKey": ["Authorization": "Bearer \(token)"]])
+                          options: ["AVURLAssetHTTPHeaderFieldsKey": ["Authorization": "Bearer \(token)"],
+                                    AVURLAssetOverrideMIMETypeKey: mime])
+    }
+
+    /// The type to tell the player a Drive video is: from its name, else Drive's type, else an MP4.
+    nonisolated static func playerMIME(name: String?, mime: String?) -> String {
+        switch ((name ?? "") as NSString).pathExtension.lowercased() {
+        case "mov", "qt": return "video/quicktime"
+        case "mp4", "m4v": return "video/mp4"
+        default: break
+        }
+        let m = (mime ?? "").lowercased()
+        return m == "video/quicktime" ? m : "video/mp4"
     }
 
     /// Gets a token that will last the film's start and fetches the file's first part (and its index when that's
