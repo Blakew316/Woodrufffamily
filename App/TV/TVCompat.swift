@@ -96,7 +96,9 @@ final class PictureStage: UIView {
 }
 
 /// The iPhone's live player, as Apple TV can have it: the Mac Studio (which keeps every camera live) hands over each
-/// camera's current picture about once a second, at home or through Tailscale.
+/// camera's current picture, at home or through Tailscale. The last picture shows at once; then the Mac Studio pushes
+/// each new one down a single connection (about once a second for a tile, eight a second for the open camera), or,
+/// from a Mac Studio without that, it's asked for one at a time.
 @MainActor
 final class LivePlayer: NSObject {
     let surface = PictureStage(frame: .zero)
@@ -107,6 +109,11 @@ final class LivePlayer: NSObject {
     private var live = false
     private var misses = 0
     private var lastJPEG: Data?
+    /// When a current picture last came (the "isn't sharing" message waits for a while without one).
+    private var lastFresh: Date?
+    /// When a picture was last kept for the tile and on disk (for next time it opens).
+    private var lastKept: Date?
+    private var saidNotSharing = false
     var isRunning: Bool { feed != nil }
     var isLive: Bool { live }
     /// When the feed last started.
@@ -118,45 +125,127 @@ final class LivePlayer: NSObject {
         surface.backgroundColor = .black
     }
 
+    /// Pictures a second: the open camera's eight, a tile's one.
+    private var wantedFPS: Double { CameraStreams.shared.expanded == camera.id ? 8 : 1 }
+
     func start() {
         guard feed == nil else { return }
-        onStatus?("Starting…")
         misses = 0
-        lastStart = Date()
-        feed = Task { [weak self] in
-            while !Task.isCancelled {
-                // The player isn't held while it waits, so one let go stops here.
-                guard let id = self?.camera.id else { return }
-                let jpeg = await Self.fetch(id)
-                // Decoded off the main thread (a picture a second), so the remote stays smooth.
-                var img: UIImage?
-                if let jpeg {
-                    img = await Task.detached(priority: .userInitiated) { () -> UIImage? in
-                        let i = UIImage(data: jpeg)
-                        return i?.preparingForDisplay() ?? i
-                    }.value
-                }
-                // Paused or closed meanwhile: not shown, and not said to be live again.
-                if Task.isCancelled { return }
-                guard let wait = self?.show(jpeg, img) else { return }
-                try? await Task.sleep(nanoseconds: wait)
+        saidNotSharing = false
+        let now = Date()
+        lastStart = now
+        // The last picture at once (this run's, or the one kept on disk), while the current one comes.
+        if surface.image.image == nil, let still = CameraStreams.shared.stills[camera.id] {
+            surface.image.image = still
+            surface.videoSize = still.size
+        }
+        if let f = lastFresh, now.timeIntervalSince(f) < 15 {
+            // Back after a moment (an open camera closed over it): still current.
+            live = true
+            onStatus?("Live")
+        } else {
+            lastFresh = nil
+            onStatus?(surface.image.image == nil ? "Starting…" : "Updating…")
+        }
+        feed = Task { [weak self] in await self?.run() }
+    }
+
+    private func run() async {
+        // Only for a stream that answered nothing: asked one picture at a time instead, for a minute.
+        var streamOffUntil = Date.distantPast
+        while !Task.isCancelled {
+            let id = camera.id
+            guard let token = CameraShareKey.token() else { await missed(); continue }
+            let hosts = (UserDefaults.standard.string(forKey: CameraShareKey.hostsKey) ?? "").split(separator: ",").map(String.init)
+            // A picture first: from the address that answered last, else whichever answers first.
+            var host: String?
+            if let h = Self.good, hosts.contains(h), let f = await TVCameraFeed.still(h, id: id, token: token, timeout: 2) {
+                host = h
+                await present(f)
+            } else if let won = await TVCameraFeed.race(hosts, id: id, token: token) {
+                Self.good = won.0
+                host = won.0
+                await present(won.1)
             }
+            if Task.isCancelled { return }
+            guard let host else {
+                if Self.good != nil { Self.good = nil }
+                await missed()
+                continue
+            }
+            let fps = wantedFPS
+            if Date() >= streamOffUntil {
+                let got = await stream(host, id: id, token: token, fps: fps)
+                if got == 0 && !Task.isCancelled { streamOffUntil = Date().addingTimeInterval(60) }
+                continue
+            }
+            try? await Task.sleep(nanoseconds: UInt64(1_000_000_000 / fps))
         }
     }
 
-    /// Shows the picture that came (or counts one that didn't); how long to wait before the next.
-    private func show(_ jpeg: Data?, _ img: UIImage?) -> UInt64 {
-        if let jpeg, let img {
-            misses = 0
+    /// The Mac Studio's pictures pushed down one connection, until it ends, the player stops or the camera is opened
+    /// or closed (a new speed). How many came.
+    private func stream(_ host: String, id: String, token: String, fps: Double) async -> Int {
+        guard let url = TVCameraFeed.url(host, path: "/mjpeg", id: id, token: token, fps: fps) else { return 0 }
+        let reader = MJPEGReader(url: url)
+        var got = 0
+        await withTaskCancellationHandler {
+            for await f in reader.frames {
+                got += 1
+                await present(f)
+                if Task.isCancelled || wantedFPS != fps { break }
+            }
+        } onCancel: {
+            reader.cancel()
+        }
+        reader.cancel()
+        return got
+    }
+
+    /// Decoded off the main thread, so the remote stays smooth; then shown (unless paused or closed meanwhile).
+    private func present(_ f: ShareFrame) async {
+        let jpeg = f.jpeg
+        // The same picture again (a Mac Studio that has no newer one yet): nothing to decode.
+        if jpeg != lastJPEG {
+            let img = await Task.detached(priority: .userInitiated) { () -> UIImage? in
+                let i = UIImage(data: jpeg)
+                return i?.preparingForDisplay() ?? i
+            }.value
+            guard !Task.isCancelled, feed != nil, let img else { return }
             lastJPEG = jpeg
             surface.image.image = img
             surface.videoSize = img.size
-            if !live { live = true; onStatus?("Live") }
-            return 1_000_000_000
         }
+        guard !Task.isCancelled, feed != nil else { return }
+        misses = 0
+        let wasNotSharing = saidNotSharing
+        saidNotSharing = false
+        if f.age < 15 {
+            lastFresh = Date()
+            if !live { live = true; onStatus?("Live") }
+            // Kept for the tile (shown at once next time) and on disk, now and then.
+            if lastKept.map({ Date().timeIntervalSince($0) > 60 }) ?? true {
+                lastKept = Date()
+                CameraStreams.shared.keepStill(camera, jpeg)
+            }
+        } else if (live && f.age > 30) || wasNotSharing {
+            // The Mac Studio has only an older picture now (its stream for the camera is starting again).
+            live = false
+            onStatus?("Updating…")
+        }
+    }
+
+    /// No picture came: tried again soon at first, then every few seconds.
+    private func missed() async {
         misses += 1
-        if misses == 3 { live = false; onStatus?("The Mac Studio isn’t sharing this camera right now") }
-        return 4_000_000_000
+        let since = lastFresh ?? lastStart ?? Date()
+        if !saidNotSharing, Date().timeIntervalSince(since) > 8 {
+            saidNotSharing = true
+            live = false
+            onStatus?("The Mac Studio isn’t sharing this camera right now")
+        }
+        let wait: UInt64 = misses <= 3 ? 300_000_000 : misses <= 6 ? 1_500_000_000 : 4_000_000_000
+        try? await Task.sleep(nanoseconds: wait)
     }
 
     func restart() { close(); start() }
@@ -168,24 +257,164 @@ final class LivePlayer: NSObject {
 
     /// The address that answered last, tried first next time.
     private static var good: String?
+}
 
-    private static func fetch(_ id: String) async -> Data? {
-        guard let token = CameraShareKey.token() else { return nil }
-        let hosts = (UserDefaults.standard.string(forKey: CameraShareKey.hostsKey) ?? "").split(separator: ",").map(String.init)
-        let order = (good.map { [$0] } ?? []) + hosts.filter { $0 != good }
-        for h in order {
-            var c = URLComponents()
-            c.scheme = "http"; c.host = h; c.port = Int(CameraShareKey.port); c.path = "/still"
-            c.queryItems = [URLQueryItem(name: "id", value: id), URLQueryItem(name: "k", value: token)]
-            guard let url = c.url else { continue }
-            var r = URLRequest(url: url)
-            r.timeoutInterval = 3
-            if let (d, resp) = try? await URLSession.shared.data(for: r), (resp as? HTTPURLResponse)?.statusCode == 200, d.count > 500 {
-                good = h
-                return d
+/// One of the Mac Studio's pictures, and how many seconds old it was when sent.
+struct ShareFrame {
+    let jpeg: Data
+    let age: Double
+}
+
+/// Asking the Mac Studio's camera share (CameraShare on the Mac).
+enum TVCameraFeed {
+    /// One session for every camera: connections kept and reused, short waits.
+    static let session: URLSession = {
+        let c = URLSessionConfiguration.ephemeral
+        c.timeoutIntervalForRequest = 3
+        c.httpMaximumConnectionsPerHost = 16
+        c.httpShouldUsePipelining = true
+        c.requestCachePolicy = .reloadIgnoringLocalCacheData
+        c.urlCache = nil
+        c.waitsForConnectivity = false
+        return URLSession(configuration: c)
+    }()
+
+    static func url(_ host: String, path: String, id: String, token: String, fps: Double? = nil) -> URL? {
+        var c = URLComponents()
+        c.scheme = "http"; c.host = host; c.port = Int(CameraShareKey.port); c.path = path
+        var q = [URLQueryItem(name: "id", value: id), URLQueryItem(name: "k", value: token)]
+        if let fps { q.append(URLQueryItem(name: "fps", value: String(Int(fps.rounded())))) }
+        c.queryItems = q
+        return c.url
+    }
+
+    /// The camera's current picture from one address (nil if it doesn't answer in time).
+    static func still(_ host: String, id: String, token: String, timeout: Double) async -> ShareFrame? {
+        guard let url = url(host, path: "/still", id: id, token: token) else { return nil }
+        let r = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: timeout)
+        guard let (d, resp) = try? await session.data(for: r), let h = resp as? HTTPURLResponse,
+              h.statusCode == 200, d.count > 500 else { return nil }
+        let age = h.value(forHTTPHeaderField: "X-Frame-Age").flatMap(Double.init) ?? 0
+        return ShareFrame(jpeg: d, age: age)
+    }
+
+    /// Every address asked at once; the first picture back wins (and the others are let go).
+    static func race(_ hosts: [String], id: String, token: String) async -> (String, ShareFrame)? {
+        guard !hosts.isEmpty else { return nil }
+        return await withTaskGroup(of: (String, ShareFrame)?.self) { g in
+            for h in hosts {
+                g.addTask { await still(h, id: id, token: token, timeout: 2.5).map { (h, $0) } }
             }
+            for await r in g {
+                if let r { g.cancelAll(); return r }
+            }
+            return nil
         }
-        return nil
+    }
+}
+
+/// Reads the Mac Studio's picture stream (multipart/x-mixed-replace JPEGs). It reads the parts itself, or, when
+/// URLSession splits them (a response for each part), takes each part's body.
+final class MJPEGReader: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+    let frames: AsyncStream<ShareFrame>
+    private let out: AsyncStream<ShareFrame>.Continuation
+    private var session: URLSession!
+    private var buffer = Data()
+    /// Reading the parts itself: the length of the part being read (nil while reading its headers).
+    private var need: Int?
+    private var age: Double = 0
+    /// URLSession hands over one part at a time: its expected length (-1 unknown).
+    private var partMode = false
+    private var partLength: Int64 = -1
+
+    init(url: URL) {
+        var c: AsyncStream<ShareFrame>.Continuation?
+        frames = AsyncStream(bufferingPolicy: .bufferingNewest(2)) { c = $0 }
+        out = c!
+        super.init()
+        let cfg = URLSessionConfiguration.ephemeral
+        // Nothing for this long (the Mac sends a picture at least every few seconds): it's gone.
+        cfg.timeoutIntervalForRequest = 8
+        cfg.timeoutIntervalForResource = 3600
+        cfg.urlCache = nil
+        cfg.requestCachePolicy = .reloadIgnoringLocalCacheData
+        let q = OperationQueue()
+        q.maxConcurrentOperationCount = 1
+        session = URLSession(configuration: cfg, delegate: self, delegateQueue: q)
+        session.dataTask(with: URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 8)).resume()
+    }
+
+    func cancel() {
+        out.finish()
+        session.invalidateAndCancel()
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
+                    completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+        let http = response as? HTTPURLResponse
+        let mime = (response.mimeType ?? "").lowercased()
+        if let http, http.statusCode != 200 { completionHandler(.cancel); cancel(); return }
+        if mime.hasPrefix("image/") {
+            // A part of its own: the one before it is done.
+            if partMode, partLength < 0, buffer.count > 500 { out.yield(ShareFrame(jpeg: buffer, age: age)) }
+            partMode = true
+            buffer = Data()
+            partLength = response.expectedContentLength
+            age = http?.value(forHTTPHeaderField: "X-Frame-Age").flatMap(Double.init) ?? 0
+        } else if !mime.hasPrefix("multipart/") {
+            completionHandler(.cancel); cancel(); return
+        }
+        completionHandler(.allow)
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        buffer.append(data)
+        if partMode {
+            if partLength > 0, buffer.count >= Int(partLength) {
+                out.yield(ShareFrame(jpeg: Data(buffer.prefix(Int(partLength))), age: age))
+                buffer = Data()
+                partLength = 0
+            }
+            return
+        }
+        parse()
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        if partMode, partLength < 0, buffer.count > 500 { out.yield(ShareFrame(jpeg: buffer, age: age)) }
+        cancel()
+    }
+
+    /// Each part: "--frame", its headers (Content-Length, X-Frame-Age), a blank line, then the JPEG.
+    private func parse() {
+        while true {
+            if need == nil {
+                guard let end = buffer.range(of: Data("\r\n\r\n".utf8)) else {
+                    if buffer.count > 65_536 { cancel() }
+                    return
+                }
+                let head = String(decoding: buffer[buffer.startIndex..<end.lowerBound], as: UTF8.self)
+                buffer = buffer.subdata(in: end.upperBound..<buffer.endIndex)
+                var length: Int?
+                age = 0
+                for line in head.components(separatedBy: "\r\n") {
+                    let kv = line.split(separator: ":", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
+                    guard kv.count == 2 else { continue }
+                    switch kv[0].lowercased() {
+                    case "content-length": length = Int(kv[1])
+                    case "x-frame-age": age = Double(kv[1]) ?? 0
+                    default: break
+                    }
+                }
+                guard let length, length > 0, length < 20_000_000 else { cancel(); return }
+                need = length
+            }
+            guard let n = need, buffer.count >= n else { return }
+            let jpeg = buffer.subdata(in: buffer.startIndex..<(buffer.startIndex + n))
+            buffer = buffer.subdata(in: (buffer.startIndex + n)..<buffer.endIndex)
+            need = nil
+            if jpeg.count > 500 { out.yield(ShareFrame(jpeg: jpeg, age: age)) }
+        }
     }
 }
 

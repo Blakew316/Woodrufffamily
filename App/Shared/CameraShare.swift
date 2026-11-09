@@ -52,6 +52,14 @@ final class CameraShare {
     /// Each camera's latest picture and when it was taken (taken again at most once a second, only while asked for).
     private var latest: [String: (jpeg: Data, at: Date)] = [:]
     private var token: String?
+    /// When an Apple TV last asked for each camera: its stream is kept live, and its picture fresh, for a while after.
+    private var askedAt: [String: Date] = [:]
+    /// The cameras whose streams this Mac keeps live for the Apple TVs (started for them).
+    private var keptForTV: Set<String> = []
+    /// Takes the asked-for cameras' pictures again as they go stale (while any is asked for).
+    private var refresher: Task<Void, Never>?
+    /// The picture streams open now (GET /mjpeg): which camera, and how many pictures a second.
+    private var streamFPS: [ObjectIdentifier: (id: String, fps: Double)] = [:]
     /// A picture being taken of each camera now: every Apple TV asking meanwhile gets the same one.
     private var taking: [String: Task<Data?, Never>] = [:]
     /// The last alerts this Mac sent, newest last, for the Apple TVs' own alerts (GET /events).
@@ -80,7 +88,10 @@ final class CameraShare {
         l.newConnectionHandler = { [weak self] c in
             c.start(queue: .main)
             // An Apple TV that went away mid-request: never left open.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 15) { c.cancel() }
+            // (A picture stream, GET /mjpeg, stays open: it ends itself.)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 15) {
+                Task { @MainActor in if !CameraShare.shared.isStreaming(c) { c.cancel() } }
+            }
             Task { @MainActor in self?.read(c, Data()) }
         }
         l.start(queue: .main)
@@ -125,7 +136,9 @@ final class CameraShare {
                 guard let self else { return }
                 var all = got
                 if let data { all.append(data) }
-                if all.range(of: Data("\r\n\r\n".utf8)) != nil {
+                if all.range(of: Data("\r\n\r\n".utf8)) != nil, CameraShare.isStream(all) {
+                    self.stream(String(decoding: all, as: UTF8.self), c)
+                } else if all.range(of: Data("\r\n\r\n".utf8)) != nil {
                     await self.answer(String(decoding: all, as: UTF8.self), c)
                 } else if done || error != nil || all.count > 8192 {
                     c.cancel()
@@ -161,9 +174,11 @@ final class CameraShare {
             if let jpeg = CameraEventMedia.eventImage(id) { return reply(c, "200 OK", jpeg) }
             return reply(c, "404 Not Found", nil)
         }
+        watched(id)
         if let kept = latest[id], Date().timeIntervalSince(kept.at) < 0.9 { return reply(c, "200 OK", kept.jpeg) }
         if let jpeg = await frame(id) { return reply(c, "200 OK", jpeg) }
-        if let kept = latest[id] { return reply(c, "200 OK", kept.jpeg) }
+        // Not live yet (its stream is starting now): the latest picture kept, at once, with its age.
+        if let kept = latest[id] { return replyFrame(c, kept.jpeg, age: Date().timeIntervalSince(kept.at)) }
         reply(c, "503 Service Unavailable", nil)
     }
 
@@ -175,12 +190,140 @@ final class CameraShare {
         let jpeg = await t.value
         taking[id] = nil
         if let jpeg { latest[id] = (jpeg, Date()) }
+        // Not live: the last live picture this Mac kept of it (on disk), dated when it was taken, until a new one.
+        if jpeg == nil, latest[id] == nil, let kept = CameraStreams.shared.latestStill(id) {
+            latest[id] = (kept, CameraStreams.shared.stillAt[id] ?? .distantPast)
+        }
         return jpeg
     }
 
     private func reply(_ c: NWConnection, _ status: String, _ jpeg: Data?, type: String = "image/jpeg") {
         var out = Data("HTTP/1.1 \(status)\r\nContent-Type: \(type)\r\nContent-Length: \(jpeg?.count ?? 0)\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n".utf8)
         if let jpeg { out.append(jpeg) }
+        c.send(content: out, completion: .contentProcessed { _ in c.cancel() })
+    }
+}
+
+// MARK: Keeping the Apple TVs' cameras fresh
+
+extension CameraShare {
+    /// How long a camera an Apple TV asked for stays live after its last ask.
+    static let warmFor: TimeInterval = 300
+
+    /// An Apple TV asked for [id]: its stream is kept live (started now if it isn't), and its picture taken again as
+    /// it goes stale, so the next ask is answered at once from what's kept.
+    func watched(_ id: String) {
+        askedAt[id] = Date()
+        keepLive(id)
+        if refresher == nil { refresher = Task { [weak self] in await self?.refresh() } }
+    }
+
+    func isStreaming(_ c: NWConnection) -> Bool { streamFPS[ObjectIdentifier(c)] != nil }
+
+    private func keepLive(_ id: String) {
+        guard !CameraStreams.shared.pinned.contains(id),
+              let cam = NestCameras.shared.cameras.first(where: { $0.id == id }), cam.webRTC, cam.online else { return }
+        CameraStreams.shared.keepPlaying(cam)
+        keptForTV.insert(id)
+    }
+
+    /// Ten times a second while any camera is asked for: each one's picture is taken again when it's older than its
+    /// fastest stream wants (once a second for one asked for in the last few seconds, every five otherwise). One no
+    /// Apple TV has asked for in five minutes is let go.
+    private func refresh() async {
+        var tick = 0
+        while !Task.isCancelled {
+            let now = Date()
+            for (id, at) in askedAt {
+                let fps = streamFPS.values.filter { $0.id == id }.map(\.fps).max()
+                if fps == nil, now.timeIntervalSince(at) > Self.warmFor {
+                    askedAt[id] = nil
+                    letGo(id)
+                    continue
+                }
+                let every = fps.map { 1 / $0 } ?? (now.timeIntervalSince(at) < 10 ? 1 : 5)
+                let age = latest[id].map { now.timeIntervalSince($0.at) } ?? .infinity
+                if age >= every * 0.9, taking[id] == nil { Task { _ = await self.frame(id) } }
+            }
+            // Every two seconds: a stream that stopped starts again, and its picture goes back off screen after the
+            // camera was open on this Mac.
+            tick += 1
+            if tick % 20 == 0 { for id in keptForTV { keepLive(id) } }
+            if askedAt.isEmpty { refresher = nil; return }
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+    }
+
+    private func letGo(_ id: String) {
+        guard keptForTV.remove(id) != nil else { return }
+        // Kept live for something else too (Vehicle Alerts, or every camera kept ready on this Mac).
+        if VehicleWatch.shared.watched.contains(id) || CameraStreams.shared.warmed.contains(id) { return }
+        CameraStreams.shared.stopKeeping(id)
+    }
+
+    static func isStream(_ request: Data) -> Bool { request.starts(with: Data("GET /mjpeg?".utf8)) }
+
+    /// GET /mjpeg?id=<camera>&k=<key>&fps=<1–10>: the camera's pictures as they're taken, pushed down one connection
+    /// (multipart/x-mixed-replace JPEGs, each with its age in X-Frame-Age): at most [fps] a second, and the latest
+    /// again every three seconds when nothing new comes. It ends after ten minutes (the Apple TV asks again).
+    func stream(_ request: String, _ c: NWConnection) {
+        let line = request.components(separatedBy: "\r\n").first ?? ""
+        let parts = line.split(separator: " ")
+        guard parts.count >= 2, let url = URLComponents(string: "http://x" + parts[1]) else { return reply(c, "404 Not Found", nil) }
+        let q = Dictionary((url.queryItems ?? []).map { ($0.name, $0.value ?? "") }, uniquingKeysWith: { a, _ in a })
+        if token == nil { token = CameraShareKey.token() }
+        guard let token, q["k"] == token, let id = q["id"], !id.isEmpty else { return reply(c, "403 Forbidden", nil) }
+        let fps = min(10, max(0.5, Double(q["fps"] ?? "") ?? 1))
+        let key = ObjectIdentifier(c)
+        streamFPS[key] = (id, fps)
+        watched(id)
+        c.stateUpdateHandler = { state in
+            switch state {
+            case .failed, .cancelled: Task { @MainActor in CameraShare.shared.streamFPS[key] = nil }
+            default: break
+            }
+        }
+        let head = "HTTP/1.1 200 OK\r\nContent-Type: multipart/x-mixed-replace; boundary=frame\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n"
+        c.send(content: Data(head.utf8), completion: .contentProcessed { _ in })
+        Task { await self.pump(c, key, id, fps) }
+    }
+
+    private func pump(_ c: NWConnection, _ key: ObjectIdentifier, _ id: String, _ fps: Double) async {
+        let began = Date()
+        var sentAt: Date?
+        var lastSend = Date.distantPast
+        var lastAsk = Date()
+        while streamFPS[key] != nil, Date().timeIntervalSince(began) < 600 {
+            let now = Date()
+            if now.timeIntervalSince(lastAsk) >= 1 { lastAsk = now; watched(id) }
+            if let f = latest[id], now.timeIntervalSince(lastSend) >= 0.9 / fps,
+               f.at != sentAt || now.timeIntervalSince(lastSend) >= 3 {
+                let age = min(999_999, max(0, now.timeIntervalSince(f.at)))
+                var part = Data("--frame\r\nContent-Type: image/jpeg\r\nContent-Length: \(f.jpeg.count)\r\nX-Frame-Age: \(String(format: "%.1f", age))\r\n\r\n".utf8)
+                part.append(f.jpeg)
+                part.append(Data("\r\n".utf8))
+                guard await send(c, part) else { break }
+                sentAt = f.at
+                lastSend = Date()
+            }
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+        streamFPS[key] = nil
+        c.cancel()
+    }
+
+    /// Sent (handed to the network, so a slow Apple TV is never sent more than it takes); false once it's gone.
+    private func send(_ c: NWConnection, _ data: Data) async -> Bool {
+        await withCheckedContinuation { (k: CheckedContinuation<Bool, Never>) in
+            c.send(content: data, completion: .contentProcessed { e in k.resume(returning: e == nil) })
+        }
+    }
+
+    /// A picture that isn't current (the camera's stream is starting), with how many seconds old it is.
+    private func replyFrame(_ c: NWConnection, _ jpeg: Data, age: Double) {
+        let a = String(format: "%.1f", min(999_999, max(0, age)))
+        var out = Data("HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nContent-Length: \(jpeg.count)\r\nX-Frame-Age: \(a)\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n".utf8)
+        out.append(jpeg)
         c.send(content: out, completion: .contentProcessed { _ in c.cancel() })
     }
 }
