@@ -47,6 +47,7 @@ enum GoogleDrive {
     /// revoke would end their sign-ins too (the Nest cameras, Drive, Photos, Calendar).
     static func signOut() {
         for k in ["gdrive.refresh", "gdrive.access", "gdrive.expires", "gdrive.scopes", "gdrive.email"] { Keychain.set(nil, for: k) }
+        memo.set(nil, expires: 0)
     }
 
     struct Failure: LocalizedError {
@@ -108,11 +109,15 @@ enum GoogleDrive {
     }
 
     private static func keep(_ j: [String: Any]) {
-        if let a = j["access_token"] as? String { Keychain.set(a, for: "gdrive.access") }
         // What Google let the app have (each permission is a box the person can leave unticked).
         if let s = j["scope"] as? String { Keychain.set(s, for: "gdrive.scopes") }
         let life = (j["expires_in"] as? NSNumber)?.doubleValue ?? 3600
-        Keychain.set(String(Date().timeIntervalSince1970 + life), for: "gdrive.expires")
+        let expires = Date().timeIntervalSince1970 + life
+        Keychain.set(String(expires), for: "gdrive.expires")
+        if let a = j["access_token"] as? String {
+            Keychain.set(a, for: "gdrive.access")
+            memo.set(a, expires: expires)
+        }
     }
 
     private static func tokenRequest(_ form: [String: String]) async throws -> [String: Any] {
@@ -134,10 +139,15 @@ enum GoogleDrive {
         }
     }
 
-    /// A current access token: the kept one until a minute before it runs out, then a fresh one.
-    static func token() async throws -> String {
+    /// A current access token: the kept one until [minLife] seconds before it runs out (a minute by default), then a
+    /// fresh one. Opening a title asks for ten minutes, so the film's first requests never wait for a new one.
+    static func token(minLife: Double = 60) async throws -> String {
+        if let a = memo.get(minLife: minLife) { return a }
         let expires = Double(Keychain.get("gdrive.expires") ?? "") ?? 0
-        if let a = Keychain.get("gdrive.access"), !a.isEmpty, expires - Date().timeIntervalSince1970 > 60 { return a }
+        if let a = Keychain.get("gdrive.access"), !a.isEmpty, expires - Date().timeIntervalSince1970 > minLife {
+            memo.set(a, expires: expires)
+            return a
+        }
         guard let refresh = Keychain.get("gdrive.refresh"), !refresh.isEmpty else { throw Failure("Sign in to Google Drive in Settings.") }
         if let t = refreshing { return try await t.value }
         let t = Task { () throws -> String in
@@ -154,7 +164,17 @@ enum GoogleDrive {
     private static var refreshing: Task<String, Error>?
 
     /// The kept token as rejected: the next request gets a fresh one.
-    static func dropToken() { Keychain.set("0", for: "gdrive.expires") }
+    static func dropToken() {
+        Keychain.set("0", for: "gdrive.expires")
+        memo.set(nil, expires: 0)
+    }
+
+    /// The token in memory when it has more than a minute left, from any thread (the player's stream asks for one for
+    /// every part it fetches, and shouldn't wait for the main thread or the keychain to get it).
+    nonisolated static func cachedToken() -> String? { memo.get(minLife: 60) }
+
+    nonisolated private static let memo = DriveTokenMemo()
+
 
     // MARK: Drive
 
@@ -315,6 +335,21 @@ enum GoogleDrive {
 
     static func base64url(_ d: Data) -> String {
         d.base64EncodedString().replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
+    }
+}
+
+/// Drive's current access token and when it runs out, in memory (read from any thread).
+private final class DriveTokenMemo: @unchecked Sendable {
+    private let lock = NSLock()
+    private var token: String?
+    private var expires: Double = 0
+    func get(minLife: Double) -> String? {
+        lock.lock(); defer { lock.unlock() }
+        guard let token, !token.isEmpty, expires - Date().timeIntervalSince1970 > minLife else { return nil }
+        return token
+    }
+    func set(_ t: String?, expires e: Double) {
+        lock.lock(); token = t; expires = e; lock.unlock()
     }
 }
 

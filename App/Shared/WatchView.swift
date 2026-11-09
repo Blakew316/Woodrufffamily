@@ -982,11 +982,9 @@ enum PlayRouter {
         if tv == nil, PhonePlayback.playsHere, PhonePlayback.canPlay(a) {
             guard let p = PhonePlayback.play(a, fleet: fleet, fromStart: fromStart) else { return false }
             #if os(iOS) || os(tvOS)
-            // Once the title page that asked has closed (Apple's player shows over the topmost screen).
-            Task { @MainActor in
-                try? await Task.sleep(nanoseconds: 300_000_000)
-                NativePlayer.shared.present(p)
-            }
+            // The film starts loading at once; Apple's player shows over the topmost screen as soon as the title page
+            // that asked has closed.
+            NativePlayer.shared.present(p)
             #else
             // In a player window of its own, straight away (it opens over the title page, which closes behind it).
             MacPlayer.shared.present(p)
@@ -1060,6 +1058,9 @@ struct TitleSheet: View {
 
     /// What's shown: the answer read here, else the one kept from the last time this title was opened.
     private func details(_ c: (any WatchSource)?) -> TitleDetails? { d ?? TitleCache.shared.details(hub: c?.sourceID, id: id) }
+
+    /// What Play would play, fetched ahead when it plays here (so it starts the moment Play is pressed).
+    private var warmPlay: PlayAction? { details(client)?.play ?? TitleCache.shared.tile(id)?.play }
 
     /// The season shown: the one picked, else the one the TV suggests.
     private func season(of d: TitleDetails?) -> Int { picked ?? d?.season ?? 0 }
@@ -1159,6 +1160,7 @@ struct TitleSheet: View {
         }
         .task { await load() }
         .task(id: "\(shown?.id ?? "")|\(season)") { await loadEpisodes() }
+        .task(id: warmPlay?.key) { if let p = warmPlay { PhonePlayback.warm(p) } }
         .sheetBanner()
     }
     #endif
@@ -1262,6 +1264,8 @@ struct TitleSheet: View {
             .task { await load() }
             // The episodes of the season picked (and of the first one shown, as soon as the title shows).
             .task(id: "\(shown?.id ?? "")|\(season)") { await loadEpisodes() }
+            // Its Play made ready to start at once.
+            .task(id: warmPlay?.key) { if let p = warmPlay { PhonePlayback.warm(p) } }
         }
         // Errors from here (a play that failed, Mark as Watched) show over the sheet, not hidden behind it.
         .sheetBanner()

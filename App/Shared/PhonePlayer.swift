@@ -13,6 +13,8 @@ struct PhonePlay: Identifiable {
     var key: String
     var title: String
     var start: Double   // seconds
+    /// The title's picture, shown while it starts.
+    var art: URL? = nil
 }
 
 @Observable @MainActor
@@ -43,19 +45,55 @@ final class PhonePlayback {
         item.preferredForwardBufferDuration = 2
     }
 
+    /// Once it's playing, the player buffers as far ahead as it likes again (two seconds ahead all film long would
+    /// stop it at every hiccup of the connection).
+    nonisolated static func playing(_ item: AVPlayerItem) {
+        item.preferredForwardBufferDuration = 0
+    }
+
+    /// The resume point, asked for before the player has read the file, so the first parts it fetches are from
+    /// there and not from the start.
+    nonisolated static func seekAhead(_ p: AVPlayer, _ play: PhonePlay) {
+        guard play.start > 5 else { return }
+        p.seek(to: CMTime(seconds: play.start, preferredTimescale: 600), toleranceBefore: nearEnough, toleranceAfter: nearEnough)
+    }
+
+    /// Once the file is open: at the resume point (again, if the early ask didn't take) and playing, without waiting
+    /// for a long buffer first.
+    static func begin(_ p: AVPlayer, _ play: PhonePlay) async {
+        if play.start > 5, abs(p.currentTime().seconds - play.start) > 3 {
+            await p.seek(to: CMTime(seconds: play.start, preferredTimescale: 600), toleranceBefore: nearEnough, toleranceAfter: nearEnough)
+        }
+        p.playImmediately(atRate: 1)
+    }
+
+    /// How long it may take to start before it says so.
+    static let startLimit = 30
+
+    static let tooSlow = "It didn’t start within 30 seconds. Check the connection, then try again."
+
+    /// Gets a Drive video ready to start the moment Play is pressed (a title's page asks when it opens): a token
+    /// that will last, and the file's first part.
+    static func warm(_ a: PlayAction) {
+        guard playsHere, canPlay(a), a.key.hasPrefix("drive:"), GoogleDrive.signedIn,
+              DriveDownloads.shared.local(a.key) == nil else { return }
+        DriveStream.prefetch(fileID: String(a.key.dropFirst(6)))
+    }
+
     /// Something that plays one particular file (not "the next episode", which the TV works out).
     static func canPlay(_ a: PlayAction) -> Bool { a.latest != true }
 
     /// What to play [a] here, or nil (and it says why) when it can't be.
     static func play(_ a: PlayAction, fleet: Fleet, fromStart: Bool = false) -> PhonePlay? {
         let start = fromStart ? 0 : max(0, (a.position ?? 0) / 1000)
+        let art = a.key.hasPrefix("drive:") ? DriveLibrary.shared.art(for: a.key) : nil
         // Downloaded here: from the device, with or without a connection.
         if a.key.hasPrefix("drive:"), let file = DriveDownloads.shared.local(a.key) {
-            return PhonePlay(source: .url(file), key: a.key, title: a.title, start: start)
+            return PhonePlay(source: .url(file), key: a.key, title: a.title, start: start, art: art)
         }
         // A Drive video with Drive signed in here: straight from Google, at home or away.
         if a.key.hasPrefix("drive:"), GoogleDrive.signedIn {
-            return PhonePlay(source: .drive(String(a.key.dropFirst(6))), key: a.key, title: a.title, start: start)
+            return PhonePlay(source: .drive(String(a.key.dropFirst(6))), key: a.key, title: a.title, start: start, art: art)
         }
         guard let c = fleet.hubClient() else { fleet.show(TVError.notPaired); return nil }
         let ext = (a.key as NSString).pathExtension.lowercased()
@@ -106,6 +144,13 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
     private var current: PhonePlay?
     private var inPictureInPicture = false
     private var statusWatch: NSKeyValueObservation?
+    private var displayWatch: NSKeyValueObservation?
+    /// Started playing (the resume point found, Play pressed on the player).
+    private var begun = false
+    /// Why it can't play, found before the player was on screen (said once it is).
+    private var pendingFailure: String?
+    /// Says so when it hasn't started in time.
+    private var watchdog: Task<Void, Never>?
 
     func present(_ play: PhonePlay) {
         // One still showing (another Play while it's up, or one in picture in picture): closed first, without it
@@ -116,8 +161,12 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
         finish()
         if let old, old.presentingViewController != nil { old.dismiss(animated: false) }
         inPictureInPicture = false
-        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
-        try? AVAudioSession.sharedInstance().setActive(true)
+        begun = false
+        pendingFailure = nil
+        let audio = AVAudioSession.sharedInstance()
+        try? audio.setCategory(.playback, mode: .moviePlayback)
+        // Activating can take a moment; not on the main thread, where the player is being shown.
+        DispatchQueue.global(qos: .userInitiated).async { try? audio.setActive(true) }
         let item: AVPlayerItem
         switch play.source {
         case .url(let u):
@@ -139,10 +188,16 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
         let p = AVPlayer(playerItem: item)
         player = p
         current = play
+        // The file starts loading now, while the title's page closes and the player comes up.
+        PhonePlayback.seekAhead(p, play)
         statusWatch = item.observe(\.status, options: [.initial, .new]) { [weak self] item, _ in
-            guard item.status == .failed else { return }
-            let words = PhonePlayback.failure(item.error, play)
-            Task { @MainActor in self?.failed(words) }
+            let status = item.status
+            guard status != .unknown else { return }
+            let words = status == .failed ? PhonePlayback.failure(item.error, play) : nil
+            Task { @MainActor in
+                guard let self, self.player === p else { return }
+                if let words { self.failed(words) } else { self.ready(p, play) }
+            }
         }
         let c = PlayerController()
         c.player = p
@@ -158,19 +213,83 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
         ticker = p.addPeriodicTimeObserver(forInterval: CMTime(seconds: 10, preferredTimescale: 1), queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.report() }
         }
-        Self.top()?.present(c, animated: true) {
-            Task { @MainActor in
-                if play.start > 5 {
-                    await p.seek(to: CMTime(seconds: play.start, preferredTimescale: 600), toleranceBefore: PhonePlayback.nearEnough, toleranceAfter: PhonePlayback.nearEnough)
-                }
-                p.playImmediately(atRate: 1)
+        if let art = play.art { poster(art, on: c) }
+        watchdog = Task { @MainActor [weak self] in
+            // Until it's playing (its first frame), or said why not.
+            for _ in 0..<(PhonePlayback.startLimit * 10) {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+                guard let self, self.player === p else { return }
+                if p.timeControlStatus == .playing { PhonePlayback.playing(item); return }
+                if item.status == .failed { return }
+            }
+            guard let self, self.player === p else { return }
+            self.failed(PhonePlayback.tooSlow)
+        }
+        show(c, tries: 0)
+    }
+
+    /// The file is open: to the resume point and playing (whether or not the player is on screen yet).
+    private func ready(_ p: AVPlayer, _ play: PhonePlay) {
+        guard !begun else { return }
+        begun = true
+        Task { @MainActor in await PhonePlayback.begin(p, play) }
+    }
+
+    /// Shows the player once the screen it goes over is still: the title's page that asked has closed (presenting
+    /// while it's closing does nothing, and the film would never show).
+    private func show(_ c: PlayerController, tries: Int) {
+        guard controller === c, c.presentingViewController == nil else { return }
+        let top = Self.top()
+        let busy = top.map { $0.transitionCoordinator != nil || $0.presentedViewController != nil || $0.isBeingPresented || $0.isBeingDismissed } ?? true
+        // The first look is a moment later, so a page closing after Play has begun to close.
+        if tries == 0 || (busy && tries < 40) {
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: tries == 0 ? 120_000_000 : 50_000_000)
+                self?.show(c, tries: tries + 1)
+            }
+            return
+        }
+        top?.present(c, animated: true) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.controller === c, let words = self.pendingFailure else { return }
+                self.pendingFailure = nil
+                self.failed(words)
+            }
+        }
+    }
+
+    /// The title's picture behind the player's spinner until the first frame shows.
+    private func poster(_ url: URL, on c: PlayerController) {
+        c.loadViewIfNeeded()
+        guard let overlay = c.contentOverlayView else { return }
+        let v = UIImageView(frame: overlay.bounds)
+        v.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        v.contentMode = .scaleAspectFill
+        v.clipsToBounds = true
+        v.alpha = 0.6
+        overlay.addSubview(v)
+        if let img = ImageStore.shared.cached(url) {
+            v.image = img
+        } else {
+            Task { @MainActor [weak v] in
+                let img = await ImageStore.shared.image(url)
+                v?.image = img
+            }
+        }
+        displayWatch = c.observe(\.isReadyForDisplay, options: [.initial, .new]) { [weak v, weak c] _, _ in
+            Task { @MainActor [weak v, weak c] in
+                guard let v, let c, c.isReadyForDisplay else { return }
+                UIView.animate(withDuration: 0.25, animations: { v.alpha = 0 }, completion: { _ in v.removeFromSuperview() })
             }
         }
     }
 
     /// Says why it can't play, over the player; OK closes the player.
     private func failed(_ words: String) {
-        guard let c = controller, c.presentedViewController == nil else { return }
+        guard let c = controller else { return }
+        // Not on screen yet: said as soon as it is.
+        guard c.presentingViewController != nil else { pendingFailure = words; return }
+        guard c.presentedViewController == nil else { return }
         let alert = UIAlertController(title: "Can’t Play This Here", message: words, preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "OK", style: .default) { [weak c] _ in c?.dismiss(animated: true) })
         c.present(alert, animated: true)
@@ -207,6 +326,11 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
         ticker = nil
         statusWatch?.invalidate()
         statusWatch = nil
+        displayWatch?.invalidate()
+        displayWatch = nil
+        watchdog?.cancel()
+        watchdog = nil
+        pendingFailure = nil
         player?.pause()
         player?.replaceCurrentItem(with: nil)
         player = nil
@@ -284,6 +408,7 @@ final class MacPlayer: NSObject, NSWindowDelegate {
         PhonePlayback.quickStart(item)
         let p = AVPlayer(playerItem: item)
         player = p
+        PhonePlayback.seekAhead(p, play)
 
         let view = AVPlayerView()
         view.player = p
@@ -309,17 +434,21 @@ final class MacPlayer: NSObject, NSWindowDelegate {
             MainActor.assumeIsolated { self?.report() }
         }
         watch = Task { [weak self] in
-            if play.start > 5 {
-                await p.seek(to: CMTime(seconds: play.start, preferredTimescale: 600), toleranceBefore: PhonePlayback.nearEnough, toleranceAfter: PhonePlayback.nearEnough)
-            }
-            p.playImmediately(atRate: 1)
-            // A file Apple's player can't open, or the source out of reach: said over the player.
-            for _ in 0..<40 {
-                try? await Task.sleep(nanoseconds: 500_000_000)
+            // Playing as soon as the file is open; a file Apple's player can't open, the source out of reach, or no
+            // start in time: said over the player.
+            var begun = false
+            for _ in 0..<(PhonePlayback.startLimit * 20) {
                 guard let self, self.player === p else { return }
                 if item.status == .failed { self.failed(PhonePlayback.failure(item.error, play)); return }
-                if item.status == .readyToPlay { return }
+                if !begun, item.status == .readyToPlay {
+                    begun = true
+                    await PhonePlayback.begin(p, play)
+                }
+                if begun, p.timeControlStatus == .playing { PhonePlayback.playing(item); return }
+                try? await Task.sleep(nanoseconds: 50_000_000)
             }
+            guard let self, self.player === p else { return }
+            self.failed(PhonePlayback.tooSlow)
         }
     }
 

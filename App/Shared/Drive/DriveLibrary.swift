@@ -387,6 +387,13 @@ final class DriveLibrary: WatchSource {
     /// A title's story as TMDB told it (nil until it's been looked up).
     func overview(_ id: String) -> String? { entry(id)?.overview }
 
+    /// The picture to show while [key] starts playing: its title's backdrop, else its poster.
+    func art(for key: String) -> URL? {
+        let s = saved.spots[key] ?? context[key]
+        let e = s?.titleId.flatMap { entry($0) }
+        return artURL(e?.backdrop ?? s?.poster ?? e?.poster, small: false)
+    }
+
     // MARK: Where things were left off
 
     private var nowMS: Double { Date().timeIntervalSince1970 * 1000 }
