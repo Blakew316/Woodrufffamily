@@ -59,6 +59,20 @@ def deep(key, app, app_obj, builds):
     a = app_obj.get("attributes") or {}
     say("App attributes: %s" % {k: a.get(k) for k in ("bundleId", "sku", "primaryLocale", "contentRightsDeclaration",
                                                        "isOrEverWasMadeForKids")})
+    say("App name: %s" % a.get("name"))
+    infos = safe(key, "/apps/%s/appInfos?include=appInfoLocalizations" % app)
+    say("App infos: %s" % [((i.get("attributes") or {}).get("state") or (i.get("attributes") or {}).get("appStoreState"))
+                            for i in (infos.get("data") or [])] if "data" in infos else infos)
+    say("App info names: %s" % [((x.get("attributes") or {}).get("locale"), (x.get("attributes") or {}).get("name"))
+                                 for x in (infos.get("included") or [])])
+    av = safe(key, "/apps/%s/appAvailabilityV2" % app)
+    say("Availability: %s" % ({k: v for k, v in ((av.get("data") or {}).get("attributes") or {}).items()} if "data" in av else av))
+    if "data" in av and av["data"]:
+        terr = safe(key, "https://api.appstoreconnect.apple.com/v2/appAvailabilities/%s/territoryAvailabilities?limit=200" % av["data"]["id"])
+        rows = terr.get("data") or []
+        avail = [r for r in rows if (r.get("attributes") or {}).get("available")]
+        say("Territories: %d listed, %d available%s" % (len(rows), len(avail),
+            "" if "data" in terr else " (%s)" % terr))
     say("Beta license agreement: %s" % safe(key, "/apps/%s/betaLicenseAgreement" % app))
     say("Beta app localizations: %s" % safe(key, "/apps/%s/betaAppLocalizations" % app))
     say("Beta review detail: %s" % safe(key, "/apps/%s/betaAppReviewDetail" % app))
