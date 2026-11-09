@@ -3,6 +3,8 @@ import Photos
 import TVServices
 import UIKit
 import ImageIO
+import CoreImage
+import CoreImage.CIFilterBuiltins
 
 /// The Top Shelf slideshow: an iCloud Photos album picked here, its pictures kept ready (1920 × 1080, the Top Shelf's own size) in the folder
 /// the Top Shelf reads, and refreshed when the app opens.
@@ -90,6 +92,48 @@ final class TopShelfAlbum {
         return UIImage(cgImage: cg)
     }
 
+    /// The whole photo on the Top Shelf's 1920 × 1080, fitted rather than cropped (filled to the Top Shelf, a portrait
+    /// photo showed less than half of itself and a landscape one lost a quarter), over a soft, darkened copy of itself
+    /// filling the rest of the screen.
+    nonisolated private static func shelfPicture(_ photo: UIImage) -> UIImage? {
+        let screen = CGSize(width: 1920, height: 1080)
+        let w = photo.size.width, h = photo.size.height
+        guard w > 0, h > 0 else { return nil }
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        format.opaque = true
+        // Behind it: a small copy (drawn the right way up), blurred, stretched over the whole screen.
+        let small = CGSize(width: 192, height: max(1, (192 * h / w).rounded()))
+        let thumb = UIGraphicsImageRenderer(size: small, format: format).image { _ in photo.draw(in: CGRect(origin: .zero, size: small)) }
+        let soft = blurred(thumb) ?? thumb
+        func centered(_ scale: CGFloat) -> CGRect {
+            let size = CGSize(width: w * scale, height: h * scale)
+            return CGRect(x: (screen.width - size.width) / 2, y: (screen.height - size.height) / 2, width: size.width, height: size.height)
+        }
+        let fill = max(screen.width / w, screen.height / h)
+        let fit = min(screen.width / w, screen.height / h)
+        return UIGraphicsImageRenderer(size: screen, format: format).image { ctx in
+            UIColor.black.setFill()
+            ctx.fill(CGRect(origin: .zero, size: screen))
+            soft.draw(in: centered(fill))
+            UIColor(white: 0, alpha: 0.35).setFill()
+            ctx.fill(CGRect(origin: .zero, size: screen))
+            photo.draw(in: centered(fit))
+        }
+    }
+
+    /// A strong blur of a small picture, nil if it can't be made.
+    nonisolated private static func blurred(_ image: UIImage) -> UIImage? {
+        guard let cg = image.cgImage else { return nil }
+        let input = CIImage(cgImage: cg)
+        let blur = CIFilter.gaussianBlur()
+        blur.inputImage = input.clampedToExtent()
+        blur.radius = 8
+        guard let out = blur.outputImage?.cropped(to: input.extent),
+              let made = CIContext().createCGImage(out, from: input.extent) else { return nil }
+        return UIImage(cgImage: made)
+    }
+
     private func write() async {
         guard let id = picked,
               let album = PHAssetCollection.fetchAssetCollections(withLocalIdentifiers: [id], options: nil).firstObject,
@@ -140,12 +184,13 @@ final class TopShelfAlbum {
             }
             // Apple TV only lets apps write in Caches (the shared folder's too), which is where the Top Shelf reads.
             // A new name each time (the Apple TV keeps pictures by their address: the same name would keep showing
-            // the old photo). Made into a JPEG off the main thread, so the remote stays smooth meanwhile.
+            // the old photo). Fitted to the Top Shelf and made into a JPEG off the main thread, so the remote stays
+            // smooth meanwhile.
             let file = dir.appendingPathComponent(String(format: "%@-%02d.jpg", stamp, i))
             var written: Result<Void, Error>?
             if let image = picture {
                 written = await Task.detached(priority: .utility) { () -> Result<Void, Error>? in
-                    guard let data = image.jpegData(compressionQuality: 0.8) else { return nil }
+                    guard let data = (Self.shelfPicture(image) ?? image).jpegData(compressionQuality: 0.8) else { return nil }
                     do { try data.write(to: file, options: .atomic); return .success(()) } catch { return .failure(error) }
                 }.value
             }
