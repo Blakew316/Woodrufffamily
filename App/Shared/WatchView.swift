@@ -69,35 +69,16 @@ struct WatchView: View {
         let mine = homeFrom == client?.sourceID ? home : nil
         let shown = mine ?? (error == nil ? kept : nil)
         ScrollView {
-            LazyVStack(alignment: .leading, spacing: 28) {
-                #if os(iOS)
-                // Movies | TV Shows, then search right under it (on iPad the switch is in the bar at the top).
-                VStack(spacing: 12) {
-                    #if !os(tvOS)
-                    if sizeClass != .regular { sectionPicker }
-                    #endif
-                    WatchSearchField(text: $query)
-                }
-                .padding(.horizontal)
-                .padding(.top, 8)
-                #endif
-                if !query.isEmpty {
-                    WatchSearchResults(query: query)
-                } else if let h = shown {
-                    content(h, client)
-                } else if let error {
-                    VStack(spacing: 14) {
-                        EmptyState(symbol: "wifi.exclamationmark", title: "Can’t Load the Library", message: error)
-                        ActionButton(action: { await load() }) { Text("Try Again") }
-                            .buttonStyle(.glass)
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.top, 80)
-                } else {
-                    WatchPlaceholder()
-                }
+            #if os(tvOS)
+            // Apple TV: the banner and Movies | TV Shows first, always there (never unloaded); the rows under them load
+            // as they come up.
+            VStack(alignment: .leading, spacing: 28) {
+                if let h = shown { tvBanner(h, client) }
+                shelfStack(shown, client)
             }
-            .padding(.bottom, 30)
+            #else
+            shelfStack(shown, client)
+            #endif
         }
         .scrollIndicators(.hidden)
         // Scrolling the page puts the search keyboard away.
@@ -197,6 +178,39 @@ struct WatchView: View {
         .background { TimingProbe(name: "Watch", ready: shown != nil) }
     }
 
+    /// The page under the banner: search and its results on iPhone, the rows, or why there are none.
+    @ViewBuilder private func shelfStack(_ shown: WatchHome?, _ client: (any WatchSource)?) -> some View {
+        LazyVStack(alignment: .leading, spacing: 28) {
+            #if os(iOS)
+            // Movies | TV Shows, then search right under it (on iPad the switch is in the bar at the top).
+            VStack(spacing: 12) {
+                #if !os(tvOS)
+                if sizeClass != .regular { sectionPicker }
+                #endif
+                WatchSearchField(text: $query)
+            }
+            .padding(.horizontal)
+            .padding(.top, 8)
+            #endif
+            if !query.isEmpty {
+                WatchSearchResults(query: query)
+            } else if let h = shown {
+                content(h, client)
+            } else if let error {
+                VStack(spacing: 14) {
+                    EmptyState(symbol: "wifi.exclamationmark", title: "Can’t Load the Library", message: error)
+                    ActionButton(action: { await load() }) { Text("Try Again") }
+                        .buttonStyle(.glass)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.top, 80)
+            } else {
+                WatchPlaceholder()
+            }
+        }
+        .padding(.bottom, 30)
+    }
+
     @ViewBuilder private func content(_ h: WatchHome, _ client: (any WatchSource)?) -> some View {
         if h.state != "ready" && (h.featured ?? []).isEmpty && (h.continue ?? []).isEmpty {
             EmptyState(symbol: "film.stack", title: stateTitle(h.state), message: stateMessage(h.state, tv: h.tv, drive: client?.sourceID == "drive")).padding(.top, 60)
@@ -206,24 +220,10 @@ struct WatchView: View {
         let titles = sectionTitles[place] ?? []
         let watchingIDs = Set((h.continue ?? []).filter { ($0.kind == "show") == (place == "shows") }.compactMap(\.titleId))
         let worked = shelves.get(place: place, titles: titles, shown: watchingIDs)
+        #if !os(tvOS)
         // Until the whole list is read, the library's own featured titles, so the banner shows at once.
+        // (Apple TV's banner is above the rows, in tvBanner.)
         let featured = worked.featured.isEmpty ? (h.featured ?? []).filter { ($0.kind == "show") == (place == "shows") } : worked.featured
-        #if os(tvOS)
-        // The banner with Movies | TV Shows over its top. The switch is always the same one in the same place (the banner
-        // under it can change or still be loading), so picking TV Shows keeps the focus on it: nothing moves it to Play.
-        ZStack(alignment: .top) {
-            if !featured.isEmpty {
-                // The whole screen; the first row (Continue Watching) rises up over its bottom, as the TV app does.
-                Billboard(titles: featured, page: $page, client: client).id(place)
-                    // Fading out as the page moves down to the rows (and back in on the way up), as the TV app's does.
-                    .visualEffect { c, p in c.opacity(max(0, min(1, 1 + p.frame(in: .scrollView).minY / 650))) }
-                    .padding(.bottom, -330)
-            } else {
-                Color.clear.frame(height: 140)
-            }
-            tvSectionPicker.padding(.top, 30)
-        }
-        #else
         if !featured.isEmpty {
             Billboard(titles: featured, page: $page, client: client).id(place)
         }
@@ -259,15 +259,32 @@ struct WatchView: View {
         .focused($pickerFocused)
         .frame(maxWidth: .infinity)
         .focusSection()
-        // Switching Movies | TV Shows keeps the focus here while the other library comes in (and after it has).
-        .onChange(of: section) { _, _ in
-            pickerFocused = true
-            Task {
-                for _ in 0..<2 {
-                    try? await Task.sleep(nanoseconds: 200_000_000)
-                    pickerFocused = true
-                }
+        // Switching Movies | TV Shows keeps the focus here. Once only: taking it again a moment later pulled the
+        // remote back up when Down was pressed straight after.
+        .onChange(of: section) { _, _ in pickerFocused = true }
+    }
+
+    /// Apple TV: the banner with Movies | TV Shows over its top. Always there (not in the lazy stack of rows, which
+    /// unloads what's scrolled off: Up from the first row then found nothing above it and went to the sidebar).
+    @ViewBuilder private func tvBanner(_ h: WatchHome, _ client: (any WatchSource)?) -> some View {
+        let place = section == "shows" ? "shows" : "movies"
+        let titles = sectionTitles[place] ?? []
+        let watchingIDs = Set((h.continue ?? []).filter { ($0.kind == "show") == (place == "shows") }.compactMap(\.titleId))
+        let worked = shelves.get(place: place, titles: titles, shown: watchingIDs)
+        // Until the whole list is read, the library's own featured titles, so the banner shows at once.
+        let featured = worked.featured.isEmpty ? (h.featured ?? []).filter { ($0.kind == "show") == (place == "shows") } : worked.featured
+        // The switch is always the same one in the same place (the banner under it can change or still be loading).
+        ZStack(alignment: .top) {
+            if !featured.isEmpty {
+                // The whole screen; the first row (Continue Watching) rises up over its bottom, as the TV app does.
+                Billboard(titles: featured, page: $page, client: client)
+                    // Fading out as the page moves down to the rows (and back in on the way up), as the TV app's does.
+                    .visualEffect { c, p in c.opacity(max(0, min(1, 1 + p.frame(in: .scrollView).minY / 650))) }
+                    .padding(.bottom, -330)
+            } else {
+                Color.clear.frame(height: 140)
             }
+            tvSectionPicker.padding(.top, 30)
         }
     }
     #endif
@@ -545,6 +562,12 @@ struct Billboard: View {
             if let t = titles[safe: page] ?? titles.first {
                 wideCard(t).id(t.id).transition(.opacity)
             }
+            #if os(tvOS)
+            // Play and Details: one pair that stays while the picture and words under it change.
+            if let t = titles[safe: page] ?? titles.first {
+                tvButtons(t).zIndex(1)
+            }
+            #endif
         }
         #if os(tvOS)
         // Apple TV: the whole screen, edge to edge, as the TV app's own banner (the first row rises up over it).
@@ -605,25 +628,37 @@ struct Billboard: View {
                         .frame(maxWidth: 820, alignment: .leading)
                         .transition(.opacity)
                 }
-                HStack(spacing: 22) {
-                    if let p = t.play {
-                        CapsuleButton(title: p.label ?? "Play", symbol: "play.fill") { PlayRouter.start(p, fleet: fleet) }
-                            .focused($focusedButton, equals: "play")
-                    }
-                    CapsuleButton(title: "Details", symbol: nil, prominent: false) { open(t) }
-                        .focused($focusedButton, equals: "details")
-                }
-                .padding(.top, 8)
-                // A section across the screen: Down from Movies | TV Shows always lands on Play.
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .focusSection()
-                // Play/Pause on the remote plays it from either button, as the TV app's banner does.
-                .onPlayPauseCommand { if let p = t.play { PlayRouter.start(p, fleet: fleet) } }
+                // Room for Play and Details, which are laid over this place (tvButtons): they aren't part of the card,
+                // so they stay when the card changes.
+                Text(" ").font(.subheadline.weight(.semibold)).padding(.vertical, 10).padding(.top, 8).hidden()
             }
             // Above the row that rises over the banner's bottom.
             .padding(.leading, 90).padding(.bottom, 400).padding(.trailing, 90)
         }
         .task(id: t.id) { await overview(t) }
+    }
+
+    /// Apple TV: Play and Details, over the card's lower left. One pair for every title: buttons inside the card were
+    /// rebuilt whenever the title changed, and the one the remote was on lost the focus, which then landed anywhere
+    /// (the sidebar too).
+    private func tvButtons(_ t: Title) -> some View {
+        HStack(spacing: 22) {
+            if let p = t.play {
+                CapsuleButton(title: p.label ?? "Play", symbol: "play.fill") { PlayRouter.start(p, fleet: fleet) }
+                    .focused($focusedButton, equals: "play")
+            }
+            CapsuleButton(title: "Details", symbol: nil, prominent: false) { open(t) }
+                .focused($focusedButton, equals: "details")
+        }
+        .padding(.top, 8)
+        // A section across the screen: Down from Movies | TV Shows and Up from the first row always land here, on Play.
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .focusSection()
+        .defaultFocus($focusedButton, t.play != nil ? "play" : "details", priority: .userInitiated)
+        // Play/Pause on the remote plays it from either button, as the TV app's banner does.
+        .onPlayPauseCommand { if let p = t.play { PlayRouter.start(p, fleet: fleet) } }
+        .padding(.leading, 90).padding(.bottom, 400).padding(.trailing, 90)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
     }
     #else
     private func wideCard(_ t: Title) -> some View {

@@ -137,6 +137,18 @@ struct CapsuleButton: View {
     var prominent = true
     var action: () -> Void
     var body: some View {
+        #if os(tvOS)
+        // Apple TV: its colours come from the focus (CapsuleFocusStyle), so only the one the remote is on is white.
+        Button(action: action) {
+            HStack(spacing: 6) {
+                if let symbol { Image(systemName: symbol).font(.subheadline.weight(.bold)) }
+                Text(title).font(.subheadline.weight(.semibold)).lineLimit(1)
+            }
+            .fixedSize()
+            .padding(.horizontal, 18).padding(.vertical, 10)
+        }
+        .buttonStyle(CapsuleFocusStyle())
+        #else
         Button(action: action) {
             HStack(spacing: 6) {
                 if let symbol { Image(systemName: symbol).font(.subheadline.weight(.bold)) }
@@ -149,8 +161,42 @@ struct CapsuleButton: View {
             .modifier(SecondaryGlass(on: !prominent))
         }
         .buttonStyle(PressScale(scale: 0.95))
+        #endif
     }
 }
+
+#if os(tvOS)
+/// Apple TV: a capsule that is white with black words only while the remote is on it, and dark glass with white words
+/// otherwise. (A Play that was always white looked picked while the remote was somewhere else.)
+struct CapsuleFocusStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        CapsuleFocusBody(configuration: configuration)
+    }
+}
+
+private struct CapsuleFocusBody: View {
+    let configuration: ButtonStyleConfiguration
+    @Environment(\.isFocused) private var focused
+
+    var body: some View {
+        configuration.label
+            .foregroundStyle(focused ? Color.black : Color.white)
+            .background {
+                if focused {
+                    Capsule().fill(Color.white)
+                } else {
+                    Capsule().fill(.ultraThinMaterial).environment(\.colorScheme, .dark)
+                        .overlay { Capsule().strokeBorder(Color.white.opacity(0.28), lineWidth: 1) }
+                }
+            }
+            .scaleEffect(configuration.isPressed ? 0.95 : (focused ? 1.1 : 1))
+            .shadow(color: .black.opacity(focused ? 0.55 : 0), radius: focused ? 24 : 0, y: focused ? 16 : 0)
+            .zIndex(focused ? 1 : 0)
+            .animation(.spring(response: 0.3, dampingFraction: 0.75), value: focused)
+            .animation(.spring(response: 0.25, dampingFraction: 0.6), value: configuration.isPressed)
+    }
+}
+#endif
 
 struct SecondaryGlass: ViewModifier {
     var on: Bool
