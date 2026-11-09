@@ -84,6 +84,10 @@ final class Diagnostics: NSObject {
 
     private func add(_ new: [Report]) {
         guard !new.isEmpty else { return }
+        #if os(tvOS)
+        // An Apple TV's settings don't reach the Macs from where it is: each line goes straight to the Mac Studio too.
+        for r in new { TVDiagnosticsRelay.send(kind: r.kind, detail: r.detail, build: r.build) }
+        #endif
         var list = mine()
         for r in new where !list.contains(r) { list.append(r) }
         list.sort { $0.at > $1.at }
@@ -181,6 +185,28 @@ final class Diagnostics: NSObject {
 
     #if os(macOS)
     /// Every device's summaries, newest first, in ~/Library/Logs/Woodruff Family/diagnostics.log.
+    /// A line of an Apple TV's own diagnostics, sent straight to this Mac (GET /diag on the camera share), kept in
+    /// ~/Library/Logs/Woodruff Family/appletv.log.
+    func noteRemote(device: String, build: String, kind: String, detail: String) {
+        func clean(_ s: String) -> String {
+            String(s.prefix(600)).replacingOccurrences(of: "\t", with: " ").replacingOccurrences(of: "\n", with: " ")
+        }
+        let line = "\(ISO8601DateFormatter.plain.string(from: Date()))\t\(clean(device))\tbuild \(clean(build))\t\(clean(kind))\t\(clean(detail))\n"
+        guard let lib = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first else { return }
+        let file = lib.appendingPathComponent("Logs/Woodruff Family/appletv.log")
+        DispatchQueue.global(qos: .utility).async {
+            try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+            let data = Data(line.utf8)
+            if let h = try? FileHandle(forWritingTo: file) {
+                defer { try? h.close() }
+                _ = try? h.seekToEnd()
+                try? h.write(contentsOf: data)
+            } else {
+                try? data.write(to: file)
+            }
+        }
+    }
+
     func writeFamilyLog() {
         let family = Saved.load(Self.key, as: [String: String].self) ?? [:]
         var lines: [(Double, String)] = []

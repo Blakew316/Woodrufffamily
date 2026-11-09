@@ -14,7 +14,8 @@ private let streamSession: URLSession = {
     let config = URLSessionConfiguration.default
     config.urlCache = nil
     config.requestCachePolicy = .reloadIgnoringLocalCacheData
-    config.timeoutIntervalForRequest = 20
+    // Google can take a while to start sending from deep inside a big film: waited for, rather than given up on.
+    config.timeoutIntervalForRequest = 45
     config.httpMaximumConnectionsPerHost = 6
     return URLSession(configuration: config, delegate: StreamRouter.shared, delegateQueue: q)
 }()
@@ -49,24 +50,10 @@ final class DriveStream: NSObject {
     /// Drive's own address with the sign-in in the request's header, for the player to fetch and buffer itself:
     /// far faster for big films than answering its requests one by one (as the Android TVs' player does). Nil
     /// without a kept token lasting at least [minLife] seconds (then the asset above is used).
-    /// [mime]: what the file is. Drive's address has no extension, and Google labels some videos with no video type
-    /// at all, so the player is told rather than left to refuse an MP4 it can't identify.
-    nonisolated static func directAsset(fileID: String, mime: String = "video/mp4", minLife: Double = 900) -> AVURLAsset? {
+    nonisolated static func directAsset(fileID: String, minLife: Double = 900) -> AVURLAsset? {
         guard let token = GoogleDrive.cachedToken(minLife: minLife) else { return nil }
         return AVURLAsset(url: GoogleDrive.mediaURL(fileID),
-                          options: ["AVURLAssetHTTPHeaderFieldsKey": ["Authorization": "Bearer \(token)"],
-                                    AVURLAssetOverrideMIMETypeKey: mime])
-    }
-
-    /// The type to tell the player a Drive video is: from its name, else Drive's type, else an MP4.
-    nonisolated static func playerMIME(name: String?, mime: String?) -> String {
-        switch ((name ?? "") as NSString).pathExtension.lowercased() {
-        case "mov", "qt": return "video/quicktime"
-        case "mp4", "m4v": return "video/mp4"
-        default: break
-        }
-        let m = (mime ?? "").lowercased()
-        return m == "video/quicktime" ? m : "video/mp4"
+                          options: ["AVURLAssetHTTPHeaderFieldsKey": ["Authorization": "Bearer \(token)"]])
     }
 
     /// Gets a token that will last the film's start and fetches the file's first part (and its index when that's
@@ -275,8 +262,25 @@ private final class Loader: NSObject, AVAssetResourceLoaderDelegate, StreamTask 
         let request: AVAssetResourceLoadingRequest
         let retried: Bool
         let task: URLSessionDataTask
-        init(request: AVAssetResourceLoadingRequest, retried: Bool, task: URLSessionDataTask) {
-            self.request = request; self.retried = retried; self.task = task
+        /// Times it has been asked for again after a slow or dropped connection.
+        let attempts: Int
+        init(request: AVAssetResourceLoadingRequest, retried: Bool, task: URLSessionDataTask, attempts: Int) {
+            self.request = request; self.retried = retried; self.task = task; self.attempts = attempts
+        }
+    }
+
+    /// Failures worth asking again for (the connection, not the file).
+    private static let transient: Set<URLError.Code> = [.timedOut, .networkConnectionLost, .cannotConnectToHost,
+                                                         .dnsLookupFailed, .cannotFindHost, .secureConnectionFailed]
+
+    /// A part that failed for the connection's sake (or Google was busy): asked for again from where it got to, after
+    /// a moment, three times at most before the player is told.
+    private func again(_ load: Load) {
+        let req = load.request, next = load.attempts + 1, retried = load.retried
+        streamQueue.asyncAfter(deadline: .now() + 0.5 * Double(next)) { [weak self] in
+            guard let self, !req.isCancelled, !req.isFinished else { return }
+            if let token = GoogleDrive.cachedToken() { self.send(req, token: token, retried: retried, attempts: next) }
+            else { self.fetch(req, retried: false) }
         }
     }
     private var loads: [Int: Load] = [:]
@@ -357,7 +361,7 @@ private final class Loader: NSObject, AVAssetResourceLoaderDelegate, StreamTask 
         }
     }
 
-    private func send(_ req: AVAssetResourceLoadingRequest, token: String, retried: Bool) {
+    private func send(_ req: AVAssetResourceLoadingRequest, token: String, retried: Bool, attempts: Int = 0) {
         guard !req.isCancelled, !req.isFinished else { return }
         var start: Int64 = 0
         var end: Int64?
@@ -371,9 +375,9 @@ private final class Loader: NSObject, AVAssetResourceLoaderDelegate, StreamTask 
         var r = URLRequest(url: GoogleDrive.mediaURL(fileID))
         r.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         r.setValue("bytes=\(start)-\(end.map(String.init) ?? "")", forHTTPHeaderField: "Range")
-        r.timeoutInterval = 20
+        r.timeoutInterval = 45
         let t = streamSession.dataTask(with: r)
-        loads[t.taskIdentifier] = Load(request: req, retried: retried, task: t)
+        loads[t.taskIdentifier] = Load(request: req, retried: retried, task: t, attempts: attempts)
         StreamRouter.shared.handlers[t.taskIdentifier] = self
         t.resume()
     }
@@ -386,6 +390,8 @@ private final class Loader: NSObject, AVAssetResourceLoaderDelegate, StreamTask 
             answer(.cancel)
             if code == 401 && !load.retried {
                 fetch(load.request, retried: true)
+            } else if [429, 500, 502, 503, 504].contains(code), load.attempts < 3 {
+                again(load)
             } else if !load.request.isCancelled && !load.request.isFinished {
                 load.request.finishLoading(with: GoogleDrive.failure(code, nil))
             }
@@ -421,6 +427,12 @@ private final class Loader: NSObject, AVAssetResourceLoaderDelegate, StreamTask 
         guard let load = loads.removeValue(forKey: task.taskIdentifier) else { return }
         let req = load.request
         guard !req.isCancelled, !req.isFinished else { return }
+        // A slow or dropped connection (Google slow to start deep inside a big film, the Wi‑Fi hiccuping): asked for
+        // again from where it got to, instead of the film stopping with a timeout.
+        if let e = error as? URLError, Self.transient.contains(e.code), load.attempts < 3 {
+            again(load)
+            return
+        }
         if let error { req.finishLoading(with: error) } else { req.finishLoading() }
     }
 }

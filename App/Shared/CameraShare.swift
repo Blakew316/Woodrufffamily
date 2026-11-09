@@ -156,12 +156,18 @@ final class CameraShare {
         let line = request.components(separatedBy: "\r\n").first ?? ""
         let parts = line.split(separator: " ")
         guard parts.count >= 2, let url = URLComponents(string: "http://x" + parts[1]),
-              ["/still", "/event", "/events"].contains(url.path) else {
+              ["/still", "/event", "/events", "/diag"].contains(url.path) else {
             return reply(c, "404 Not Found", nil)
         }
         let q = Dictionary((url.queryItems ?? []).map { ($0.name, $0.value ?? "") }, uniquingKeysWith: { a, _ in a })
         if token == nil { token = CameraShareKey.token() }
         guard let token, q["k"] == token else { return reply(c, "403 Forbidden", nil) }
+        // GET /diag?n=<device>&b=<build>&t=<kind>&d=<detail>&k=<key>: a line of an Apple TV's own diagnostics (how a
+        // film played, a freeze), kept in this Mac's appletv.log.
+        if url.path == "/diag" {
+            Diagnostics.shared.noteRemote(device: q["n"] ?? "Apple TV", build: q["b"] ?? "", kind: q["t"] ?? "", detail: q["d"] ?? "")
+            return reply(c, "204 No Content", nil)
+        }
         // GET /events?since=<ms>&k=<key>: the alerts sent after `since` (the Apple TVs' own alerts).
         if url.path == "/events" {
             let since = Int64(q["since"] ?? "") ?? 0

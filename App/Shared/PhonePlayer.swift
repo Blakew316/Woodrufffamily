@@ -168,8 +168,6 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
     /// Playing Drive's address directly: its file, and the task that renews the sign-in before it runs out.
     private var directID: String?
     private var renew: Task<Void, Never>?
-    /// The type the player is told Drive's file is (Drive's address has no extension to go by).
-    private var directMIME = "video/mp4"
     /// The item playing now (it changes when Drive's address fails and the file is read request by request).
     private var item: AVPlayerItem?
 
@@ -190,7 +188,7 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
                 try? await Task.sleep(nanoseconds: 40 * 60 * 1_000_000_000)
                 guard let self, self.player === p, let id = self.directID else { return }
                 guard (try? await GoogleDrive.token(minLife: 1800)) != nil,
-                      let a = DriveStream.directAsset(fileID: id, mime: self.directMIME, minLife: 1800) else { continue }
+                      let a = DriveStream.directAsset(fileID: id, minLife: 1800) else { continue }
                 let at = p.currentTime()
                 let wasPlaying = p.rate > 0
                 let fresh = AVPlayerItem(asset: a)
@@ -230,11 +228,9 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
             // buffering, smooth on big films. Else (or a kind of file Apple's player can't open, said precisely by
             // the other way) answered request by request (DriveStream).
             let listed = DriveLibrary.shared.listedFile(id)
-            let mime = DriveStream.playerMIME(name: listed?.name, mime: listed?.mimeType)
-            if DriveStream.unplayable(listed?.mimeType) == nil, let a = DriveStream.directAsset(fileID: id, mime: mime) {
+            if DriveStream.unplayable(listed?.mimeType) == nil, let a = DriveStream.directAsset(fileID: id) {
                 item = AVPlayerItem(asset: a)
                 directID = id
-                directMIME = mime
             } else {
                 let s = DriveStream(fileID: id)
                 stream = s

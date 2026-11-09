@@ -372,3 +372,28 @@ private struct TVAlertButtonStyle: ButtonStyle {
         }
     }
 }
+
+/// The Apple TV's own diagnostics lines (how each film played, freezes), sent to the Mac Studio's camera share: its
+/// settings don't reach the Macs from where it is, so they're read there (appletv.log) instead.
+@MainActor
+enum TVDiagnosticsRelay {
+    static func send(kind: String, detail: String, build: String) {
+        guard let token = CameraShareKey.token() else { return }
+        let hosts = (UserDefaults.standard.string(forKey: CameraShareKey.hostsKey) ?? "").split(separator: ",").map(String.init).filter { !$0.isEmpty }
+        guard !hosts.isEmpty else { return }
+        let name = UIDevice.current.name
+        func enc(_ s: String) -> String { s.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? "" }
+        let query = [("n", name), ("b", build), ("t", kind), ("d", detail), ("k", token)].map { URLQueryItem(name: $0.0, value: enc($0.1)) }
+        Task.detached(priority: .utility) {
+            for h in hosts {
+                var c = URLComponents()
+                c.scheme = "http"; c.host = h; c.port = Int(CameraShareKey.port); c.path = "/diag"
+                c.percentEncodedQueryItems = query
+                guard let u = c.url else { continue }
+                var r = URLRequest(url: u, timeoutInterval: 4)
+                r.cachePolicy = .reloadIgnoringLocalCacheData
+                if let (_, resp) = try? await URLSession.shared.data(for: r), let code = (resp as? HTTPURLResponse)?.statusCode, code < 300 { return }
+            }
+        }
+    }
+}
