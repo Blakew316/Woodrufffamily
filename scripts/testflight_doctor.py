@@ -208,17 +208,22 @@ def main(argv=None):
     # Fix: availability. With none, TestFlight lists the app but can't install it ("not available or doesn't exist").
     av = safe(key, "/apps/%s/appAvailabilityV2" % app)
     if "error" in av:
-        temp = "${usa}"
         try:
+            # Apple wants every territory listed, each marked available or not: the United States available.
+            terrs = all_pages(key, "/territories" + q({"limit": 200}))
+            refs, inc = [], []
+            for n, t in enumerate(terrs):
+                tid = "${t%d}" % n
+                refs.append({"type": "territoryAvailabilities", "id": tid})
+                inc.append({"type": "territoryAvailabilities", "id": tid, "attributes": {"available": t["id"] == "USA"},
+                            "relationships": {"territory": {"data": {"type": "territories", "id": t["id"]}}}})
             asc.call(key, "POST", "https://api.appstoreconnect.apple.com/v2/appAvailabilities", {
                 "data": {"type": "appAvailabilities",
-                         "attributes": {"availableInNewTerritories": True},
+                         "attributes": {"availableInNewTerritories": False},
                          "relationships": {"app": {"data": {"type": "apps", "id": app}},
-                                           "territoryAvailabilities": {"data": [{"type": "territoryAvailabilities", "id": temp}]}}},
-                "included": [{"type": "territoryAvailabilities", "id": temp,
-                              "attributes": {"available": True},
-                              "relationships": {"territory": {"data": {"type": "territories", "id": "USA"}}}}]})
-            say("FIXED: the app is now available in the United States (and new territories).")
+                                           "territoryAvailabilities": {"data": refs}}},
+                "included": inc})
+            say("FIXED: the app is now available in the United States (%d territories listed)." % len(terrs))
         except RuntimeError as e:
             say("Couldn't set availability: %s" % e)
 
