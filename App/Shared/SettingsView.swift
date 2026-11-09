@@ -81,14 +81,20 @@ struct HubSettingsPending: View {
     @Environment(Fleet.self) private var fleet
     var hub: HubSettings
 
+    /// The TV not answering in time (an Apple TV away from home, say): said as the TVs being out of reach, not as a
+    /// question about whether the TV is on.
+    static func unreachable(_ error: String) -> Bool {
+        error.contains("didn't answer in time") || error.contains("didn’t answer in time")
+    }
+
     var body: some View {
-        if let e = hub.error {
+        if let e = hub.error, !Self.unreachable(e) {
             Section {
                 Text("Can’t Read the Settings").font(.headline)
                 Text(e).font(.subheadline).foregroundStyle(.secondary)
                 ActionButton(action: { await hub.load(fleet.hubClient()) }) { Text("Try Again") }
             }
-        } else if !fleet.tvs.contains(where: { $0.online }) {
+        } else if hub.error != nil || !fleet.tvs.contains(where: { $0.online }) {
             // No TV answering (away from home, say): said plainly, not a spinner that never stops.
             Section {
                 Text("The TVs can’t be reached from here").font(.headline)
