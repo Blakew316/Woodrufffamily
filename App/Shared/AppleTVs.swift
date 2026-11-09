@@ -118,8 +118,6 @@ struct AppleTVsSection: View {
             mine = AppleTVFinder.familyPrint()
             finder.start()
         }
-        // Not looking for Apple TVs on the Wi‑Fi once the page has gone (it starts again as it's back).
-        .onDisappear { finder.stop() }
     }
 
     private func state(_ atv: FoundAppleTV, _ inFamily: Bool) -> String {

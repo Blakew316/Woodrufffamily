@@ -9,6 +9,9 @@ final class LocationWeather: NSObject, CLLocationManagerDelegate {
     static let shared = LocationWeather()
     private let manager = CLLocationManager()
     private weak var fleet: Fleet?
+    /// A look is on its way (asked for, or being passed to the TVs): starting up asks both here and when the
+    /// permission is first reported, which found the place and told every TV twice.
+    private var asking = false
 
     func start(_ fleet: Fleet) {
         self.fleet = fleet
@@ -24,7 +27,10 @@ final class LocationWeather: NSObject, CLLocationManagerDelegate {
             let last = UserDefaults.standard.double(forKey: "weatherCheckedAt")
             // Also when Home's own weather has no spot yet (it reads the place found here).
             let noSpot = UserDefaults.standard.object(forKey: "weatherLat") == nil
-            if noSpot || Date().timeIntervalSince1970 - last > 12 * 3600 { manager.requestLocation() }
+            if !asking, noSpot || Date().timeIntervalSince1970 - last > 12 * 3600 {
+                asking = true
+                manager.requestLocation()
+            }
         default: break
         }
     }
@@ -35,10 +41,15 @@ final class LocationWeather: NSObject, CLLocationManagerDelegate {
 
     nonisolated func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         guard let loc = locations.last else { return }
-        Task { @MainActor in await self.apply(loc) }
+        Task { @MainActor in
+            await self.apply(loc)
+            self.asking = false
+        }
     }
 
-    nonisolated func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {}
+    nonisolated func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
+        Task { @MainActor in self.asking = false }
+    }
 
     private func apply(_ loc: CLLocation) async {
         // Home's greeting shows the weather here too.

@@ -211,7 +211,10 @@ struct ApplianceView: View {
         .toolbar {
             if inSheet { ToolbarItem(placement: .cancellationAction) { Button(role: .close) { dismiss() } } }
         }
-        .refreshable { await st.refresh(full: false) }
+        // Read afresh as the page opens (the round reads it only every 30 seconds), and on a pull: just this
+        // appliance, not the whole house.
+        .task(id: device.id) { await st.refresh(device: device.id) }
+        .refreshable { await st.refresh(device: id) }
     }
 
     private var isMachine: Bool { [.washer, .dryer, .dishwasher, .oven].contains(device.kind) }
