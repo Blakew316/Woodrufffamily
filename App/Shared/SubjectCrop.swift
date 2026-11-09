@@ -8,12 +8,14 @@ import Vision
 /// notification extension for the snapshot it fetches. Give it a picture no bigger than about 1280 pixels across
 /// (the extension has little memory).
 enum SubjectCrop {
-    enum Kind: Sendable { case person, animal, other }
+    /// [whole]: the whole picture, never cropped (a motion alert, as Google Home shows it).
+    enum Kind: Sendable { case person, animal, other, whole }
 
-    /// The kind an alert's title names: "Person seen" and "Someone’s at the door" are a person; "Motion seen" and
-    /// "Vehicle seen" are whatever stands out.
+    /// The kind an alert's title names: "Person seen" and "Someone’s at the door" are a person; "Vehicle seen" and a
+    /// package are whatever stands out; "Motion seen" is the whole picture.
     static func kind(_ title: String) -> Kind {
         let words = Set(title.lowercased().split(whereSeparator: { !$0.isLetter }).map(String.init))
+        if words.contains("motion") { return .whole }
         if !words.isDisjoint(with: ["person", "people", "someone", "door", "doorbell", "face", "visitor"]) { return .person }
         if !words.isDisjoint(with: ["animal", "animals", "pet", "pets", "dog", "cat"]) { return .animal }
         return .other
@@ -23,7 +25,7 @@ enum SubjectCrop {
     /// thumbnail is clipped to); nil when nothing is found, or the framing would be most of the picture anyway.
     static func unitFocus(in image: CGImage, kind: Kind) -> CGRect? {
         let w = CGFloat(image.width), h = CGFloat(image.height)
-        guard w > 0, h > 0, let f = framing(in: image, kind: kind) else { return nil }
+        guard kind != .whole, w > 0, h > 0, let f = framing(in: image, kind: kind) else { return nil }
         return CGRect(x: f.minX / w, y: f.minY / h, width: f.width / w, height: f.height / h)
     }
 
@@ -96,6 +98,8 @@ enum SubjectCrop {
             if boxes.isEmpty { boxes = salient(handler) }
         case .other:
             boxes = salient(handler)
+        case .whole:
+            return nil
         }
         boxes = boxes.filter { !$0.isNull && $0.width > 0 && $0.height > 0 }
         guard let first = boxes.first else { return nil }

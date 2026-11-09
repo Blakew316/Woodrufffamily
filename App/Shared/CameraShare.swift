@@ -9,7 +9,7 @@ import WoodruffKit
 enum CameraShareKey {
     /// The Mac Studio's addresses, kept with the family's settings so the Apple TVs know where to ask.
     static let hostsKey = "cameraShare.hosts"
-    static let port: UInt16 = 8097
+    static let port = UInt16(CameraEventMedia.sharePort)
 
     /// The key a request carries, made from the family code (never the code itself).
     static func token() -> String? {
@@ -95,15 +95,22 @@ final class CameraShare {
     }
 
     /// GET /still?id=<camera>&k=<key>: the camera's current picture as a JPEG.
+    /// GET /event?id=<event's short id>&k=<key>: the picture this Mac alerted with for that event (full size, for the
+    /// iPhones' alerts: their push carries only a small one).
     private func answer(_ request: String, _ c: NWConnection) async {
         let line = request.components(separatedBy: "\r\n").first ?? ""
         let parts = line.split(separator: " ")
-        guard parts.count >= 2, let url = URLComponents(string: "http://x" + parts[1]), url.path == "/still" else {
+        guard parts.count >= 2, let url = URLComponents(string: "http://x" + parts[1]), url.path == "/still" || url.path == "/event" else {
             return reply(c, "404 Not Found", nil)
         }
         let q = Dictionary((url.queryItems ?? []).map { ($0.name, $0.value ?? "") }, uniquingKeysWith: { a, _ in a })
         if token == nil { token = CameraShareKey.token() }
         guard let token, q["k"] == token, let id = q["id"], !id.isEmpty else { return reply(c, "403 Forbidden", nil) }
+        if url.path == "/event" {
+            guard id.count <= 32, id.allSatisfy(\.isHexDigit) else { return reply(c, "403 Forbidden", nil) }
+            if let jpeg = CameraEventMedia.eventImage(id) { return reply(c, "200 OK", jpeg) }
+            return reply(c, "404 Not Found", nil)
+        }
         if let kept = latest[id], Date().timeIntervalSince(kept.at) < 0.9 { return reply(c, "200 OK", kept.jpeg) }
         if let jpeg = await frame(id) { return reply(c, "200 OK", jpeg) }
         if let kept = latest[id] { return reply(c, "200 OK", kept.jpeg) }

@@ -219,6 +219,8 @@ enum CameraStillPull {
     static func run() async -> Int {
         guard !running, !Demo.isOn, NestCameras.shared.connected, let token = CameraShareKey.token() else { return 0 }
         let hosts = (UserDefaults.standard.string(forKey: CameraShareKey.hostsKey) ?? "").split(separator: ",").map(String.init).filter { !$0.isEmpty }
+        // The notification extension asks the Mac Studio for each alert's picture with these too.
+        CameraEventMedia.keepShare(token: token, hosts: hosts.joined(separator: ","))
         let cams = NestCameras.shared.cameras.filter { $0.online }
         guard !hosts.isEmpty, let first = cams.first else { return 0 }
         running = true

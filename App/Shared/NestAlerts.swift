@@ -41,6 +41,10 @@ final class NestAlerts {
         var hasClip: Bool
         var at: Date
     }
+    #if os(macOS)
+    /// Each event session's picture being got now (a clip that comes in a later message joins it).
+    private var racing: [String: EventPicture] = [:]
+    #endif
     private weak var fleet: Fleet?
     /// When the event being posted happened (Google's timestamp), for Settings' Last Camera Event.
     private var eventHappened: Date?
@@ -229,6 +233,14 @@ final class NestAlerts {
                 if let url = (value as? [String: Any])?["previewUrl"] as? String, !url.isEmpty,
                    let p = posted[session], !p.hasClip {
                     posted[session]?.hasClip = true
+                    #if os(macOS)
+                    // Its picture is still being got: the clip's first frames can be it.
+                    if let race = racing[session] {
+                        race.offerClip(url)
+                        PushRelay.log.notice("clip for \(p.body, privacy: .public) came while its picture was being got (used for it)")
+                        break
+                    }
+                    #endif
                     PushRelay.log.notice("clip for \(p.body, privacy: .public) came after its alert (no second alert)")
                 }
             default: break
@@ -244,7 +256,7 @@ final class NestAlerts {
             }
             if let title {
                 posted[session] = Posted(title: title, body: name, camera: device, key: key, event: eventID, hasClip: clip != nil, at: Date())
-                post(title: title, body: name, camera: device, key: key, event: eventID, clip: clip, quiet: catchingUp)
+                post(title: title, body: name, camera: device, key: key, event: eventID, clip: clip, quiet: catchingUp, session: session)
             }
         }
         seen = seen.filter { $0.value.timeIntervalSinceNow > -3600 }
@@ -263,8 +275,9 @@ final class NestAlerts {
     #endif
 
     /// [picture]: the Mac's own frame of the moment (a vehicle it saw), used instead of fetching one.
+    /// [session]: the event session (a clip that comes later for it joins the picture still being got).
     private func post(title: String, body: String, camera: String, key: String, event: String?, clip: String?, quiet: Bool = false,
-                      picture: Data? = nil) {
+                      picture: Data? = nil, session: String? = nil) {
         let short = Self.shortID(key)
         let c = UNMutableNotificationContent()
         c.title = title
@@ -288,12 +301,26 @@ final class NestAlerts {
         if PhoneWidgetShare.saveCamera(id: camera, name: body, doorbell: doorbell, event: tag) {
             WidgetCenter.shared.reloadTimelines(ofKind: PhoneWidgetShare.tvsCamerasKind); WidgetCenter.shared.reloadTimelines(ofKind: PhoneWidgetShare.doorbellKind)
         }
+        // Where the extension (and this) can ask the Mac Studio for its picture of the event.
+        CameraEventMedia.keepShare(token: CameraShareKey.token(), hosts: UserDefaults.standard.string(forKey: CameraShareKey.hostsKey))
+        // Google's picture of the event, asked for at once: it makes a snapshot only within 30 seconds of the event.
+        // Kept for the replay, and for this device's own alert below.
+        let google = Task { await CameraEventMedia.fetch(camera: camera, eventID: event, clipURL: clip, key: short, until: Date().addingTimeInterval(25)) }
         // One alert per event, with its picture. The Mac's push normally brings it (picture included), so the iPhone
         // shows its own only when that hasn't come: after a short wait for it, or at once when catching up.
         Task {
             if !quiet { try? await Task.sleep(nanoseconds: 15_000_000_000) }
             let shown = await Self.alreadyShown(id: id, key: short)
-            let file = await CameraEventMedia.fetch(camera: camera, eventID: event, clipURL: clip, key: short, timeout: shown ? 10 : 8)
+            // Google's clip or snapshot, or the Mac Studio's picture of the event, whichever comes first.
+            let got = await CameraEventMedia.firstPicture(camera: camera, eventID: event, clipURL: clip, key: short,
+                                                          deadline: Date().addingTimeInterval(shown ? 10 : 8), google: google)
+            var file = got?.file
+            var how = got == nil ? "none" : got!.fromMac ? "the Mac’s picture" : file?.pathExtension == "mp4" ? "Google’s clip" : "Google’s snapshot"
+            // Neither: the camera's latest picture (better than none).
+            if file == nil, !shown, let jpeg = CameraStreams.shared.latestStill(camera) {
+                file = CameraEventMedia.jpegFile(jpeg, name: "kept-\(short)")
+                if file != nil { how = "the camera’s latest picture" }
+            }
             // The widget's still, and (for an alert shown here) where who or what was seen is, from one decode.
             var look: (still: Data?, focus: CGRect?) = (nil, nil)
             if let file {
@@ -315,20 +342,15 @@ final class NestAlerts {
                 PushRelay.log.notice("alert for \(body, privacy: .public) came from the Mac meanwhile (not shown twice)")
                 return
             }
+            PushRelay.log.notice("alert for \(body, privacy: .public) shown here, picture: \(c.attachments.isEmpty ? "none" : how, privacy: .public)")
             Notifier.deliver(c, id: id)
         }
         #elseif os(macOS)
-        // One alert per event, with its picture: it waits for the picture (a few seconds at most, less for the
-        // doorbell), then goes once, here and to every iPhone. A picture that comes later doesn't send it again.
-        let once = SentOnce()
-        let cap: UInt64 = c.userInfo["ring"] != nil ? 4 : 7
-        Task {
-            try? await Task.sleep(nanoseconds: cap * 1_000_000_000)
-            guard !once.done else { return }
-            once.done = true
-            PushRelay.log.notice("alert for \(body, privacy: .public) sent without a picture (none in \(cap) s)")
-            Notifier.deliver(c, id: id)
-        }
+        // One alert per event, with its picture: the first good one there is (Google's picture of the event, else a
+        // frame of the camera's live stream, else its latest picture), waited for a few seconds at most (less for the
+        // doorbell); then it goes once, here and to every iPhone, the picture inside the push and kept full size here
+        // for the iPhones to fetch.
+        let ring = c.userInfo["ring"] != nil
         let received = Date(), happened = eventHappened
         // The Mac's TVs & Cameras widget: the camera's red tag at once, its picture of the moment when there is one.
         let macCam = NestCameras.shared.cameras.first { $0.id == camera }
@@ -337,72 +359,35 @@ final class NestAlerts {
         if !quiet, MacCameraShare.save(id: camera, name: macCam?.name ?? body, doorbell: macCam?.doorbell ?? false, event: macTag) {
             WidgetCenter.shared.reloadTimelines(ofKind: MacCameraShare.kind); WidgetCenter.shared.reloadTimelines(ofKind: "com.woodruff.family.widget.tvs")
         }
-        Task {
+        let race = EventPicture(camera: camera, event: event, clip: clip, key: short)
+        if let session { racing[session] = race }
+        race.start(given: picture)
+        Task { [weak self] in
+            let got = await race.result(googleWait: ring ? 2.5 : 4.5, cap: ring ? 4 : 7, last: 20)
+            if let session, self?.racing[session] === race { self?.racing[session] = nil }
             var thumb: String?
             var still: Data?
-            // Where who or what was seen is in the picture (Vision, in the same look that crops the small picture):
-            // the Mac's own alert shows the picture, its small picture on the subject.
+            // Where who or what was seen is in the picture (Vision): the small picture in the push is cropped to it,
+            // and the alerts' small picture shows it (motion: the whole picture).
             var focus: CGRect?
-            // The picture the Mac's own alert carries (a JPEG), and the files made here for it (let go at the end).
             var shown: URL?
-            var made: [URL] = []
-            defer { for u in made { try? FileManager.default.removeItem(at: u) } }
-            // The camera's already live (the doorbell and driveway are kept ready): its frame now, no wait for Google.
-            // Big enough for the small picture in the push to be cropped to who or what was seen.
-            var picture = picture
-            var fromLive = false
-            if picture == nil, !quiet, let jpeg = await CameraStreams.shared.liveFrame(camera, maxSide: 1280) { picture = jpeg; fromLive = true }
-            if let picture {
-                let file = FileManager.default.temporaryDirectory.appendingPathComponent("frame-\(short).jpg")
-                if (try? picture.write(to: file, options: .atomic)) != nil {
-                    made.append(file)
-                    let framed = await CameraEventMedia.subjectThumbnail(file, title: title)
-                    thumb = framed.thumb; focus = framed.focus
-                    still = await CameraEventMedia.still(file)
-                    shown = file
-                }
-                if still == nil { still = picture }
-            } else if let token = try? await NestCameras.shared.accessToken(),
-               let file = await CameraEventMedia.fetch(camera: camera, eventID: event, clipURL: clip, key: short, timeout: 10, using: token) {
-                let framed = await CameraEventMedia.subjectThumbnail(file, title: title)
-                thumb = framed.thumb; focus = framed.focus
-                still = await CameraEventMedia.still(file)
-                if file.pathExtension == "mp4" {
-                    // A clip: its frame a second in (the one Vision looked at) on the Mac's alert.
-                    let u = FileManager.default.temporaryDirectory.appendingPathComponent("still-\(short).jpg")
-                    if let still, (try? still.write(to: u, options: .atomic)) != nil { made.append(u); shown = u }
-                } else {
-                    shown = file
-                }
-            }
-            // Google has no picture for these cameras (no snapshot, and often no clip): one frame from the live stream.
-            var how = fromLive ? "the live stream, at once" : picture != nil ? "the Mac's own frame" : "Google's clip or snapshot"
-            if thumb == nil, !quiet, picture == nil, let cam = NestCameras.shared.cameras.first(where: { $0.id == camera }), cam.webRTC, cam.online {
-                let t0 = Date()
-                if let jpeg = await CameraStreams.shared.grabFrame(cam) {
-                    still = jpeg
-                    let file = FileManager.default.temporaryDirectory.appendingPathComponent("grab-\(short).jpg")
-                    if (try? jpeg.write(to: file, options: .atomic)) != nil {
-                        made.append(file)
-                        let framed = await CameraEventMedia.subjectThumbnail(file, title: title)
-                        thumb = framed.thumb; focus = framed.focus
-                        shown = file
-                    }
-                }
-                how = String(format: "the live stream, %.1f s", Date().timeIntervalSince(t0))
+            if let got, let made = await CameraEventMedia.keepEventPicture(got.file, key: short, title: title) {
+                focus = made.focus; still = made.still; shown = made.file
+                // A clip that came meanwhile goes in the push too.
+                if let later = race.clip, !later.isEmpty { c.userInfo["clip"] = later }
+                if let focus { c.userInfo["f"] = CameraEventMedia.focusText(focus) }
+                let info = c.userInfo.reduce(into: [String: String]()) { out, kv in if let k = kv.key as? String, let v = kv.value as? String { out[k] = v } }
+                let budget = PushRelay.thumbnailBudget(id: id, title: c.title, body: c.body, userInfo: info, sound: c.sound != nil)
+                thumb = CameraEventMedia.pushThumbnail(made.image, focus: focus, budget: budget)
             }
             if let still, MacCameraShare.save(id: camera, name: macCam?.name ?? body, doorbell: macCam?.doorbell ?? false, jpeg: still) {
                 WidgetCenter.shared.reloadTimelines(ofKind: MacCameraShare.kind); WidgetCenter.shared.reloadTimelines(ofKind: "com.woodruff.family.widget.tvs")
             }
             // The latest event, for Send Test Camera Alert.
             Saved.save(LastCameraEvent.savedKey, LastCameraEvent(title: title, body: body, camera: camera, key: short, happened: happened,
-                                                                 event: event ?? "", clip: clip ?? "", at: received, thumb: thumb))
-            PushRelay.log.notice("picture for \(body, privacy: .public)\(quiet ? " (clip came later)" : "", privacy: .public): \(thumb.map { "\($0.count) characters, from \(how)\(focus != nil ? ", on its subject" : "")" } ?? "none (no clip or snapshot from Google, and no frame from the live stream)", privacy: .public)")
-            guard !once.done else {
-                if thumb != nil { PushRelay.log.notice("picture for \(body, privacy: .public) came after its alert went (no second alert)") }
-                return
-            }
-            once.done = true
+                                                                 event: event ?? "", clip: race.clip ?? clip ?? "", at: received, thumb: thumb))
+            let waited = String(format: "%.1f", Date().timeIntervalSince(received))
+            PushRelay.log.notice("picture for \(body, privacy: .public) after \(waited, privacy: .public) s: \(got.map { $0.source.text } ?? "none (no picture from Google, the live stream or before)", privacy: .public)\(thumb.map { ", \($0.count) characters in the push" } ?? ", none in the push", privacy: .public)\(focus != nil ? ", on its subject" : "", privacy: .public)")
             if let thumb { c.userInfo["thumb"] = thumb }
             if let shown, let a = CameraEventMedia.attachment(shown, focus: focus) { c.attachments = [a] }
             Notifier.deliver(c, id: id)
@@ -432,11 +417,106 @@ final class NestAlerts {
     }
 }
 
-/// Whether an event's alert has gone out (the picture's wait and its time limit race; the first one sends it).
+#if os(macOS)
+/// The Mac: the picture for one event's alert, got every way at once the moment the event comes. Google's own picture
+/// of the event (its snapshot, asked for at once as it's made only within 30 seconds, or its clip's first frames) is
+/// the one Google Home shows, so it's waited for a few seconds; meanwhile a frame of the camera's live stream (every
+/// camera is kept live on the Mac that sends) is ready, and the camera's latest picture is the last resort.
 @MainActor
-private final class SentOnce {
-    var done = false
+private final class EventPicture {
+    enum Source: Int {
+        case given = 0, google, live, grabbed, kept
+        var text: String {
+            switch self {
+            case .given: return "the Mac’s own frame"
+            case .google: return "Google’s picture of the event"
+            case .live: return "the live stream, at once"
+            case .grabbed: return "the live stream, started for it"
+            case .kept: return "the camera’s latest picture"
+            }
+        }
+    }
+
+    let camera: String
+    let event: String?
+    let key: String
+    private(set) var clip: String?
+    private(set) var best: (file: URL, source: Source)?
+    /// Google's fetches still going.
+    private var googleBusy = 0
+    private var askedImage = false
+
+    init(camera: String, event: String?, clip: String?, key: String) {
+        self.camera = camera; self.event = event; self.clip = clip.flatMap { $0.isEmpty ? nil : $0 }; self.key = key
+    }
+
+    func start(given: Data?) {
+        if let given, let u = write(given, "given") { take(u, .given); return }
+        google(clip: clip)
+        Task { [weak self] in
+            guard let self else { return }
+            if let jpeg = await CameraStreams.shared.liveFrame(self.camera, maxSide: 1600), let u = self.write(jpeg, "live") {
+                self.take(u, .live)
+                return
+            }
+            // Not live: its stream started for this one picture.
+            guard let cam = NestCameras.shared.cameras.first(where: { $0.id == self.camera }), cam.webRTC, cam.online else { return }
+            if let jpeg = await CameraStreams.shared.grabFrame(cam, timeout: 15), let u = self.write(jpeg, "grab") { self.take(u, .grabbed) }
+        }
+    }
+
+    /// The event's clip came in a later message.
+    func offerClip(_ url: String) {
+        guard clip == nil else { return }
+        clip = url
+        google(clip: url)
+    }
+
+    private func google(clip: String?) {
+        let image = askedImage ? nil : event.flatMap { $0.isEmpty ? nil : $0 }
+        guard image != nil || clip != nil else { return }
+        if image != nil { askedImage = true }
+        googleBusy += 1
+        let camera = camera, key = key
+        Task { [weak self] in
+            let token = try? await NestCameras.shared.accessToken()
+            var file: URL?
+            if let token {
+                file = await CameraEventMedia.fetch(camera: camera, eventID: image, clipURL: clip, key: key,
+                                                    until: Date().addingTimeInterval(20), using: token)
+            }
+            guard let self else { return }
+            self.googleBusy -= 1
+            if let file { self.take(file, .google) }
+        }
+    }
+
+    private func take(_ u: URL, _ s: Source) {
+        if best == nil || s.rawValue < best!.source.rawValue { best = (u, s) }
+    }
+
+    private func write(_ d: Data, _ tag: String) -> URL? {
+        CameraEventMedia.jpegFile(d, name: "frame-\(tag)-\(key)")
+    }
+
+    /// The picture to alert with: Google's as soon as it's there; else, once [googleWait] seconds are up (or Google
+    /// has nothing), the stream's frame; with nothing at all by [cap], the camera's latest picture; nil only when
+    /// there's still nothing after [last] seconds.
+    func result(googleWait: Double, cap: Double, last: Double) async -> (file: URL, source: Source)? {
+        let t0 = Date()
+        while true {
+            let waited = Date().timeIntervalSince(t0)
+            if let b = best {
+                if b.source.rawValue <= Source.google.rawValue || googleBusy == 0 || waited >= googleWait { return b }
+            } else if waited >= cap, let jpeg = CameraStreams.shared.latestStill(camera), let u = write(jpeg, "kept") {
+                return (u, .kept)
+            }
+            if waited >= last { return best }
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+    }
 }
+#endif
 
 /// A camera alert as it went out: what Send Test Camera Alert sends again, picture and clip included.
 struct LastCameraEvent: Codable, Equatable {

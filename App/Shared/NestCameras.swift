@@ -88,6 +88,8 @@ final class NestCameras {
         CameraEventMedia.keepCredentials(clientID: Keychain.get("nest.client"), secret: Keychain.get("nest.secret"),
                                          refresh: Keychain.get("nest.refresh"), access: Keychain.get("nest.access"),
                                          expires: Keychain.get("nest.expires").flatMap(Double.init))
+        // And where it can ask the Mac Studio for its picture of an event.
+        CameraEventMedia.keepShare(token: CameraShareKey.token(), hosts: UserDefaults.standard.string(forKey: CameraShareKey.hostsKey))
         #endif
     }
 
@@ -547,6 +549,13 @@ final class CameraStreams {
         stills[id] = img
         let file = Self.stillFile(id)
         DispatchQueue.global(qos: .utility).async { try? jpeg.write(to: file, options: .atomic) }
+    }
+
+    /// The camera's latest live picture as kept on disk (a JPEG), nil when there's none: an alert's picture when
+    /// nothing better comes.
+    func latestStill(_ id: String) -> Data? {
+        guard let d = try? Data(contentsOf: Self.stillFile(id)), d.count > 500 else { return nil }
+        return d
     }
 
     func player(_ cam: NestCameras.Camera) -> LivePlayer {

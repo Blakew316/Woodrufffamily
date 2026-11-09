@@ -61,7 +61,7 @@ enum CameraEventMedia {
         if let a = s.string(forKey: "cam.access"), s.double(forKey: "cam.expires") > Date().timeIntervalSince1970 + 30 { return a }
         guard let refresh = s.string(forKey: "cam.refresh"), let id = s.string(forKey: "cam.client"),
               let secret = s.string(forKey: "cam.secret") else { return nil }
-        var r = URLRequest(url: URL(string: "https://oauth2.googleapis.com/token")!, timeoutInterval: 10)
+        var r = URLRequest(url: URL(string: "https://oauth2.googleapis.com/token")!, timeoutInterval: 8)
         r.httpMethod = "POST"
         r.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._~"))
@@ -76,10 +76,88 @@ enum CameraEventMedia {
         return a
     }
 
+    /// Google refused the kept token before its time (renewed elsewhere): the next `token()` renews it.
+    private static func forgetAccess() {
+        store?.removeObject(forKey: "cam.expires")
+    }
+
+    /// [using] when the caller gave one (the Mac's own sign-in), else the kept one.
+    private static func bearer(_ using: String?) async -> String? {
+        if let using { return using }
+        return await token()
+    }
+
+    // MARK: The Mac Studio's picture of the event (CameraShare)
+
+    /// The port the Mac Studio hands out the cameras' pictures on (`CameraShareKey.port`).
+    static let sharePort = 8097
+
+    /// Kept by the app (iPhone and iPad) for the notification extension: the key that opens the Mac Studio's pictures
+    /// (made from the family code, never the code itself) and the Mac Studio's addresses, home and Tailscale.
+    static func keepShare(token: String?, hosts: String?) {
+        guard let s = store else { return }
+        if let token, !token.isEmpty, s.string(forKey: "cam.shareToken") != token { s.set(token, forKey: "cam.shareToken") }
+        if let hosts, !hosts.isEmpty, s.string(forKey: "cam.shareHosts") != hosts { s.set(hosts, forKey: "cam.shareHosts") }
+    }
+
+    /// The event's picture the Mac Studio kept for [key] (full size, the moment it alerted for), from whichever of its
+    /// addresses answers first; asked again until [deadline] (the Mac may still be making it, or the network is
+    /// changing). Saved as the event's snapshot, nil when it can't be had.
+    static func fromMac(key: String, deadline: Date) async -> URL? {
+        guard let s = store, let token = s.string(forKey: "cam.shareToken"), !token.isEmpty, let f = folder else { return nil }
+        let hosts = (s.string(forKey: "cam.shareHosts") ?? "").split(separator: ",").map(String.init).filter { !$0.isEmpty }
+        guard !hosts.isEmpty, key.allSatisfy(\.isHexDigit) else { return nil }
+        var pause = 0.5
+        while !Task.isCancelled {
+            let left = deadline.timeIntervalSinceNow
+            guard left > 0.3 else { return nil }
+            let wait = min(left, 4)
+            let jobs: [@Sendable () async -> Data?] = hosts.map { h in { await macEvent(h, key: key, token: token, timeout: wait) } }
+            if let d = await FirstOf<Data>(jobs.count).run(jobs, deadline: Date().addingTimeInterval(wait + 0.2)) {
+                let file = f.appendingPathComponent("\(key).jpg")
+                if (try? d.write(to: file, options: .atomic)) != nil { return file }
+                return nil
+            }
+            try? await Task.sleep(nanoseconds: UInt64(min(pause, max(0, deadline.timeIntervalSinceNow - 0.3)) * 1_000_000_000))
+            pause = min(pause * 2, 3)
+        }
+        return nil
+    }
+
+    private static func macEvent(_ host: String, key: String, token: String, timeout: Double) async -> Data? {
+        var c = URLComponents()
+        c.scheme = "http"; c.host = host; c.port = sharePort; c.path = "/event"
+        c.queryItems = [URLQueryItem(name: "id", value: key), URLQueryItem(name: "k", value: token)]
+        guard let url = c.url else { return nil }
+        var r = URLRequest(url: url, timeoutInterval: timeout)
+        r.cachePolicy = .reloadIgnoringLocalCacheData
+        guard let (d, resp) = try? await URLSession.shared.data(for: r),
+              (resp as? HTTPURLResponse)?.statusCode == 200, d.count > 500 else { return nil }
+        return d
+    }
+
+    /// The first picture of the event there is, by [deadline]: Google's clip or snapshot ([google] when it's already
+    /// being fetched) or the Mac Studio's picture of it, asked for at the same time. nil when neither came.
+    static func firstPicture(camera: String, eventID: String?, clipURL: String?, key: String, deadline: Date,
+                             google: Task<URL?, Never>? = nil) async -> (file: URL, fromMac: Bool)? {
+        let fromGoogle: @Sendable () async -> (file: URL, fromMac: Bool)? = {
+            let f: URL?
+            if let google { f = await google.value }
+            else { f = await fetch(camera: camera, eventID: eventID, clipURL: clipURL, key: key, until: deadline) }
+            return f.map { ($0, false) }
+        }
+        let mac: @Sendable () async -> (file: URL, fromMac: Bool)? = {
+            await fromMac(key: key, deadline: deadline).map { ($0, true) }
+        }
+        return await FirstOf<(file: URL, fromMac: Bool)>(2).run([fromGoogle, mac], deadline: deadline)
+    }
+
     // MARK: The clip or snapshot
 
     /// How long a replay is kept: long enough to tap the alert and watch it, short enough that nothing piles up.
     static let keptFor: TimeInterval = 600
+    /// The Mac's picture of each event (what the iPhones fetch, and Send Test Camera Alert's) is kept an hour.
+    static let eventKeptFor: TimeInterval = 3600
 
     /// What's kept for an alert (its short id), if it was fetched and is still fresh.
     static func cached(_ key: String) -> URL? {
@@ -106,48 +184,113 @@ enum CameraEventMedia {
     /// neither for it, or it doesn't come within [timeout] seconds.
     /// [using] is a Google token the caller already has (the Mac's own sign-in); else the one kept for the extension.
     static func fetch(camera: String, eventID: String?, clipURL: String?, key: String, timeout: Double, using: String? = nil) async -> URL? {
+        await fetch(camera: camera, eventID: eventID, clipURL: clipURL, key: key, until: Date().addingTimeInterval(timeout), using: using)
+    }
+
+    /// The same by [deadline]: the clip and the snapshot are asked for at once, each again while Google isn't ready
+    /// (a clip comes a few seconds after the event), and the first that comes is the one.
+    static func fetch(camera: String, eventID: String?, clipURL: String?, key: String, until deadline: Date, using: String? = nil) async -> URL? {
         // A clip kept is the best there is; a snapshot kept is replaced only by the event's clip, never asked for again.
         let kept = cached(key)
         if let kept, kept.pathExtension == "mp4" || (clipURL ?? "").isEmpty { return kept }
-        var given = using
-        if given == nil { given = await token() }
-        guard let f = folder, let token = given else { return kept }
+        guard let f = folder else { return kept }
         prune(f)
+        var jobs: [@Sendable () async -> URL?] = []
         if let clipURL, !clipURL.isEmpty, let u = URL(string: clipURL) {
-            var r = URLRequest(url: u, timeoutInterval: timeout)
+            jobs.append { await clip(u, key: key, folder: f, using: using, deadline: deadline) }
+        }
+        if kept == nil, let eventID, !eventID.isEmpty {
+            jobs.append { await snapshot(camera: camera, eventID: eventID, key: key, folder: f, using: using, deadline: deadline) }
+        }
+        guard !jobs.isEmpty else { return kept }
+        return await FirstOf<URL>(jobs.count).run(jobs, deadline: deadline) ?? kept
+    }
+
+    /// Waits before asking Google again: [pause] seconds, never past [deadline].
+    private static func again(_ pause: Double, _ deadline: Date) async {
+        let s = min(pause, max(0, deadline.timeIntervalSinceNow - 0.5))
+        if s > 0 { try? await Task.sleep(nanoseconds: UInt64(s * 1_000_000_000)) }
+    }
+
+    /// The event's clip: Google makes it a few seconds after the event, so it's asked for again until it's there.
+    private static func clip(_ u: URL, key: String, folder f: URL, using: String?, deadline: Date) async -> URL? {
+        var pause = 0.6
+        var renewed = false
+        while !Task.isCancelled {
+            let left = deadline.timeIntervalSinceNow
+            guard left > 0.5, let token = await bearer(using) else { return nil }
+            var r = URLRequest(url: u, timeoutInterval: min(left, 10))
             r.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
             // Straight to a file, not into memory (the notification extension has little to spare).
             if let (tmp, resp) = try? await URLSession.shared.download(for: r) {
                 let size = (try? tmp.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
-                if (resp as? HTTPURLResponse)?.statusCode == 200, size > 1000 {
+                let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+                if code == 200, size > 1000 {
                     let file = f.appendingPathComponent("\(key).mp4")
                     try? FileManager.default.removeItem(at: file)
                     if (try? FileManager.default.moveItem(at: tmp, to: file)) != nil { return file }
                 }
                 try? FileManager.default.removeItem(at: tmp)
+                if code == 401, using == nil, !renewed { renewed = true; forgetAccess(); continue }
+                if code == 403 { return nil }
             }
+            await again(pause, deadline)
+            pause = min(pause * 1.6, 3)
         }
-        if let kept { return kept }
-        guard let eventID, !eventID.isEmpty, let cmd = URL(string: sdm + camera + ":executeCommand") else { return nil }
-        var r = URLRequest(url: cmd, timeoutInterval: timeout)
-        r.httpMethod = "POST"
-        r.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        r.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        r.httpBody = try? JSONSerialization.data(withJSONObject: [
-            "command": "sdm.devices.commands.CameraEventImage.GenerateImage", "params": ["eventId": eventID],
-        ])
-        guard let (d, resp) = try? await URLSession.shared.data(for: r), (resp as? HTTPURLResponse)?.statusCode == 200,
-              let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
-              let results = j["results"] as? [String: Any], let url = results["url"] as? String,
-              let imageToken = results["token"] as? String,
-              var c = URLComponents(string: url) else { return nil }
-        c.queryItems = (c.queryItems ?? []) + [URLQueryItem(name: "width", value: "1280")]
-        guard let imageURL = c.url else { return nil }
-        var g = URLRequest(url: imageURL, timeoutInterval: timeout)
-        g.setValue("Basic \(imageToken)", forHTTPHeaderField: "Authorization")
-        guard let (img, ok) = try? await URLSession.shared.data(for: g), (ok as? HTTPURLResponse)?.statusCode == 200, img.count > 500 else { return nil }
-        let file = f.appendingPathComponent("\(key).jpg")
-        return (try? img.write(to: file, options: .atomic)) != nil ? file : nil
+        return nil
+    }
+
+    /// The event's snapshot (GenerateImage): Google makes it only within 30 seconds of the event, so it's asked for at
+    /// once, and again after a moment when Google is busy or the network drops.
+    private static func snapshot(camera: String, eventID: String, key: String, folder f: URL, using: String?, deadline: Date) async -> URL? {
+        guard let cmd = URL(string: sdm + camera + ":executeCommand") else { return nil }
+        var pause = 0.5
+        var renewed = false
+        var refused = 0
+        while !Task.isCancelled {
+            let left = deadline.timeIntervalSinceNow
+            guard left > 0.5, let token = await bearer(using) else { return nil }
+            var r = URLRequest(url: cmd, timeoutInterval: min(left, 8))
+            r.httpMethod = "POST"
+            r.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            r.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            r.httpBody = try? JSONSerialization.data(withJSONObject: [
+                "command": "sdm.devices.commands.CameraEventImage.GenerateImage", "params": ["eventId": eventID],
+            ])
+            if let (d, resp) = try? await URLSession.shared.data(for: r) {
+                let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+                if code == 200 {
+                    guard let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
+                          let results = j["results"] as? [String: Any], let url = results["url"] as? String,
+                          let imageToken = results["token"] as? String, var c = URLComponents(string: url) else { return nil }
+                    c.queryItems = (c.queryItems ?? []) + [URLQueryItem(name: "width", value: "1280")]
+                    guard let imageURL = c.url else { return nil }
+                    // The picture itself, asked again if the download fails (its link holds a while).
+                    var tries = 0
+                    while tries < 4, !Task.isCancelled, deadline.timeIntervalSinceNow > 0.3 {
+                        tries += 1
+                        var g = URLRequest(url: imageURL, timeoutInterval: min(deadline.timeIntervalSinceNow, 8))
+                        g.setValue("Basic \(imageToken)", forHTTPHeaderField: "Authorization")
+                        if let (img, ok) = try? await URLSession.shared.data(for: g), (ok as? HTTPURLResponse)?.statusCode == 200, img.count > 500 {
+                            let file = f.appendingPathComponent("\(key).jpg")
+                            return (try? img.write(to: file, options: .atomic)) != nil ? file : nil
+                        }
+                        await again(0.5, deadline)
+                    }
+                    return nil
+                }
+                if code == 401, using == nil, !renewed { renewed = true; forgetAccess(); continue }
+                // A camera that makes no snapshots (the newer ones send clips), or the event's 30 seconds are over:
+                // asked once more in case it was a moment too soon, then left.
+                if (400..<500).contains(code), code != 429 {
+                    refused += 1
+                    if refused >= 2 { return nil }
+                }
+            }
+            await again(pause, deadline)
+            pause = min(pause * 1.6, 2.5)
+        }
+        return nil
     }
 
     /// A notification attachment of a kept file (a copy: the system moves what it's given).
@@ -176,9 +319,49 @@ enum CameraEventMedia {
         return (still, focus)
     }
 
+    // MARK: The Mac's picture of each event
+
+    /// Where the Mac keeps the picture it alerted with for [key] (full size, for the iPhones and their extensions).
+    static func eventFile(_ key: String) -> URL? {
+        folder?.appendingPathComponent("event-\(key).jpg")
+    }
+
+    /// The kept picture of [key]'s event, while it's fresh (CameraShare's GET /event).
+    static func eventImage(_ key: String) -> Data? {
+        guard key.allSatisfy(\.isHexDigit), !key.isEmpty, let u = eventFile(key),
+              let d = (try? u.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate,
+              d.timeIntervalSinceNow > -eventKeptFor else { return nil }
+        return try? Data(contentsOf: u)
+    }
+
+    /// The Mac: the event's picture made ready to go out, from [file] (Google's snapshot or clip, or a frame of the
+    /// stream): kept full size under [key] for the iPhones to fetch, where its subject is ([title]: the person for
+    /// "Person seen", nothing for motion: the whole picture), and a still for the widget. Decoded once.
+    static func keepEventPicture(_ file: URL, key: String, title: String) async -> (file: URL, focus: CGRect?, image: CGImage, still: Data?)? {
+        guard let image = await picture(file, maxSide: 1600), let out = eventFile(key),
+              let full = jpeg(image, quality: 0.85), (try? full.write(to: out, options: .atomic)) != nil else { return nil }
+        let look = max(image.width, image.height) > 1280 ? (scaled(image, maxSide: 1280) ?? image) : image
+        let focus = SubjectCrop.unitFocus(in: look, kind: SubjectCrop.kind(title))
+        let still = scaled(image, maxSide: 480).flatMap { jpeg($0, quality: 0.75) }
+        return (out, focus, image, still)
+    }
+
+    /// A focus as the push carries it ("x,y,w,h", unit rectangle from the top left).
+    static func focusText(_ r: CGRect) -> String {
+        String(format: "%.3f,%.3f,%.3f,%.3f", r.minX, r.minY, r.width, r.height)
+    }
+
+    static func focus(_ text: String?) -> CGRect? {
+        guard let parts = text?.split(separator: ",").compactMap({ Double($0) }), parts.count == 4,
+              parts[2] > 0.01, parts[3] > 0.01 else { return nil }
+        let r = CGRect(x: parts[0], y: parts[1], width: parts[2], height: parts[3]).intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
+        return r.isNull || r.width < 0.01 || r.height < 0.01 ? nil : r
+    }
+
     // MARK: The small picture the Mac sends inside the push
 
-    /// Most of a push's 4 KB is left for this: a small JPEG of the moment, as base64.
+    /// What's left of a push's 4 KB for the picture when nothing else is long (`PushRelay.thumbnailBudget` works out
+    /// the room each push really has).
     static let thumbnailLimit = 2200
 
     /// A small picture of the moment, from a snapshot or a clip's frame a second in, as base64 that fits in a push.
@@ -186,30 +369,53 @@ enum CameraEventMedia {
     /// (no camera sign-in there, or the snapshot's 30 seconds are over: Send Test Camera Alert).
     static func thumbnail(_ file: URL) async -> String? {
         guard let image = await picture(file) else { return nil }
-        return encodedThumbnail(image)
+        return pushThumbnail(image, focus: nil, budget: thumbnailLimit)
     }
 
-    /// The same small picture cropped to who or what the alert is about ([title]: "Person seen" is a person, else
-    /// what stands out), so the few bytes there are carry the subject in more detail; and where that subject is in
-    /// the whole picture (`focus`), for an attachment of the same moment. Vision looks once for both.
+    /// The same small picture cropped to who or what the alert is about ([title]: "Person seen" is a person, motion
+    /// the whole picture, else what stands out), so the few bytes there are carry the subject in more detail; and
+    /// where that subject is in the whole picture (`focus`), for an attachment of the same moment.
     static func subjectThumbnail(_ file: URL, title: String) async -> (thumb: String?, focus: CGRect?) {
         guard let image = await picture(file, maxSide: 1280) else { return (nil, nil) }
         let focus = SubjectCrop.unitFocus(in: image, kind: SubjectCrop.kind(title))
-        let subject = focus.flatMap { SubjectCrop.crop(image, unit: $0) } ?? image
-        return (encodedThumbnail(subject), focus)
+        return (pushThumbnail(image, focus: focus, budget: thumbnailLimit), focus)
     }
 
-    private static func encodedThumbnail(_ image: CGImage) -> String? {
-        for side in [256, 208, 168, 136, 112] {
-            guard let small = scaled(image, maxSide: side) else { continue }
-            for quality in [0.6, 0.45, 0.3] {
-                if let d = jpeg(small, quality: quality) {
-                    let b64 = d.base64EncodedString()
-                    if b64.count <= thumbnailLimit { return b64 }
+    /// The push's small picture of [image] (cropped to [focus] when there is one), as base64 of at most [budget]
+    /// characters: the biggest picture that fits, as HEIC when that carries more of it than JPEG does (HEIC holds
+    /// about twice the detail in the same bytes; the iPhone turns it back into a JPEG to attach it).
+    static func pushThumbnail(_ image: CGImage, focus: CGRect?, budget: Int) -> String? {
+        guard budget >= 400 else { return nil }
+        let subject = focus.flatMap { SubjectCrop.crop(image, unit: $0) } ?? image
+        let sides = [400, 352, 312, 280, 248, 220, 196, 172, 148, 124, 100, 80, 64]
+        let qualities = [0.6, 0.46, 0.34, 0.25]
+        var small: [Int: CGImage] = [:]
+        func biggest(_ type: String) -> (side: Int, b64: String)? {
+            for side in sides {
+                if small[side] == nil { small[side] = scaled(subject, maxSide: side) }
+                guard let s = small[side] else { continue }
+                for q in qualities {
+                    // This Mac can't write the format at all.
+                    guard let d = encode(s, type: type, quality: q) else { return nil }
+                    let b = d.base64EncodedString()
+                    if b.count <= budget { return (side, b) }
                 }
             }
+            return nil
         }
-        return nil
+        let j = biggest(UTType.jpeg.identifier)
+        #if os(macOS)
+        // Only worth it when it's clearly bigger (the same size goes as the JPEG every device reads).
+        if let h = biggest(UTType.heic.identifier), h.side > (j?.side ?? 0) { return h.b64 }
+        #endif
+        return j?.b64
+    }
+
+    private static func encode(_ image: CGImage, type: String, quality: Double) -> Data? {
+        let out = NSMutableData()
+        guard let dest = CGImageDestinationCreateWithData(out, type as CFString, 1, nil) else { return nil }
+        CGImageDestinationAddImage(dest, image, [kCGImageDestinationLossyCompressionQuality: quality] as CFDictionary)
+        return CGImageDestinationFinalize(dest) && out.length > 0 ? out as Data : nil
     }
 
     /// A picture of the moment for the TVs & Cameras widget: a JPEG at most 480 pixels across.
@@ -218,13 +424,15 @@ enum CameraEventMedia {
         return jpeg(small, quality: 0.75)
     }
 
-    /// The moment as an image at most [maxSide] pixels across: the snapshot itself, or a clip's frame a second in.
+    /// The moment as an image at most [maxSide] pixels across: the snapshot itself, or a clip's frame a second in
+    /// (its first frame for a clip shorter than that).
     static func picture(_ file: URL, maxSide: Int = 480) async -> CGImage? {
         if file.pathExtension == "mp4" {
             let generator = AVAssetImageGenerator(asset: AVURLAsset(url: file))
             generator.appliesPreferredTrackTransform = true
             generator.maximumSize = CGSize(width: maxSide, height: maxSide)
-            return try? await generator.image(at: CMTime(seconds: 1, preferredTimescale: 600)).image
+            if let i = try? await generator.image(at: CMTime(seconds: 1, preferredTimescale: 600)).image { return i }
+            return try? await generator.image(at: .zero).image
         }
         guard let src = CGImageSourceCreateWithURL(file as CFURL, nil) else { return nil }
         return CGImageSourceCreateThumbnailAtIndex(src, 0, [kCGImageSourceCreateThumbnailFromImageAlways: true,
@@ -232,11 +440,27 @@ enum CameraEventMedia {
                                                             kCGImageSourceCreateThumbnailWithTransform: true] as CFDictionary)
     }
 
-    /// The Mac's small picture as a file to attach (the full clip or snapshot couldn't be fetched here).
+    /// The Mac's small picture as a file to attach (the full clip or snapshot couldn't be fetched here): a JPEG
+    /// (a HEIC one is made a JPEG, the picture type every alert can show).
     static func thumbnailFile(_ base64: String) -> URL? {
-        guard let d = Data(base64Encoded: base64), !d.isEmpty else { return nil }
+        guard let d = Data(base64Encoded: base64), d.count > 100 else { return nil }
+        var out = d
+        // HEIC: "ftyp" four bytes in.
+        if d.count > 12, d.subdata(in: 4..<8) == Data("ftyp".utf8) {
+            guard let src = CGImageSourceCreateWithData(d as CFData, nil),
+                  let image = CGImageSourceCreateImageAtIndex(src, 0, nil),
+                  let j = jpeg(image, quality: 0.92) else { return nil }
+            out = j
+        }
         let u = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".jpg")
-        return (try? d.write(to: u, options: .atomic)) != nil ? u : nil
+        return (try? out.write(to: u, options: .atomic)) != nil ? u : nil
+    }
+
+    /// [data] (a JPEG of the moment) as a file to attach.
+    static func jpegFile(_ data: Data, name: String) -> URL? {
+        guard let f = folder else { return nil }
+        let u = f.appendingPathComponent(name + ".jpg")
+        return (try? data.write(to: u, options: .atomic)) != nil ? u : nil
     }
 
     private static func scaled(_ image: CGImage, maxSide: Int) -> CGImage? {
@@ -253,19 +477,63 @@ enum CameraEventMedia {
     }
 
     private static func jpeg(_ image: CGImage, quality: Double) -> Data? {
-        let out = NSMutableData()
-        guard let dest = CGImageDestinationCreateWithData(out, UTType.jpeg.identifier as CFString, 1, nil) else { return nil }
-        CGImageDestinationAddImage(dest, image, [kCGImageDestinationLossyCompressionQuality: quality] as CFDictionary)
-        return CGImageDestinationFinalize(dest) ? out as Data : nil
+        encode(image, type: UTType.jpeg.identifier, quality: quality)
     }
 
-    /// Clips and snapshots older than ten minutes are let go, and anything left from the alerts' attachments.
+    /// Clips and snapshots older than ten minutes are let go, and anything left from the alerts' attachments; the
+    /// Mac's pictures of its events after an hour.
     private static func prune(_ f: URL) {
-        let old = Date().addingTimeInterval(-keptFor)
+        let now = Date()
         for u in (try? FileManager.default.contentsOfDirectory(at: f, includingPropertiesForKeys: [.contentModificationDateKey])) ?? [] {
-            if let d = (try? u.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate, d < old {
+            let life = u.lastPathComponent.hasPrefix("event-") ? eventKeptFor : keptFor
+            if let d = (try? u.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate, d < now.addingTimeInterval(-life) {
                 try? FileManager.default.removeItem(at: u)
             }
         }
+    }
+}
+
+/// The first of several ways to get something that comes back with it, or nil when none does by the deadline. The
+/// others are stopped, and never waited for (one stuck on a slow network can't hold up the alert).
+final class FirstOf<T>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cont: CheckedContinuation<T?, Never>?
+    private var left: Int
+    private var tasks: [Task<Void, Never>] = []
+
+    init(_ count: Int) { left = count }
+
+    func run(_ jobs: [@Sendable () async -> T?], deadline: Date) async -> T? {
+        guard !jobs.isEmpty else { return nil }
+        left = jobs.count
+        return await withCheckedContinuation { (c: CheckedContinuation<T?, Never>) in
+            lock.lock(); cont = c; lock.unlock()
+            var made: [Task<Void, Never>] = []
+            for job in jobs {
+                made.append(Task { let r = await job(); self.end(r, counted: true) })
+            }
+            let wait = max(0, deadline.timeIntervalSinceNow)
+            made.append(Task {
+                try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
+                self.end(nil, counted: false, timeUp: true)
+            })
+            lock.lock()
+            let over = cont == nil
+            if !over { tasks = made }
+            lock.unlock()
+            if over { for t in made { t.cancel() } }
+        }
+    }
+
+    private func end(_ r: T?, counted: Bool, timeUp: Bool = false) {
+        lock.lock()
+        if counted { left -= 1 }
+        guard let c = cont, r != nil || timeUp || left <= 0 else { lock.unlock(); return }
+        cont = nil
+        let all = tasks
+        tasks = []
+        lock.unlock()
+        c.resume(returning: r)
+        for t in all { t.cancel() }
     }
 }

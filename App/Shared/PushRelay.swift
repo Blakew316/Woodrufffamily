@@ -255,8 +255,11 @@ final class PushRelay {
                    userInfo: ["camera": e.camera, "key": e.key, "event": e.event, "clip": e.clip, "thumb": e.thumb ?? ""])
     }
 
-    private func send(id: String, title: String, body: String, category: String?, userInfo: [String: String], sound: Bool = true) async {
-        guard let auth = token() else { lastError = "The push key couldn’t be read. Add it again."; return }
+    /// Apple's limit for an alert push's payload.
+    static let pushLimit = 4096
+
+    /// A push's payload as Apple gets it.
+    static func payload(id: String, title: String, body: String, category: String?, userInfo: [String: String], sound: Bool) -> [String: Any] {
         var aps: [String: Any] = ["alert": ["title": title, "body": body], "thread-id": userInfo["tv"] ?? id.components(separatedBy: "-").first ?? "woodruff"]
         if sound { aps["sound"] = "default" }
         if let category { aps["category"] = category }
@@ -264,13 +267,40 @@ final class PushRelay {
         if userInfo["camera"] != nil { aps["mutable-content"] = 1 }
         var payload: [String: Any] = ["aps": aps]
         for (k, v) in userInfo { payload[k] = v }
-        guard var data = try? JSONSerialization.data(withJSONObject: payload) else { return }
+        return payload
+    }
+
+    /// The payload's bytes. "/" is left as it is (escaped, the picture's base64 grew by a few dozen bytes).
+    static func encoded(_ payload: [String: Any]) -> Data? {
+        try? JSONSerialization.data(withJSONObject: payload, options: [.withoutEscapingSlashes])
+    }
+
+    /// How many characters of picture a camera's push has room for, with everything else it carries. When a long clip
+    /// link (or event id) would leave the picture too little, the push goes without it (`send` leaves it out first,
+    /// and the iPhone gets the full picture from this Mac instead).
+    static func thumbnailBudget(id: String, title: String, body: String, userInfo: [String: String], sound: Bool) -> Int {
+        var info = userInfo
+        info["thumb"] = ""
+        func room() -> Int {
+            let size = encoded(payload(id: id, title: title, body: body, category: nil, userInfo: info, sound: sound))?.count ?? pushLimit
+            return pushLimit - 32 - size
+        }
+        var r = room()
+        if r < 2000, info["clip"] != nil { info["clip"] = nil; r = room() }
+        if r < 1500, info["event"] != nil { info["event"] = nil; r = room() }
+        return min(max(r, 0), 3000)
+    }
+
+    private func send(id: String, title: String, body: String, category: String?, userInfo: [String: String], sound: Bool = true) async {
+        guard let auth = token() else { lastError = "The push key couldn’t be read. Add it again."; return }
+        var payload = Self.payload(id: id, title: title, body: body, category: category, userInfo: userInfo, sound: sound)
+        guard var data = Self.encoded(payload) else { return }
         // Apple takes at most 4 KB. The picture matters most: the clip's long link goes first (the iPhone can only use
-        // it with its own camera sign-in), then the event id, and only then the picture.
-        for drop in ["clip", "event", "thumb"] where data.count > 4000 {
+        // it with its own camera sign-in), then the event id, the picture's framing, and only then the picture.
+        for drop in ["clip", "event", "f", "thumb"] where data.count > Self.pushLimit {
             guard payload[drop] != nil else { continue }
             payload[drop] = nil
-            guard let smaller = try? JSONSerialization.data(withJSONObject: payload) else { return }
+            guard let smaller = Self.encoded(payload) else { return }
             data = smaller
             PushRelay.log.notice("push too big: left out \(drop, privacy: .public), now \(data.count, privacy: .public) bytes")
         }
