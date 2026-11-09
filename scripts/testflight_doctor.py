@@ -45,10 +45,56 @@ def all_pages(key, path):
     return out
 
 
+def safe(key, path):
+    """GET path, or the error as text (a read that fails is itself a finding)."""
+    try:
+        return asc.call(key, "GET", path)
+    except RuntimeError as e:
+        return {"error": str(e)}
+
+
+def deep(key, app, app_obj, builds):
+    """Everything TestFlight's 'not available or doesn't exist' can hang on, read only."""
+    say("--- deep ---")
+    a = app_obj.get("attributes") or {}
+    say("App attributes: %s" % {k: a.get(k) for k in ("bundleId", "sku", "primaryLocale", "contentRightsDeclaration",
+                                                       "isOrEverWasMadeForKids")})
+    say("Beta license agreement: %s" % safe(key, "/apps/%s/betaLicenseAgreement" % app))
+    say("Beta app localizations: %s" % safe(key, "/apps/%s/betaAppLocalizations" % app))
+    say("Beta review detail: %s" % safe(key, "/apps/%s/betaAppReviewDetail" % app))
+    say("Pre-release versions: %s" % [((v.get("attributes") or {}).get("version"), (v.get("attributes") or {}).get("platform"))
+                                      for v in (safe(key, "/apps/%s/preReleaseVersions?limit=10" % app).get("data") or [])])
+    for b in builds[:3]:
+        ba = b.get("attributes") or {}
+        icons = safe(key, "/builds/%s/icons" % b["id"])
+        say("Build %s icons: %s" % (ba.get("version"), [((i.get("attributes") or {}).get("iconType"),
+                                                          bool((i.get("attributes") or {}).get("iconAsset")))
+                                                         for i in (icons.get("data") or [])] or icons))
+        say("Build %s attributes: %s" % (ba.get("version"), {k: ba.get(k) for k in (
+            "uploadedDate", "expirationDate", "usesNonExemptEncryption", "lsMinimumSystemVersion",
+            "computedMinMacOsVersion", "iconAssetToken")}))
+        say("Build %s beta detail: %s" % (ba.get("version"), safe(key, "/builds/%s/buildBetaDetail" % b["id"])))
+    testers = all_pages(key, "/betaTesters" + q({"filter[apps]": app, "limit": 200}))
+    for t in testers:
+        ta = t.get("attributes") or {}
+        tid = t["id"]
+        tb = safe(key, "/betaTesters/%s/builds?limit=5" % tid)
+        tapps = safe(key, "/betaTesters/%s/apps?limit=5" % tid)
+        say("Tester %s: %s; apps %s; individual builds %s" % (
+            ta.get("email"), {k: ta.get(k) for k in ("state", "inviteType", "firstName", "lastName")},
+            [x.get("id") for x in (tapps.get("data") or [])] or tapps,
+            [((x.get("attributes") or {}).get("version")) for x in (tb.get("data") or [])] or tb))
+    say("Agreement check (a write-free endpoint that fails when agreements are missing): %s"
+        % ("ok" if "error" not in safe(key, "/apps/%s/appStoreVersions?limit=1" % app) else
+           safe(key, "/apps/%s/appStoreVersions?limit=1" % app)))
+    say("--- end deep ---")
+
+
 def main(argv=None):
     p = argparse.ArgumentParser()
     p.add_argument("--fix", action="store_true")
     p.add_argument("--invite", action="append", default=[], help="email to invite to the team (Developer)")
+    p.add_argument("--deep", action="store_true", help="also read testers' access, the builds' icons and the app's beta details")
     args = p.parse_args(argv)
 
     key = asc.find_key()
@@ -111,6 +157,9 @@ def main(argv=None):
         say("PROBLEM: no internal testing group.")
     elif not (internal[0].get("attributes") or {}).get("hasAccessToAllBuilds"):
         say("PROBLEM: the internal group doesn't get new builds by itself (automatic distribution off).")
+
+    if args.deep:
+        deep(key, app, apps[0], builds)
 
     if not args.fix:
         say("Report only. Run again with --fix to repair.")
