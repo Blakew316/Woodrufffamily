@@ -205,6 +205,35 @@ def main(argv=None):
             except RuntimeError as e:
                 say("Couldn't add the builds: %s" % e)
 
+    # Fix: availability. With none, TestFlight lists the app but can't install it ("not available or doesn't exist").
+    av = safe(key, "/apps/%s/appAvailabilityV2" % app)
+    if "error" in av:
+        temp = "${usa}"
+        try:
+            asc.call(key, "POST", "https://api.appstoreconnect.apple.com/v2/appAvailabilities", {
+                "data": {"type": "appAvailabilities",
+                         "attributes": {"availableInNewTerritories": True},
+                         "relationships": {"app": {"data": {"type": "apps", "id": app}},
+                                           "territoryAvailabilities": {"data": [{"type": "territoryAvailabilities", "id": temp}]}}},
+                "included": [{"type": "territoryAvailabilities", "id": temp,
+                              "attributes": {"available": True},
+                              "relationships": {"territory": {"data": {"type": "territories", "id": "USA"}}}}]})
+            say("FIXED: the app is now available in the United States (and new territories).")
+        except RuntimeError as e:
+            say("Couldn't set availability: %s" % e)
+
+    # Fix: the app's name (it was its bundle id, which TestFlight shows).
+    infos = safe(key, "/apps/%s/appInfos?include=appInfoLocalizations" % app)
+    for loc in infos.get("included") or []:
+        la = loc.get("attributes") or {}
+        if loc.get("type") == "appInfoLocalizations" and la.get("name") != "Woodruff Family":
+            try:
+                asc.call(key, "PATCH", "/appInfoLocalizations/%s" % loc["id"], {"data": {
+                    "type": "appInfoLocalizations", "id": loc["id"], "attributes": {"name": "Woodruff Family"}}})
+                say("FIXED: the app's name (%s) is now Woodruff Family." % la.get("locale"))
+            except RuntimeError as e:
+                say("Couldn't rename the app: %s" % e)
+
     # Fix: TestFlight's Test Information (beta description and feedback email), empty until now.
     locs = safe(key, "/apps/%s/betaAppLocalizations" % app).get("data") or []
     if not locs:
