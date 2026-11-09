@@ -19,6 +19,31 @@ enum CameraShareKey {
     }
 }
 
+/// A camera alert the Mac Studio sent, as it hands it to the Apple TVs (GET /events): the Apple TV shows its own small
+/// alert for it. [at] is when the Mac sent it, in milliseconds by the Mac's clock (the Apple TV asks for those after
+/// the last one it saw).
+struct CameraShareEvent: Codable, Equatable {
+    /// The event's short id (its picture is GET /event?id=).
+    var key: String
+    var camera: String
+    var name: String
+    var title: String
+    /// person, door, motion, vehicle or event.
+    var kind: String
+    var at: Int64
+    /// Where who or what was seen is in the picture ("x,y,w,h", unit rectangle from the top left).
+    var focus: String?
+    /// Google's event id and clip, for the replay when the camera is opened.
+    var event: String?
+    var clip: String?
+}
+
+/// GET /events: the Mac's clock now and the alerts after `since`.
+struct CameraShareFeed: Codable {
+    var now: Int64
+    var events: [CameraShareEvent]
+}
+
 #if os(macOS)
 @MainActor
 final class CameraShare {
@@ -29,6 +54,23 @@ final class CameraShare {
     private var token: String?
     /// A picture being taken of each camera now: every Apple TV asking meanwhile gets the same one.
     private var taking: [String: Task<Data?, Never>] = [:]
+    /// The last alerts this Mac sent, newest last, for the Apple TVs' own alerts (GET /events).
+    private var recent: [CameraShareEvent] = []
+
+    /// An alert went out (its picture already kept for GET /event): the Apple TVs show it on their next ask. Only on
+    /// the Mac that shares the cameras (the hub).
+    func noteEvent(key: String, camera: String, name: String, title: String, focus: CGRect?, event: String?, clip: String?) {
+        guard listener != nil else { return }
+        let t = title.lowercased()
+        let kind = t.contains("door") || t.contains("ring") ? "door" : t.contains("person") ? "person"
+            : t.contains("motion") ? "motion" : t.contains("vehicle") ? "vehicle" : "event"
+        // Always after the last one, so an Apple TV asking for newer ones never misses one sent the same millisecond.
+        let at = max(Int64(Date().timeIntervalSince1970 * 1000), (recent.last?.at ?? 0) + 1)
+        recent.append(CameraShareEvent(key: key, camera: camera, name: name, title: title, kind: kind, at: at,
+                                       focus: focus.map { CameraEventMedia.focusText($0) },
+                                       event: event.flatMap { $0.isEmpty ? nil : $0 }, clip: clip.flatMap { $0.isEmpty ? nil : $0 }))
+        if recent.count > 20 { recent.removeFirst(recent.count - 20) }
+    }
 
     /// On the Mac Studio (the updater's hub) only: it's the Mac that's always home with every camera live.
     func start() {
@@ -100,12 +142,20 @@ final class CameraShare {
     private func answer(_ request: String, _ c: NWConnection) async {
         let line = request.components(separatedBy: "\r\n").first ?? ""
         let parts = line.split(separator: " ")
-        guard parts.count >= 2, let url = URLComponents(string: "http://x" + parts[1]), url.path == "/still" || url.path == "/event" else {
+        guard parts.count >= 2, let url = URLComponents(string: "http://x" + parts[1]),
+              ["/still", "/event", "/events"].contains(url.path) else {
             return reply(c, "404 Not Found", nil)
         }
         let q = Dictionary((url.queryItems ?? []).map { ($0.name, $0.value ?? "") }, uniquingKeysWith: { a, _ in a })
         if token == nil { token = CameraShareKey.token() }
-        guard let token, q["k"] == token, let id = q["id"], !id.isEmpty else { return reply(c, "403 Forbidden", nil) }
+        guard let token, q["k"] == token else { return reply(c, "403 Forbidden", nil) }
+        // GET /events?since=<ms>&k=<key>: the alerts sent after `since` (the Apple TVs' own alerts).
+        if url.path == "/events" {
+            let since = Int64(q["since"] ?? "") ?? 0
+            let feed = CameraShareFeed(now: Int64(Date().timeIntervalSince1970 * 1000), events: recent.filter { $0.at > since })
+            return reply(c, "200 OK", (try? JSONEncoder().encode(feed)) ?? Data("{}".utf8), type: "application/json")
+        }
+        guard let id = q["id"], !id.isEmpty else { return reply(c, "403 Forbidden", nil) }
         if url.path == "/event" {
             guard id.count <= 32, id.allSatisfy(\.isHexDigit) else { return reply(c, "403 Forbidden", nil) }
             if let jpeg = CameraEventMedia.eventImage(id) { return reply(c, "200 OK", jpeg) }
@@ -128,8 +178,8 @@ final class CameraShare {
         return jpeg
     }
 
-    private func reply(_ c: NWConnection, _ status: String, _ jpeg: Data?) {
-        var out = Data("HTTP/1.1 \(status)\r\nContent-Type: image/jpeg\r\nContent-Length: \(jpeg?.count ?? 0)\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n".utf8)
+    private func reply(_ c: NWConnection, _ status: String, _ jpeg: Data?, type: String = "image/jpeg") {
+        var out = Data("HTTP/1.1 \(status)\r\nContent-Type: \(type)\r\nContent-Length: \(jpeg?.count ?? 0)\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n".utf8)
         if let jpeg { out.append(jpeg) }
         c.send(content: out, completion: .contentProcessed { _ in c.cancel() })
     }

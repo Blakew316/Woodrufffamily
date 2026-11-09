@@ -57,6 +57,8 @@ struct WoodruffTVApp: App {
                     HomeWeather.shared.refresh()
                     SettingsSync.shared.start(fleet)
                     NestAlerts.shared.start(fleet)
+                    // The cameras' alerts, from the Mac Studio, as the pill at the top right.
+                    TVAlerts.shared.start()
                     DecoWifi.shared.start()
                     Task.detached(priority: .background) { await ImageStore.shared.trim() }
                 }
@@ -65,6 +67,7 @@ struct WoodruffTVApp: App {
             if phase == .active { fleet.setActive(true) } else if phase == .background { fleet.setActive(false) }
             if phase == .background {
                 AppWake.wentAway = true
+                TVAlerts.shared.pause()
                 CameraStreams.shared.background()
                 DriveLibrary.shared.flush()
                 // Pictures not on screen are let go (they're on disk), as the iPhone does: a smaller app in the
@@ -74,6 +77,8 @@ struct WoodruffTVApp: App {
             }
             if phase == .active {
                 CameraStreams.shared.foreground()
+                // Asking the Mac Studio for alerts again (only once the launch has started everything else).
+                if AppWake.wentAway { TVAlerts.shared.start() }
                 let woke = AppWake.wentAway
                 if woke {
                     AppWake.wentAway = false
@@ -141,6 +146,18 @@ struct TVRoot: View {
                 TVMacRoot()
             }
         }
+        // A camera alert's pill, over every page (in its own window over a video or an open camera).
+        .overlay { TVAlertLayer() }
+        // The pill selected: its camera, opened with the event's picture.
+        .cameraPresenter(Binding(
+            get: {
+                CameraStreams.shared.requested.map { id in
+                    NestCameras.shared.cameras.first { $0.id == id }
+                        ?? NestCameras.Camera(id: id, name: "Camera", room: nil, doorbell: false, webRTC: true)
+                }
+            },
+            set: { if $0 == nil { CameraStreams.shared.requested = nil } }
+        ))
         .alert("Connect to the Family?", isPresented: Binding(get: { join.asking != nil }, set: { if !$0 { join.answer(false) } })) {
             Button("Allow") { join.answer(true) }
             Button("Don’t Allow", role: .cancel) { join.answer(false) }

@@ -399,6 +399,11 @@ final class NestAlerts {
             PushRelay.log.notice("picture for \(body, privacy: .public) after \(waited, privacy: .public) s: \(got.map { $0.source.text } ?? "none (no picture from Google, the live stream or before)", privacy: .public)\(thumb.map { ", \($0.count) characters in the push" } ?? ", none in the push", privacy: .public)\(focus != nil ? ", on its subject" : "", privacy: .public)")
             if let thumb { c.userInfo["thumb"] = thumb }
             if let shown, let a = CameraEventMedia.attachment(shown, focus: focus) { c.attachments = [a] }
+            // The Apple TVs' own alert for it (the hub only; its picture is kept above for them to fetch).
+            if !quiet {
+                CameraShare.shared.noteEvent(key: short, camera: camera, name: body, title: title, focus: focus,
+                                             event: event, clip: race.clip ?? clip)
+            }
             Notifier.deliver(c, id: id)
         }
         #endif
