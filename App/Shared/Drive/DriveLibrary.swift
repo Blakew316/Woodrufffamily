@@ -275,7 +275,8 @@ final class DriveLibrary: WatchSource {
 
     /// What TMDB already said about [e], kept from the last read.
     private func keep(_ e: Entry) -> Entry {
-        guard let old = (saved.movies + saved.shows).first(where: { $0.id == e.id && $0.name == e.name }) else { return e }
+        // Looked up again when the title read from its name changed (a "Blade Runner 2049" once read as "Blade Runner").
+        guard let old = (saved.movies + saved.shows).first(where: { $0.id == e.id && $0.name == e.name && $0.title == e.title }) else { return e }
         var n = e
         n.poster = old.poster; n.backdrop = old.backdrop; n.genres = old.genres; n.rating = old.rating
         n.overview = old.overview; n.tmdb = old.tmdb; n.year = e.year ?? old.year

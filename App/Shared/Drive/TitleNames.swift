@@ -1,4 +1,5 @@
 import Foundation
+import WoodruffKit
 
 /// The TV's rules for reading a file or folder name (Tmdb.parse, EpisodeMeta, ShowPrefs): the title and year to look
 /// up, a season's number, an episode's number and its name. Kept the same, so the app and the TVs agree on every title.
@@ -7,6 +8,9 @@ enum TitleNames {
     private static let brackets = re(#"[\[{].*?[\]}]"#)
     private static let year = re(#"(?<![0-9])(19[2-9][0-9]|20[0-9]{2})(?![0-9])"#)
     private static let junk = re(#"(?i)\b(2160p|1080p|720p|576p|480p|4k|uhd|hdr10?|dv|bluray|blu ray|bdrip|brrip|webrip|web dl|webdl|web|hdtv|dvdrip|x264|x265|h 264|h 265|hevc|avc|aac|ac3|dts|atmos|remux|proper|repack|extended|unrated|imax|criterion|s\d{1,2}(e\d{1,3})?|season \d+|complete)\b"#)
+    private static let bracketedYear = re(#"[\[{]\s*(19[2-9][0-9]|20[0-9]{2})\s*[\]}]"#)
+    /// No film comes out more than a year or two ahead.
+    private static let latestYear = Calendar(identifier: .gregorian).component(.year, from: Date()) + 2
     private static let tail = re(#"[(\-–:,\s]+$"#)
     private static let copyOf = re(#"(?i)^copy of\s+"#)
     private static let copyNumber = re(#"\s*\(\d{1,2}\)(?=\.[A-Za-z0-9]{2,4}$|$)"#)
@@ -34,13 +38,18 @@ enum TitleNames {
     static func parse(_ name: String, stripExtension: Bool) -> (title: String, year: Int?) {
         var s = cleanCopy(name)
         if stripExtension { s = (s as NSString).deletingPathExtension }
+        // A year in square brackets ("Dune Part Two [2024]") is still the year to look up, though the brackets go.
+        var bracketYear: Int?
+        if let m = first(bracketedYear, in: s), let g = group(m, 1, in: s), let v = Int(g), v <= latestYear { bracketYear = v }
         s = replace(brackets, in: s)
         s = s.replacingOccurrences(of: ".", with: " ").replacingOccurrences(of: "_", with: " ")
         s = s.split(whereSeparator: \.isWhitespace).joined(separator: " ")
         var y: Int?
         let ns = s as NSString
         for m in year.matches(in: s, range: NSRange(location: 0, length: ns.length)) where m.range.location > 0 {
-            y = Int(ns.substring(with: m.range))
+            // A "year" still to come is part of the name ("Blade Runner 2049").
+            guard let v = Int(ns.substring(with: m.range)), v <= latestYear else { continue }
+            y = v
             s = ns.substring(to: m.range.location)
             break
         }
@@ -51,7 +60,8 @@ enum TitleNames {
         s = replace(tail, in: s).replacingOccurrences(of: "(", with: "").replacingOccurrences(of: ")", with: "")
         s = s.trimmingCharacters(in: .whitespaces)
         if s.isEmpty { s = stripExtension ? (name as NSString).deletingPathExtension : name }
-        return (s, y)
+        // Shown without a year however it was written (the TV's names are cleaned the same way as they're read).
+        return (TitleText.withoutYear(s), y ?? bracketYear)
     }
 
     private static func cleanCopy(_ name: String) -> String {

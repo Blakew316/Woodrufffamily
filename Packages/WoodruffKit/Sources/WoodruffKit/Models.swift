@@ -397,6 +397,8 @@ public struct Title: Codable, Hashable, Sendable, Identifiable {
     public var added: Double?
     public var play: PlayAction?
     public var isShow: Bool { kind == "show" }
+
+    enum CodingKeys: String, CodingKey { case id, kind, title, year, poster, backdrop, genres, rating, watched, caption, added, play }
 }
 
 public struct ContinueItem: Codable, Hashable, Sendable, Identifiable {
@@ -416,6 +418,10 @@ public struct ContinueItem: Codable, Hashable, Sendable, Identifiable {
     public var restart: PlayAction?
     public var id: String { key }
     public var progress: Double { guard let d = duration, d > 0 else { return 0 }; return min(1, (position ?? 0) / d) }
+
+    enum CodingKeys: String, CodingKey {
+        case key, playTitle, titleId, kind, name, code, episode, position, duration, upNext, poster, drive, play, restart
+    }
 }
 
 public struct Episode: Codable, Hashable, Sendable, Identifiable {
@@ -500,11 +506,86 @@ public struct TitleDetails: Codable, Sendable {
     public var playName: String?
     public var watchKey: String?
     public var watched: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case id, kind, title, year, poster, backdrop, genres, rating, caption, overview, runtime, ageRating, cast, seasons, season
+        case films, play, restart, playMinutes, playName, watchKey, watched
+    }
 }
 
 public struct EpisodeList: Codable, Sendable {
     public var state: String
     public var episodes: [Episode]
+}
+
+// Read as the synthesized ones would, but with the film's or show's name shown without its year ("Vice (2018)" is
+// "Vice"): done here, as each answer is read, so every page (and every title added later) shows the same name. What
+// plays (`play`, `playTitle`) is left as the TV named it.
+
+extension Title {
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        kind = try c.decode(String.self, forKey: .kind)
+        title = TitleText.withoutYear(try c.decode(String.self, forKey: .title))
+        year = try c.decodeIfPresent(Int.self, forKey: .year)
+        poster = try c.decodeIfPresent(String.self, forKey: .poster)
+        backdrop = try c.decodeIfPresent(String.self, forKey: .backdrop)
+        genres = try c.decodeIfPresent([String].self, forKey: .genres)
+        rating = try c.decodeIfPresent(Double.self, forKey: .rating)
+        watched = try c.decodeIfPresent(Bool.self, forKey: .watched)
+        caption = try c.decodeIfPresent(String.self, forKey: .caption)
+        added = try c.decodeIfPresent(Double.self, forKey: .added)
+        play = try c.decodeIfPresent(PlayAction.self, forKey: .play)
+    }
+}
+
+extension ContinueItem {
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        key = try c.decode(String.self, forKey: .key)
+        playTitle = try c.decode(String.self, forKey: .playTitle)
+        titleId = try c.decodeIfPresent(String.self, forKey: .titleId)
+        kind = try c.decode(String.self, forKey: .kind)
+        name = TitleText.withoutYear(try c.decode(String.self, forKey: .name))
+        code = try c.decodeIfPresent(String.self, forKey: .code)
+        episode = try c.decodeIfPresent(String.self, forKey: .episode)
+        position = try c.decodeIfPresent(Double.self, forKey: .position)
+        duration = try c.decodeIfPresent(Double.self, forKey: .duration)
+        upNext = try c.decodeIfPresent(Bool.self, forKey: .upNext)
+        poster = try c.decodeIfPresent(String.self, forKey: .poster)
+        drive = try c.decodeIfPresent(Bool.self, forKey: .drive)
+        play = try c.decode(PlayAction.self, forKey: .play)
+        restart = try c.decodeIfPresent(PlayAction.self, forKey: .restart)
+    }
+}
+
+extension TitleDetails {
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        kind = try c.decode(String.self, forKey: .kind)
+        title = TitleText.withoutYear(try c.decode(String.self, forKey: .title))
+        year = try c.decodeIfPresent(Int.self, forKey: .year)
+        poster = try c.decodeIfPresent(String.self, forKey: .poster)
+        backdrop = try c.decodeIfPresent(String.self, forKey: .backdrop)
+        genres = try c.decodeIfPresent([String].self, forKey: .genres)
+        rating = try c.decodeIfPresent(Double.self, forKey: .rating)
+        caption = try c.decodeIfPresent(String.self, forKey: .caption)
+        overview = try c.decodeIfPresent(String.self, forKey: .overview)
+        runtime = try c.decodeIfPresent(Double.self, forKey: .runtime)
+        ageRating = try c.decodeIfPresent(String.self, forKey: .ageRating)
+        cast = try c.decodeIfPresent([String].self, forKey: .cast)
+        seasons = try c.decodeIfPresent([Season].self, forKey: .seasons)
+        season = try c.decodeIfPresent(Int.self, forKey: .season)
+        films = try c.decodeIfPresent([Episode].self, forKey: .films)
+        play = try c.decodeIfPresent(PlayAction.self, forKey: .play)
+        restart = try c.decodeIfPresent(PlayAction.self, forKey: .restart)
+        playMinutes = try c.decodeIfPresent(Double.self, forKey: .playMinutes)
+        playName = try c.decodeIfPresent(String.self, forKey: .playName)
+        watchKey = try c.decodeIfPresent(String.self, forKey: .watchKey)
+        watched = try c.decodeIfPresent(Bool.self, forKey: .watched)
+    }
 }
 
 // MARK: Settings
