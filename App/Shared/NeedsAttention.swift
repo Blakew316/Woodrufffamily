@@ -7,6 +7,8 @@ import WoodruffKit
 struct NeedsAttentionSection: View {
     @Environment(Fleet.self) private var fleet
     let hub: HubSettings
+    /// Its name above the rows (not on a page that already has it as its title: iPad Settings in two columns).
+    var titled = true
 
     struct Issue: Identifiable {
         var id: String
@@ -65,7 +67,7 @@ struct NeedsAttentionSection: View {
                     }
                 }
             } header: {
-                Text("Needs Attention")
+                if titled { Text("Needs Attention") }
             }
         }
     }

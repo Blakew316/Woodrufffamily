@@ -589,7 +589,7 @@ private struct PhoneTabPage: View {
     var body: some View {
         let s = section
         let playing = fleet.selected?.nowPlaying
-        NavigationStack { s.view }
+        PhoneTabStack(section: s)
             // What's playing floats above the tabs everywhere but Remote, which shows it itself.
             .safeAreaInset(edge: .bottom, spacing: 0) { if s != .remote { NowPlayingBar() } }
             // Room under every page's last row for the bar, so nothing ends up stuck behind it.
