@@ -788,10 +788,10 @@ private struct MacWatchSearch: ViewModifier {
     }
 }
 
-/// Mac: the window's own toolbar (Back, the page's name, Home | Watch | Settings in the middle, Edit Home on Home, the
-/// remote, and Watch's search), the page under it, and the remote as a sidebar on the right that slides out when it's
-/// wanted. Home and Watch keep one row of their own above the page (`headerRow`): Home's greeting and the thermostat;
-/// Watch's Movies | TV Shows, the TV it plays on and the thermostat.
+/// Mac: the window's own toolbar (Back while it goes somewhere, the page's name or on Home the greeting, Home | Watch
+/// | Settings in the middle, the thermostat, Edit Home on Home, the remote, and Watch's search), the page under it,
+/// and the remote as a sidebar on the right that slides out when it's wanted. Watch keeps one row of its own above
+/// the page (`headerRow`): Movies | TV Shows and the TV it plays on.
 struct MacRoot: View {
     @Environment(Fleet.self) private var fleet
     @Binding var selection: AppSection
@@ -994,13 +994,27 @@ struct MacRoot: View {
 
     // MARK: The toolbar
 
-    /// The window's toolbar: Back at the left, ahead of the page's name; Home | Watch | Settings in the middle; then
-    /// Edit Home (on Home) and the remote. Watch's search field comes after them (`searchable`, in `body`).
+    /// The window's toolbar: at the left, Back while there's somewhere to go back to, and on Home's first page the
+    /// weather and the greeting; Home | Watch | Settings in the middle; then the thermostat (on Home's and Watch's
+    /// first pages), Edit Home (on Home) and the remote, level with one another. Watch's search field comes after
+    /// them (`searchable`, in `body`).
     @ToolbarContentBuilder private var windowToolbar: some ToolbarContent {
-        ToolbarItem(placement: .navigation) {
-            Button { MacActions.back() } label: { Label("Back", systemImage: "chevron.backward") }
-                .disabled(!MacActions.canGoBack)
-                .help(backHelp)
+        // Back is there only while it goes somewhere. (It sat at the top left of every first page, dimmed, doing
+        // nothing when clicked.)
+        if MacActions.canGoBack {
+            ToolbarItem(placement: .navigation) {
+                Button { MacActions.back() } label: { Label("Back", systemImage: "chevron.backward") }
+                    .help(backHelp)
+            }
+        }
+        // Home's first page: the weather and the greeting at the window's top left, in the toolbar itself. (They had
+        // a row of their own under the toolbar, in its middle, with the thermostat at its far right: a strip of
+        // mostly empty space above Home.)
+        // (Only where there's room beside Home | Watch | Settings: the greeting from a middling window up, the weather
+        // with it in a wide one.)
+        if onHome && width >= 1040 {
+            ToolbarItem(placement: .navigation) { MacToolbarGreeting(weather: width >= 1300) }
+                .sharedBackgroundVisibility(.hidden)
         }
         ToolbarItem(placement: .principal) {
             Picker("Section", selection: sectionChoice) {
@@ -1008,6 +1022,13 @@ struct MacRoot: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
+        }
+        // The thermostat, level with Edit Home and the remote, as tall as they are: on the pages that had it in the
+        // row under the toolbar (Home's and Watch's first pages). It draws its own glass.
+        if thermostatInToolbar {
+            ToolbarItem(placement: .primaryAction) { ThermostatChip(compact: thermostatCompact, height: 36) }
+                .sharedBackgroundVisibility(.hidden)
+            ToolbarSpacer(.fixed, placement: .primaryAction)
         }
         if onHome {
             ToolbarItem(placement: .primaryAction) { editHomeButton }
@@ -1020,6 +1041,12 @@ struct MacRoot: View {
                 .help("Remote (⌥⌘R)")
         }
     }
+
+    /// Home's or Watch's first page, with nothing opened on top: the toolbar has the thermostat.
+    private var thermostatInToolbar: Bool { (homeRow || watchRow) && nav.path.isEmpty }
+    /// Without its − and + where the toolbar is short of room: a small window, or Watch's (which has the search
+    /// field too) in a middling one.
+    private var thermostatCompact: Bool { narrow || width < 1100 || (inWatch && width < 1500) }
 
     /// Where the toolbar's Back goes ("Back to Watch"), for its tooltip.
     private var backHelp: String {
@@ -1053,9 +1080,10 @@ struct MacRoot: View {
 
     // MARK: The page's own row
 
-    /// The first page is Home's own, or Watch's own, whatever is opened on top of it: it keeps a row of its own above
-    /// it (`headerRow`). Not by what's on top (as `onHome` goes): the row stays as it is under an opened page, so the
-    /// page doesn't move as one opens or closes over it.
+    /// The first page is Home's own, or Watch's own, whatever is opened on top of it. Watch's keeps a row of its own
+    /// above it (`headerRow`); not by what's on top (as `onHome` goes): the row stays as it is under an opened page,
+    /// so the page doesn't move as one opens or closes over it. (Home has no row: its greeting and the thermostat are
+    /// in the toolbar.)
     private var homeRow: Bool { section == .home && tvSelection == nil && deviceSelection == nil && query.isEmpty }
     private var watchRow: Bool { inWatch && query.isEmpty }
 
@@ -1063,7 +1091,7 @@ struct MacRoot: View {
     /// over search results, which start right under the toolbar), what's playing at the bottom, and the window's
     /// toolbar see-through (not over search results, which scroll straight under it).
     private var rootChrome: MacPageChrome<some View, some View> {
-        MacPageChrome(header: rootHeader, headerSpacing: homeRow || watchRow ? nil : 0,
+        MacPageChrome(header: rootHeader, headerSpacing: watchRow ? nil : 0,
                       toolbarBackground: query.isEmpty ? .hidden : .automatic, bottom: nowPlaying)
     }
 
@@ -1099,7 +1127,7 @@ struct MacRoot: View {
     }
 
     @ViewBuilder private var rootHeader: some View {
-        if homeRow || watchRow { headerRow }
+        if watchRow { headerRow }
     }
 
     /// Watch's Movies | TV Shows.
@@ -1113,34 +1141,20 @@ struct MacRoot: View {
         .fixedSize()
     }
 
-    /// The row above Home's and Watch's first page, under the toolbar. On Home, the greeting with the weather in the
-    /// middle and the thermostat at the right; on Watch, Movies | TV Shows, the TV it plays on and the thermostat.
+    /// The row above Watch's first page, under the toolbar: Movies | TV Shows and the TV it plays on. (The thermostat
+    /// that was at its right is in the toolbar.)
     private var headerRow: some View {
-        let greeting = homeRow && width >= 900
-        // Wide enough: the greeting sits in the very middle of the page, with the thermostat at the far right.
-        // Narrower, it sits beside the thermostat in the row (centred, it would collide).
-        let centred = greeting && width >= 1150
-        // Home scrolled down: the greeting goes and the row closes up over it.
-        let quiet = centred && MacHomeScroll.shared.scrolledDown
-        let watchBarHidden = watchRow && MacWatchScroll.shared.barHidden
-        // Wide enough: Movies | TV Shows sits in the very middle too, under the toolbar's Home | Watch | Settings.
-        let libraryCentred = watchRow && width >= 1150
+        let watchBarHidden = MacWatchScroll.shared.barHidden
+        // Wide enough: Movies | TV Shows sits in the very middle, under the toolbar's Home | Watch | Settings.
+        let libraryCentred = width >= 1150
         return ZStack {
             HStack(spacing: 10) {
                 Spacer(minLength: 8)
-                if greeting && !centred {
-                    MacGreetingPill(compact: width < 1150)
-                        .transition(.opacity.combined(with: .scale(scale: 0.96)))
+                if !libraryCentred {
+                    libraryPicker
                     Spacer(minLength: 8)
                 }
-                if watchRow {
-                    if !libraryCentred {
-                        libraryPicker
-                        Spacer(minLength: 8)
-                    }
-                    TVPicker()
-                }
-                ThermostatChip(compact: narrow || (greeting && width < 1150), height: 44)
+                TVPicker()
             }
             if libraryCentred { libraryPicker }
         }
@@ -1149,20 +1163,9 @@ struct MacRoot: View {
         // Watch scrolled down: Movies | TV Shows and the rest of this row fade away (back when it scrolls up).
         .opacity(watchBarHidden ? 0 : 1)
         .allowsHitTesting(!watchBarHidden)
-        .overlay {
-            // In the middle of the row, beside the thermostat (no extra room under the row for it).
-            if centred {
-                MacGreetingHero()
-                    .offset(y: quiet ? -8 : 0)
-                    .opacity(quiet ? 0 : 1)
-                    .scaleEffect(quiet ? 0.94 : 1)
-                    .transition(.opacity.combined(with: .scale(scale: 0.96)))
-            }
-        }
         .padding(.horizontal, 18)
         .padding(.top, 4)
-        .padding(.bottom, centred && !quiet ? 14 : 8)
-        .animation(.smooth(duration: 0.3), value: greeting)
+        .padding(.bottom, 8)
         // Dragging the row's empty space moves the window, as the toolbar above it does.
         .background { Color.clear.contentShape(Rectangle()).gesture(WindowDragGesture()) }
     }
