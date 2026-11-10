@@ -125,6 +125,7 @@ enum MacSnapshot {
             lines.append("\(name) search fields: \(fields.isEmpty ? "none" : fields.joined(separator: "; "))")
             let panels = sidePanels(in: window.contentView, window: window)
             lines.append("\(name) side panels: \(panels.isEmpty ? "none" : panels.joined(separator: "; "))")
+            lines += scrollFacts(name, in: window)
         }
         let windows = NSApp.windows.filter(\.isVisible).map { "\(type(of: $0)) “\($0.title)” \(Int($0.frame.width))×\(Int($0.frame.height))" }
         lines.append("\(name) windows: \(windows.joined(separator: "; ")); remote panel \(Fleet.shared.remotePanel ? "on" : "off")")
@@ -142,6 +143,43 @@ enum MacSnapshot {
         var found: [String] = []
         for sub in view.subviews { found += sidePanels(in: sub, window: window, depth: depth + 1) }
         return found
+    }
+
+    /// The page's scrolling parts, measured (a picture drawn by the app leaves some of them out): each one's size, the
+    /// size of what's in it, how many layers that is and how many of them have something drawn, how many are cut to
+    /// a shape, and whether anything above it is hidden, see-through or cut to a shape.
+    private static func scrollFacts(_ name: String, in window: NSWindow) -> [String] {
+        var lines: [String] = []
+        for scroll in scrollViews(in: window.contentView) where scroll.frame.width > 400 && scroll.frame.height > 300 && !scroll.isHiddenOrHasHiddenAncestor {
+            let document = scroll.documentView
+            var total = 0, drawn = 0, shaped = 0
+            if let layer = document?.layer { census(layer, &total, &drawn, &shaped) }
+            var above: [String] = []
+            var layer = document?.layer
+            while let l = layer {
+                if l.isHidden { above.append("hidden") } else if l.opacity < 0.05 { above.append("see-through") } else if l.mask != nil { above.append("cut to a shape") }
+                layer = l.superlayer
+            }
+            lines.append("\(name) scrolling part \(Int(scroll.frame.width))×\(Int(scroll.frame.height)): holds \(Int(document?.frame.width ?? 0))×\(Int(document?.frame.height ?? 0)), \(total) layers, \(drawn) drawn, \(shaped) cut to a shape; above it: \(above.isEmpty ? "all showing" : above.joined(separator: ", "))")
+        }
+        if lines.isEmpty { lines.append("\(name) scrolling parts: none") }
+        return lines
+    }
+
+    private static func scrollViews(in view: NSView?) -> [NSScrollView] {
+        guard let view else { return [] }
+        var found: [NSScrollView] = []
+        if let scroll = view as? NSScrollView { found.append(scroll) }
+        for sub in view.subviews { found += scrollViews(in: sub) }
+        return found
+    }
+
+    /// Counts the layers under [layer]: all of them, those with something drawn, and those cut to a shape.
+    private static func census(_ layer: CALayer, _ total: inout Int, _ drawn: inout Int, _ shaped: inout Int) {
+        total += 1
+        if layer.contents != nil { drawn += 1 }
+        if layer.mask != nil { shaped += 1 }
+        for sub in layer.sublayers ?? [] { census(sub, &total, &drawn, &shaped) }
     }
 
     /// The search fields under [view]: each one's size, whether it's hidden, and its prompt.
