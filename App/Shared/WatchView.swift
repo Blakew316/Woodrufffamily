@@ -1569,13 +1569,17 @@ struct TitleSheet: View {
                         Task { await load() }
                     }
                 } label: {
-                    if let p = t?.play {
-                        Label((p.position ?? 0) > 0 ? "Resume" : (p.label ?? "Play"), systemImage: "play.fill")
-                    } else if failed != nil {
-                        Text("Try Again")
-                    } else {
-                        ProgressView()
+                    Group {
+                        if let p = t?.play {
+                            Label((p.position ?? 0) > 0 ? "Resume" : (p.label ?? "Play"), systemImage: "play.fill")
+                        } else if failed != nil {
+                            Text("Try Again")
+                        } else {
+                            ProgressView()
+                        }
                     }
+                    // The widest of the row, and the same width whatever it says.
+                    .frame(minWidth: 240)
                 }
                 .buttonStyle(.glassProminent)
                 .focused($tvFocus, equals: "play")
@@ -2041,6 +2045,20 @@ private struct TVEpisodeShelf: View {
     /// The one at the shelf's left edge.
     @State private var atEdge: String?
 
+    init(items: [Episode], next: String?, words: CGFloat, client: (any WatchSource)?, fallback: URL?,
+         focus: FocusState<String?>.Binding, changed: @escaping () -> Void, played: @escaping () -> Void) {
+        self.items = items
+        self.next = next
+        self.words = words
+        self.client = client
+        self.fallback = fallback
+        self.focus = focus
+        self.changed = changed
+        self.played = played
+        // At the one to watch next from its first frame (not drawn at the first one and then moved).
+        _atEdge = State(initialValue: next)
+    }
+
     var body: some View {
         ScrollView(.horizontal) {
             LazyHStack(alignment: .top, spacing: TVWatch.gap) {
@@ -2057,12 +2075,13 @@ private struct TVEpisodeShelf: View {
         .scrollTargetBehavior(.viewAligned)
         .scrollIndicators(.hidden)
         .scrollClipDisabled()
-        // As tall as its tiles (a lazy row otherwise takes all the height the page has left).
-        .fixedSize(horizontal: false, vertical: true)
+        // As tall as its tiles, said outright (a lazy row otherwise takes all the height the page has left), and the
+        // same as its stand-ins while it's read, so the page keeps its place.
+        .frame(height: TVWatch.shelfHeight(words: words))
         // The whole width is the shelf's, so Down reaches it from any button above it.
         .focusSection()
-        // A new list (the title read, another season picked): from the one to watch next.
-        .onChange(of: items.map(\.id), initial: true) { _, _ in atEdge = next }
+        // Another list (another season picked): from the one to watch next again.
+        .onChange(of: items.map(\.id)) { _, _ in atEdge = next }
     }
 }
 #endif
