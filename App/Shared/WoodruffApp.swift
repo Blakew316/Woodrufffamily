@@ -606,7 +606,9 @@ struct RootView: View {
     /// (The Lock Screen's Live Activity follows the remote's TV by itself: `LiveActivitySync.watch`.)
     private var tabs: some View {
         tabView
-            .background { FleetSideEffects() }
+            // Once the first frame is on screen: what it watches (the thermostat, the weather) makes the smart-home
+            // stores read everything they keep, which opening on Remote or Watch needs nowhere in its first frame.
+            .background { AfterFirstFrame { FleetSideEffects() } }
     }
 
     private var tabView: some View {
@@ -701,6 +703,21 @@ private struct PhoneTabPage: View {
 
 /// What follows the TVs outside the app's pages (the widgets, and on the Mac Control Center). Nothing to draw: it's
 /// a view of its own so a change to the TVs redraws only this, not the whole window.
+/// What it holds is made a moment after the first frame is on screen, not with it.
+struct AfterFirstFrame<Content: View>: View {
+    @ViewBuilder var content: () -> Content
+    @State private var ready = false
+
+    var body: some View {
+        ZStack { if ready { content() } }
+            .task {
+                guard !ready else { return }
+                try? await Task.sleep(nanoseconds: 250_000_000)
+                ready = true
+            }
+    }
+}
+
 struct FleetSideEffects: View {
     @Environment(Fleet.self) private var fleet
 
@@ -780,7 +797,9 @@ struct MacRoot: View {
     @Binding var selection: AppSection
     @SceneStorage("mac.tv") private var tvSelection: String?
     @State private var deviceSelection: String?
-    private let home = SmartHome.shared
+    /// (Asked for only when a speaker's or a light's page is the one showing: the store reads everything it keeps as
+    /// it's first made.)
+    private var home: SmartHome { SmartHome.shared }
     private let nav = MacNav.shared
     private let bar = MacBar.shared
     private let layout = HomeLayout.shared
@@ -1188,6 +1207,9 @@ enum SpaceKey {
                 typedInList = Date()
                 return e
             }
+            // The keyboard is on a button, a switch or a menu (Tab put it there): Space presses that, as it does in
+            // every Mac app. (It went to the TV instead, so nothing could be pressed from the keyboard.)
+            if let control = window.firstResponder as? NSControl, !(control is NSTableView) { return e }
             // Held down: one press, not play-pause-play.
             if !e.isARepeat {
                 if let take = page, take() { return nil }

@@ -7,6 +7,8 @@ struct WatchView: View {
     @Environment(Fleet.self) private var fleet
     @Namespace private var zoom
     @State private var home: WatchHome?
+    /// When each library was last read by this page. Kept outside the page, which the Mac builds again at each visit.
+    private static var lastRead: [String: Date] = [:]
     /// The screenshot run's title has been opened (once).
     @State private var routedTitle = false
     @State private var error: String?
@@ -400,6 +402,7 @@ struct WatchView: View {
             }
             if homeFrom != hubID { homeFrom = hubID }
             if error != nil { error = nil }
+            Self.lastRead[hubID] = Date()
             await rows
             let place = self.place
             // A library that was still being read when the rows were asked for (a fresh install): asked again now.
@@ -417,6 +420,13 @@ struct WatchView: View {
     private func loop() async {
         // Last time's rows at once (an app update keeps them), then read afresh behind them.
         await restoreSections()
+        // Read moments ago by this page before it was left and come back to (the Mac builds it again each time Watch
+        // is picked): what the app kept shows, and the next read waits until it's due. Reading again at once was a
+        // request and a redraw at every visit.
+        if let id = client?.sourceID, let at = Self.lastRead[id], fleet.libraryFrom == id, fleet.library != nil {
+            let since = Date().timeIntervalSince(at)
+            if since >= 0 && since < 30 { try? await Task.sleep(nanoseconds: UInt64((30 - since) * 1_000_000_000)) }
+        }
         while !Task.isCancelled {
             await load()
             // Sooner while the library is still being read, or TMDB's posters are still coming in (Drive).
@@ -1105,7 +1115,7 @@ struct PosterTile: View {
                             Image(systemName: "checkmark.circle.fill").symbolRenderingMode(.palette).foregroundStyle(.white, .black.opacity(0.5)).padding(6)
                         }
                     }
-                    .shadow(color: .black.opacity(0.25), radius: 8, y: 4)
+                    .background { PosterShadow() }
                 VStack(alignment: .leading, spacing: 1) {
                     Text(title.title).font(.footnote.weight(.semibold)).lineLimit(1)
                     if let caption = title.caption {
@@ -1168,6 +1178,17 @@ struct PosterTile: View {
     #endif
 }
 
+/// A poster's shadow, cast by a plain card the poster's shape behind it. (A shadow on the clipped picture itself is
+/// worked out off screen for every poster on every frame of a scroll; a plain shape's isn't.) The card is covered by
+/// the picture once it has loaded.
+struct PosterShadow: View {
+    var body: some View {
+        RoundedRectangle(cornerRadius: 12, style: .continuous)
+            .fill(Palette.cardFill)
+            .shadow(color: .black.opacity(0.25), radius: 8, y: 4)
+    }
+}
+
 struct ContinueTile: View {
     @Environment(Fleet.self) private var fleet
     @Environment(\.openTitle) private var openTitle
@@ -1205,7 +1226,7 @@ struct ContinueTile: View {
                         }
                     }
                     .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    .shadow(color: .black.opacity(0.25), radius: 8, y: 4)
+                    .background { PosterShadow() }
                 VStack(alignment: .leading, spacing: 1) {
                     Text(item.name).font(.footnote.weight(.semibold)).lineLimit(1)
                     Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)

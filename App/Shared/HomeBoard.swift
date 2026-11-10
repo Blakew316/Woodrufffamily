@@ -271,6 +271,10 @@ struct HomeBoard: View, Equatable {
     /// The Mac's TV zoom, on room tabs (a TV that's also in Favorites zooms from one place only).
     var zoom: Namespace.ID? = nil
     var zoomed: String? = nil
+    /// A room further down Home: its tiles are built as it comes within a screen of showing (and then stay), not
+    /// with the page. Its place is kept at its full height meanwhile, so nothing moves when they arrive.
+    var deferred = false
+    @State private var built = false
 
     @Environment(HomeScroller.self) private var scroller: HomeScroller?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -325,7 +329,7 @@ struct HomeBoard: View, Equatable {
 
     /// Drawn again when what it shows changes, not each time Home is (the actions it's given are the same each time).
     nonisolated static func == (a: HomeBoard, b: HomeBoard) -> Bool {
-        a.page == b.page && a.tiles == b.tiles && a.zoom == b.zoom && a.zoomed == b.zoomed
+        a.page == b.page && a.tiles == b.tiles && a.zoom == b.zoom && a.zoomed == b.zoomed && a.deferred == b.deferred
     }
 
     var body: some View {
@@ -374,11 +378,15 @@ struct HomeBoard: View, Equatable {
         let order = currentOrder()
         let plan = packBoard(order.map { (id: $0, span: span(of: $0, byID[$0], m)) }, columns: m.columns)
         let arranging = layout.arranging
+        // (While Home is being arranged every room is there: a tile is dragged from one to the next.)
+        let shows = !deferred || built || arranging
         ZStack(alignment: .topLeading) {
             backdrop(arranging)
-            ForEach(order, id: \.self) { id in
-                if let tile = byID[id], let slot = plan.slots[id] {
-                    cell(tile, slot, m, arranging)
+            if shows {
+                ForEach(order, id: \.self) { id in
+                    if let tile = byID[id], let slot = plan.slots[id] {
+                        cell(tile, slot, m, arranging)
+                    }
                 }
             }
             if let r = resize, let slot = plan.slots[r.id] {
@@ -393,6 +401,14 @@ struct HomeBoard: View, Equatable {
         }
         .frame(height: m.height(rows: plan.rows), alignment: .topLeading)
         .frame(maxWidth: .infinity, alignment: .topLeading)
+        .background {
+            // Seen from most of a screen away, above or below: its tiles are built before it scrolls into view.
+            if deferred && !built {
+                Color.clear.padding(.vertical, -700)
+                    .onScrollVisibilityChange(threshold: 0.01) { near in if near { built = true } }
+            }
+        }
+        .onChange(of: arranging) { _, on in if on && !built { built = true } }
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { w in
             if abs(w - width) > 0.5 { width = w }
         }
@@ -492,11 +508,27 @@ struct HomeBoard: View, Equatable {
                 .buttonStyle(PressScale(scale: 0.85))
                 .offset(x: -16, y: -16)
                 .accessibilityLabel(page == favoritesKey ? "Remove from Favorites" : "Hide from Home")
-            ResizeGrip(trailing: true, shown: true, active: resize?.id == tile.id)
-                .gesture(resizeGesture(tile, size, m))
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
-                .accessibilityLabel("Resize")
+            if resizable(tile, m) {
+                ResizeGrip(trailing: true, shown: true, active: resize?.id == tile.id)
+                    .gesture(resizeGesture(tile, size, m))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                    .accessibilityLabel("Resize")
+            }
         }
+    }
+
+    /// Whether a tile can be given another size here. An iPad lays cameras and TVs out at sizes of its own (`span`), so
+    /// they have no grip there: dragging one snapped back on the iPad, yet resized that tile on every iPhone and Mac.
+    private func resizable(_ tile: HomeTile, _ m: BoardMetrics) -> Bool {
+        #if os(iOS)
+        if UIDevice.current.userInterfaceIdiom == .pad, m.columns >= 6 {
+            switch tile.kind {
+            case .camera, .tv: return false
+            case .small: break
+            }
+        }
+        #endif
+        return true
     }
 
     /// The board's empty space: press and hold to start arranging; a tap there while arranging stops.

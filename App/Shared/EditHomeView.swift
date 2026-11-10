@@ -312,15 +312,21 @@ struct EditHomeView: View {
         @Bindable var layout = layout
         // Worked out once for the sheet (three parts of it list the rooms).
         let rooms = homeRooms(fleet)
+        let grouped = layout.groupByRoom
+        let moveSection: ((IndexSet, Int) -> Void)? = grouped ? nil : { from, to in
+            HomeLayout.shared.sections.move(fromOffsets: from, toOffset: to)
+        }
         NavigationStack {
             List {
                 Section {
                     ForEach(layout.sections, id: \.self) { key in
                         Toggle(HomeLayout.title(key), isOn: shown(section: key))
                     }
-                    .onMove { layout.sections.move(fromOffsets: $0, toOffset: $1) }
+                    // Their order is Home's only while Home isn't grouped by room (grouped, each room is a part of Home
+                    // and the rooms have their own order, below): no dragging that does nothing, and no line offering it.
+                    .onMove(perform: moveSection)
                 } header: { Text("Sections") } footer: {
-                    Text("Drag to change the order of Home. Turn one off to hide it.")
+                    Text(grouped ? "Turn one off to hide it." : "Drag to change the order of Home. Turn one off to hide it.")
                 }
 
                 Section {

@@ -32,8 +32,8 @@ final class Diagnostics: NSObject {
         PlayCrumb.reportLast()
         #if !os(tvOS)
         MXMetricManager.shared.add(self)
-        // What was delivered while the app wasn't running.
-        take(MXMetricManager.shared.pastDiagnosticPayloads)
+        // What was delivered while the app wasn't running: fetched and read off the main thread.
+        Task.detached(priority: .utility) { self.take(MXMetricManager.shared.pastDiagnosticPayloads) }
         #endif
         #if os(macOS)
         writeFamilyLog()
@@ -49,7 +49,18 @@ final class Diagnostics: NSObject {
     // MARK: Taking reports in
 
     #if !os(tvOS)
-    fileprivate func take(_ payloads: [MXDiagnosticPayload]) {
+    /// Apple's reports, read into a line each and kept. Read off the main thread: each one is its whole call stacks
+    /// as JSON, and every past report is handed over again as the app opens (it held up the first moments of
+    /// every launch).
+    nonisolated fileprivate func take(_ payloads: [MXDiagnosticPayload]) {
+        guard !payloads.isEmpty else { return }
+        Task.detached(priority: .utility) {
+            let new = self.lines(payloads)
+            await self.add(new)
+        }
+    }
+
+    nonisolated private func lines(_ payloads: [MXDiagnosticPayload]) -> [Report] {
         var new: [Report] = []
         for p in payloads {
             saveFull(p)
@@ -67,7 +78,7 @@ final class Diagnostics: NSObject {
             for l in p.appLaunchDiagnostics ?? [] { new.append(report(l, "Slow Launch", "\(seconds(l.launchDuration)) to open" + frames(l.callStackTree), at)) }
             #endif
         }
-        add(new)
+        return new
     }
     #endif
 
@@ -113,13 +124,13 @@ final class Diagnostics: NSObject {
     }
 
     #if !os(tvOS)
-    private func report(_ d: MXDiagnostic, _ kind: String, _ detail: String, _ at: Double) -> Report {
+    nonisolated private func report(_ d: MXDiagnostic, _ kind: String, _ detail: String, _ at: Double) -> Report {
         Report(at: at, kind: kind, build: d.metaData.applicationBuildVersion, detail: detail)
     }
     #endif
 
     #if !os(tvOS)
-    private func crashDetail(_ c: MXCrashDiagnostic) -> String {
+    nonisolated private func crashDetail(_ c: MXCrashDiagnostic) -> String {
         var bits: [String] = []
         if let t = c.exceptionType { bits.append("exception \(t)") }
         if let s = c.signal { bits.append("signal \(s)") }
@@ -129,13 +140,13 @@ final class Diagnostics: NSObject {
     }
     #endif
 
-    private func seconds(_ m: Measurement<UnitDuration>) -> String {
+    nonisolated private func seconds(_ m: Measurement<UnitDuration>) -> String {
         String(format: "%.1f s", m.converted(to: .seconds).value)
     }
 
     #if !os(tvOS)
     /// The first frames of the thread that was running (binary and offset; symbols are matched to the build later).
-    private func frames(_ tree: MXCallStackTree) -> String {
+    nonisolated private func frames(_ tree: MXCallStackTree) -> String {
         guard let json = try? JSONSerialization.jsonObject(with: tree.jsonRepresentation()) as? [String: Any],
               let stacks = json["callStacks"] as? [[String: Any]] else { return "" }
         let stack = stacks.first { ($0["threadAttributed"] as? Bool) == true } ?? stacks.first
@@ -165,7 +176,7 @@ final class Diagnostics: NSObject {
         return (try? JSONDecoder().decode([Report].self, from: data)) ?? []
     }
 
-    private static var folder: URL? {
+    nonisolated private static var folder: URL? {
         #if os(macOS)
         guard let lib = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first else { return nil }
         let dir = lib.appendingPathComponent("Logs/Woodruff Family/Diagnostics", isDirectory: true)
@@ -179,7 +190,7 @@ final class Diagnostics: NSObject {
 
     #if !os(tvOS)
     /// The whole report as Apple gave it (the last 20 kept).
-    private func saveFull(_ p: MXDiagnosticPayload) {
+    nonisolated private func saveFull(_ p: MXDiagnosticPayload) {
         guard let dir = Self.folder else { return }
         let data = p.jsonRepresentation()
         let name = "\(Int(p.timeStampEnd.timeIntervalSince1970)).json"

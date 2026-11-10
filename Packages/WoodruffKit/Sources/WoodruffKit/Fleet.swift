@@ -370,13 +370,31 @@ public final class Fleet {
                 } else { found[h.id] = h }
             }
         }
-        add(Saved.load("pairings", as: [Hub].self))
-        if let json = Keychain.get("pairings"), let list = try? JSONDecoder().decode([Hub].self, from: Data(json.utf8)) { add(list) }
-        add(Saved.load("hubs", as: [Hub].self)) // before this version: keys were only in the Keychain
-        for (id, h) in found where h.connection.key.isEmpty {
-            if let k = Keychain.get("hub.\(id)") { found[id]?.connection.key = k }
+        let saved = Saved.load("pairings", as: [Hub].self) ?? []
+        add(saved)
+        // The Keychain's copy only when the saved one is empty or has a TV without its key. This runs before the
+        // first frame, and it was the process's first Keychain call (the slow one). When the saved copy is whole,
+        // the Keychain's is read in the background a moment later instead (`pairingsInKeychain`).
+        if saved.isEmpty || saved.contains(where: { $0.connection.key.isEmpty }) {
+            add(pairingsInKeychain())
+            add(Saved.load("hubs", as: [Hub].self)) // before this version: keys were only in the Keychain
+            for (id, h) in found where h.connection.key.isEmpty {
+                if let k = Keychain.get("hub.\(id)") { found[id]?.connection.key = k }
+            }
+        } else {
+            keychainPairingsUnread = true
         }
         return found.values.filter { !$0.connection.key.isEmpty }.sorted { $0.addedAt < $1.addedAt }
+    }
+
+    /// The Keychain's copy of the pairings wasn't read as the app opened (the saved copy was whole): `start` reads it
+    /// in the background and adds any TV only it has.
+    static var keychainPairingsUnread = false
+
+    /// The pairings as the Keychain has them (none when it has no copy).
+    nonisolated static func pairingsInKeychain() -> [Hub] {
+        guard let json = Keychain.get("pairings"), let list = try? JSONDecoder().decode([Hub].self, from: Data(json.utf8)) else { return [] }
+        return list
     }
 
     /// Restores pairings from a copy kept outside the app (the Mac's app group), when the app's own are gone.
@@ -393,6 +411,16 @@ public final class Fleet {
     public func start() async {
         guard loop == nil else { return }
         Fleet.running = self
+        // The Keychain's copy of the pairings, left unread as the app opened: read off the main thread now, and a TV
+        // only it has is added (as a copy kept outside the app would be).
+        if Fleet.keychainPairingsUnread {
+            Fleet.keychainPairingsUnread = false
+            Task.detached(priority: .utility) { [weak self] in
+                let list = Fleet.pairingsInKeychain()
+                guard !list.isEmpty else { return }
+                await self?.restorePairings(list)
+            }
+        }
         if !Demo.isOn { discovery.start() }
         // What every TV is doing: each hub on its own clock (see `askDue`), never waiting on the others.
         loop = Task { [weak self] in

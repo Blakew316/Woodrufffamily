@@ -116,6 +116,10 @@ struct AllDevicesView: View {
                         LazyVGrid(columns: columns, alignment: .leading, spacing: 12) {
                             ForEach(list) { item in tile(item) }
                         }
+                        // One glass pass for the room's tiles, not one each. (They never touch, so none of them
+                        // blends into the next. Home's own boards are left as they are: a tile dragged over another
+                        // there would run into it.)
+                        .glassGroup(spacing: 0)
                         #endif
                     }
                 }

@@ -167,7 +167,10 @@ struct HomeView: View {
                         if !tiles.isEmpty { roomGroup(room, tiles, c) }
                     } else if layout.groupByRoom || isTV {
                         // Like the Home app: each room with everything in it.
-                        ForEach(roomGroups(c)) { g in roomGroup(g.id, g.tiles, c) }
+                        // The first rooms with the page; the ones further down as they come near (`HomeBoard.deferred`).
+                        ForEach(Array(roomGroups(c).enumerated()), id: \.element.id) { i, g in
+                            roomGroup(g.id, g.tiles, c, deferred: i >= 2)
+                        }
                         if !layout.hiddenSections.contains("wifi") { WifiSection() }
                     } else {
                         ForEach(layout.visibleSections.filter { $0 != "status" && $0 != "rooms" }, id: \.self) { key in
@@ -399,7 +402,7 @@ struct HomeView: View {
         layout.arrange(fleet.tvs.filter { roomMatches(SmartHome.shared.rooms[$0.id] ?? ($0.isUnpaired ? nil : $0.name), r) }, in: "tvs")
     }
 
-    private func roomGroup(_ r: String, _ tiles: [HomeTile], _ c: Contents) -> some View {
+    private func roomGroup(_ r: String, _ tiles: [HomeTile], _ c: Contents, deferred: Bool = false) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             // The room picked in the room bar is already its title; names only when every room is listed.
             #if os(tvOS)
@@ -408,10 +411,14 @@ struct HomeView: View {
             if c.room.isEmpty { Text(r == noRoom ? "Other" : r).font(.title3.bold()) }
             #endif
             #if os(macOS)
-            HomeBoard(page: r, tiles: tiles, openTV: { open($0) }, zoom: zoom, zoomed: openTV)
+            HomeBoard(page: r, tiles: tiles, openTV: { open($0) }, zoom: zoom, zoomed: openTV, deferred: deferred)
+                .equatable()
+            #elseif os(tvOS)
+            // (Apple TV builds every room with the page: the remote can only move to a tile that's there.)
+            HomeBoard(page: r, tiles: tiles, openTV: { open($0) })
                 .equatable()
             #else
-            HomeBoard(page: r, tiles: tiles, openTV: { open($0) })
+            HomeBoard(page: r, tiles: tiles, openTV: { open($0) }, deferred: deferred)
                 .equatable()
             #endif
         }

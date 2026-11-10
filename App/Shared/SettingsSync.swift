@@ -120,6 +120,12 @@ final class SettingsSync {
     /// The stamps as last written to UserDefaults (written again only when they've changed).
     @ObservationIgnored private var savedStamps: [String: Double]?
     @ObservationIgnored private var savedEntryStamps: [String: [String: Double]]?
+    /// The TVs' copies as last read, so a round that finds the same bytes again does none of it twice: each TV's
+    /// sealed copy with what it opened to, what each opened copy holds, and how things stood here when each was last
+    /// merged in (changes noticed, settings kept).
+    @ObservationIgnored private var openedBefore: [String: (box: Data, fp: Data, plain: Data)] = [:]
+    @ObservationIgnored private var parsedBefore: [Data: [String: [String: Any]]] = [:]
+    @ObservationIgnored private var mergedBefore: [Data: (changes: Int, kept: Int)] = [:]
     /// Changes noticed here so far, and whether a TV is still to get the latest of them.
     @ObservationIgnored private var changes = 0
     @ObservationIgnored private var unsaved = false
@@ -913,21 +919,49 @@ final class SettingsSync {
         var remote: [String: [String: [String: Any]]] = [:]
         var opened: [Data: [String: [String: Any]]] = [:]
         var ours: Set<String> = []
+        // (A copy that's the same bytes as last round isn't decrypted, parsed and merged in all over again: this runs
+        // every 12 seconds on the main thread, and nearly every round finds each TV's copy just as it was.)
+        let quiet = !Dreo.shared.busy && !DecoWifi.shared.busy
+        // Which settings are kept here now (the same number, and the same ones).
+        let shape = last.keys.reduce(last.count) { $0 &+ $1.hashValue }
         for hub in hubs {
             guard let raw = copies[hub.id]?.raw else { continue }
             let plain: Data?
             if let h = heads[hub.id] {
-                plain = h.fp == fam.fp ? Self.open(h.box, storeKey(hub, fam)) : nil
+                if h.fp != fam.fp {
+                    plain = nil
+                } else if let kept = openedBefore[hub.id], kept.box == h.box, kept.fp == fam.fp {
+                    plain = kept.plain
+                } else {
+                    plain = Self.open(h.box, storeKey(hub, fam))
+                    openedBefore[hub.id] = plain.map { (box: h.box, fp: fam.fp, plain: $0) }
+                }
                 if plain != nil { ours.insert(hub.id) }
             } else {
                 plain = legacyRead.contains(hub.id) ? nil : Self.open(raw, legacyStoreKey(hub))
             }
             guard let plain else { continue }
             if let its = opened[plain] { remote[hub.id] = its; continue }
-            guard let its = Self.copyItems(plain) else { continue }
+            let its: [String: [String: Any]]
+            if let kept = parsedBefore[plain] {
+                its = kept
+            } else {
+                guard let read = Self.copyItems(plain) else { continue }
+                its = read
+                if parsedBefore.count > 6 { parsedBefore = [:] }
+                parsedBefore[plain] = read
+            }
             opened[plain] = its
             remote[hub.id] = its
+            // Merged in again only if something could come of it: the same copy was already taken in, nothing has
+            // changed here since (no change noticed, no setting become readable), and no sign-in is being tried here
+            // (its keys are left alone until it's over, then taken in).
+            if quiet, let done = mergedBefore[plain], done.changes == changes, done.kept == shape { continue }
             apply(its, checked: true)
+            if mergedBefore.count > 6 { mergedBefore = [:] }
+            // (Kept only if taking it in left the settings kept here as they were: otherwise once more next round.)
+            let after = last.keys.reduce(last.count) { $0 &+ $1.hashValue }
+            mergedBefore[plain] = quiet && after == shape ? (changes: changes, kept: shape) : nil
         }
         // 3. Each TV whose copy is behind gets everything from here (keeping anything this version doesn't know,
         //    and anything the copy has newer), sealed with the family code. A copy sealed with an older family code

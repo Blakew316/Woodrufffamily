@@ -56,24 +56,36 @@ public enum Keychain {
     /// Writes [value] (nil or empty: removes it). True once it's done.
     @discardableResult
     public static func set(_ value: String?, for account: String) -> Bool {
+        // Already what's there (as last read or written here): nothing to write. A renewed sign-in writes the same
+        // scopes and the same renewal key every time, and each write is a round trip to the system's keychain on
+        // whichever thread asked, usually the main one.
+        let wanted = (value?.isEmpty == false) ? value : nil
+        let kept = cache.value(account)
+        if kept.hit && kept.value == wanted { return true }
         // Nothing kept for it is handed out while it's written; what's there afterwards is kept only once the
         // write has gone through (one that didn't is read afresh next time).
         cache.writeStarted(account)
         defer { bumpGeneration() }
         #if canImport(Security)
         let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: account]
-        let deleted = SecItemDelete(q as CFDictionary)
-        let gone = deleted == errSecSuccess || deleted == errSecItemNotFound
-        guard let value, !value.isEmpty else {
+        guard let value = wanted else {
+            let deleted = SecItemDelete(q as CFDictionary)
+            let gone = deleted == errSecSuccess || deleted == errSecItemNotFound
             cache.writeFinished(account, nil, ok: gone)
             return gone
         }
-        var add = q
-        add[kSecValueData as String] = Data(value.utf8)
-        add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
-        let added = SecItemAdd(add as CFDictionary, nil)
-        cache.writeFinished(account, value, ok: added == errSecSuccess)
-        return added == errSecSuccess
+        // Changed in place when it's there (one round trip, and never a moment with nothing there for another
+        // thread to read); added when it isn't. (It was deleted and added again every time: two round trips.)
+        let data = Data(value.utf8)
+        var status = SecItemUpdate(q as CFDictionary, [kSecValueData as String: data] as CFDictionary)
+        if status == errSecItemNotFound {
+            var add = q
+            add[kSecValueData as String] = data
+            add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+            status = SecItemAdd(add as CFDictionary, nil)
+        }
+        cache.writeFinished(account, value, ok: status == errSecSuccess)
+        return status == errSecSuccess
         #else
         UserDefaults.standard.set(value, forKey: "kc." + account)
         cache.writeFinished(account, value, ok: true)

@@ -625,8 +625,12 @@ final class CameraStreams {
         let id = cam.id
         guard let img = image ?? PlatformImage(data: jpeg) else { return }
         #if os(macOS)
-        // The Mac's TVs & Cameras widget shows it too.
-        if MacCameraShare.save(id: id, name: cam.name, doorbell: cam.doorbell, jpeg: jpeg) {
+        // The Mac's TVs & Cameras widget shows two cameras: the doorbell and the driveway, or the first two it knows
+        // when the house has neither. Only a picture the widget shows is kept for it. (Every camera's picture, every
+        // two minutes, was a file written on the main thread and two kinds of widget reloaded, each a look at
+        // every TV.)
+        let shown = Self.isImportant(cam) || NestCameras.shared.cameras.filter(Self.isImportant).count < 2
+        if shown, MacCameraShare.save(id: id, name: cam.name, doorbell: cam.doorbell, jpeg: jpeg) {
             WidgetCenter.shared.reloadTimelines(ofKind: MacCameraShare.kind); WidgetCenter.shared.reloadTimelines(ofKind: "com.woodruff.family.widget.tvs")
         }
         #endif
