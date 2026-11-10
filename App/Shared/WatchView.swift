@@ -21,13 +21,18 @@ struct WatchView: View {
     /// Movies or TV Shows, as on the TV's streaming screen.
     @AppStorage("watch.section") private var section = "movies"
     #if os(tvOS)
-    /// Apple TV: Movies | TV Shows has the focus (kept there when it's switched).
-    @FocusState private var pickerFocused: Bool
+    /// Apple TV: the library this page is for ("movies" or "shows"). Movies and TV Shows are two tabs in the sidebar
+    /// there (`TVMacRoot`), each with a page of its own, so nothing on the page switches between them.
+    var library: String? = nil
     #endif
     /// The TV's library or the Drive one (Settings → Watch).
     @AppStorage("watch.source") private var source = "tv"
-    /// The posters' width (fitted to the window on the Mac).
+    /// The posters' width (fitted to the window on the Mac; on Apple TV its one size, read from across the room).
+    #if os(tvOS)
+    @State private var posterWidth: CGFloat = TVWatch.poster
+    #else
     @State private var posterWidth: CGFloat = 112
+    #endif
     /// Every title of each, for its banner and rows, and when it was read.
     @State private var sectionTitles: [String: [Title]] = [:]
     @State private var sectionRead: [String: Date] = [:]
@@ -39,9 +44,11 @@ struct WatchView: View {
     #endif
 
     /// Posters sized so each row fills the page: on the Mac and iPad about 150 points each, as many as fit; 112 on
-    /// iPhone.
+    /// iPhone. (Apple TV: always `TVWatch.poster`, whatever the page's width. They were fitted as on iPad, about
+    /// 160 points each.)
     private func fitPosters(_ w: CGFloat) {
-        #if os(iOS) || os(tvOS)
+        #if !os(tvOS)
+        #if os(iOS)
         guard sizeClass == .regular else { if posterWidth != 112 { posterWidth = 112 }; return }
         let target: CGFloat = 160
         #else
@@ -49,9 +56,19 @@ struct WatchView: View {
         #endif
         let fit = fittedPosterWidth(w, target: target)
         if abs(fit - posterWidth) > 0.5 { posterWidth = fit }
+        #endif
     }
 
     private var client: (any WatchSource)? { WatchSources.current(fleet) }
+
+    /// The library shown: "movies" or "shows".
+    private var place: String {
+        #if os(tvOS)
+        // Apple TV: its tab's own.
+        if let library { return library }
+        #endif
+        return section == "shows" ? "shows" : "movies"
+    }
 
     var body: some View {
         // Worked out once for the page: the tiles are handed their pictures' addresses, so none of them looks at the
@@ -66,8 +83,7 @@ struct WatchView: View {
         let shown = mine ?? (error == nil ? kept : nil)
         ScrollView {
             #if os(tvOS)
-            // Apple TV: the banner and Movies | TV Shows first, always there (never unloaded); the rows under them load
-            // as they come up.
+            // Apple TV: the banner first, always there (never unloaded); the rows under it load as they come up.
             VStack(alignment: .leading, spacing: 28) {
                 if let h = shown { tvBanner(h, client) }
                 shelfStack(shown, client)
@@ -142,11 +158,14 @@ struct WatchView: View {
                 if client?.sourceID == "drive" { await loadSection(force: true) }
             }
         }
-        // Movies | TV Shows (on the Mac, switched in the window's top bar).
+        #if !os(tvOS)
+        // Movies | TV Shows (on the Mac, switched in the window's top bar). (Not on Apple TV, where each has a page
+        // of its own: the other tab being opened is no reason to start this page's banner again.)
         .onChange(of: section) { _, _ in
             page = 0
             Task { await loadSection(force: false) }
         }
+        #endif
         // Again from the start when the remote moves to a TV with another library.
         .task(id: client?.sourceID) { await loop() }
         // A Google token ready before Play is pressed (fetching one then adds a round trip to the start), lasting most
@@ -210,7 +229,7 @@ struct WatchView: View {
             EmptyState(symbol: "film.stack", title: stateTitle(h.state), message: stateMessage(h.state, tv: h.tv, drive: client?.sourceID == "drive")).padding(.top, 60)
         }
         // Movies or TV Shows, as on the TV: the day's five across the top, then the rows.
-        let place = section == "shows" ? "shows" : "movies"
+        let place = self.place
         let titles = sectionTitles[place] ?? []
         let watchingIDs = Set((h.continue ?? []).filter { ($0.kind == "show") == (place == "shows") }.compactMap(\.titleId))
         let worked = shelves.get(place: place, titles: titles, shown: watchingIDs)
@@ -224,7 +243,14 @@ struct WatchView: View {
         #endif
         let watching = (h.continue ?? []).filter { !removed.contains($0.key) && ($0.kind == "show") == (place == "shows") }
         if !watching.isEmpty {
+            #if os(tvOS)
+            // Apple TV: wide stills, each its title's own wide picture (the row's titles have them).
+            ShelfRow("Continue Watching") {
+                ForEach(watching) { ContinueTile(item: $0, poster: client?.artURL($0.poster), still: client?.artURL(worked.wide[$0.titleId ?? ""])) }
+            }
+            #else
             ShelfRow("Continue Watching") { ForEach(watching) { ContinueTile(item: $0, poster: client?.artURL($0.poster)) } }
+            #endif
         }
         ForEach(worked.rows, id: \.name) { row in
             ShelfRow(row.name, all: LibraryRef(place: place, genre: row.genre, sort: row.name == "Top Rated" ? "rated" : row.name == "Recently Added" ? "recent" : nil)) {
@@ -241,44 +267,31 @@ struct WatchView: View {
     }
 
     #if os(tvOS)
-    /// Apple TV: Movies | TV Shows, a section across the whole width so Up from anywhere under it lands there.
-    private var tvSectionPicker: some View {
-        Picker("Library", selection: $section) {
-            Text("Movies").tag("movies")
-            Text("TV Shows").tag("shows")
-        }
-        .pickerStyle(.segmented)
-        .labelsHidden()
-        .fixedSize()
-        .focused($pickerFocused)
-        .frame(maxWidth: .infinity)
-        .focusSection()
-        // Switching Movies | TV Shows keeps the focus here. Once only: taking it again a moment later pulled the
-        // remote back up when Down was pressed straight after.
-        .onChange(of: section) { _, _ in pickerFocused = true }
-    }
-
-    /// Apple TV: the banner with Movies | TV Shows over its top. Always there (not in the lazy stack of rows, which
-    /// unloads what's scrolled off: Up from the first row then found nothing above it and went to the sidebar).
+    /// Apple TV: the banner, the whole screen, with the first row over its foot, far enough up that all of the row
+    /// shows (it was cut off by the bottom of the screen). Always there (not in the lazy stack of rows, which unloads
+    /// what's scrolled off: Up from the first row then found nothing above it and went to the sidebar).
     @ViewBuilder private func tvBanner(_ h: WatchHome, _ client: (any WatchSource)?) -> some View {
-        let place = section == "shows" ? "shows" : "movies"
+        let place = self.place
         let titles = sectionTitles[place] ?? []
-        let watchingIDs = Set((h.continue ?? []).filter { ($0.kind == "show") == (place == "shows") }.compactMap(\.titleId))
-        let worked = shelves.get(place: place, titles: titles, shown: watchingIDs)
+        let watching = (h.continue ?? []).filter { ($0.kind == "show") == (place == "shows") }
+        let worked = shelves.get(place: place, titles: titles, shown: Set(watching.compactMap(\.titleId)))
         // Until the whole list is read, the library's own featured titles, so the banner shows at once.
         let featured = worked.featured.isEmpty ? (h.featured ?? []).filter { ($0.kind == "show") == (place == "shows") } : worked.featured
-        // The switch is always the same one in the same place (the banner under it can change or still be loading).
+        // The first row is Continue Watching's stills when there's anything in it (less what was just taken off it
+        // here), else a row of posters, which is taller and so starts higher.
+        let rowsTop = watching.contains(where: { !removed.contains($0.key) }) ? TVWatch.stillsTop : TVWatch.postersTop
         ZStack(alignment: .top) {
             if !featured.isEmpty {
-                // The whole screen; the first row (Continue Watching) rises up over its bottom, as the TV app does.
-                Billboard(titles: featured, page: $page, client: client)
+                Billboard(titles: featured, page: $page, client: client, rowsTop: rowsTop)
                     // Fading out as the page moves down to the rows (and back in on the way up), as the TV app's does.
                     .visualEffect { c, p in c.opacity(max(0, min(1, 1 + p.frame(in: .scrollView).minY / 650))) }
-                    .padding(.bottom, -330)
+                    // The banner is the whole screen (1080); the rows start at `rowsTop` (the stack puts 28 points
+                    // between the banner and them).
+                    .padding(.bottom, rowsTop - 28 - 1080)
             } else {
+                // No banner yet (nothing with a wide picture): room for the sidebar's corner above the first row.
                 Color.clear.frame(height: 140)
             }
-            tvSectionPicker.padding(.top, 30)
         }
         // The top of the page, for the banner to send the page back to (`WatchScrollReader`).
         .id(WatchScrollReader.top)
@@ -302,7 +315,7 @@ struct WatchView: View {
     /// Every title of the section shown (a page at a time from the library), for its banner and rows.
     private func loadSection(force: Bool = false) async {
         guard let c = client else { return }
-        let place = section == "shows" ? "shows" : "movies"
+        let place = self.place
         // Read again at most every 10 minutes (Watch asks for its page every minute).
         if !force, sectionTitles[place] != nil, let at = sectionRead[place], Date().timeIntervalSince(at) < 600 { return }
         let source = c.sourceID
@@ -379,7 +392,7 @@ struct WatchView: View {
             if homeFrom != hubID { homeFrom = hubID }
             if error != nil { error = nil }
             await rows
-            let place = section == "shows" ? "shows" : "movies"
+            let place = self.place
             // A library that was still being read when the rows were asked for (a fresh install): asked again now.
             if newer || (h.state == "ready" && sectionRead[place] == nil) { await loadSection(force: true) }
         } catch {
@@ -458,7 +471,7 @@ private struct PlayingWatcher: View {
 struct TitleRef: Hashable, Identifiable { var id: String }
 
 extension View {
-    /// A title's sheet: on Apple TV a card over the dimmed screen, elsewhere a sheet.
+    /// A title's sheet: on Apple TV its own page over the whole screen (Menu closes it), elsewhere a sheet.
     @ViewBuilder func titleSheet<C: View>(_ item: Binding<TitleRef?>, @ViewBuilder content: @escaping (TitleRef) -> C) -> some View {
         #if os(tvOS)
         fullScreenCover(item: item) { content($0).presentationBackground(.clear) }
@@ -484,8 +497,14 @@ private struct OpenTitleKey: EnvironmentKey { static let defaultValue = OpenTitl
 struct WatchChanged { var changed: (String?) -> Void; func callAsFunction(removed: String? = nil) { changed(removed) } }
 private struct WatchChangedKey: EnvironmentKey { static let defaultValue = WatchChanged { _ in } }
 
-/// How wide Watch's posters are: the Mac fits them to the window; elsewhere the usual 112.
-private struct PosterWidthKey: EnvironmentKey { static let defaultValue: CGFloat = 112 }
+/// How wide Watch's posters are: the Mac fits them to the window; elsewhere the usual 112 (Apple TV: its one size).
+private struct PosterWidthKey: EnvironmentKey {
+    #if os(tvOS)
+    static let defaultValue: CGFloat = TVWatch.poster
+    #else
+    static let defaultValue: CGFloat = 112
+    #endif
+}
 
 /// A poster's width in a page [width] points wide, so each row fills it: about [target] points each, as many as fit.
 func fittedPosterWidth(_ width: CGFloat, target: CGFloat) -> CGFloat {
@@ -510,8 +529,59 @@ extension EnvironmentValues {
 }
 
 #if os(tvOS)
+/// Apple TV's sizes for Watch, in points on its 1920 by 1080 screen (read from across the room), as the TV app's own.
+enum TVWatch {
+    /// A poster: 250 by 375. Six across, the seventh showing at the edge.
+    static let poster: CGFloat = 250
+    /// A wide picture (Continue Watching, an episode, a collection's film): 400 by 225. Four across, the fifth showing.
+    static let still: CGFloat = 400
+    /// Between the tiles of a row.
+    static let gap: CGFloat = 40
+    /// A row's heading.
+    static let heading = Font.system(size: 38, weight: .bold)
+    /// Where the first row under the banner starts (its heading's top, from the top of the screen), so the whole of
+    /// it shows with its names, clear of the bottom edge (and the page needn't move when the remote comes down onto
+    /// it): a row of stills, or the taller row of posters.
+    static let stillsTop: CGFloat = 568
+    static let postersTop: CGFloat = 456
+    /// How tall the words under a Continue Watching still are: a name on up to two lines, and the line under it.
+    static let continueWords: CGFloat = 106
+    /// On a title's page: how tall the words under a still are (an episode's number, name and story; a film's name),
+    /// the room over the stills for the one under the remote to lift into, and how tall the shelf is with both.
+    static let episodeWords: CGFloat = 136
+    static let filmWords: CGFloat = 70
+    static let shelfLift: CGFloat = 20
+    static func shelfHeight(words: CGFloat) -> CGFloat { shelfLift + still * 9 / 16 + 16 + words }
+}
+
+/// Apple TV draws posters and stills two or three times the size a phone does, on a screen up to 4K: TMDB's larger
+/// copy of each (a poster 500 across in place of 342, a still 780 in place of 300). Any other picture is left as it is.
+private func tvLarge(_ url: URL?) -> URL? {
+    guard let url, url.host == "image.tmdb.org" else { return url }
+    let address = url.absoluteString
+    for (small, large) in [("/t/p/w342/", "/t/p/w500/"), ("/t/p/w300/", "/t/p/w780/")] where address.contains(small) {
+        return URL(string: address.replacingOccurrences(of: small, with: large)) ?? url
+    }
+    return url
+}
+
+/// Apple TV: how far a still's film or episode has got, across the foot of the still (shaded, so it reads over any
+/// picture).
+private struct TVProgressFoot: View {
+    var progress: Double
+
+    var body: some View {
+        ZStack(alignment: .bottom) {
+            LinearGradient(colors: [.clear, .black.opacity(0.55)], startPoint: .top, endPoint: .bottom).frame(height: 72)
+            Capsule().fill(.white.opacity(0.3)).frame(height: 6)
+                .overlay(alignment: .leading) { GeometryReader { g in Capsule().fill(.white).frame(width: g.size.width * progress) } }
+                .padding(.horizontal, 20).padding(.bottom, 16)
+        }
+    }
+}
+
 /// Apple TV: Watch's own scrolling, for its banner. Moving back up to Play from the rows left the page where it was
-/// (Play was already on screen, so nothing scrolled): the banner cut off and dimmed, Movies | TV Shows out of sight.
+/// (Play was already on screen, so nothing scrolled): the banner cut off and dimmed.
 private struct WatchScrollerKey: EnvironmentKey { static let defaultValue: ScrollViewProxy? = nil }
 extension EnvironmentValues {
     var watchScroller: ScrollViewProxy? {
@@ -539,6 +609,11 @@ struct Billboard: View {
     @Binding var page: Int
     /// The TV the library is from (Watch works it out once for every picture on the page).
     var client: (any WatchSource)?
+    #if os(tvOS)
+    /// Apple TV: where the first row under the banner starts, from the top of the screen. The banner's words and
+    /// buttons sit just above it.
+    var rowsTop: CGFloat = TVWatch.stillsTop
+    #endif
     /// What each featured title is about (the wide banner shows it), read once each.
     @State private var overviews: [String: String] = [:]
     #if os(iOS) || os(tvOS)
@@ -588,6 +663,45 @@ struct Billboard: View {
             withAnimation(.easeInOut(duration: 0.7)) { page = (page + 1) % titles.count }
         }
     }
+    #elseif os(tvOS)
+    /// Apple TV: the whole screen, edge to edge, as the TV app's own banner: one title at a time that moves on by
+    /// itself, its picture behind, its words and Play and Details over the lower left, just above the first row, which
+    /// sits over the banner's foot (`rowsTop`) so that all of it shows.
+    private var pages: some View {
+        ZStack(alignment: .bottomLeading) {
+            if let t = titles[safe: page] ?? titles.first {
+                tvPicture(t).id(t.id).transition(.opacity)
+            }
+            // The same for every title, so they stay while the picture changes under them.
+            tvScrims.zIndex(1)
+            if let t = titles[safe: page] ?? titles.first {
+                VStack(alignment: .leading, spacing: 22) {
+                    tvWords(t).id(t.id).transition(.opacity)
+                    // Play and Details: one pair that stays while the picture and the words over them change.
+                    tvButtons(t)
+                }
+                // In line with the rows' tiles, and clear of the first row's heading.
+                .padding(.leading, 100).padding(.trailing, 90).padding(.bottom, 1080 - rowsTop + 40)
+                .zIndex(2)
+            }
+        }
+        .frame(height: 1080)
+        .frame(maxWidth: .infinity)
+        .ignoresSafeArea(edges: [.top, .horizontal])
+        .task(id: page) {
+            // The next title's picture made ready meanwhile (it fills the screen), so it fades in whole instead of as a
+            // grey placeholder its picture then fades into.
+            if titles.count > 1, let next = titles[safe: (page + 1) % titles.count],
+               let art = client?.artURL(next.backdrop ?? next.poster), ImageStore.shared.cached(art, maxPixel: 2400) == nil {
+                Task(priority: .utility) { _ = await ImageStore.shared.image(art, maxPixel: 2400) }
+            }
+            try? await Task.sleep(nanoseconds: 12_000_000_000)
+            // Not while its Play or Details has the focus: the next title would take it away, and Down would stop working.
+            while !Task.isCancelled && focusedButton != nil { try? await Task.sleep(nanoseconds: 1_000_000_000) }
+            guard !Task.isCancelled, titles.count > 1 else { return }
+            withAnimation(.easeInOut(duration: 0.7)) { page = (page + 1) % titles.count }
+        }
+    }
     #else
     /// The Mac has no swiping pages (a plain TabView there is a strip of blank tabs): one card at a time that moves
     /// on by itself; the dots pick one.
@@ -596,85 +710,71 @@ struct Billboard: View {
             if let t = titles[safe: page] ?? titles.first {
                 wideCard(t).id(t.id).transition(.opacity)
             }
-            #if os(tvOS)
-            // Play and Details: one pair that stays while the picture and words under it change.
-            if let t = titles[safe: page] ?? titles.first {
-                tvButtons(t).zIndex(1)
-            }
-            #endif
         }
-        #if os(tvOS)
-        // Apple TV: the whole screen, edge to edge, as the TV app's own banner (the first row rises up over it).
-        .frame(height: 1080)
-        .frame(maxWidth: .infinity)
-        .ignoresSafeArea(edges: [.top, .horizontal])
-        #else
         // The window's whole width, a third as tall: it grows and shrinks with the window, and the rows show under it.
         .aspectRatio(3.0, contentMode: .fit)
         .padding(.horizontal, 20)
-        #endif
         .task(id: page) {
-            #if os(tvOS)
-            // The next title's picture made ready meanwhile (it fills the screen), so it fades in whole instead of as a
-            // grey placeholder its picture then fades into.
-            if titles.count > 1, let next = titles[safe: (page + 1) % titles.count],
-               let art = client?.artURL(next.backdrop ?? next.poster), ImageStore.shared.cached(art, maxPixel: 2400) == nil {
-                Task(priority: .utility) { _ = await ImageStore.shared.image(art, maxPixel: 2400) }
-            }
-            #endif
             try? await Task.sleep(nanoseconds: 12_000_000_000)
-            #if os(tvOS)
-            // Not while its Play or Details has the focus: the next title would take it away, and Down would stop working.
-            while !Task.isCancelled && focusedButton != nil { try? await Task.sleep(nanoseconds: 1_000_000_000) }
-            #endif
             guard !Task.isCancelled, titles.count > 1 else { return }
             withAnimation(.easeInOut(duration: 0.7)) { page = (page + 1) % titles.count }
         }
     }
     #endif
 
-    /// The Mac's and iPad's banner, as on the TV: the words on the left, the whole 16:9 picture on the right in a
-    /// rounded frame, over a blurred copy of it filling the banner.
     #if os(tvOS)
-    /// Apple TV: the picture filling the screen; over its lower left, as the TV app does, the name large, what it
-    /// is, what it's about, then Play and Details.
-    private func wideCard(_ t: Title) -> some View {
-        let art = client?.artURL(t.backdrop ?? t.poster)
-        return ZStack(alignment: .bottomLeading) {
-            Color.clear.overlay { Artwork(url: art, maxPixel: 2400) }.clipped()
+    /// Apple TV: the title's picture, filling the screen.
+    private func tvPicture(_ t: Title) -> some View {
+        Color.clear.overlay { Artwork(url: client?.artURL(t.backdrop ?? t.poster), maxPixel: 2400) }.clipped()
+    }
+
+    /// Apple TV: over the picture, the system's material rising from its foot (whole behind the rows that sit over it,
+    /// thinning out above the first row's heading, as the TV app's banner has it, so the rows' names read over any
+    /// picture), and a shade from the left for the words.
+    private var tvScrims: some View {
+        // How far up the screen the first row starts, from the bottom (0 to 1).
+        let rows = (1080 - rowsTop) / 1080
+        return ZStack {
+            Rectangle().fill(.regularMaterial)
+                .mask {
+                    LinearGradient(stops: [.init(color: .black, location: 0), .init(color: .black, location: rows),
+                                           .init(color: .black.opacity(0.35), location: rows + 0.1),
+                                           .init(color: .clear, location: rows + 0.22)],
+                                   startPoint: .bottom, endPoint: .top)
+                }
             LinearGradient(stops: [.init(color: .black.opacity(0.7), location: 0), .init(color: .black.opacity(0.25), location: 0.5),
                                    .init(color: .clear, location: 0.8)], startPoint: .leading, endPoint: .trailing)
-            LinearGradient(stops: [.init(color: .clear, location: 0.4), .init(color: .black.opacity(0.75), location: 1)],
-                           startPoint: .top, endPoint: .bottom)
-            VStack(alignment: .leading, spacing: 14) {
-                Text(t.title)
-                    .font(.system(size: 76, weight: .heavy))
-                    .foregroundStyle(.white)
+        }
+    }
+
+    /// Apple TV: the words over the picture's lower left, as the TV app does: the name large, what it is, what it's
+    /// about.
+    private func tvWords(_ t: Title) -> some View {
+        // Over a row of posters there's less room than over the shorter stills: a smaller name, on one line.
+        let compact = rowsTop < TVWatch.stillsTop
+        return VStack(alignment: .leading, spacing: 14) {
+            Text(t.title)
+                .font(.system(size: compact ? 60 : 76, weight: .heavy))
+                .foregroundStyle(.white)
+                .lineLimit(compact ? 1 : 2)
+                .minimumScaleFactor(0.6)
+                .shadow(color: .black.opacity(0.5), radius: 12)
+            Text(meta(t)).font(.system(size: 26, weight: .semibold)).foregroundStyle(.white.opacity(0.9))
+            if let o = overviews[t.id], !o.isEmpty {
+                Text(o)
+                    .font(.system(size: 25, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.9))
                     .lineLimit(2)
-                    .minimumScaleFactor(0.6)
-                    .shadow(color: .black.opacity(0.5), radius: 12)
-                Text(meta(t)).font(.system(size: 26, weight: .semibold)).foregroundStyle(.white.opacity(0.9))
-                if let o = overviews[t.id], !o.isEmpty {
-                    Text(o)
-                        .font(.system(size: 25, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.9))
-                        .lineLimit(3)
-                        .frame(maxWidth: 820, alignment: .leading)
-                        .transition(.opacity)
-                }
-                // Room for Play and Details, which are laid over this place (tvButtons): they aren't part of the card,
-                // so they stay when the card changes.
-                Text(" ").font(.subheadline.weight(.semibold)).padding(.vertical, 10).padding(.top, 8).hidden()
+                    .frame(maxWidth: 820, alignment: .leading)
+                    .transition(.opacity)
             }
-            // Above the row that rises over the banner's bottom.
-            .padding(.leading, 90).padding(.bottom, 400).padding(.trailing, 90)
         }
         .task(id: t.id) { await overview(t) }
     }
 
-    /// Apple TV: Play and Details, over the card's lower left. One pair for every title: buttons inside the card were
-    /// rebuilt whenever the title changed, and the one the remote was on lost the focus, which then landed anywhere
-    /// (the sidebar too).
+    /// Apple TV: Play and Details, under the words. One pair for every title: buttons that were part of each title's
+    /// own card were rebuilt whenever the title changed, and the one the remote was on lost the focus, which then
+    /// landed anywhere (the sidebar too).
     private func tvButtons(_ t: Title) -> some View {
         HStack(spacing: 22) {
             if let p = t.play {
@@ -684,24 +784,23 @@ struct Billboard: View {
             CapsuleButton(title: "Details", symbol: nil, prominent: false) { open(t) }
                 .focused($focusedButton, equals: "details")
         }
-        .padding(.top, 8)
-        // A section across the screen: Down from Movies | TV Shows and Up from the first row always land here, on Play.
+        // A section across the screen: Up from the first row always lands here, on Play.
         .frame(maxWidth: .infinity, alignment: .leading)
         .focusSection()
         .defaultFocus($focusedButton, t.play != nil ? "play" : "details", priority: .userInitiated)
-        // Back on Play or Details (up from the rows): the page goes back to its top, the banner whole again with
-        // Movies | TV Shows over it. By itself it stayed where it was, as the buttons were already on screen. (Only on
-        // reaching these two, and only to the top, where they stay in view: the page never chases the focus.)
+        // Back on Play or Details (up from the rows): the page goes back to its top, the banner whole again. By itself
+        // it stayed where it was, as the buttons were already on screen. (Only on reaching these two, and only to the
+        // top, where they stay in view: the page never chases the focus.)
         .onChange(of: focusedButton) { _, now in
             guard now != nil, let scroller else { return }
             withAnimation(.smooth(duration: 0.3)) { scroller.scrollTo(WatchScrollReader.top, anchor: .top) }
         }
         // Play/Pause on the remote plays it from either button, as the TV app's banner does.
         .onPlayPauseCommand { if let p = t.play { PlayRouter.start(p, fleet: fleet) } }
-        .padding(.leading, 90).padding(.bottom, 400).padding(.trailing, 90)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
     }
     #else
+    /// The Mac's and iPad's banner, as on the TV: the words on the left, the whole 16:9 picture on the right in a
+    /// rounded frame, over a blurred copy of it filling the banner.
     private func wideCard(_ t: Title) -> some View {
         let art = client?.artURL(t.backdrop ?? t.poster)
         return GeometryReader { g in
@@ -794,7 +893,8 @@ struct Billboard: View {
         .padding(.trailing, 44).padding(.bottom, 26)
         #else
         #if os(tvOS)
-        .padding(.trailing, 90).padding(.bottom, 360)
+        // Level with Play and Details, at the other side.
+        .padding(.trailing, 90).padding(.bottom, 1080 - rowsTop + 66)
         #else
         .padding(.trailing, 30).padding(.bottom, 14)
         #endif
@@ -858,11 +958,26 @@ struct ShelfRow<Content: View>: View {
     init(_ title: String, all: LibraryRef? = nil, @ViewBuilder content: () -> Content) {
         self.title = title; self.all = all; self.content = content()
     }
+    /// The name's size. (Apple TV: 38 points, as the TV app's rows. The phone's style is 57 points on a TV.)
+    private var titleFont: Font {
+        #if os(tvOS)
+        return TVWatch.heading
+        #else
+        return .title2.bold()
+        #endif
+    }
+    private var chevronFont: Font {
+        #if os(tvOS)
+        return .system(size: 26, weight: .bold)
+        #else
+        return .headline.weight(.bold)
+        #endif
+    }
     /// The shelf's name, with a chevron when it opens everything in it.
     private var heading: some View {
         HStack(spacing: 4) {
-            Text(title).font(.title2.bold())
-            Image(systemName: "chevron.right").font(.headline.weight(.bold)).foregroundStyle(.secondary)
+            Text(title).font(titleFont)
+            Image(systemName: "chevron.right").font(chevronFont).foregroundStyle(.secondary)
         }
     }
     var body: some View {
@@ -878,13 +993,13 @@ struct ShelfRow<Content: View>: View {
                         .buttonStyle(.plain)
                     #endif
                 } else {
-                    Text(title).font(.title2.bold())
+                    Text(title).font(titleFont)
                 }
             }
             .padding(.horizontal, 20)
             ScrollView(.horizontal) {
                 #if os(tvOS)
-                FirstFocusRow(spacing: 40, alignment: .top) { content }
+                FirstFocusRow(spacing: TVWatch.gap, alignment: .top) { content }
                     .scrollTargetLayout()
                     .padding(.horizontal, 20)
                     .padding(.vertical, 30)
@@ -938,6 +1053,9 @@ struct PosterTile: View {
     }
 
     var body: some View {
+        #if os(tvOS)
+        tvLockup
+        #else
         Button {
             TitleCache.shared.opening(title)
             openTitle(title.id)
@@ -966,20 +1084,56 @@ struct PosterTile: View {
         #if os(macOS)
         .hoverTilt(cornerRadius: 12)
         #endif
-        #if os(tvOS)
-        // Play/Pause on the remote plays the title it's on, as the TV app does (one with nothing to play yet, a show
-        // not started, opens its card).
-        .onPlayPauseCommand {
-            guard let p = title.play else {
-                TitleCache.shared.opening(title)
-                openTitle(title.id)
-                return
+        .contextMenu { TitleMenu(title: title) }
+        #endif
+    }
+
+    #if os(tvOS)
+    @Environment(\.displayScale) private var displayScale
+
+    /// Apple TV: the system's own tile, as the TV app's posters. The poster (250 by 375) lifts, tilts and catches the
+    /// light under the remote, and its name sits under it on up to two lines, moving out of its way. (It was a
+    /// 160-point poster that grew by a tenth, with a name cut to one line.)
+    private var tvLockup: some View {
+        Button {
+            open()
+        } label: {
+            Color.clear.frame(width: width, height: width * 1.5)
+                .overlay { Artwork(url: tvLarge(poster), maxPixel: Int(width * 1.5 * displayScale)) }
+                .overlay(alignment: .topTrailing) {
+                    if title.watched == true {
+                        Image(systemName: "checkmark.circle.fill").font(.system(size: 30)).symbolRenderingMode(.palette)
+                            .foregroundStyle(.white, .black.opacity(0.5)).padding(10)
+                    }
+                }
+                .clipped()
+                // The view the remote lifts (the style rounds its corners itself).
+                .hoverEffect(.highlight)
+            VStack(alignment: .leading, spacing: 2) {
+                // Two lines kept for every name, so a row's tiles are all one height.
+                Text(title.title).font(.caption.weight(.medium)).lineLimit(2, reservesSpace: true).multilineTextAlignment(.leading)
+                if let caption = title.caption {
+                    Text(caption).font(.caption2).foregroundStyle(Color.accentColor).lineLimit(1)
+                }
             }
+            .frame(width: width, alignment: .leading)
+        }
+        .buttonStyle(.borderless)
+        // Play/Pause on the remote plays the title it's on, as the TV app does (one with nothing to play yet, a show
+        // not started, opens its page).
+        .onPlayPauseCommand {
+            guard let p = title.play else { open(); return }
             PlayRouter.start(p, fleet: fleet)
         }
-        #endif
         .contextMenu { TitleMenu(title: title) }
     }
+
+    /// Its page, with this tile's picture and name at the top while the rest loads.
+    private func open() {
+        TitleCache.shared.opening(title)
+        openTitle(title.id)
+    }
+    #endif
 }
 
 struct ContinueTile: View {
@@ -990,15 +1144,18 @@ struct ContinueTile: View {
     var item: ContinueItem
     /// Its poster's address, as Watch worked it out.
     var poster: URL?
+    #if os(tvOS)
+    /// Apple TV: its title's wide picture, when it has one (the tile is a still there, as the TV app's Up Next).
+    var still: URL? = nil
+    @Environment(\.displayScale) private var displayScale
+    #endif
 
     var body: some View {
+        #if os(tvOS)
+        tvLockup
+        #else
         Button {
-            #if os(tvOS)
-            // On Apple TV it opens the title's card (Resume and Start Over), as the other tiles do.
-            if let id = item.titleId { openTitle(id) } else { PlayRouter.start(item.play, fleet: fleet) }
-            #else
             PlayRouter.start(item.play, fleet: fleet)
-            #endif
         } label: {
             VStack(alignment: .leading, spacing: 6) {
                 Color.clear.frame(width: width, height: width * 1.5)
@@ -1025,24 +1182,61 @@ struct ContinueTile: View {
             }
         }
         .buttonStyle(PressScale(scale: 0.96))
-        #if os(tvOS)
-        // Play/Pause on the remote goes on from where it got to, as the TV app's Up Next does (a click opens its card).
-        .onPlayPauseCommand { PlayRouter.start(item.play, fleet: fleet) }
+        .contextMenu { menu }
         #endif
-        .contextMenu {
-            Button(item.play.label ?? "Play") { PlayRouter.start(item.play, fleet: fleet) }
-            if let r = item.restart { Button(r.label ?? "Start Over") { PlayRouter.start(r, fleet: fleet, fromStart: true) } }
-            PlayOnMenu(action: item.play)
-            if let id = item.titleId { Button(item.kind == "show" ? "Episodes" : "Details") { openTitle(id) } }
-            Button(role: .destructive) {
-                act {
-                    guard let c = WatchSources.current(fleet) else { throw TVError.notPaired }
-                    try await c.removeContinue(key: item.key, title: item.playTitle)
-                    watchChanged(removed: item.key)
-                }
-            } label: { Text("Remove from Continue Watching") }
-        }
     }
+
+    /// The long-press menu.
+    @ViewBuilder private var menu: some View {
+        Button(item.play.label ?? "Play") { PlayRouter.start(item.play, fleet: fleet) }
+        if let r = item.restart { Button(r.label ?? "Start Over") { PlayRouter.start(r, fleet: fleet, fromStart: true) } }
+        PlayOnMenu(action: item.play)
+        if let id = item.titleId { Button(item.kind == "show" ? "Episodes" : "Details") { openTitle(id) } }
+        Button(role: .destructive) {
+            act {
+                guard let c = WatchSources.current(fleet) else { throw TVError.notPaired }
+                try await c.removeContinue(key: item.key, title: item.playTitle)
+                watchChanged(removed: item.key)
+            }
+        } label: { Text("Remove from Continue Watching") }
+    }
+
+    #if os(tvOS)
+    /// Apple TV: a wide still (400 by 225), as the TV app's Up Next: the title's own wide picture with how far it got
+    /// across its foot, then the name and what's next or what's left under it. The system's own tile, which lifts and
+    /// catches the light under the remote. A click goes on from where it got to (it used to open the title's page
+    /// under a play symbol; the page is still in the long-press menu), and so does Play/Pause on the remote.
+    private var tvLockup: some View {
+        let w = TVWatch.still, h = TVWatch.still * 9 / 16
+        return Button {
+            PlayRouter.start(item.play, fleet: fleet)
+        } label: {
+            Color.clear.frame(width: w, height: h)
+                .overlay {
+                    if let still {
+                        Artwork(url: still, maxPixel: Int(w * displayScale))
+                    } else {
+                        // No wide picture: its poster whole, over a soft copy of itself.
+                        BlurredArtwork(url: tvLarge(poster), radius: 30, maxPixel: 256)
+                        Artwork(url: tvLarge(poster), contentMode: .fit, maxPixel: Int(h * displayScale))
+                    }
+                }
+                .overlay(alignment: .bottom) { if item.progress > 0 { TVProgressFoot(progress: item.progress) } }
+                .clipped()
+                // The view the remote lifts (the style rounds its corners itself).
+                .hoverEffect(.highlight)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(item.name).font(.caption.weight(.semibold)).lineLimit(2).multilineTextAlignment(.leading)
+                Text(subtitle).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+            }
+            // The same room under every still (a name on two lines fits), so the row's tiles are all one height.
+            .frame(width: w, height: TVWatch.continueWords, alignment: .topLeading)
+        }
+        .buttonStyle(.borderless)
+        .onPlayPauseCommand { PlayRouter.start(item.play, fleet: fleet) }
+        .contextMenu { menu }
+    }
+    #endif
 
     private var subtitle: String {
         if item.upNext == true { return "Next · " + (item.code ?? "") }
@@ -1153,7 +1347,7 @@ enum PlayRouter {
 
 /// A film's or show's page, as a sheet: backdrop, Play, the story, seasons and episodes. Opened again, it shows at once
 /// what it showed last time (and reads the title again behind it); opened from a tile, the tile's picture and name are
-/// at its top while the rest loads.
+/// at its top while the rest loads. (On Apple TV it's a page over the whole screen: `tvPage`.)
 struct TitleSheet: View {
     @Environment(Fleet.self) private var fleet
     @Environment(\.dismiss) private var dismiss
@@ -1188,145 +1382,238 @@ struct TitleSheet: View {
 
     #if os(tvOS)
     @FocusState private var tvFocus: String?
-    /// When the card opened (see the X in `tvCard`).
-    @State private var tvOpened = Date()
     #endif
 
     var body: some View {
         #if os(tvOS)
-        tvCard
+        tvPage
         #else
         sheetBody
         #endif
     }
 
     #if os(tvOS)
-    /// On Apple TV: one card sized to what it shows (a strip of the banner, the details, Play), with the X in its corner.
-    private var tvCard: some View {
+    /// Apple TV: the title's own page, as the TV app's. Its picture fills the screen; over the lower left are its name,
+    /// the lines about it and its story; under them Play (where the remote starts) with Start Over and Play On beside
+    /// it; and for a show its episodes (for a collection its films) as one shelf of large stills across the foot of
+    /// the screen, starting at the one to watch next, with the season above it. Menu closes it. (It was a card the
+    /// width of a phone, with an X in its corner and episodes one at a time.)
+    private var tvPage: some View {
         let c = client
         let shown = details(c)
         let season = self.season(of: shown)
-        let t: SheetTop? = shown.map { top($0, c) } ?? TitleCache.shared.tile(id).map { top($0, c) }
-        // Where the remote starts when there's no Play: the first film of a collection (else the first episode).
-        let firstRow = shown?.films?.first?.id ?? episodes.first?.id
-        // Play; with none, that first film; the X only when there's nothing else.
-        let startOn: String = t?.play != nil ? "play" : (firstRow ?? "close")
-        return ZStack {
-            Color.black.opacity(0.6).ignoresSafeArea()
-            VStack(alignment: .leading, spacing: 0) {
-                // The picture flush with the card's top; the title and details over its foot.
-                Color.clear.frame(height: 400)
-                    .overlay { Artwork(url: t?.art, maxPixel: 1800) }
-                    .overlay { LinearGradient(stops: [.init(color: .clear, location: 0.4), .init(color: .black.opacity(0.92), location: 1)], startPoint: .top, endPoint: .bottom) }
-                    .overlay(alignment: .bottomLeading) {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text(t?.title ?? "").font(.system(size: 50, weight: .bold)).foregroundStyle(.white).lineLimit(2).minimumScaleFactor(0.6)
-                            if let f = t?.facts, !f.isEmpty { Text(f).font(.callout.weight(.medium)).foregroundStyle(.white.opacity(0.8)).lineLimit(2) }
-                        }
-                        .padding(.horizontal, 36).padding(.bottom, 20)
-                    }
-                    .clipped()
-                VStack(alignment: .leading, spacing: 22) {
-                    if let o = shown?.overview { Text(o).font(.caption).foregroundStyle(.white.opacity(0.85)).lineLimit(4) }
-                    if let failed, shown == nil {
-                        Text(failed).font(.callout).foregroundStyle(.secondary)
-                    }
-                    VStack(alignment: .leading, spacing: 18) {
-                        if let p = t?.play {
-                            // Part watched: Resume and Start Over side by side.
-                            let started = (p.position ?? 0) > 0
-                            HStack(spacing: 18) {
-                                Button { if PlayRouter.start(p, fleet: fleet) { dismiss() } } label: {
-                                    Label(started ? "Resume" : (p.label ?? "Play"), systemImage: "play.fill").frame(maxWidth: .infinity)
-                                }
-                                .focused($tvFocus, equals: "play")
-                                if started || t?.restart != nil {
-                                    Button { if PlayRouter.start(t?.restart ?? p, fleet: fleet, fromStart: true) { dismiss() } } label: {
-                                        Text("Start Over").frame(maxWidth: .infinity)
-                                    }
-                                }
-                            }
-                        } else if failed != nil {
-                            ActionButton(action: { await load() }) { Text("Try Again") }
-                        } else if shown == nil {
-                            ProgressView()
-                        }
-                    }
-                    // A folder of films (a collection) has no Play of its own: each film, to play as an episode is.
-                    // Without them its card only spun.
-                    if let films = shown?.films, !films.isEmpty {
-                        Text("In This Collection").font(.headline)
-                        ScrollView(.horizontal, showsIndicators: false) {
-                            LazyHStack(alignment: .top, spacing: 30) {
-                                ForEach(films) { e in
-                                    EpisodeRow(episode: e, still: c?.artURL(e.still, small: true), changed: { watchChanged(); Task { await load() } }, played: { dismiss() })
-                                        .frame(width: 440)
-                                        .focused($tvFocus, equals: e.id)
-                                }
-                            }
-                            .padding(.vertical, 10)
-                        }
-                        .scrollClipDisabled()
-                        .frame(height: 200)
-                    }
-                    if let d = shown, let seasons = d.seasons, !seasons.isEmpty {
-                        Picker("Season", selection: Binding(get: { season }, set: { picked = $0 })) {
-                            ForEach(Array(seasons.enumerated()), id: \.offset) { i, s in Text(s.name).tag(i) }
-                        }
-                        .pickerStyle(.menu)
-                        .focused($tvFocus, equals: "season")
-                        ScrollView(.horizontal, showsIndicators: false) {
-                            LazyHStack(alignment: .top, spacing: 30) {
-                                ForEach(episodes) { e in
-                                    EpisodeRow(episode: e, still: c?.artURL(e.still, small: true), changed: { watchChanged(); Task { await loadEpisodes() } }, played: { dismiss() })
-                                        .frame(width: 440)
-                                        .focused($tvFocus, equals: e.id)
-                                }
-                            }
-                            .padding(.vertical, 10)
-                        }
-                        .scrollClipDisabled()
-                        .frame(height: 200)
-                    }
-                }
-                .padding(.horizontal, 36).padding(.top, 18).padding(.bottom, 30)
+        let tile = TitleCache.shared.tile(id)
+        let t: SheetTop? = shown.map { top($0, c) } ?? tile.map { top($0, c) }
+        let films = shown?.films ?? []
+        // What's on the shelf: a collection's films, else the episodes of the season shown.
+        let shelf = films.isEmpty ? episodes : films
+        // A show or a collection has a shelf across the foot of its page (a show's is known from its tile before the
+        // title is read, so the page keeps its place when the episodes arrive).
+        let hasShelf = !films.isEmpty || !(shown?.seasons ?? []).isEmpty || (shown == nil && tile?.kind == "show")
+        // The one to go on with (what Play plays): the shelf starts there.
+        let next = Self.nextUp(shelf, playing: t?.play?.key)
+        // Where the remote starts: Play, or what stands in its place while the title is read; with no Play to come (a
+        // collection), the one to go on with.
+        let startOn: String = t?.play != nil || shown == nil ? "play" : (next ?? "play")
+        return VStack(alignment: .leading, spacing: 0) {
+            tvWords(t, shown, roomy: !hasShelf)
+            tvActions(t, read: shown != nil)
+                .padding(.top, 26)
+            if hasShelf {
+                tvShelf(shown, shelf, next: next, season: season, art: t?.art, c)
+                    .padding(.top, 30)
             }
-            .frame(width: 620).fixedSize(horizontal: false, vertical: true)
-            .background(Color(white: 0.11))
-            .clipShape(RoundedRectangle(cornerRadius: 44, style: .continuous))
-            .overlay(alignment: .topTrailing) {
-                // Not in the card's first moments while the title is still being read: nothing else is on the card yet,
-                // so the remote is on the X, and a second click meant for Play closed the card. (Menu closes it all the
-                // while.)
-                Button {
-                    if shown != nil || failed != nil || Date().timeIntervalSince(tvOpened) > 2 { dismiss() }
-                } label: { Image(systemName: "xmark").font(.title3.weight(.bold)) }
-                    .buttonBorderShape(.circle)
-                    .focused($tvFocus, equals: "close")
-                    .padding(26)
-                    .accessibilityLabel("Close")
-            }
-            .shadow(color: .black.opacity(0.5), radius: 40, y: 20)
-            .focusSection()
-            .defaultFocus($tvFocus, startOn)
-            // Play/Pause plays the title from anywhere on its card (on an episode, that episode).
-            .onPlayPauseCommand { if let p = t?.play, PlayRouter.start(p, fleet: fleet) { dismiss() } }
         }
-        // Opened before its Play was known (a show not started yet, or Continue Watching before its details came): the
-        // remote was left on the X, so the next click closed the card. Play takes it as soon as it's there.
+        // At the foot of the screen, from its left edge. (No spacer above the words: one would be given half of the
+        // room the buttons and the shelf leave, and the story cut short for it.)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+        .background { tvBackdrop(t?.art, shelf: hasShelf) }
+        .defaultFocus($tvFocus, startOn)
+        // Play/Pause plays the title from anywhere on its page (on an episode, that episode).
+        .onPlayPauseCommand { if let p = t?.play, PlayRouter.start(p, fleet: fleet) { dismiss() } }
+        // Play wasn't known as the page opened (a show not started yet, or a title opened before it was read) and now
+        // is: the remote goes to it, unless it has been moved onto something else meanwhile. (The remote used to be
+        // left on the X, and the next click closed the card.)
         .onChange(of: t?.play == nil) { wasMissing, missing in
-            if wasMissing && !missing { Task { @MainActor in tvFocus = "play" } }
+            guard wasMissing, !missing, tvFocus == nil || tvFocus == "play" else { return }
+            Task { @MainActor in tvFocus = "play" }
         }
-        // No Play to come (a collection): the same for its first film, as soon as it's there (and as the card opens,
-        // when it's known already). Only from the X or from nowhere: never off something the remote was moved to.
-        .onChange(of: firstRow == nil, initial: true) { _, missing in
-            guard !missing, t?.play == nil, tvFocus == nil || tvFocus == "close" else { return }
-            Task { @MainActor in tvFocus = firstRow }
+        // No Play to come (a collection): the same for the one to go on with, as soon as it's there (and as the page
+        // opens, when it's known already). Only from Play's place or from nowhere: never off something the remote was
+        // moved to.
+        .onChange(of: next == nil, initial: true) { _, missing in
+            guard !missing, shown != nil, t?.play == nil, tvFocus == nil || tvFocus == "play" else { return }
+            Task { @MainActor in tvFocus = next }
         }
         .task { await load() }
         .task(id: "\(shown?.id ?? "")|\(season)") { await loadEpisodes() }
         .task(id: warmPlay?.key) { if let p = warmPlay { PhonePlayback.warm(p) } }
         .sheetBanner()
+    }
+
+    /// Apple TV: the one to go on with on a shelf: the one Play plays; else the next one, one part watched, or the
+    /// first not watched yet (the first of all when every one has been).
+    private static func nextUp(_ shelf: [Episode], playing key: String?) -> String? {
+        if let key, shelf.contains(where: { $0.key == key }) { return key }
+        if let e = shelf.first(where: { $0.upNext == true }) { return e.id }
+        if let e = shelf.first(where: { $0.progress > 0 && $0.watched != true }) { return e.id }
+        return (shelf.first(where: { $0.watched != true }) ?? shelf.first)?.id
+    }
+
+    /// Apple TV: the title's picture across the whole screen, shaded from the left for the words over it, with the
+    /// system's material rising from its foot behind the buttons and the shelf, as the TV app's own pages have it.
+    private func tvBackdrop(_ art: URL?, shelf: Bool) -> some View {
+        // How far up the screen the material is whole (0 to 1 from the bottom): behind a shelf, or only a film's foot.
+        let whole: CGFloat = shelf ? 0.54 : 0.12
+        return Color.black
+            .overlay { Artwork(url: art, maxPixel: 2400) }
+            .overlay {
+                Rectangle().fill(.regularMaterial)
+                    .mask {
+                        LinearGradient(stops: [.init(color: .black, location: 0), .init(color: .black, location: whole),
+                                               .init(color: .black.opacity(0.35), location: whole + 0.12),
+                                               .init(color: .clear, location: whole + 0.28)],
+                                       startPoint: .bottom, endPoint: .top)
+                    }
+            }
+            .overlay {
+                LinearGradient(stops: [.init(color: .black.opacity(0.75), location: 0), .init(color: .black.opacity(0.3), location: 0.5),
+                                       .init(color: .clear, location: 0.85)], startPoint: .leading, endPoint: .trailing)
+            }
+            .clipped()
+            .ignoresSafeArea()
+    }
+
+    /// Apple TV: the name, the lines about it and the story. [roomy]: a film's page, with no shelf under them.
+    private func tvWords(_ t: SheetTop?, _ d: TitleDetails?, roomy: Bool) -> some View {
+        let about = d.map { tvAbout($0) } ?? ""
+        return VStack(alignment: .leading, spacing: 12) {
+            Text(t?.title ?? "")
+                .font(.system(size: roomy ? 76 : 60, weight: .heavy))
+                .foregroundStyle(.white)
+                .lineLimit(2)
+                .minimumScaleFactor(0.6)
+                .shadow(color: .black.opacity(0.5), radius: 12)
+            if !about.isEmpty {
+                Text(about).font(.system(size: 26, weight: .semibold)).foregroundStyle(.white.opacity(0.9)).lineLimit(1)
+            }
+            if let f = t?.facts, !f.isEmpty {
+                Text(f).font(.system(size: 26, weight: .semibold)).foregroundStyle(.white.opacity(0.75)).lineLimit(2)
+            }
+            // The story gives way first when the page is full (the lines above it keep their room).
+            if let o = d?.overview, !o.isEmpty {
+                Text(o).font(.body).foregroundStyle(.white.opacity(0.9)).lineLimit(roomy ? 6 : 3).layoutPriority(-1)
+            }
+            if roomy, let cast = d?.cast, !cast.isEmpty {
+                Text("Starring " + cast.joined(separator: ", ")).font(.caption).foregroundStyle(.white.opacity(0.75)).lineLimit(1)
+            }
+            if let failed, d == nil {
+                Text(failed).font(.body).foregroundStyle(.white.opacity(0.9)).lineLimit(3)
+            }
+        }
+        .frame(maxWidth: 1000, alignment: .leading)
+    }
+
+    /// Apple TV: the year, what kind of film or show it is and how well it's rated, on a line of their own.
+    private func tvAbout(_ d: TitleDetails) -> String {
+        var about: [String] = []
+        if let year = d.year { about.append(String(year)) }
+        if let genres = d.genres, !genres.isEmpty { about.append(genres.prefix(3).joined(separator: ", ")) }
+        if let rating = d.rating { about.append(String(format: "★ %.1f", rating)) }
+        return about.joined(separator: " · ")
+    }
+
+    /// Apple TV: Play (or Resume), with Start Over and Play On beside it. Play is one button from the moment the page
+    /// opens, never rebuilt, so the remote stays on it: it turns while the title is read (a click then does nothing),
+    /// and offers Try Again if it can't be. [read]: the title has been read (now or before).
+    private func tvActions(_ t: SheetTop?, read: Bool) -> some View {
+        HStack(spacing: 24) {
+            if t?.play != nil || !read {
+                Button {
+                    if let p = t?.play {
+                        // Closes once the play has gone out; if there's nowhere to play it, stays open and says why.
+                        if PlayRouter.start(p, fleet: fleet) { dismiss() }
+                    } else if failed != nil {
+                        failed = nil
+                        Task { await load() }
+                    }
+                } label: {
+                    if let p = t?.play {
+                        Label((p.position ?? 0) > 0 ? "Resume" : (p.label ?? "Play"), systemImage: "play.fill")
+                    } else if failed != nil {
+                        Text("Try Again")
+                    } else {
+                        ProgressView()
+                    }
+                }
+                .buttonStyle(.glassProminent)
+                .focused($tvFocus, equals: "play")
+            }
+            if let p = t?.play {
+                // Part watched: Start Over beside Resume.
+                if (p.position ?? 0) > 0 || t?.restart != nil {
+                    Button("Start Over") { if PlayRouter.start(t?.restart ?? p, fleet: fleet, fromStart: true) { dismiss() } }
+                }
+                PlayOnMenu(action: p, then: { dismiss() }).menuStyle(.button)
+            }
+        }
+        .buttonStyle(.glass)
+        // A section across the screen: Up from anywhere on the shelf lands here, on Play.
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .focusSection()
+    }
+
+    /// Apple TV: the season (a picker when there's more than one), then its episodes as a shelf across the screen. A
+    /// collection's films the same way.
+    private func tvShelf(_ d: TitleDetails?, _ shelf: [Episode], next: String?, season: Int, art: URL?, _ c: (any WatchSource)?) -> some View {
+        let films = d?.films ?? []
+        let seasons = d?.seasons ?? []
+        // A film has only its name under its still; an episode its number, name and story.
+        let words = films.isEmpty ? TVWatch.episodeWords : TVWatch.filmWords
+        return VStack(alignment: .leading, spacing: 6) {
+            if !films.isEmpty {
+                Text("In This Collection").font(TVWatch.heading)
+            } else if seasons.count > 1 {
+                Picker("Season", selection: Binding(get: { season }, set: { picked = $0 })) {
+                    ForEach(Array(seasons.enumerated()), id: \.offset) { i, s in Text(s.name).tag(i) }
+                }
+                .pickerStyle(.menu)
+                .focused($tvFocus, equals: "season")
+                // A section across the screen: Up from anywhere on the shelf lands here, not past it.
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .focusSection()
+            } else {
+                Text(seasons.first?.name ?? "Episodes").font(TVWatch.heading)
+            }
+            if !shelf.isEmpty {
+                TVEpisodeShelf(items: shelf, next: next, words: words, client: c, fallback: art, focus: $tvFocus,
+                               changed: {
+                                   watchChanged()
+                                   Task { if films.isEmpty { await loadEpisodes() } else { await load() } }
+                               },
+                               played: { dismiss() })
+            } else if let episodesNote, !loadingEpisodes {
+                // Why there are none, with a way to ask again.
+                VStack(alignment: .leading, spacing: 20) {
+                    Text(episodesNote).font(.body).foregroundStyle(.secondary)
+                    Button("Try Again") { Task { await loadEpisodes() } }
+                        .buttonStyle(.glass)
+                        .focused($tvFocus, equals: "again")
+                }
+                .frame(maxWidth: .infinity, minHeight: TVWatch.shelfHeight(words: words), alignment: .topLeading)
+                .focusSection()
+            } else {
+                // Still being read: the shelf's own shapes, so the page keeps its place when they arrive.
+                HStack(alignment: .top, spacing: TVWatch.gap) {
+                    ForEach(0..<4, id: \.self) { _ in
+                        Placeholder().frame(width: TVWatch.still, height: TVWatch.still * 9 / 16)
+                    }
+                }
+                .padding(.top, TVWatch.shelfLift)
+                .frame(height: TVWatch.shelfHeight(words: words), alignment: .top)
+                .shimmer()
+            }
+        }
     }
     #endif
 
@@ -1691,6 +1978,51 @@ private struct Recent<Value> {
     }
 }
 
+#if os(tvOS)
+/// Apple TV: a title's episodes (or a collection's films) as one shelf of large stills across the screen. It starts at
+/// the one to watch next: that one is at the shelf's left edge, under Play, so the remote lands on it coming down.
+private struct TVEpisodeShelf: View {
+    var items: [Episode]
+    /// The one to start at.
+    var next: String?
+    /// How tall the words under each still are (every tile the same).
+    var words: CGFloat
+    var client: (any WatchSource)?
+    /// The picture for one with no still of its own: the title's.
+    var fallback: URL?
+    /// The page's focus: each tile is known to it by its episode.
+    var focus: FocusState<String?>.Binding
+    var changed: () -> Void
+    var played: () -> Void
+    /// The one at the shelf's left edge.
+    @State private var atEdge: String?
+
+    var body: some View {
+        ScrollView(.horizontal) {
+            LazyHStack(alignment: .top, spacing: TVWatch.gap) {
+                ForEach(items) { e in
+                    EpisodeRow(episode: e, still: tvLarge(client?.artURL(e.still)) ?? fallback, changed: changed, played: played, wordsHeight: words)
+                        .focused(focus, equals: e.id)
+                }
+            }
+            .scrollTargetLayout()
+            // Room over the stills for the one under the remote to lift into.
+            .padding(.top, TVWatch.shelfLift)
+        }
+        .scrollPosition(id: $atEdge, anchor: .leading)
+        .scrollTargetBehavior(.viewAligned)
+        .scrollIndicators(.hidden)
+        .scrollClipDisabled()
+        // As tall as its tiles (a lazy row otherwise takes all the height the page has left).
+        .fixedSize(horizontal: false, vertical: true)
+        // The whole width is the shelf's, so Down reaches it from any button above it.
+        .focusSection()
+        // A new list (the title read, another season picked): from the one to watch next.
+        .onChange(of: items.map(\.id), initial: true) { _, _ in atEdge = next }
+    }
+}
+#endif
+
 struct EpisodeRow: View {
     @Environment(Fleet.self) private var fleet
     var episode: Episode
@@ -1703,11 +2035,59 @@ struct EpisodeRow: View {
     var changed: () -> Void
     /// A play went out (the title's sheet closes, so what's playing shows).
     var played: () -> Void = {}
+    #if os(tvOS)
+    /// Apple TV: how tall the words under its still are.
+    var wordsHeight: CGFloat = TVWatch.episodeWords
+    @Environment(\.displayScale) private var displayScale
+    #endif
 
     private var action: PlayAction {
         PlayAction(key: episode.key, title: episode.playTitle, position: episode.position, label: nil, duration: episode.duration, resume: true, latest: nil)
     }
 
+    #if os(tvOS)
+    /// Apple TV: a large still (400 by 225) with the episode's number, its name and its story under it: the system's
+    /// own tile, which lifts and catches the light under the remote. A click plays it. (It was a row the width of a
+    /// phone, with a 132-point still and a play symbol.)
+    var body: some View {
+        let w = TVWatch.still, h = TVWatch.still * 9 / 16
+        Button { if PlayRouter.start(action, fleet: fleet) { played() } } label: {
+            Color.clear.frame(width: w, height: h)
+                .overlay { Artwork(url: still, maxPixel: Int(w * displayScale)) }
+                .overlay(alignment: .topTrailing) {
+                    if episode.watched == true {
+                        Image(systemName: "checkmark.circle.fill").font(.system(size: 30)).symbolRenderingMode(.palette)
+                            .foregroundStyle(.black, .white).padding(10)
+                    }
+                }
+                .overlay(alignment: .bottom) {
+                    if episode.progress > 0 && episode.watched != true { TVProgressFoot(progress: episode.progress) }
+                }
+                .clipped()
+                // The view the remote lifts (the style rounds its corners itself).
+                .hoverEffect(.highlight)
+            // The same height under every still, so the shelf's tiles line up: the story takes what the name leaves.
+            VStack(alignment: .leading, spacing: 4) {
+                if !caption.isEmpty {
+                    Text(caption).font(.caption2.weight(.semibold)).foregroundStyle(episode.new == true ? Color.accentColor : .secondary)
+                        .textCase(.uppercase).lineLimit(1)
+                }
+                Text(episode.name).font(.caption.weight(.semibold)).lineLimit(2).multilineTextAlignment(.leading)
+                if let o = episode.overview {
+                    Text(o).font(.caption2).foregroundStyle(.secondary).multilineTextAlignment(.leading).layoutPriority(-1)
+                }
+            }
+            .frame(width: w, height: wordsHeight, alignment: .topLeading)
+        }
+        .buttonStyle(.borderless)
+        // Play/Pause plays this episode, as a click does (not the show's own Play, which the page's Play/Pause plays).
+        .onPlayPauseCommand { if PlayRouter.start(action, fleet: fleet) { played() } }
+        .contextMenu {
+            Button("Play from the Start") { if PlayRouter.start(action, fleet: fleet, fromStart: true) { played() } }
+            PlayOnMenu(action: action, then: played)
+        }
+    }
+    #else
     var body: some View {
         Button { if PlayRouter.start(action, fleet: fleet) { played() } } label: {
             VStack(alignment: .leading, spacing: 8) {
@@ -1743,10 +2123,6 @@ struct EpisodeRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        #if os(tvOS)
-        // Play/Pause plays this episode, as a click does (not the show's own Play, which the card's Play/Pause plays).
-        .onPlayPauseCommand { if PlayRouter.start(action, fleet: fleet) { played() } }
-        #endif
         .contextMenu {
             Button("Play from the Start") { if PlayRouter.start(action, fleet: fleet, fromStart: true) { played() } }
             PlayOnMenu(action: action, then: played)
@@ -1757,6 +2133,7 @@ struct EpisodeRow: View {
             #endif
         }
     }
+    #endif
 
     private var caption: String {
         var c: [String] = []
@@ -1816,6 +2193,17 @@ struct LibraryGrid: View {
                 EmptyState(symbol: "film.stack", title: "Nothing Here", message: filtered ? "Nothing in \(heading) matches these choices." : "Nothing in \(heading) yet.")
                     .padding(.top, 80)
             }
+            #if os(tvOS)
+            // Apple TV: the same posters as Watch's rows (250 by 375), six across, with room around each for it to lift
+            // under the remote. (They were 104 points across, under a search keyboard.)
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: TVWatch.poster, maximum: TVWatch.poster), spacing: TVWatch.gap, alignment: .top)], spacing: 50) {
+                ForEach(items) { t in
+                    PosterTile(title: t, width: TVWatch.poster, poster: client?.artURL(t.poster))
+                        .onAppear { nearEnd(t) }
+                }
+            }
+            .padding(.horizontal, 20).padding(.vertical, 30)
+            #else
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 104, maximum: 150), spacing: 12, alignment: .top)], spacing: 18) {
                 ForEach(items) { t in
                     PosterTile(title: t, width: 104, poster: client?.artURL(t.poster))
@@ -1823,12 +2211,14 @@ struct LibraryGrid: View {
                 }
             }
             .padding(16)
+            #endif
             if loading { ProgressView().padding() }
         }
         .navigationTitle(heading)
         #if os(macOS)
         .pageSearch(text: $query, prompt: heading) { filterMenu }
-        #else
+        #elseif !os(tvOS)
+        // (Not on Apple TV: no keyboard over the posters there. Search is its own tab in the sidebar.)
         .pageSearch(text: $query, prompt: heading)
         #endif
         .environment(\.openTitle, OpenTitleAction { openTitle = $0 })
@@ -1896,7 +2286,12 @@ struct LibraryGrid: View {
     /// The page just read (below what's on screen): its posters are downloaded a few at a time, so they're there by the
     /// time it's scrolled to.
     private func warm(_ titles: [Title], _ c: any WatchSource) {
+        #if os(tvOS)
+        // The copies Apple TV's posters are drawn from (`tvLarge`).
+        let urls = titles.compactMap { tvLarge(c.artURL($0.poster)) }
+        #else
         let urls = titles.compactMap { c.artURL($0.poster) }
+        #endif
         warming?.cancel()
         warming = Task(priority: .utility) {
             await withTaskGroup(of: Void.self) { g in
@@ -2056,6 +2451,24 @@ extension Array {
 /// Watch while the library loads: the billboard and two shelves as soft shimmering shapes.
 struct WatchPlaceholder: View {
     var body: some View {
+        #if os(tvOS)
+        // Apple TV: two rows of its own posters, under where the banner will be. (The phone's shapes were drawn
+        // there: a billboard taller than the screen.)
+        VStack(alignment: .leading, spacing: 28) {
+            ForEach(0..<2, id: \.self) { _ in
+                VStack(alignment: .leading, spacing: 40) {
+                    Placeholder(corner: 8).frame(width: 320, height: 38)
+                    HStack(spacing: TVWatch.gap) {
+                        ForEach(0..<6, id: \.self) { _ in Placeholder().frame(width: TVWatch.poster, height: TVWatch.poster * 1.5) }
+                    }
+                }
+                .padding(.horizontal, 20)
+            }
+        }
+        .padding(.top, TVWatch.postersTop)
+        .shimmer()
+        .accessibilityLabel("Loading")
+        #else
         VStack(alignment: .leading, spacing: 26) {
             Placeholder(corner: 0).aspectRatio(0.82, contentMode: .fit).frame(maxWidth: .infinity)
             ForEach(0..<2, id: \.self) { _ in
@@ -2068,13 +2481,20 @@ struct WatchPlaceholder: View {
         }
         .shimmer()
         .accessibilityLabel("Loading")
+        #endif
     }
 }
 
 
 /// The banner's five and the rows for a list, kept until the list (or what's in Continue Watching) changes.
 final class ShelfCache {
-    struct Worked { var featured: [Title]; var rows: [(name: String, genre: String?, titles: [Title])] }
+    struct Worked {
+        var featured: [Title]; var rows: [(name: String, genre: String?, titles: [Title])]
+        #if os(tvOS)
+        /// Apple TV: each title's wide picture, by title (Continue Watching's stills).
+        var wide: [String: String] = [:]
+        #endif
+    }
     private var lastTitles: [Title] = []
     private var lastShown: Set<String> = []
     private var lastDay = -1
@@ -2087,6 +2507,9 @@ final class ShelfCache {
         if titles != lastTitles || shown != lastShown || day != lastDay || place != lastPlace {
             lastTitles = titles; lastShown = shown; lastDay = day; lastPlace = place
             value = Worked(featured: WatchRows.featured(titles, section: place), rows: WatchRows.rows(titles, shown: shown))
+            #if os(tvOS)
+            value.wide = Dictionary(titles.compactMap { t in t.backdrop.map { (t.id, $0) } }, uniquingKeysWith: { first, _ in first })
+            #endif
         }
         return value
     }
@@ -2201,9 +2624,17 @@ enum WatchPrefetch {
         let place = UserDefaults.standard.string(forKey: "watch.section") == "shows" ? "shows" : "movies"
         guard let titles = await ShelfStore.shared.titles(source: source, place: place), !titles.isEmpty else { return }
         let banner = WatchRows.featured(titles, section: place).first.flatMap { client.artURL($0.backdrop ?? $0.poster) }
+        #if os(tvOS)
+        // Apple TV: the copies its posters are drawn from (`tvLarge`), made ready at the size they're drawn at on a
+        // 4K screen, and the banner's picture at the size its banner asks for.
+        let first = (WatchRows.rows(titles).first?.titles ?? []).prefix(14).compactMap { tvLarge(client.artURL($0.poster)) }
+        if let banner { _ = await ImageStore.shared.image(banner, maxPixel: 2400) }
+        for u in first.prefix(6) { _ = await ImageStore.shared.image(u, maxPixel: 1024) }
+        #else
         let first = (WatchRows.rows(titles).first?.titles ?? []).prefix(14).compactMap { client.artURL($0.poster) }
         if let banner { _ = await ImageStore.shared.image(banner, maxPixel: 1800) }
         for u in first.prefix(6) { _ = await ImageStore.shared.image(u, maxPixel: 512) }
+        #endif
         for u in first.dropFirst(6) { await ImageStore.shared.prefetch(u) }
     }
 }
@@ -2245,6 +2676,10 @@ final class MacWatchScroll {
 /// Fetches a shelf's posters ahead of being scrolled to, a few at a time, onto disk (not into memory).
 enum ShelfWarmer {
     static func warm(_ urls: [URL]) async {
+        #if os(tvOS)
+        // The copies Apple TV's posters are drawn from (`tvLarge`).
+        let urls = urls.map { tvLarge($0) ?? $0 }
+        #endif
         await withTaskGroup(of: Void.self) { g in
             for (i, u) in urls.enumerated() {
                 if i >= 3 { _ = await g.next() }

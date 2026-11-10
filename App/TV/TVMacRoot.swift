@@ -8,14 +8,24 @@ import WoodruffKit
 struct TVMacRoot: View {
     @Environment(Fleet.self) private var fleet
     @AppStorage("tv.tab") private var tab = "home"
+    /// The library last opened (Movies or TV Shows): the one whose pictures are made ready as the app opens.
     @AppStorage("watch.section") private var watchSection = "movies"
     @State private var query = ""
-    /// The title opened from Search (its card over the results).
+    /// The title opened from Search (its page over the results).
     @State private var searchTitle: String?
-    /// Search asked again (a result was marked watched on its card).
+    /// Search asked again (a result was marked watched on its page).
     @State private var searchAgain = 0
     /// Settings' open pages: closed whenever another part of the app is picked, so coming back starts at its list.
     @State private var settingsPath = NavigationPath()
+
+    init() {
+        // Watch used to be one tab with Movies | TV Shows on its page: an Apple TV left on it opens on the one it was
+        // showing (set here, before the tabs are first drawn, so it never opens on a tab that's gone).
+        let kept = UserDefaults.standard
+        if kept.string(forKey: "tv.tab") == "watch" {
+            kept.set(kept.string(forKey: "watch.section") == "shows" ? "shows" : "movies", forKey: "tv.tab")
+        }
+    }
 
     var body: some View {
         TabView(selection: $tab) {
@@ -24,7 +34,7 @@ struct TVMacRoot: View {
                     ScrollView { WatchSearchResults(query: query, again: searchAgain).padding(.horizontal, 60) }
                         .searchable(text: $query, prompt: "Movies and TV Shows")
                 }
-                // A result opens its title's card, as everywhere else in Watch (without these, choosing one did
+                // A result opens its title's page, as everywhere else in Watch (without these, choosing one did
                 // nothing).
                 .environment(\.openTitle, OpenTitleAction { searchTitle = $0 })
                 .environment(\.watchChanged, WatchChanged { _ in searchAgain += 1 })
@@ -37,14 +47,10 @@ struct TVMacRoot: View {
                 }
                 .background { TVPhotoBackdrop() }
             }
-            Tab("Watch", systemImage: "play.tv", value: "watch") {
-                NavigationStack {
-                    WatchView()
-                        .toolbar(.hidden, for: .navigationBar)
-                        .ignoresSafeArea(edges: .top)
-                }
-                .background { HomeBackdrop() }
-            }
+            // Movies and TV Shows: a tab each, as the TV app's own sidebar has them, each with its own banner and rows
+            // (they were one Watch tab, switched by a control over its banner).
+            Tab("Movies", systemImage: "movieclapper", value: "movies") { watchPage("movies") }
+            Tab("TV Shows", systemImage: "tv", value: "shows") { watchPage("shows") }
             // Set apart lower in the sidebar, as Apple TV keeps Library.
             TabSection("") {
                 Tab("Settings", systemImage: "gearshape", value: "settings") {
@@ -54,20 +60,35 @@ struct TVMacRoot: View {
             }
         }
         .tabViewStyle(.sidebarAdaptable)
-        .onChange(of: tab) { _, now in if now != "settings" { settingsPath = NavigationPath() } }
+        .onChange(of: tab) { _, now in
+            if now != "settings" { settingsPath = NavigationPath() }
+            if now == "movies" || now == "shows" { watchSection = now }
+        }
         // A photo chosen on the Top Shelf (woodruff://home): the app opens on Home, whichever page it was left on.
         // (Nothing took the link, so it opened wherever that was.)
         .onOpenURL { url in
             if url.scheme == "woodruff" && url.host == "home" { tab = "home" }
         }
         .onAppear {
-            // The screenshot run (-tvTab watch) opens a given page.
-            if let t = UserDefaults.standard.string(forKey: "tvTab") { tab = t == "tvs" ? "home" : t }
+            // The screenshot run (-tvTab movies) opens a given page ("watch" is the library last opened).
+            if let t = UserDefaults.standard.string(forKey: "tvTab") {
+                tab = t == "tvs" ? "home" : t == "watch" ? (watchSection == "shows" ? "shows" : "movies") : t
+            }
         }
         .task {
             HomeWeather.shared.refresh()
             HomeGreeting.shared.refresh()
         }
+    }
+
+    /// Movies' or TV Shows' own page, behind the sidebar: its banner fills the screen to the top edge.
+    private func watchPage(_ library: String) -> some View {
+        NavigationStack {
+            WatchView(library: library)
+                .toolbar(.hidden, for: .navigationBar)
+                .ignoresSafeArea(edges: .top)
+        }
+        .background { HomeBackdrop() }
     }
 }
 
