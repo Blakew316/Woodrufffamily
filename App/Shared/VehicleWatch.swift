@@ -360,9 +360,13 @@ final class VehicleDetector {
             try? VNImageRequestHandler(cgImage: piece, options: [:]).perform([request])
             for o in (request.results as? [VNRecognizedObjectObservation]) ?? [] {
                 guard let best = o.labels.first, kinds.contains(best.identifier) else { continue }
+                let b = o.boundingBox
+                // A part of the picture is for the small vehicles in it. A box that nearly fills the part is the
+                // detector taking the part as a whole for a vehicle (it did, of empty pavement, 86% sure), and a
+                // vehicle that large is found in the whole picture anyway.
+                if !whole, b.width > 0.8 || b.height > 0.8 || b.width * b.height > 0.45 { continue }
                 // Vision measures a box up from the bottom of what it was shown: here it's down from the top of the
                 // whole picture.
-                let b = o.boundingBox
                 let x: CGFloat = part.minX + b.minX * part.width
                 let y: CGFloat = part.minY + (1 - b.maxY) * part.height
                 let box = CGRect(x: x, y: y, width: b.width * part.width, height: b.height * part.height)
