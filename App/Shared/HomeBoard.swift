@@ -401,6 +401,12 @@ struct HomeBoard: View, Equatable {
         }
         .frame(height: m.height(rows: plan.rows), alignment: .topLeading)
         .frame(maxWidth: .infinity, alignment: .topLeading)
+        #if !os(tvOS)
+        // The board's glass, drawn together as one layer (each tile's was a pass of its own as Home scrolled). Round
+        // the whole board, so every tile is inside it; nothing merges, as only glass that touches does. While Home is
+        // being arranged the tiles are plain material instead (`glass`), so one dragged across another covers it.
+        .glassGroup(spacing: 0)
+        #endif
         .background {
             // Seen from most of a screen away, above or below: its tiles are built before it scrolls into view.
             if deferred && !built {

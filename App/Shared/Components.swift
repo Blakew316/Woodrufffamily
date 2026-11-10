@@ -51,7 +51,7 @@ extension View {
     /// Liquid Glass in [shape] (iOS 26 / macOS 26), a material on older Macs.
     @ViewBuilder func glass<S: Shape>(_ shape: S, tint: Color? = nil, interactive: Bool = true) -> some View {
         if #available(iOS 26, macOS 26, *) {
-            self.glassEffect(tint.map { Glass.regular.tint($0).interactive(interactive) } ?? Glass.regular.interactive(interactive), in: shape)
+            self.modifier(GlassIn(shape: shape, tint: tint, interactive: interactive))
         } else {
             self.background { if let tint { shape.fill(tint.gradient) } else { shape.fill(.regularMaterial) } }
         }
@@ -60,6 +60,25 @@ extension View {
     /// Groups nearby glass so it blends and morphs together.
     @ViewBuilder func glassGroup(spacing: CGFloat = 16) -> some View {
         if #available(iOS 26, macOS 26, *) { GlassEffectContainer(spacing: spacing) { self } } else { self }
+    }
+}
+
+/// Liquid Glass in a shape. On one of Home's tiles while Home is being arranged it's a plain material instead: a
+/// board's glass is drawn together, as one layer behind all its tiles (`HomeBoard`), and a tile dragged across another
+/// wouldn't cover it (the one underneath would show through). The same view either way, so nothing is built again when
+/// arranging starts or ends.
+@available(iOS 26, macOS 26, tvOS 26, *)
+private struct GlassIn<S: Shape>: ViewModifier {
+    var shape: S
+    var tint: Color?
+    var interactive: Bool
+    @Environment(\.homeArranging) private var arranging
+
+    func body(content: Content) -> some View {
+        let glass = tint.map { Glass.regular.tint($0).interactive(interactive) } ?? Glass.regular.interactive(interactive)
+        content
+            .background { if arranging { shape.fill(.regularMaterial) } }
+            .glassEffect(arranging ? .identity : glass, in: shape)
     }
 }
 
