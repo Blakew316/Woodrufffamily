@@ -628,7 +628,7 @@ struct RootView: View {
             #endif
         }
         // On iPad the tabs float at the top and turn into a sidebar, like the Mac's; on iPhone, the usual tab bar.
-        .tabViewStyle(.sidebarAdaptable)
+        .modifier(TabsStyle())
         #if os(iOS)
         // The Search tab's field is the tab view's own (`searchable` on the tab view: the tab with the search role
         // gets it). Picking the tab starts a search; closing the search goes back to the tab before.
@@ -638,6 +638,22 @@ struct RootView: View {
         // What's playing, as the tab bar's own accessory: above it, and in line with it once it has tucked away.
         .modifier(TabViewNowPlaying(onRemote: selection.wrappedValue == .remote))
         #endif
+    }
+
+    /// iPad: the tabs float at the top and can turn into a sidebar. iPhone: the plain tab bar. (Told it could become
+    /// a sidebar, an iPhone also showed the tab view's search field at the top of the other tabs' pages.)
+    private struct TabsStyle: ViewModifier {
+        func body(content: Content) -> some View {
+            #if os(iOS)
+            if UIDevice.current.userInterfaceIdiom == .pad {
+                content.tabViewStyle(.sidebarAdaptable)
+            } else {
+                content.tabViewStyle(.tabBarOnly)
+            }
+            #else
+            content.tabViewStyle(.sidebarAdaptable)
+            #endif
+        }
     }
 
     #if os(iOS)

@@ -19,11 +19,16 @@ struct PhoneTabStack: View {
 
     var body: some View {
         #if os(iOS)
+        let pad = UIDevice.current.userInterfaceIdiom == .pad
         // An iPad only: a large iPhone on its side is regular width too, and keeps its single list.
-        if section == .settings && UIDevice.current.userInterfaceIdiom == .pad {
+        if section == .settings && pad {
             PadSettingsTab()
-        } else {
+        } else if section == .search || pad {
             NavigationStack { section.view }
+        } else {
+            // iPhone: the tab view's search field is the Search tab's alone. (It's the tab view that's searchable,
+            // for that tab's sake; this keeps its field off the first page of every other tab.)
+            NavigationStack { section.view.toolbar(removing: .search) }
         }
         #else
         NavigationStack { section.view }
