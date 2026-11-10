@@ -43,6 +43,9 @@ final class DriveStream: NSObject {
     /// What Google said when it refused this file for good, if it did (its daily limit for the file, say).
     func refusalNow() -> String? { loader.notes.refusal }
 
+    /// Whether what Google refused it with was its daily limit.
+    func overLimitNow() -> Bool { loader.notes.overLimit }
+
     /// An asset for the player (this object must be kept while it plays).
     func asset() -> AVURLAsset {
         // A scheme of its own, so the player asks this object instead of fetching it itself.
@@ -304,14 +307,17 @@ private final class StreamNotes: @unchecked Sendable {
     private var handed: Int64 = 0
     private var most: Int64 = 0
     private var refused: String?
+    private var limit = false
 
     func asking(_ bytes: Int64) { lock.lock(); requests += 1; asked += bytes; lock.unlock() }
     func got(_ bytes: Int64) { lock.lock(); sent += bytes; lock.unlock() }
     func gave(_ bytes: Int64) { lock.lock(); handed += bytes; lock.unlock() }
     func keeping(_ bytes: Int64) { lock.lock(); most = max(most, bytes); lock.unlock() }
-    func refuse(_ why: String) { lock.lock(); refused = why; lock.unlock() }
+    func refuse(_ why: String, limit isLimit: Bool) { lock.lock(); refused = why; limit = isLimit; lock.unlock() }
 
     var refusal: String? { lock.lock(); defer { lock.unlock() }; return refused }
+    /// Google refused the file with its daily limit.
+    var overLimit: Bool { lock.lock(); defer { lock.unlock() }; return limit }
 
     var tally: String {
         lock.lock(); defer { lock.unlock() }
@@ -825,7 +831,7 @@ private final class Loader: NSObject, AVAssetResourceLoaderDelegate, StreamTask 
             return
         }
         let f = GoogleDrive.failure(code, piece.body)
-        notes.refuse(f.message)
+        notes.refuse(f.message, limit: reason == "downloadQuotaExceeded")
         gaveUp(piece, f)
     }
 

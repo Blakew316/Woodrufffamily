@@ -348,6 +348,92 @@ enum GoogleDrive {
         return ((try? await files(q, orderBy: "name_natural", fields: "files(id,name,mimeType)", limit: 12)) ?? []).map(\.name)
     }
 
+    // MARK: Google's daily limit
+
+    /// Said when Google refuses every film, not only one (a copy wouldn't play either).
+    static let allowanceSpent = "Google Drive has stopped sending films to the family’s app for today (its daily allowance). It comes back by itself, usually within a day."
+
+    /// Whether Google sends [id] right now, asked for its first byte: false when it refuses with its daily limit, true
+    /// when it sends it, nil when that couldn't be found out (no connection, some other answer). Nothing but the
+    /// answer's first lines is read.
+    static func sends(_ id: String) async -> Bool? {
+        guard let signIn = try? await token() else { return nil }
+        var r = URLRequest(url: mediaURL(id))
+        r.setValue("Bearer \(signIn)", forHTTPHeaderField: "Authorization")
+        r.setValue("bytes=0-0", forHTTPHeaderField: "Range")
+        r.timeoutInterval = 15
+        guard let (bytes, resp) = try? await URLSession.shared.bytes(for: r) else { return nil }
+        defer { bytes.task.cancel() }
+        let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+        if code == 200 || code == 206 { return true }
+        guard code == 403 else { return nil }
+        var body = Data()
+        do {
+            for try await b in bytes {
+                body.append(b)
+                if body.count >= 16_384 { break }
+            }
+        } catch { return nil }
+        return reason(body) == "downloadQuotaExceeded" ? false : nil
+    }
+
+    /// The name of the copy of [id] the app keeps in its own folder in Drive.
+    private static func copyName(_ id: String) -> String { "film-copy-\(id)" }
+
+    /// What's in the app's own folder in Drive (hidden from the family's Drive pages).
+    private static func ownFiles() async throws -> [[String: Any]] {
+        var c = URLComponents(string: filesBase)!
+        c.queryItems = [.init(name: "spaces", value: "appDataFolder"), .init(name: "pageSize", value: "200"),
+                        .init(name: "fields", value: "files(id,name,createdTime)")]
+        return try await get(c.url!)["files"] as? [[String: Any]] ?? []
+    }
+
+    /// The copy of [id] made earlier, if there is one.
+    static func copy(of id: String) async throws -> String? {
+        let name = copyName(id)
+        return try await ownFiles().first { $0["name"] as? String == name }?["id"] as? String
+    }
+
+    /// Makes a copy of [id] in the app's own folder in Drive: to Google a file of its own, with a daily limit of its
+    /// own. Google makes it, from one place in Drive to another: nothing is downloaded. It takes as much of Drive's
+    /// space as the film (`removeOldCopies` removes it two days on).
+    static func makeCopy(of id: String) async throws -> String {
+        if let have = try? await copy(of: id) { return have }
+        var c = URLComponents(string: "\(filesBase)/\(id)/copy")!
+        c.queryItems = [.init(name: "supportsAllDrives", value: "true"), .init(name: "fields", value: "id")]
+        var r = URLRequest(url: c.url!)
+        r.httpMethod = "POST"
+        r.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        r.setValue("Bearer \(try await token())", forHTTPHeaderField: "Authorization")
+        r.httpBody = try JSONSerialization.data(withJSONObject: ["name": copyName(id), "parents": ["appDataFolder"]] as [String: Any])
+        // A big film can take Google a while.
+        r.timeoutInterval = 600
+        let (d, resp) = try await URLSession.shared.data(for: r)
+        let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+        if code == 200, let new = (try? JSONSerialization.jsonObject(with: d) as? [String: Any])?["id"] as? String { return new }
+        let why = reason(d)
+        Diagnostics.shared.notePlayback("Drive wouldn’t make a copy: \(code)" + (why.isEmpty ? "" : " (\(why))"))
+        if why == "storageQuotaExceeded" {
+            throw Failure("There isn’t room in Google Drive for a copy of this film. Free some space there, or try again tomorrow.")
+        }
+        throw Failure("Google Drive wouldn’t let the app make a copy (\(why.isEmpty ? String(code) : why)). In Google Drive, choose Make a copy on the film and play that.")
+    }
+
+    /// The app's copies made more than two days ago are removed: each takes as much of Drive's space as its film, and
+    /// by then Google sends the film itself again.
+    static func removeOldCopies() async {
+        guard let files = try? await ownFiles() else { return }
+        for f in files {
+            guard let id = f["id"] as? String, let name = f["name"] as? String, name.hasPrefix("film-copy-"),
+                  let made = time(f["createdTime"] as? String), Date().timeIntervalSince1970 - made > 2 * 86_400,
+                  let signIn = try? await token(), let url = URL(string: "\(filesBase)/\(id)") else { continue }
+            var r = URLRequest(url: url)
+            r.httpMethod = "DELETE"
+            r.setValue("Bearer \(signIn)", forHTTPHeaderField: "Authorization")
+            _ = try? await URLSession.shared.data(for: r)
+        }
+    }
+
     /// The file's bytes, from where the player or a download asks.
     nonisolated static func mediaURL(_ id: String, acknowledgeAbuse: Bool = false) -> URL {
         var c = URLComponents(string: "\(filesBase)/\(id)")!

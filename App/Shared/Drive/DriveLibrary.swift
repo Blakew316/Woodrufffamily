@@ -791,6 +791,20 @@ final class DriveLibrary: WatchSource {
         }
     }
 
+    /// A few other films' files than [id], from across the library (to see whether Google refuses only one file or
+    /// all of them).
+    func otherFiles(than id: String) -> [(id: String, title: String)] {
+        var all: [(id: String, title: String)] = []
+        for e in saved.movies {
+            if let file = e.file, file != id { all.append((file, e.title)) }
+        }
+        guard all.count > 3 else { return all }
+        return [all[0], all[all.count / 2], all[all.count - 1]]
+    }
+
+    /// The app's own copies of films are looked through once each launch (`GoogleDrive.removeOldCopies`).
+    @ObservationIgnored private var copiesLookedAt = false
+
     nonisolated func artURL(_ s: String?, small: Bool) -> URL? {
         guard var s, s.hasPrefix("http") else { return nil }
         if small { s = s.replacingOccurrences(of: "/t/p/w1280/", with: "/t/p/w300/") }
@@ -826,6 +840,10 @@ final class DriveLibrary: WatchSource {
                 do { saved.syncFile = try await upload(mine) } catch { unsynced = true; throw error }
             }
             saved.synced = nowMS
+            if !copiesLookedAt {
+                copiesLookedAt = true
+                Task { await GoogleDrive.removeOldCopies() }
+            }
             store()
             await resolveContexts()
         } catch {

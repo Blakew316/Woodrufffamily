@@ -16,6 +16,13 @@ struct PhonePlay: Identifiable {
     var start: Double   // seconds
     /// The title's picture, shown while it starts.
     var art: URL? = nil
+    /// Playing the app's own copy of the film's file in Drive: the file it's a copy of.
+    var copyOf: String? = nil
+
+    /// The same film, from [copy] of its file [original].
+    func playing(copy: String, of original: String) -> PhonePlay {
+        PhonePlay(source: .drive(copy), key: key, title: title, start: start, art: art, copyOf: original)
+    }
 }
 
 @Observable @MainActor
@@ -126,6 +133,35 @@ final class PhonePlayback {
             return nil
         }
         return PhonePlay(source: .url(c.streamURL(a.key)), key: a.key, title: a.title, start: start)
+    }
+
+    // MARK: Google's daily limit
+
+    static let limitTitle = "Google Drive’s Daily Limit"
+    static let copyOffer = "Google Drive won’t send this film again today. The app can make a copy of it in your Google Drive and play that. The copy needs as much free space as the film, and is removed after two days."
+    static let makingCopy = "Making a copy in Google Drive…"
+
+    /// What can be done about a film Google refused with its daily limit: nothing when it refuses the others too (the
+    /// app's whole allowance for the day), else the copy made earlier, else a copy can be offered.
+    enum LimitAnswer { case allowanceSpent, copy(String), offerCopy }
+
+    static func limitAnswer(for id: String) async -> LimitAnswer {
+        // A few other films (one of them may be refused for itself): any that Google still sends means it's this file.
+        var sent: String?, refused: [String] = []
+        for other in DriveLibrary.shared.otherFiles(than: id) {
+            guard let answer = await GoogleDrive.sends(other.id) else { continue }
+            if answer { sent = other.title; break }
+            refused.append(other.title)
+        }
+        // Two others refused and none sent: it isn't this file (one other alone could be refused for itself).
+        if sent == nil, refused.count >= 2 {
+            Diagnostics.shared.notePlayback("Google refuses \(refused.joined(separator: ", ")) too: the app’s whole allowance for the day is used up, not only this file’s")
+            return .allowanceSpent
+        }
+        Diagnostics.shared.notePlayback(sent.map { "Google still sends \($0): only this file is refused" }
+                                        ?? "Whether Google refuses other films too couldn’t be found out")
+        if let copy = try? await GoogleDrive.copy(of: id) { return .copy(copy) }
+        return .offerCopy
     }
 
     /// Everything the player said about a failure, for the diagnostics: each error and the one under it, and its error
@@ -245,6 +281,8 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
     private var presentAttempts = 0
     /// Why it can't play, found before the player was on screen (said once it is).
     private var pendingFailure: String?
+    /// A copy to offer (Google's daily limit for the file), found before the player was on screen.
+    private var pendingOffer: (play: PhonePlay, id: String)?
     /// Says so when it hasn't started in time.
     private var watchdog: Task<Void, Never>?
     /// Playing Drive's address directly: its file, when the sign-in it was given runs out (seconds since 1970), and
@@ -438,6 +476,11 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
                     let heard = self.stream?.recentFailure
                     let detail = (heard as NSError?).map { ", \($0.domain) \($0.code)" } ?? ""
                     Diagnostics.shared.notePlayback("\(play.title): couldn’t play (\(code)\(detail))" + (refusal.map { ": \($0)" } ?? ""))
+                    // Google's daily limit for the file: a copy of it may play (not asked of a copy that was refused too).
+                    if self.stream?.overLimitNow() == true, case .drive(let id) = play.source, play.copyOf == nil {
+                        self.overLimit(play, id: id, words: refusal ?? words)
+                        return
+                    }
                     self.failed(refusal ?? heard.map { PhonePlayback.failure($0, play) } ?? words)
                 } else {
                     self.ready(p, play)
@@ -643,6 +686,10 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
                 guard let self, self.controller === c else { return }
                 self.onScreen = true
                 if self.fileReady, let p = self.player, let play = self.current { self.ready(p, play) }
+                if let offer = self.pendingOffer {
+                    self.pendingOffer = nil
+                    self.offerCopy(offer.play, id: offer.id)
+                }
                 guard let words = self.pendingFailure else { return }
                 self.pendingFailure = nil
                 self.failed(words)
@@ -691,6 +738,58 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
             a.extendedLanguageTag = "und"
             self.metadata = [Self.titleItem(play.title), a]
             self.item?.externalMetadata = self.metadata
+        }
+    }
+
+    /// Google refused the film with its daily limit: the copy made earlier is played, or one is offered, unless
+    /// Google is refusing the other films too (then a copy wouldn't play either, and that is what's said).
+    private func overLimit(_ play: PhonePlay, id: String, words: String) {
+        Task { @MainActor [weak self] in
+            let answer = await PhonePlayback.limitAnswer(for: id)
+            guard let self, self.current?.id == play.id else { return }
+            switch answer {
+            case .allowanceSpent: self.failed(GoogleDrive.allowanceSpent)
+            case .copy(let copy): self.present(play.playing(copy: copy, of: id))
+            case .offerCopy: self.offerCopy(play, id: id)
+            }
+        }
+    }
+
+    /// Offers to make a copy of the film in Google Drive and play that.
+    private func offerCopy(_ play: PhonePlay, id: String) {
+        guard let c = controller, current?.id == play.id else { return }
+        // Not on screen yet: offered as soon as it is.
+        guard c.presentingViewController != nil else { pendingOffer = (play, id); return }
+        guard c.presentedViewController == nil else { return }
+        let alert = UIAlertController(title: PhonePlayback.limitTitle, message: PhonePlayback.copyOffer, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "Play a Copy", style: .default) { [weak self] _ in self?.makeCopy(play, id: id) })
+        alert.addAction(UIAlertAction(title: "Not Now", style: .cancel) { [weak c] _ in c?.dismiss(animated: true) })
+        c.present(alert, animated: true)
+    }
+
+    /// Has Google make the copy (it can take a minute for a big film), then plays it.
+    private func makeCopy(_ play: PhonePlay, id: String) {
+        guard let c = controller, current?.id == play.id else { return }
+        let wait = UIAlertController(title: PhonePlayback.makingCopy, message: nil, preferredStyle: .alert)
+        c.present(wait, animated: true)
+        let shown = Date()
+        Task { @MainActor [weak self] in
+            let made: Result<String, Error>
+            do { made = .success(try await GoogleDrive.makeCopy(of: id)) } catch { made = .failure(error) }
+            // The note comes down first, whatever follows: not before it has finished coming up (taking it down
+            // mid-way doesn't take), and a moment is given for it to go.
+            let up = Date().timeIntervalSince(shown)
+            if up < 0.8 { try? await Task.sleep(nanoseconds: UInt64((0.8 - up) * 1_000_000_000)) }
+            wait.dismiss(animated: false)
+            try? await Task.sleep(nanoseconds: 200_000_000)
+            guard let self, self.current?.id == play.id else { return }
+            switch made {
+            case .success(let copy):
+                Diagnostics.shared.notePlayback("\(play.title): a copy made in Google Drive, played instead")
+                self.present(play.playing(copy: copy, of: id))
+            case .failure(let error):
+                self.failed((error as? GoogleDrive.Failure)?.message ?? error.localizedDescription)
+            }
         }
     }
 
@@ -755,6 +854,7 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
         startAnyway?.cancel()
         startAnyway = nil
         pendingFailure = nil
+        pendingOffer = nil
         player?.pause()
         player?.replaceCurrentItem(with: nil)
         player = nil
@@ -876,6 +976,11 @@ final class MacPlayer: NSObject, NSWindowDelegate {
                 if item.status == .failed {
                     let words = self.stream?.refusalNow() ?? PhonePlayback.failure(self.stream?.recentFailure ?? item.error, play)
                     Diagnostics.shared.notePlayback("\(play.title): couldn’t play (\(PhonePlayback.errorTrail(item))): \(words)")
+                    // Google's daily limit for the file: a copy of it may play (not asked of a copy that was refused too).
+                    if self.stream?.overLimitNow() == true, case .drive(let id) = play.source, play.copyOf == nil {
+                        await self.overLimit(play, id: id)
+                        return
+                    }
                     self.failed(words)
                     return
                 }
@@ -888,6 +993,39 @@ final class MacPlayer: NSObject, NSWindowDelegate {
             }
             guard let self, self.player === p else { return }
             self.failed(PhonePlayback.tooSlow)
+        }
+    }
+
+    /// Google refused the film with its daily limit: the copy made earlier is played, or one is offered, unless
+    /// Google is refusing the other films too (then a copy wouldn't play either, and that is what's said).
+    private func overLimit(_ play: PhonePlay, id: String) async {
+        let answer = await PhonePlayback.limitAnswer(for: id)
+        guard current?.id == play.id, let w = window else { return }
+        switch answer {
+        case .allowanceSpent:
+            failed(GoogleDrive.allowanceSpent)
+        case .copy(let copy):
+            present(play.playing(copy: copy, of: id))
+        case .offerCopy:
+            let offer = NSAlert()
+            offer.messageText = PhonePlayback.limitTitle
+            offer.informativeText = PhonePlayback.copyOffer
+            offer.addButton(withTitle: "Play a Copy")
+            offer.addButton(withTitle: "Not Now")
+            guard await offer.beginSheetModal(for: w) == .alertFirstButtonReturn else { w.close(); return }
+            guard current?.id == play.id else { return }
+            // Google makes the copy (it can take a minute for a big film).
+            w.title = PhonePlayback.makingCopy
+            do {
+                let copy = try await GoogleDrive.makeCopy(of: id)
+                guard current?.id == play.id else { return }
+                Diagnostics.shared.notePlayback("\(play.title): a copy made in Google Drive, played instead")
+                present(play.playing(copy: copy, of: id))
+            } catch {
+                guard current?.id == play.id else { return }
+                w.title = play.title
+                failed((error as? GoogleDrive.Failure)?.message ?? error.localizedDescription)
+            }
         }
     }
 
