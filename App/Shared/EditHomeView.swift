@@ -1,7 +1,9 @@
 import SwiftUI
 import WoodruffKit
 
-/// How Home is arranged: which sections show and in what order, and the order of the tiles in each.
+/// How Home is arranged: which sections show and in what order, and the order of the tiles in each. Each device keeps
+/// its own (it isn't one of the settings that travel): moving, resizing, starring or hiding something on one device
+/// changes nothing on the family's other devices.
 @Observable @MainActor
 final class HomeLayout {
     static let shared = HomeLayout()
@@ -30,7 +32,7 @@ final class HomeLayout {
             draggingTile = nil
         }
     }
-    /// Taking in a layout another device saved: nothing is written back meanwhile (it's already saved as it is).
+    /// Several parts are being set at once (Reset): it's saved once at the end, not once for each.
     @ObservationIgnored private var applying = false
 
     static let allSections = ["rooms", "cameras", "tvs", "speakers", "lights", "devices", "wifi"]
@@ -73,7 +75,8 @@ final class HomeLayout {
     var favorites: [String] { didSet { save() } }
 
     func isFavorite(_ id: String) -> Bool { favorites.contains(id) }
-    /// When each favourite was last added (positive) or removed (negative), so devices merge them one by one.
+    /// When each favourite was last added (positive) or removed (negative). Nothing reads them while each device keeps
+    /// its own Home; they're kept up so favourites could be merged one by one again.
     var favoriteStamps: [String: Double] { didSet { save() } }
     /// Each Home tab's tiles (Favorites, a room) in the order they were arranged.
     var boards: [String: [String]] { didSet { save() } }
@@ -125,26 +128,6 @@ final class HomeLayout {
         boards = s?.boards ?? [:]
         spans = s?.spans ?? [:]
         if (s?.version ?? 1) < 2 { save() }
-    }
-
-    /// Reads the layout again (after another of the family's devices changed it), every part of it, without writing
-    /// it back part-way through.
-    func reload() {
-        guard let s = Saved.load("homeLayout", as: Stored.self) else { return }
-        applying = true
-        defer { applying = false }
-        var secs = s.sections.filter { Self.allSections.contains($0) }
-        for k in Self.allSections where !secs.contains(k) { secs.append(k) }
-        if secs != sections { sections = secs }
-        if Set(s.hiddenSections) != hiddenSections { hiddenSections = Set(s.hiddenSections) }
-        if s.order != order { order = s.order }
-        if Set(s.hiddenItems) != hiddenItems { hiddenItems = Set(s.hiddenItems) }
-        if let g = s.groupByRoom, g != groupByRoom { groupByRoom = g }
-        if let f = s.favorites, f != favorites { favorites = f }
-        if let p = s.pinnedRooms, p != pinnedRooms { pinnedRooms = p }
-        if let fs = s.favoriteStamps, fs != favoriteStamps { favoriteStamps = fs }
-        if let b = s.boards, b != boards { boards = b }
-        if let sp = s.spans, sp != spans { spans = sp }
     }
 
     private func save() {

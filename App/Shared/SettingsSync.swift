@@ -51,22 +51,22 @@ final class SettingsSync {
         // Google Photos and Calendar, signed in here and handed to the TVs (GoogleGrants).
         "gphotos.refresh", "gphotos.scopes", "gphotos.at", "gcal.refresh", "gcal.scopes", "gcal.at",
     ]
-    /// Saved settings that travel (JSON in UserDefaults).
-    static let dataKeys = ["smartNames", "smartRooms", "smartExtraRooms", "goveeManualIPs", "homeLayout", "extras", "hiddenAlerts", "pushTokens", "diagnostics",
+    /// Saved settings that travel (JSON in UserDefaults). Home's layout ("homeLayout": the tiles' order and sizes,
+    /// Favorites, the room bar, what's hidden) is not one of them: each device keeps its own, so arranging Home on
+    /// one changes nothing on the others.
+    static let dataKeys = ["smartNames", "smartRooms", "smartExtraRooms", "goveeManualIPs", "extras", "hiddenAlerts", "pushTokens", "diagnostics",
                            "familyPairings", "atvRemote.paired", "smartSceneColors", "sonosRooms",
                            "scenes", "nestCameras"]
     /// Plain preferences that travel (property-list values in UserDefaults): alert choices, the remote's click, and
-    /// Now Playing on the Lock Screen. (Home's tile sizes travel with the Home layout.)
+    /// Now Playing on the Lock Screen.
     static let valueKeys = ["watch.source", "nest.alert.person", "nest.alert.motion", "nest.alert.doorbell", "notifyFleet", "liveActivity", "remoteClick", "sonosSeed",
                             "scenes.filled", "vehicle.cameras", "vehicle.test", "vehicle.minConfidence", "vehicle.minChanged",
                             "vehicle.maxChanged", "watch.cellularDownloads", "camera.native", "cameraShare.hosts"]
 
-    /// Saved settings kept entry by entry (one TV's name, one light's room, one paired TV, one tile's size; the Home
-    /// layout part by part), so two devices changing different entries at the same time both keep their change.
-    static let entryKeys: Set<String> = ["ud:smartNames", "ud:smartRooms", "ud:extras", "ud:hiddenAlerts", "ud:pushTokens", "ud:homeLayout", "ud:diagnostics",
+    /// Saved settings kept entry by entry (one TV's name, one light's room, one paired TV), so two devices changing
+    /// different entries at the same time both keep their change.
+    static let entryKeys: Set<String> = ["ud:smartNames", "ud:smartRooms", "ud:extras", "ud:hiddenAlerts", "ud:pushTokens", "ud:diagnostics",
                                          "ud:familyPairings", "ud:atvRemote.paired", "ud:smartSceneColors"]
-    /// Kept whole before they were kept part by part: a copy from then counts each part as old as the whole was.
-    static let wholeBefore: Set<String> = ["ud:homeLayout"]
 
     /// "Saved on Living Room, Master Bedroom" for Settings.
     private(set) var status = "Not synced yet"
@@ -179,12 +179,8 @@ final class SettingsSync {
         lastKeychainLook = Date()
         seenGeneration = Keychain.generation
         // Settings from before syncing began count as old: they fill in what's missing elsewhere but never
-        // replace anything set on another device (a new device mustn't overwrite the family's layout).
+        // replace anything set on another device (a new device mustn't overwrite the family's names and rooms).
         for (k, v) in last where stamps[k] == nil && !v.isEmpty { stamps[k] = 1 }
-        // Kept whole until now, part by part from now on: each part counts as old as the whole was.
-        for k in Self.wholeBefore where entryStamps[k] == nil {
-            if let v = last[k], !v.isEmpty { entryStamps[k] = SyncMerge.uniformStamps(v, stamp(k)) }
-        }
         saveStamps()
         watch()
         watchSignIns()
@@ -598,15 +594,11 @@ final class SettingsSync {
             let mine = stamp(k)
 
             if Self.entryKeys.contains(k) {
-                var theirs = (item["e"] as? [String: Any] ?? [:]).compactMapValues { ($0 as? NSNumber)?.doubleValue }
-                // A copy from before this setting was kept part by part: each part is as old as the whole.
-                if item["e"] == nil && Self.wholeBefore.contains(k) { theirs = SyncMerge.uniformStamps(v, t) }
+                let theirs = (item["e"] as? [String: Any] ?? [:]).compactMapValues { ($0 as? NSNumber)?.doubleValue }
                 let ours = entryStamps[k] ?? [:]
                 let l = local.isEmpty ? "{}" : local
                 let r = v.isEmpty ? "{}" : v
-                let m = k == "ud:homeLayout"
-                    ? SyncMerge.mergeLayout(local: l, localStamps: ours, remote: r, remoteStamps: theirs)
-                    : SyncMerge.mergeEntries(local: l, localStamps: ours, remote: r, remoteStamps: theirs)
+                let m = SyncMerge.mergeEntries(local: l, localStamps: ours, remote: r, remoteStamps: theirs)
                 let mergedValue = m.value == "{}" && local.isEmpty ? "" : m.value
                 if mergedValue != local { write(k, mergedValue); last[k] = mergedValue; written.insert(k) }
                 entryStamps[k] = m.stamps
@@ -658,7 +650,6 @@ final class SettingsSync {
     private func reload(_ keys: Set<String>, was before: [String: String]) {
         func any(_ prefixes: [String]) -> Bool { keys.contains { k in prefixes.contains { k.hasPrefix($0) } } }
         if any(["ud:smartNames", "ud:smartRooms", "ud:smartExtraRooms", "ud:goveeManualIPs", "ud:smartSceneColors", "ud:sonosRooms"]) { SmartHome.shared.reloadSaved() }
-        if keys.contains("ud:homeLayout") { HomeLayout.shared.reload() }
         if keys.contains("ud:scenes") { SceneStore.shared.reload() }
         if any(["kc:gphotos.", "kc:gcal."]), let fleet { Task { await GoogleGrants.handOut(fleet) } }
         if keys.contains("ud:nestCameras") { NestCameras.shared.reloadSaved() }
