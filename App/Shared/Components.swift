@@ -293,6 +293,9 @@ struct ActionButton<Label: View>: View {
 struct TVPicker: View {
     @Environment(Fleet.self) private var fleet
     var allowAll = false
+    /// In the Mac window's toolbar: the same type and the same room round its name as the pills beside it there
+    /// (Home | Watch | Settings, Movies | TV Shows), so it's exactly as tall as they are.
+    var bar = false
 
     #if os(iOS)
     /// The menu's choice for every TV at once (no TV has this id).
@@ -344,14 +347,16 @@ struct TVPicker: View {
             }
             #endif
         } label: {
-            HStack(spacing: 6) {
-                Circle().fill(dotColor).frame(width: 7, height: 7)
+            HStack(spacing: bar ? 8 : 6) {
+                Circle().fill(dotColor).frame(width: bar ? 8 : 7, height: bar ? 8 : 7)
                 Text(allowAll && fleet.remoteAll ? "All TVs" : (fleet.selected?.name ?? "TV"))
-                    .font(.headline)
+                    .font(bar ? .title3.weight(.semibold) : .headline)
+                    .lineLimit(1)
                 Image(systemName: "chevron.down").font(.caption.weight(.bold)).foregroundStyle(.secondary)
             }
             .foregroundStyle(.primary)
-            .padding(.horizontal, 14).padding(.vertical, 9)
+            .padding(.horizontal, bar ? 18 : 14).padding(.vertical, bar ? 10 : 9)
+            .modifier(BarPillType(on: bar))
             .contentShape(Capsule())
             .glass(Capsule())
         }
@@ -364,6 +369,15 @@ struct TVPicker: View {
         if allowAll && fleet.remoteAll { return fleet.tvs.contains(where: \.online) ? .green : .gray }
         guard let t = fleet.selected else { return .gray }
         return t.online ? (t.link == "refused" ? .orange : .green) : .gray
+    }
+}
+
+/// The size of type of the Mac toolbar's pills (as Home's tabs: a size up), for the TV picker when it's one of them.
+/// Elsewhere the picker's type is left alone, to follow the device's own text size.
+private struct BarPillType: ViewModifier {
+    var on: Bool
+    func body(content: Content) -> some View {
+        if on { content.dynamicTypeSize(.xxLarge) } else { content }
     }
 }
 

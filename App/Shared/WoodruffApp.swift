@@ -788,21 +788,23 @@ private struct MacWatchSearch: ViewModifier {
     }
 }
 
-/// Home | Watch | Settings in the Mac window's toolbar, the size of Home's room tabs: the same type and the same
-/// room round each name, so the bar and the tabs under it match. One piece of glass with the three in it; the one
-/// showing is lit. Picking one goes to its first page.
-private struct MacSectionBar: View {
-    /// The section lit (none on a TV's, a speaker's or a light's own page).
-    var shown: AppSection?
-    var pick: (AppSection) -> Void
+/// A row of names in one piece of glass, the one showing lit: the Mac toolbar's Home | Watch | Settings, and Watch's
+/// Movies | TV Shows beside it. The size of Home's room tabs: the same type and the same room round each name, so
+/// every pill in the bar and the tabs under it match. Picking one says so.
+private struct MacPillBar<Value: Hashable>: View {
+    var items: [(value: Value, title: String)]
+    /// The one lit (none of them: nil).
+    var shown: Value?
+    var pick: (Value) -> Void
 
     var body: some View {
         HStack(spacing: 0) {
-            ForEach(AppSection.mac) { s in
-                let on = shown == s
-                Button { pick(s) } label: {
-                    Text(s.title)
+            ForEach(items, id: \.value) { item in
+                let on = shown == item.value
+                Button { pick(item.value) } label: {
+                    Text(item.title)
                         .font(.title3.weight(.semibold))
+                        .lineLimit(1)
                         .padding(.horizontal, 20).padding(.vertical, 10)
                         .foregroundStyle(Color.primary.opacity(on ? 1 : 0.8))
                         .background { if on { Capsule().fill(Color.primary.opacity(0.18)) } }
@@ -814,6 +816,7 @@ private struct MacSectionBar: View {
         }
         // The same size of type as Home's tabs (Home draws everything a size up).
         .dynamicTypeSize(.xxLarge)
+        .fixedSize()
         .glass(Capsule(), interactive: false)
         .animation(.smooth(duration: 0.2), value: shown)
     }
@@ -908,6 +911,9 @@ struct MacRoot: View {
                         if kept.contains(s) || showing(s) { keptPage(s) }
                     }
                     watchAndOthers
+                    // Watch's first page has no name at the window's top left (it said "Watch" over "Movies" there,
+                    // beside the pills that say the same). Said by a view that's there only then, as Home's is.
+                    if watchRow { Color.clear.toolbar(removing: .title).allowsHitTesting(false) }
                 }
                 .environment(\.macPageTitle, query.isEmpty ? rootTitle : "Search")
                 // The window's title is the page's name; under it on Watch, the library showing.
@@ -1110,10 +1116,22 @@ struct MacRoot: View {
             ToolbarItem(placement: .navigation) { MacToolbarGreeting(weather: width >= 1430, large: width >= 1160) }
                 .sharedBackgroundVisibility(.hidden)
         }
+        // Watch's first page: Movies | TV Shows and the TV it plays on, at the left of Home | Watch | Settings, as pills
+        // the size of those. (They had a row of their own under the toolbar, Movies | TV Shows a square-cornered
+        // switch in its middle.) In a window too narrow for them here they stay in that row.
+        if watchPillsInToolbar {
+            ToolbarItem(placement: .navigation) {
+                HStack(spacing: 10) {
+                    libraryPicker
+                    TVPicker(bar: true)
+                }
+            }
+            .sharedBackgroundVisibility(.hidden)
+        }
         // Home | Watch | Settings, the size of Home's own tabs under it (it was the system's small switch). It draws
         // its own glass.
         ToolbarItem(placement: .principal) {
-            MacSectionBar(shown: shownSection) { go(to: $0.rawValue) }
+            MacPillBar(items: AppSection.mac.map { (value: $0, title: $0.title) }, shown: shownSection) { go(to: $0.rawValue) }
         }
         .sharedBackgroundVisibility(.hidden)
         // The thermostat, level with Edit Home and the remote, as tall as they are: on the pages that had it in the
@@ -1134,6 +1152,10 @@ struct MacRoot: View {
                 .help("Remote (⌥⌘R)")
         }
     }
+
+    /// Watch's first page, in a window wide enough: Movies | TV Shows and the TV it plays on are in the toolbar (in a
+    /// narrower one they keep their row under it).
+    private var watchPillsInToolbar: Bool { watchRow && nav.path.isEmpty && width >= 1340 }
 
     /// Home's or Watch's first page, with nothing opened on top: the toolbar has the thermostat.
     private var thermostatInToolbar: Bool { (homeRow || watchRow) && nav.path.isEmpty }
@@ -1178,7 +1200,7 @@ struct MacRoot: View {
     /// over search results, which start right under the toolbar), what's playing at the bottom, and the window's
     /// toolbar see-through (not over search results, which scroll straight under it).
     private var rootChrome: MacPageChrome<some View, some View> {
-        MacPageChrome(header: rootHeader, headerSpacing: watchRow ? nil : 0,
+        MacPageChrome(header: rootHeader, headerSpacing: watchRow && !watchPillsInToolbar ? nil : 0,
                       toolbarBackground: query.isEmpty ? .hidden : .automatic, bottom: nowPlaying)
     }
 
@@ -1214,18 +1236,17 @@ struct MacRoot: View {
     }
 
     @ViewBuilder private var rootHeader: some View {
-        if watchRow { headerRow }
+        if watchRow {
+            // (With its pills in the toolbar, a little room between the toolbar and the banner.)
+            if watchPillsInToolbar { Color.clear.frame(height: 10) } else { headerRow }
+        }
     }
 
-    /// Watch's Movies | TV Shows.
+    /// Watch's Movies | TV Shows: pills, as Home | Watch | Settings is.
     private var libraryPicker: some View {
-        Picker("Library", selection: $watchSection) {
-            Text("Movies").tag("movies")
-            Text("TV Shows").tag("shows")
+        MacPillBar(items: [(value: "movies", title: "Movies"), (value: "shows", title: "TV Shows")], shown: watchSection) {
+            watchSection = $0
         }
-        .pickerStyle(.segmented)
-        .labelsHidden()
-        .fixedSize()
     }
 
     /// The row above Watch's first page, under the toolbar: Movies | TV Shows and the TV it plays on. (The thermostat
@@ -1241,7 +1262,7 @@ struct MacRoot: View {
                     libraryPicker
                     Spacer(minLength: 8)
                 }
-                TVPicker()
+                TVPicker(bar: true)
             }
             if libraryCentred { libraryPicker }
         }
