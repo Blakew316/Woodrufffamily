@@ -976,6 +976,7 @@ struct MacRoot: View {
     /// Where the toolbar's Back goes ("Back to Watch"), for its tooltip.
     private var backHelp: String {
         if let open = nav.path.last { return "Back to \(open.backTo) (⌘[)" }
+        if MacActions.canGoBack && query.isEmpty { return "Back (⌘[)" }
         if !query.isEmpty { return "Back to \(rootTitle) (⌘[)" }
         return "Back"
     }
@@ -1127,18 +1128,37 @@ struct MacRoot: View {
 enum SpaceKey {
     private static var monitor: Any?
     /// A page's own use for Space, tried before the TV's play and pause (this monitor has every Space before any
-    /// page does): Files' Quick Look for the file under the pointer. True when it took the press.
+    /// page does): Files' Quick Look for the file picked. True when it took the press.
     static var page: (() -> Bool)?
+    /// When a letter was last typed into a list (a Mac's list jumps to the row whose name is typed): a Space just
+    /// after it is part of that name ("Camera Alerts"), not the TV's.
+    private static var typedInList = Date.distantPast
 
     static func install() {
         guard monitor == nil else { return }
         monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { e in
-            guard e.keyCode == 49, e.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty,
+            let plain = e.modifierFlags.intersection([.command, .option, .control]).isEmpty
+            guard e.keyCode == 49 else {
+                if plain, NSApp.keyWindow?.firstResponder is NSTableView,
+                   e.charactersIgnoringModifiers?.rangeOfCharacter(from: .alphanumerics) != nil {
+                    typedInList = Date()
+                }
+                return e
+            }
+            // Only in Woodruff's own window (the Mini Player's too): not in this Mac's Settings window, where Space
+            // presses the control the keyboard is on.
+            guard plain, !e.modifierFlags.contains(.shift),
                   let window = NSApp.keyWindow, window.sheetParent == nil, !(window is NSPanel),
+                  window === MainWindow.current || window.identifier?.rawValue.hasPrefix("mini") == true,
                   !(window.firstResponder is NSText) else { return e }
             // A film playing here, and its window (or Apple's full screen for it) has the keyboard, not Woodruff's
             // own: Space goes on to the player, which pauses the film. (It paused the TV instead.)
             if MacPlayer.shared.isOpen, window !== MainWindow.current { return e }
+            // In the middle of a name typed into a list: the list's.
+            if window.firstResponder is NSTableView, Date().timeIntervalSince(typedInList) < 1 {
+                typedInList = Date()
+                return e
+            }
             // Held down: one press, not play-pause-play.
             if !e.isARepeat {
                 if let take = page, take() { return nil }
@@ -1289,7 +1309,7 @@ enum MacSettingsPage: String, CaseIterable, Identifiable {
 /// Mac Settings like System Settings: its pages in a sidebar down the left (the Mac's own list: the arrow keys move
 /// through it, typing a name jumps to it, and the system lights the one picked), the page picked open on the right
 /// to change. A link inside a page to one in the list picks it there; any other shows its page on the right, over
-/// the one it was opened from: Back above its name (⌘[) goes back a page, and the row it belongs to stays lit in the
+/// the one it was opened from: the toolbar's Back (⌘[) goes back a page, and the row it belongs to stays lit in the
 /// list (a click there goes back to that page too).
 struct MacSettingsView: View {
     @Environment(Fleet.self) private var fleet
@@ -1337,8 +1357,6 @@ struct MacSettingsView: View {
         if let i = opened.firstIndex(where: { $0.id == id }) { opened.removeSubrange(i...) }
     }
 
-    /// Back shows above the page's name.
-    private var hasBack: Bool { !opened.isEmpty }
 
     /// A row of the list picked: by a click, the arrow keys, or its name typed. Its page shows, and any page opened
     /// over the last one closes (the row already lit, clicked again, goes back to its own page this way).
@@ -1460,15 +1478,11 @@ struct MacSettingsView: View {
 
             // The page: its name large at the top, then its settings, all on one plain panel matching the list's.
             VStack(alignment: .leading, spacing: 0) {
-                // A page opened from the one picked, or from one opened from it: Back to where it was opened from
-                // (⌘[ too), in line with the page's name under it.
-                if hasBack {
-                    MacBackRow(title: opened.last?.title ?? "", backTo: opened.dropLast().last?.title ?? current?.id ?? "Settings") { back() }
-                        .padding(.horizontal, 10).padding(.top, 14)
-                }
+                // (A page opened from the one picked, or from one opened from it, goes back with the toolbar's Back,
+                // ⌘[: `MacActions.back`. There's no second Back here.)
                 Text(opened.last?.title ?? current?.id ?? "Settings")
                     .font(.system(size: 26, weight: .bold, design: .rounded))
-                    .padding(.horizontal, 28).padding(.top, hasBack ? 0 : 22).padding(.bottom, 4)
+                    .padding(.horizontal, 28).padding(.top, 22).padding(.bottom, 4)
                 ZStack {
                     // The page picked in the list. Under a page opened from it, it's put away (and made afresh on
                     // the way back) unless it's one that's kept: that one stays as it was, out of sight.
@@ -1499,6 +1513,13 @@ struct MacSettingsView: View {
             .environment(\.macPageTitle, current?.id ?? "Settings")
             // The page picked fades in over the last one (the list lights its own row).
             .animation(.smooth(duration: 0.2), value: picked)
+        }
+        // The toolbar's Back and View > Back (⌘[) go back a page here while one is open over the page picked.
+        .onChange(of: opened.count, initial: true) { _, n in MacBar.shared.settingsDepth = n }
+        .onAppear { MacBar.shared.settingsBack = { back() } }
+        .onDisappear {
+            MacBar.shared.settingsDepth = 0
+            MacBar.shared.settingsBack = nil
         }
         .task {
             // What the family's updater last said, read once for Needs Attention (an update that failed shows

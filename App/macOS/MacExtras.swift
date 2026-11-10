@@ -95,6 +95,10 @@ final class MacBar {
     var section: AppSection?
     /// The toolbar has its search field now (Watch's first page, or its search results).
     var searchShown = false
+    /// Pages open inside Settings' right-hand side, over the one picked in its list: how many, and the way back one
+    /// (`MacSettingsView` keeps both while it shows). The toolbar's Back and View > Back go by them.
+    var settingsDepth = 0
+    @ObservationIgnored var settingsBack: (() -> Void)?
 }
 
 /// Menu commands: Check for Updates, Open Woodruff (⌘N), Find (⌘F); in View the sections (⌘1–⌘3), Back (⌘[) and the
@@ -266,13 +270,20 @@ enum MacActions {
         MainWindowOpener.show()
     }
 
-    /// Whether there's somewhere to go back to: a page opened on the window's stack, or Watch's search results.
-    static var canGoBack: Bool { !MacNav.shared.path.isEmpty || MacBar.shared.hasQuery }
+    /// Whether there's somewhere to go back to: a page opened on the window's stack, a page opened inside Settings,
+    /// or Watch's search results.
+    static var canGoBack: Bool { !MacNav.shared.path.isEmpty || inSettingsPage || MacBar.shared.hasQuery }
 
-    /// Back (the toolbar's button): the page on top closes; with none, Watch's search results give way to Watch.
+    /// A page is open inside Settings, over the one picked in its list.
+    private static var inSettingsPage: Bool { MacBar.shared.section == .settings && MacBar.shared.settingsDepth > 0 }
+
+    /// Back (the toolbar's button): the page on top closes; with none, a page opened inside Settings goes back one;
+    /// with none of those, Watch's search results give way to Watch.
     static func back() {
         if !MacNav.shared.path.isEmpty {
             MacNav.shared.pop()
+        } else if inSettingsPage {
+            MacBar.shared.settingsBack?()
         } else if !MacBar.shared.query.isEmpty {
             withAnimation(.smooth(duration: 0.25)) { MacBar.shared.query = "" }
         }
@@ -285,9 +296,8 @@ enum MacActions {
         return window.isMainWindow && window.attachedSheet == nil
     }
 
-    /// View > Back (⌘[): as the toolbar's button, while Woodruff's own window is the one in front. A page inside
-    /// Settings has its own Back and ⌘[ too: there's nothing on the window's stack then, so this is greyed and leaves
-    /// the keys to it.
+    /// View > Back (⌘[): as the toolbar's button, while Woodruff's own window is the one in front (a page inside
+    /// Settings goes back by it too).
     static func backFromMenu() {
         if windowInFront { back() }
     }
