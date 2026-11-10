@@ -97,6 +97,21 @@ final class PhonePlayback {
 
     static let tooSlow = "It didn’t start within 30 seconds. Check the connection, then try again."
 
+    /// What a Drive film needs each second (its size over its length) and the fastest it has arrived here, in megabits
+    /// a second. Nil until both are known.
+    static func rates(_ stream: DriveStream?, _ item: AVPlayerItem?) -> (needs: Double, fastest: Double)? {
+        guard let stream, let size = stream.sizeNow(), let length = item?.duration.seconds, length.isFinite, length > 60 else { return nil }
+        let fastest = stream.fastestNow()
+        guard fastest > 0 else { return nil }
+        return (Double(size) * 8 / length / 1_000_000, fastest)
+    }
+
+    /// Said instead of "it didn't start" when the connection brings the film slower than it plays.
+    static func slowerThanFilm(_ stream: DriveStream?, _ item: AVPlayerItem?) -> String? {
+        guard let r = rates(stream, item), r.fastest < r.needs * 0.95 else { return nil }
+        return String(format: "This film needs about %.0f megabits a second, and the connection here is giving about %.0f, so it can’t keep up. Move closer to the Wi‑Fi, or play it on a TV.", r.needs, r.fastest)
+    }
+
     /// Gets a Drive video ready to start the moment Play is pressed (a title's page asks when it opens): a token
     /// that will last, and the file's first part.
     static func warm(_ a: PlayAction) {
@@ -464,7 +479,7 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
                 if (self.item ?? item).status == .failed, self.directID == nil { return }
             }
             guard let self, self.player === p else { return }
-            self.failed(PhonePlayback.tooSlow)
+            self.failed(PhonePlayback.slowerThanFilm(self.stream, self.item ?? item) ?? PhonePlayback.tooSlow)
         }
         show(c, tries: 0)
     }
@@ -565,7 +580,9 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
     /// dropped frames and how fast Drive sent it; and for a film read from Drive, how much Google was asked for
     /// (what its daily limit for a file counts).
     private func notePlayback(_ p: AVPlayer, _ play: PhonePlay) {
-        let asked = stream.map { "asked Google for \($0.askedNow())" }
+        // What the film needs each second, beside how fast it arrived (in what was asked of Google).
+        let needs = PhonePlayback.rates(stream, p.currentItem).map { String(format: ", the film needs %.0f Mb/s", $0.needs) } ?? ""
+        let asked = stream.map { "asked Google for \($0.askedNow())\(needs)" }
         guard let events = p.currentItem?.accessLog()?.events, !events.isEmpty else {
             // The player keeps no figures of its own for a film it was handed piece by piece.
             if let asked { Diagnostics.shared.notePlayback("\(play.title) via request by request: \(asked)") }
@@ -1009,7 +1026,7 @@ final class MacPlayer: NSObject, NSWindowDelegate {
                 try? await Task.sleep(nanoseconds: 50_000_000)
             }
             guard let self, self.player === p else { return }
-            self.failed(PhonePlayback.tooSlow)
+            self.failed(PhonePlayback.slowerThanFilm(self.stream, item) ?? PhonePlayback.tooSlow)
         }
     }
 
@@ -1067,7 +1084,8 @@ final class MacPlayer: NSObject, NSWindowDelegate {
         report()
         // What Google was asked for (what its daily limit for a file counts), for the Macs' log.
         if let s = stream, let play = current {
-            Diagnostics.shared.notePlayback("\(play.title) via request by request: asked Google for \(s.askedNow())")
+            let needs = PhonePlayback.rates(s, player?.currentItem).map { String(format: ", the film needs %.0f Mb/s", $0.needs) } ?? ""
+            Diagnostics.shared.notePlayback("\(play.title) via request by request: asked Google for \(s.askedNow())\(needs)")
         }
         DriveLibrary.shared.flush()
         // Watch shows where it was left off at once.

@@ -46,6 +46,11 @@ final class DriveStream: NSObject {
     /// Whether what Google refused it with was its daily limit.
     func overLimitNow() -> Bool { loader.notes.overLimit }
 
+    /// The file's size once Google has said, and the fastest the film has arrived here (megabits a second; 0 when
+    /// not enough of it has been timed yet).
+    func sizeNow() -> Int64? { loader.notes.size }
+    func fastestNow() -> Double { loader.notes.fastest }
+
     /// An asset for the player (this object must be kept while it plays).
     func asset() -> AVURLAsset {
         // A scheme of its own, so the player asks this object instead of fetching it itself.
@@ -308,9 +313,33 @@ private final class StreamNotes: @unchecked Sendable {
     private var most: Int64 = 0
     private var refused: String?
     private var limit = false
+    /// The file's size, once Google has said.
+    private var whole: Int64?
+    /// What arrived in each of the last seconds, and the most that arrived in any three seconds running (bytes): how
+    /// fast the connection brings the film when it's asked for all it can give.
+    private var perSecond: [Int: Int64] = [:]
+    private var second = 0
+    private var bestThree: Int64 = 0
 
     func asking(_ bytes: Int64) { lock.lock(); requests += 1; asked += bytes; lock.unlock() }
-    func got(_ bytes: Int64) { lock.lock(); sent += bytes; lock.unlock() }
+    func got(_ bytes: Int64) {
+        lock.lock(); defer { lock.unlock() }
+        sent += bytes
+        let now = Int(Date().timeIntervalSince1970)
+        if now != second {
+            // The three whole seconds before this one.
+            bestThree = max(bestThree, (1...3).reduce(Int64(0)) { $0 + (perSecond[now - $1] ?? 0) })
+            if perSecond.count > 30 { perSecond = perSecond.filter { $0.key >= now - 10 } }
+            second = now
+        }
+        perSecond[now, default: 0] += bytes
+    }
+    func sized(_ bytes: Int64) { lock.lock(); whole = bytes; lock.unlock() }
+
+    /// The file's size, and the fastest the film has arrived (megabits a second, over three seconds; 0 when no three
+    /// seconds of it have been timed yet).
+    var size: Int64? { lock.lock(); defer { lock.unlock() }; return whole }
+    var fastest: Double { lock.lock(); defer { lock.unlock() }; return Double(bestThree) * 8 / 3 / 1_000_000 }
     func gave(_ bytes: Int64) { lock.lock(); handed += bytes; lock.unlock() }
     func keeping(_ bytes: Int64) { lock.lock(); most = max(most, bytes); lock.unlock() }
     func refuse(_ why: String, limit isLimit: Bool) { lock.lock(); refused = why; limit = isLimit; lock.unlock() }
@@ -321,8 +350,9 @@ private final class StreamNotes: @unchecked Sendable {
 
     var tally: String {
         lock.lock(); defer { lock.unlock() }
+        let speed = bestThree > 0 ? String(format: "up to %.0f Mb/s, ", Double(bestThree) * 8 / 3 / 1_000_000) : ""
         return "\(Self.size(asked)) in \(requests == 1 ? "1 request" : "\(requests) requests"), \(Self.size(sent)) sent, "
-            + "\(Self.size(handed)) to the player, \(Self.size(most)) kept at most"
+            + "\(Self.size(handed)) to the player, \(speed)\(Self.size(most)) kept at most"
     }
 
     private static func size(_ bytes: Int64) -> String {
@@ -498,7 +528,7 @@ private final class Loader: NSObject, AVAssetResourceLoaderDelegate, StreamTask 
     private func adopt() {
         guard !adopted, let e = Prefetch.cache[fileID] else { return }
         adopted = true
-        if e.total > 0 { total = e.total }
+        if e.total > 0 { total = e.total; notes.sized(e.total) }
         mime = e.mime
         unplayable = DriveStream.unplayable(e.mime)
         for part in e.parts where !part.data.isEmpty && piece(holding: part.offset) == nil {
@@ -679,7 +709,7 @@ private final class Loader: NSObject, AVAssetResourceLoaderDelegate, StreamTask 
             }
             if code == 416 {
                 // Asked for from past the end of the file: its size is in the answer.
-                if let size = DriveStream.total(response), size > 0 { total = size }
+                if let size = DriveStream.total(response), size > 0 { total = size; notes.sized(size) }
                 byTask[dataTask.taskIdentifier] = nil
                 piece.task = nil
                 answer(.cancel)
@@ -703,6 +733,7 @@ private final class Loader: NSObject, AVAssetResourceLoaderDelegate, StreamTask 
             if total == nil, response.expectedContentLength > 0 { total = response.expectedContentLength }
         }
         if let size = DriveStream.total(response), size > 0 { total = size }
+        if let size = total { notes.sized(size) }
         if mime == nil { mime = DriveStream.mime(response) }
         // A file Apple's player can't open: said at once, instead of the player reading on before giving up.
         if unplayable == nil, let why = DriveStream.unplayable(mime) {
