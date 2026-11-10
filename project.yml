@@ -170,6 +170,8 @@ targets:
       # Apple TV versions of the few iPhone-only pieces). Not the WebRTC camera player: there's no WebRTC for tvOS.
       - path: App/Shared
         excludes: [NativeCamera.swift, CameraSound.swift, Notifier.swift]
+      # Apple Home (the iPhone app's own code: HomeKit is on tvOS too): its lights, thermostat, locks and sensors.
+      - path: App/iOS/HomeKitLights.swift
       # The sample family's pictures (-demo YES), for the screenshot run.
       - path: App/Resources/Demo
     dependencies:
@@ -181,6 +183,8 @@ targets:
       path: App/TV/WoodruffFamilyTV.entitlements
       properties:
         com.apple.security.application-groups: [group.com.blakew316.woodruff.tv]
+        # Apple Home. Xcode's signing on the Mac Studio turns the capability on for the app's identifier by itself.
+        com.apple.developer.homekit: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.blakew316.woodruff.tv
@@ -197,6 +201,8 @@ targets:
         NSLocalNetworkUsageDescription: Woodruff finds and controls the family’s TVs, Sonos speakers and lights on your network.
         NSLocationWhenInUseUsageDescription: Woodruff shows the weather where you are on Home.
         NSPhotoLibraryUsageDescription: Woodruff shows the album you pick as a slideshow on the Top Shelf.
+        NSHomeKitUsageDescription: Show and control your Apple Home lights, thermostat, locks, plugs and sensors next to your TVs.
+        WoodruffHomeKit: "YES"
         # The Top Shelf's photos open the app (woodruff://home).
         CFBundleURLTypes:
           - CFBundleURLName: com.blakew316.woodruff.tv

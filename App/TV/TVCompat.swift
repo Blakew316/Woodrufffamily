@@ -4,7 +4,7 @@ import UniformTypeIdentifiers
 import WoodruffKit
 
 // The iPhone app's own screens run on Apple TV (App/Shared). These are the few iPhone-only pieces they reach for,
-// as Apple TV versions: no haptics, widgets, Live Activities or Apple Home here, and no live camera video (Apple TV
+// as Apple TV versions: no haptics, widgets or Live Activities here, and no live camera video (Apple TV
 // has neither a web view nor Google's WebRTC library), so a camera shows its latest picture instead.
 
 // MARK: Haptics (an Apple TV has none)
@@ -67,15 +67,6 @@ final class WidgetCenter {
     static let id = "com.woodruff.family.widgets"
     static func schedule() {}
     static func run() async {}
-}
-
-@MainActor final class HomeKitLights {
-    static let shared = HomeKitLights()
-    static var enabled: Bool { false }
-    func start() {}
-    func refresh() {}
-    func refresh(device: String) {}
-    func reload() {}
 }
 
 // MARK: Cameras: the latest picture, not live video

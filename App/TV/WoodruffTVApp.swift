@@ -3,7 +3,7 @@ import WoodruffKit
 
 /// Woodruff Family on Apple TV: the iPhone app itself (its Home, Remote, Watch and Settings, App/Shared), laid out for
 /// the TV and the Siri Remote. It starts the same things the iPhone app starts, minus what an Apple TV doesn't have
-/// (Live Activities, widgets, Apple Home, live camera video).
+/// (Live Activities, widgets, live camera video).
 @main
 struct WoodruffTVApp: App {
     @State private var fleet = Fleet.shared
@@ -52,6 +52,8 @@ struct WoodruffTVApp: App {
                     SmartThings.shared.start()
                     Dreo.shared.start()
                     Cync.shared.start()
+                    // Apple Home (the home this Apple TV belongs to): its lights, thermostat, locks and sensors.
+                    HomeKitLights.shared.start()
                     NestCameras.shared.start()
                     // Behind-the-scenes work about a second in: Watch's first pictures, the weather, the sync.
                     try? await Task.sleep(nanoseconds: 1_000_000_000)
@@ -107,6 +109,8 @@ struct WoodruffTVApp: App {
                     Task { await TopShelfAlbum.shared.refresh() }
                     SettingsSync.shared.wake()
                     if !Demo.isOn && !fleet.hubs.isEmpty { LocationWeather.shared.start(fleet) }
+                    // Apple Home read again (a light switched from the Home app meanwhile shows as it is).
+                    HomeKitLights.shared.refresh()
                 }
                 // The TVs were asked again by `setActive`; the lights, speakers, Samsung, the fans, Cync, the Wi‑Fi
                 // and the cameras now too, so Home's tiles are right as soon as it shows.

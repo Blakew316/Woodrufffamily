@@ -4,7 +4,7 @@ import UIKit
 import WoodruffKit
 
 /// The lights in Apple Home (Cync bulbs over Matter, and any other), shown and controlled with the Govee ones.
-/// HomeKit is iPhone-only for an app like this, so the Mac doesn't list them.
+/// On iPhone, iPad and Apple TV. A Mac app can't use HomeKit itself: the Mac reads it through Woodruff Home Helper.
 @MainActor
 final class HomeKitLights: NSObject, HMHomeManagerDelegate, HMHomeDelegate, HMAccessoryDelegate {
     static let shared = HomeKitLights()
@@ -133,11 +133,19 @@ final class HomeKitLights: NSObject, HMHomeManagerDelegate, HMHomeDelegate, HMAc
         let s = m.authorizationStatus
         let problem: String?
         if s.contains(.restricted) {
+            #if os(tvOS)
+            problem = "Apple Home is restricted on this Apple TV. Allow it in Settings and the ecobee shows up here."
+            #else
             problem = "Apple Home is restricted on this iPhone (Screen Time → Content & Privacy Restrictions). Allow it and the ecobee shows up here."
+            #endif
         } else if s.contains(.determined) && !s.contains(.authorized) {
             problem = "Woodruff isn’t allowed to use Apple Home. Open Settings and allow it (also under Privacy & Security → HomeKit), and the ecobee shows up here."
         } else if s.contains(.authorized) && m.homes.isEmpty {
+            #if os(tvOS)
+            problem = "This Apple TV isn’t in a home yet. Add it to your home in Settings → AirPlay and HomeKit, and the ecobee shows up here."
+            #else
             problem = "There’s no home in the Home app on this iPhone yet. Set one up there and add the ecobee to it."
+            #endif
         } else {
             problem = nil
         }
