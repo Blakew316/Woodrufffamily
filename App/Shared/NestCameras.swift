@@ -1923,11 +1923,20 @@ struct CamerasPhoneView: View {
                     LabeledContent("Google Client ID", value: clientID.isEmpty ? "Not set on the TV" : String(clientID.prefix(13)) + "…")
                     SecureField("Google Client Secret", text: $secret)
                     Button {
+                        #if os(tvOS)
+                        guard !nest.busy else { return }
+                        #endif
                         Task { await nest.signIn(project: project, clientID: clientID, secret: secret) }
                     } label: {
                         HStack { Text("Connect Cameras"); if nest.busy { Spacer(); ProgressView() } }
                     }
+                    #if os(tvOS)
+                    // Apple TV: not switched off while it connects. A button the remote is on that's switched off loses
+                    // the focus, which jumped somewhere else on the page (a press meanwhile does nothing).
+                    .disabled(project.isEmpty || clientID.isEmpty || secret.isEmpty)
+                    #else
                     .disabled(nest.busy || project.isEmpty || clientID.isEmpty || secret.isEmpty)
+                    #endif
                 } footer: {
                     Text("Uses the same Google project as your TVs (Settings → Accounts → Nest Cameras). Paste the Client Secret from Google Cloud → Credentials (the one you gave the TVs), then sign in with Google and allow the cameras. Do this on the same Wi‑Fi as your TVs.")
                 }

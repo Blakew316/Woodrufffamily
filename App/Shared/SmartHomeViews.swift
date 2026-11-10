@@ -426,6 +426,16 @@ struct LightSheet: View {
                 Group {
                     brightnessBar(light)
                         .allowsHitTesting(!light.isOffline)
+                    #if os(tvOS)
+                    // Apple TV: the bar above takes a finger. This level takes the remote: Left and Right while it's on
+                    // it, each sent to the light (the bar above follows).
+                    if !light.isOffline {
+                        Slider(value: $level, in: 1...100, step: 5) { editing in
+                            if !editing { home.setBrightness(light, Int(level)) }
+                        }
+                        .frame(maxWidth: 420)
+                    }
+                    #endif
                     Button(light.on ? "Turn Off" : "Turn On") { home.setOn(light, !light.on) }
                         .buttonStyle(.glass)
                     VStack(alignment: .leading, spacing: 10) {

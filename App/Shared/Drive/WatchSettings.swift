@@ -67,8 +67,17 @@ struct WatchSettingsView: View {
                     if let u = library.updated {
                         LabeledContent("Updated", value: u.formatted(date: .abbreviated, time: .shortened))
                     }
-                    Button("Read Drive Again") { Task { await library.refresh(force: true) } }
-                        .disabled(library.busy)
+                    Button("Read Drive Again") {
+                        #if os(tvOS)
+                        guard !library.busy else { return }
+                        #endif
+                        Task { await library.refresh(force: true) }
+                    }
+                    // Not on Apple TV: a button the remote is on that's switched off loses the focus, which jumped
+                    // somewhere else on the page while Drive was read (a press meanwhile does nothing).
+                    #if !os(tvOS)
+                    .disabled(library.busy)
+                    #endif
                     Button("Sign Out", role: .destructive) {
                         GoogleDrive.signOut()
                         library.signedOut()

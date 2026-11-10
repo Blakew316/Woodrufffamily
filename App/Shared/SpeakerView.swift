@@ -101,16 +101,9 @@ struct SpeakerDetailView: View {
             .glassGroup(spacing: 26)
 
             HStack(spacing: 12) {
-                Button {
-                    tap()
-                    let mute = !r.muted
-                    Task { await home.setMute(r, mute) }
-                } label: {
-                    Image(systemName: r.muted ? "speaker.slash.fill" : "speaker.fill").frame(width: 22)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(r.muted ? "Unmute \(r.name)" : "Mute \(r.name)")
-                .foregroundStyle(r.muted ? Palette.attention : .secondary)
+                #if !os(tvOS)
+                muteButton(r)
+                #endif
                 Slider(value: $volume, in: 0...100) { e in dragging = e; if !e { home.setVolume(r, Int(volume)) } }
                     .tint(.white)
                     // Dragging sends as it goes; the arrow keys and VoiceOver move it without a drag, and those go too
@@ -122,6 +115,13 @@ struct SpeakerDetailView: View {
             }
             .disabled(r.isOffline)
             .opacity(r.isOffline ? 0.45 : 1)
+            #if os(tvOS)
+            // Apple TV: mute under the level, not at its left. Left and Right move the level while the remote is on it;
+            // with mute beside it, Left lowered the volume once and then took the remote onto mute.
+            muteButton(r)
+                .disabled(r.isOffline)
+                .opacity(r.isOffline ? 0.45 : 1)
+            #endif
 
             if r.hasTVInput && !r.isTV && !r.isOffline {
                 Button("Switch to TV Sound") {
@@ -134,6 +134,20 @@ struct SpeakerDetailView: View {
         .padding(20)
         .frame(maxWidth: .infinity)
         .glass(RoundedRectangle(cornerRadius: 28, style: .continuous), interactive: false)
+    }
+
+    /// Mute, at the left of the level (on Apple TV, under it).
+    private func muteButton(_ r: SonosRoom) -> some View {
+        Button {
+            tap()
+            let mute = !r.muted
+            Task { await home.setMute(r, mute) }
+        } label: {
+            Image(systemName: r.muted ? "speaker.slash.fill" : "speaker.fill").frame(width: 22)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(r.muted ? "Unmute \(r.name)" : "Mute \(r.name)")
+        .foregroundStyle(r.muted ? Palette.attention : .secondary)
     }
 
     private func headline(_ r: SonosRoom) -> String {

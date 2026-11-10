@@ -80,6 +80,10 @@ struct WatchView: View {
             shelfStack(shown, client)
             #endif
         }
+        #if os(tvOS)
+        // Apple TV: the page's scrolling, in the banner's hands (back on its Play, the page goes back to its top).
+        .modifier(WatchScrollReader())
+        #endif
         .scrollIndicators(.hidden)
         // Scrolling the page puts the search keyboard away.
         .scrollDismissesKeyboard(.immediately)
@@ -286,6 +290,8 @@ struct WatchView: View {
             }
             tvSectionPicker.padding(.top, 30)
         }
+        // The top of the page, for the banner to send the page back to (`WatchScrollReader`).
+        .id(WatchScrollReader.top)
     }
     #endif
 
@@ -506,6 +512,28 @@ extension EnvironmentValues {
     }
 }
 
+#if os(tvOS)
+/// Apple TV: Watch's own scrolling, for its banner. Moving back up to Play from the rows left the page where it was
+/// (Play was already on screen, so nothing scrolled): the banner cut off and dimmed, Movies | TV Shows out of sight.
+private struct WatchScrollerKey: EnvironmentKey { static let defaultValue: ScrollViewProxy? = nil }
+extension EnvironmentValues {
+    var watchScroller: ScrollViewProxy? {
+        get { self[WatchScrollerKey.self] }
+        set { self[WatchScrollerKey.self] = newValue }
+    }
+}
+
+/// Hands Watch's scrolling to what's on the page (around its scroll view).
+private struct WatchScrollReader: ViewModifier {
+    /// The top of the page (the banner).
+    static let top = "watch.top"
+
+    func body(content: Content) -> some View {
+        ScrollViewReader { proxy in content.environment(\.watchScroller, proxy) }
+    }
+}
+#endif
+
 /// The featured titles, one card at a time, swiping.
 struct Billboard: View {
     @Environment(Fleet.self) private var fleet
@@ -523,6 +551,8 @@ struct Billboard: View {
     #if os(tvOS)
     /// Play or Details picked with the remote: the banner stays on this title (moving on would take the focus away).
     @FocusState private var focusedButton: String?
+    /// Watch's scrolling (see `tvButtons`).
+    @Environment(\.watchScroller) private var scroller
     #endif
 
     var body: some View {
@@ -655,6 +685,13 @@ struct Billboard: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .focusSection()
         .defaultFocus($focusedButton, t.play != nil ? "play" : "details", priority: .userInitiated)
+        // Back on Play or Details (up from the rows): the page goes back to its top, the banner whole again with
+        // Movies | TV Shows over it. By itself it stayed where it was, as the buttons were already on screen. (Only on
+        // reaching these two, and only to the top, where they stay in view: the page never chases the focus.)
+        .onChange(of: focusedButton) { _, now in
+            guard now != nil, let scroller else { return }
+            withAnimation(.smooth(duration: 0.3)) { scroller.scrollTo(WatchScrollReader.top, anchor: .top) }
+        }
         // Play/Pause on the remote plays it from either button, as the TV app's banner does.
         .onPlayPauseCommand { if let p = t.play { PlayRouter.start(p, fleet: fleet) } }
         .padding(.leading, 90).padding(.bottom, 400).padding(.trailing, 90)
@@ -1146,6 +1183,8 @@ struct TitleSheet: View {
 
     #if os(tvOS)
     @FocusState private var tvFocus: String?
+    /// When the card opened (see the X in `tvCard`).
+    @State private var tvOpened = Date()
     #endif
 
     var body: some View {
@@ -1163,6 +1202,10 @@ struct TitleSheet: View {
         let shown = details(c)
         let season = self.season(of: shown)
         let t: SheetTop? = shown.map { top($0, c) } ?? TitleCache.shared.tile(id).map { top($0, c) }
+        // Where the remote starts when there's no Play: the first film of a collection (else the first episode).
+        let firstRow = shown?.films?.first?.id ?? episodes.first?.id
+        // Play; with none, that first film; the X only when there's nothing else.
+        let startOn: String = t?.play != nil ? "play" : (firstRow ?? "close")
         return ZStack {
             Color.black.opacity(0.6).ignoresSafeArea()
             VStack(alignment: .leading, spacing: 0) {
@@ -1213,6 +1256,7 @@ struct TitleSheet: View {
                                 ForEach(films) { e in
                                     EpisodeRow(episode: e, still: c?.artURL(e.still, small: true), changed: { watchChanged(); Task { await load() } }, played: { dismiss() })
                                         .frame(width: 440)
+                                        .focused($tvFocus, equals: e.id)
                                 }
                             }
                             .padding(.vertical, 10)
@@ -1225,11 +1269,13 @@ struct TitleSheet: View {
                             ForEach(Array(seasons.enumerated()), id: \.offset) { i, s in Text(s.name).tag(i) }
                         }
                         .pickerStyle(.menu)
+                        .focused($tvFocus, equals: "season")
                         ScrollView(.horizontal, showsIndicators: false) {
                             LazyHStack(alignment: .top, spacing: 30) {
                                 ForEach(episodes) { e in
                                     EpisodeRow(episode: e, still: c?.artURL(e.still, small: true), changed: { watchChanged(); Task { await loadEpisodes() } }, played: { dismiss() })
                                         .frame(width: 440)
+                                        .focused($tvFocus, equals: e.id)
                                 }
                             }
                             .padding(.vertical, 10)
@@ -1244,14 +1290,20 @@ struct TitleSheet: View {
             .background(Color(white: 0.11))
             .clipShape(RoundedRectangle(cornerRadius: 44, style: .continuous))
             .overlay(alignment: .topTrailing) {
-                Button { dismiss() } label: { Image(systemName: "xmark").font(.title3.weight(.bold)) }
+                // Not in the card's first moments while the title is still being read: nothing else is on the card yet,
+                // so the remote is on the X, and a second click meant for Play closed the card. (Menu closes it all the
+                // while.)
+                Button {
+                    if shown != nil || failed != nil || Date().timeIntervalSince(tvOpened) > 2 { dismiss() }
+                } label: { Image(systemName: "xmark").font(.title3.weight(.bold)) }
                     .buttonBorderShape(.circle)
+                    .focused($tvFocus, equals: "close")
                     .padding(26)
                     .accessibilityLabel("Close")
             }
             .shadow(color: .black.opacity(0.5), radius: 40, y: 20)
             .focusSection()
-            .defaultFocus($tvFocus, "play")
+            .defaultFocus($tvFocus, startOn)
             // Play/Pause plays the title from anywhere on its card (on an episode, that episode).
             .onPlayPauseCommand { if let p = t?.play, PlayRouter.start(p, fleet: fleet) { dismiss() } }
         }
@@ -1259,6 +1311,12 @@ struct TitleSheet: View {
         // remote was left on the X, so the next click closed the card. Play takes it as soon as it's there.
         .onChange(of: t?.play == nil) { wasMissing, missing in
             if wasMissing && !missing { Task { @MainActor in tvFocus = "play" } }
+        }
+        // No Play to come (a collection): the same for its first film, as soon as it's there (and as the card opens,
+        // when it's known already). Only from the X or from nowhere: never off something the remote was moved to.
+        .onChange(of: firstRow == nil, initial: true) { _, missing in
+            guard !missing, t?.play == nil, tvFocus == nil || tvFocus == "close" else { return }
+            Task { @MainActor in tvFocus = firstRow }
         }
         .task { await load() }
         .task(id: "\(shown?.id ?? "")|\(season)") { await loadEpisodes() }

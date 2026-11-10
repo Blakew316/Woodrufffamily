@@ -895,6 +895,9 @@ private struct ThermostatSetup: View {
 
     private var lookAgain: some View {
         Button {
+            #if os(tvOS)
+            guard !looking else { return }
+            #endif
             looking = true
             Task {
                 #if os(iOS) || os(tvOS)
@@ -912,6 +915,10 @@ private struct ThermostatSetup: View {
             }
         }
         .buttonStyle(.glass)
+        // Not on Apple TV: a button the remote is on that's switched off loses the focus, which jumped to Done (a
+        // press meanwhile does nothing).
+        #if !os(tvOS)
         .disabled(looking)
+        #endif
     }
 }

@@ -1243,12 +1243,19 @@ struct SyncSettingsView: View {
                     }
                 }
                 Button {
+                    #if os(tvOS)
+                    guard !busy else { return }
+                    #endif
                     busy = true
                     Task { await sync.syncNow(); busy = false }
                 } label: {
                     HStack { Text("Sync Now"); if busy { Spacer(); ProgressView() } }
                 }
+                // Not on Apple TV: a button the remote is on that's switched off loses the focus, which jumped
+                // somewhere else on the page while it synced (a press meanwhile does nothing).
+                #if !os(tvOS)
                 .disabled(busy)
+                #endif
             }
             if let code = sync.familyCode {
                 Section {

@@ -21,6 +21,15 @@ struct HomeView: View {
     @State private var scroller = HomeScroller()
     @Namespace private var zoom
     private let layout = HomeLayout.shared
+    #if os(tvOS)
+    /// Apple TV: the rows of tiles (Favorites, then the rooms) are where the remote starts on Home. With no starting
+    /// place said, it could start on the first scene, which a stray click then ran.
+    @FocusState private var tvStart: String?
+    /// The remote has been on the tiles: from then on no starting place is said, and it's left wherever it's taken.
+    @State private var tvStarted = false
+    /// The starting place: the tiles, until the remote has been on them ("" is no one's).
+    private var tvStartOn: String { tvStarted ? "" : "tiles" }
+    #endif
 
     /// What one drawing of Home works from, found once and handed to every part (each part used to work these out
     /// for itself, again for every room).
@@ -136,9 +145,12 @@ struct HomeView: View {
                 }
                 #endif
                 #if os(tvOS)
-                // Favorites first, then every device room by room.
-                if !layout.favorites.isEmpty { favoritesGroup(c) }
-                AllDevicesView()
+                // Favorites first, then every device room by room. Together they're where the remote starts (`tvStart`).
+                VStack(alignment: .leading, spacing: 30) {
+                    if !layout.favorites.isEmpty { favoritesGroup(c) }
+                    AllDevicesView()
+                }
+                .focused($tvStart, equals: "tiles")
                 #else
                 if room == allDevicesKey {
                     // Every device, room by room: tap to turn on or off, press and hold for its controls.
@@ -180,6 +192,12 @@ struct HomeView: View {
                     .gesture(LongPressGesture(minimumDuration: 0.5).onEnded { _ in startArranging() }, including: arranging ? .none : .all)
             }
         }
+        #if os(tvOS)
+        // Apple TV: Home starts on its first row of tiles. Once the remote has been there, nothing here answers to
+        // the starting place any more, so coming back to Home, or back from a sheet, isn't changed.
+        .defaultFocus($tvStart, tvStartOn)
+        .onChange(of: tvStart) { _, now in if now != nil, !tvStarted { tvStarted = true } }
+        #endif
         .scrollPosition($scroller.position)
         .onScrollGeometryChange(for: HomeScrollSpot.self) { HomeScrollSpot($0) } action: { _, spot in scroller.take(spot) }
         // While the page moves, Home's backdrop holds still (it's the only thing that reads this).
@@ -651,7 +669,14 @@ struct HomeTVTile: View, Equatable {
         #if os(tvOS)
         .modifier(TVFocusTile())
         #endif
-        .onTapGesture { if HomeLayout.shared.tapsAllowed { open() } }
+        .onTapGesture {
+            guard HomeLayout.shared.tapsAllowed else { return }
+            #if os(tvOS)
+            // Apple TV: the tile is the button. A click turns on a TV that's off, as its tile under its room does.
+            if !tv.online, fleet.extras[tv.id]?.mac != nil { fleet.wake(tv) }
+            #endif
+            open()
+        }
         .onHover { hovering = $0 }
         .alert("Rename TV", isPresented: $renaming) {
             TextField("Name", text: $newName)

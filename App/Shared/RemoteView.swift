@@ -562,6 +562,14 @@ struct RepeatPress<Label: View>: View {
     /// Back to false by itself when the system takes the touch away (which never ends the gesture).
     @GestureState private var touching = false
 
+    #if os(tvOS)
+    /// Apple TV: a button the remote can land on and click, one press a click. (The touch below never happens there, so
+    /// Now Playing's volume and mute could be neither reached nor pressed.)
+    var body: some View {
+        Button { onPress(0) } label: { label }
+            .buttonStyle(PressScale())
+    }
+    #else
     var body: some View {
         label
             .contentShape(Rectangle())
@@ -597,6 +605,7 @@ struct RepeatPress<Label: View>: View {
             .accessibilityAddTraits(.isButton)
             .accessibilityAction { onPress(0) }
     }
+    #endif
 }
 
 /// Netflix / YouTube capsules.
