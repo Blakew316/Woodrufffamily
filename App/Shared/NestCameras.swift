@@ -2005,12 +2005,102 @@ struct CameraPresenter: ViewModifier {
         // Over the whole screen, without the cover's slide: the camera floats in by itself.
         content
             .onChange(of: camera?.id, initial: true) { _, _ in show(camera); confirm(camera?.id) }
+            #if os(iOS)
+            // A camera asked for from elsewhere (a tapped alert) opens over everything (`CameraRequest`): one open
+            // from this page closes for it, unless it's that same camera, which is then open already.
+            .onChange(of: CameraStreams.shared.requested) { _, id in
+                guard let id, let open = shown else { return }
+                if open.id == id { CameraStreams.shared.requested = nil } else { show(nil); camera = nil }
+            }
+            #endif
             .fullScreenCover(item: Binding(get: { shown }, set: { v in show(v); if v == nil { camera = nil } })) { cam in
                 CameraLiveView(camera: cam, onClose: { show(nil); camera = nil })
             }
         #endif
     }
 }
+
+#if os(iOS)
+/// iPhone and iPad: a camera asked for from outside the page it's on (a tapped alert, the widget) opens from the
+/// topmost screen, as the film player does (`NativePlayer.show`), so it comes up over a sheet or the film player too.
+/// As a cover of the window's root it opened nothing while anything else was presented.
+@MainActor
+enum CameraRequest {
+    /// The camera's view, on screen or on its way there.
+    private static var cover: UIHostingController<CameraLiveView>?
+    /// Times it has been put on screen for this request (put up again if one didn't take).
+    private static var attempts = 0
+
+    /// The camera asked for changed (nil: none is asked for any more).
+    static func changed(_ cam: NestCameras.Camera?) {
+        // Another camera's view put up from here goes first (with its full-screen picture, if that's up).
+        if let old = cover, old.rootView.camera.id != cam?.id {
+            cover = nil
+            old.presentingViewController?.dismiss(animated: false)
+        }
+        guard let cam, cover == nil else { return }
+        let id = cam.id
+        let c = UIHostingController(rootView: CameraLiveView(camera: cam, onClose: { closed(id) }))
+        // Over the whole screen, with what's under it still showing behind: the camera floats in by itself.
+        c.modalPresentationStyle = .overFullScreen
+        cover = c
+        attempts = 0
+        show(c, tries: 0)
+    }
+
+    /// Shows it once the screen it goes over is there and still (the app still opening, a sheet closing), and a camera
+    /// open on the page has closed for it (`CameraPresenter`).
+    private static func show(_ c: UIHostingController<CameraLiveView>, tries: Int) {
+        guard cover === c, c.presentingViewController == nil else { return }
+        let top = NativePlayer.top()
+        let busy = top.map { $0.transitionCoordinator != nil || $0.presentedViewController != nil || $0.isBeingPresented || $0.isBeingDismissed || $0.viewIfLoaded?.window == nil } ?? true
+        if (busy || CameraStreams.shared.expanded != nil) && tries < 40 {
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 50_000_000)
+                show(c, tries: tries + 1)
+            }
+            return
+        }
+        // Nowhere to show it: its alert, tapped again, asks again.
+        guard let top else { gone(c); return }
+        attempts += 1
+        let attempt = attempts
+        // A keyboard that's up (the remote's keyboard sheet) goes down: it would stay up over the camera.
+        top.viewIfLoaded?.endEditing(true)
+        c.view.backgroundColor = .clear
+        top.present(c, animated: false)
+        let took = c.presentingViewController != nil
+        // Looked at each second while it's wanted. UIKit refuses a presentation silently (the screen under it still
+        // changing, the app still opening): one that didn't take is put up again over whatever is on top then (a few
+        // times at most). One that was up and went without its own ✕ (the sheet it was over closed) is no longer
+        // asked for, so its alert, tapped again, opens it again.
+        Task { @MainActor in
+            var wasUp = took
+            while cover === c, attempts == attempt {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                guard cover === c, attempts == attempt else { return }
+                if c.presentingViewController != nil { wasUp = true; continue }
+                if !wasUp && attempt < 4 { show(c, tries: 40) } else { gone(c) }
+                return
+            }
+        }
+    }
+
+    /// Closed from its own view (its ✕, a tap beside it, a swipe down).
+    private static func closed(_ id: String) {
+        guard let c = cover, c.rootView.camera.id == id else { return }
+        c.presentingViewController?.dismiss(animated: false)
+        gone(c)
+    }
+
+    /// It has gone: no camera is asked for any more.
+    private static func gone(_ c: UIHostingController<CameraLiveView>) {
+        guard cover === c else { return }
+        cover = nil
+        if CameraStreams.shared.requested == c.rootView.camera.id { CameraStreams.shared.requested = nil }
+    }
+}
+#endif
 
 
 /// An alert's moment, replayed above the camera's live view when the alert is tapped.

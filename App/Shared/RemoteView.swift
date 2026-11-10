@@ -155,7 +155,15 @@ struct RemoteView: View {
             }
         }
         .inlineTitle()
-        .sheet(isPresented: $typing) { if let tv { KeyboardSheet(tv: tv).macResizable(width: 480, height: 400) } }
+        .sheet(isPresented: $typing) {
+            if let tv {
+                KeyboardSheet(tv: tv).macResizable(width: 480, height: 400)
+                    #if os(iOS)
+                    // iPhone and iPad: what the TV says back (text that didn't go through) shows over the keyboard.
+                    .sheetBanner()
+                    #endif
+            }
+        }
         .task(id: "\(fleet.selectedID ?? "")-\(all)-\(fleet.isActive)") { await fieldLoop() }
         .sheet(isPresented: $nowPlaying) { NowPlayingSheet().sheetBanner().macResizable(width: 560, height: 780) }
         // Handoff: the Mac offers to open the remote on the same TV.

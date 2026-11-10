@@ -115,7 +115,20 @@ struct SettingsView: View {
     @Environment(Fleet.self) private var fleet
     /// The TVs' settings as last read (shown at once), read again as the page opens.
     private let hub = HubSettings.shared
-    @State private var route: String? = { let r = UserDefaults.standard.string(forKey: "route"); return r == "tvs" || r == "tv" ? r : nil }()
+    /// A page to open on: "tvs" or "tv" as the app was launched with, or "tv:" and a TV's id (`alertTV`).
+    @State private var route: String? = {
+        let r = UserDefaults.standard.string(forKey: "route")
+        if r == "tvs" || r == "tv" { return r }
+        #if os(iOS)
+        // Settings first shown by a tapped TV alert starts on that TV's page.
+        if let id = UserDefaults.standard.string(forKey: "settingsTV"), !id.isEmpty { return "tv:" + id }
+        #endif
+        return nil
+    }()
+    #if os(iOS)
+    /// The TV whose alert was just tapped (`NotificationHandler`): its page opens, and this is emptied.
+    @AppStorage("settingsTV") private var alertTV = ""
+    #endif
     // Read through UserDefaults, so a switch turned on Notifications (or synced from another device) shows at once.
     @AppStorage("notifyFleet") private var notifyFleet = true
 
@@ -168,6 +181,8 @@ struct SettingsView: View {
         .navigationDestination(item: $route) { r in
             switch r {
             case "tv": TVDetailView(tvID: "tv-den")
+            // "tv:" and a TV's id: that TV's page (its alert was tapped, on iPhone and iPad).
+            case _ where r.hasPrefix("tv:"): TVDetailView(tvID: String(r.dropFirst(3)))
             default: TVsView()
             }
         }
@@ -176,6 +191,14 @@ struct SettingsView: View {
             guard let r = route else { return }
             route = nil
             if r == "tv" { MacNav.shared.push(fleet.tv("tv-den")?.name ?? "TV", backTo: "Settings", TVDetailView(tvID: "tv-den")) } else { MacNav.shared.push("TVs", backTo: "Settings", TVsView()) }
+        }
+        #endif
+        #if os(iOS)
+        // A tapped TV alert opens that TV's page, not just Settings.
+        .onChange(of: alertTV, initial: true) { _, id in
+            guard !id.isEmpty else { return }
+            alertTV = ""
+            route = "tv:" + id
         }
         #endif
         // Reads the TVs' settings, again when the remote moves to a TV with another hub, and every 20 seconds: from

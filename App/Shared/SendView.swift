@@ -489,8 +489,21 @@ struct FilesView: View {
         #endif
         .navigationTitle(listing.map { $0.path == root?.path ? (root?.name ?? "Photos & Files") : ($0.path as NSString).lastPathComponent } ?? "Photos & Files")
         .screenTitle(listing.map { $0.path == root?.path ? (root?.name ?? "Photos & Files") : ($0.path as NSString).lastPathComponent } ?? "Photos & Files")
+        #if os(iOS)
+        // Inside a folder, Back goes up one folder (below). The system's Back, and its edge swipe, left Files from
+        // any depth.
+        .navigationBarBackButtonHidden(upButton != nil)
+        #endif
         #if os(iOS) || os(tvOS)
         .toolbar {
+            #if os(iOS)
+            if let up = upButton {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button { open(up.0) } label: { Image(systemName: "chevron.backward") }
+                        .accessibilityLabel("Back")
+                }
+            }
+            #endif
             ToolbarItem(placement: .primaryAction) { optionsMenu }
             ToolbarItem(placement: .primaryAction) { addMenu }
         }

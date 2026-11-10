@@ -785,12 +785,20 @@ struct PairFoundTVView: View {
         .inlineTitle()
         #if os(iOS) || os(tvOS)
         .sheet(isPresented: $scanning) {
-            QRScannerView { code in
+            let scanner = QRScannerView { code in
                 scanning = false
                 if let c = TVConnection.parse(code) { connect(c) }
                 else { note = "That QR code isn’t a TV’s pairing code. Scan the one on \(tv.name)’s Phone screen." }
             }
             .ignoresSafeArea()
+            #if os(iOS)
+            // iPhone and iPad: a bar over the camera with a close button (as Pair a TV's scanner has).
+            NavigationStack {
+                scanner.toolbar { ToolbarItem(placement: .cancellationAction) { Button(role: .close) { scanning = false } } }
+            }
+            #else
+            scanner
+            #endif
         }
         #endif
     }
@@ -818,13 +826,25 @@ struct PairFoundTVView: View {
 struct SheetBanner: ViewModifier {
     @Environment(Fleet.self) private var fleet
     @State private var shown: Banner?
+    /// The sheet opens sheets of its own that show the banner too (a TV's page: Now Playing over it). One of those
+    /// that's open takes it first: this one, under it, could only show it once that closed. Left alone, it's shown here.
+    var afterOwnSheets = false
 
     func body(content: Content) -> some View {
         content
             .onChange(of: fleet.banner) { _, b in
                 guard let b else { return }
-                shown = b
-                fleet.banner = nil
+                guard afterOwnSheets else {
+                    shown = b
+                    fleet.banner = nil
+                    return
+                }
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 100_000_000)
+                    guard fleet.banner == b else { return }
+                    shown = b
+                    fleet.banner = nil
+                }
             }
             .alert(shown?.title ?? "", isPresented: Binding(get: { shown != nil }, set: { if !$0 { shown = nil } }), presenting: shown) { _ in
                 Button("OK", role: .cancel) {}
@@ -836,5 +856,5 @@ struct SheetBanner: ViewModifier {
 
 extension View {
     /// See `SheetBanner`: for the content of a sheet or full-screen cover.
-    func sheetBanner() -> some View { modifier(SheetBanner()) }
+    func sheetBanner(afterOwnSheets: Bool = false) -> some View { modifier(SheetBanner(afterOwnSheets: afterOwnSheets)) }
 }

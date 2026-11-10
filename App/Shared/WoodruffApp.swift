@@ -466,10 +466,16 @@ struct RootView: View {
                 .presentationDragIndicator(.visible)
                 #endif
         }
+        #if os(iOS)
+        // iPhone and iPad: opened from the topmost screen, so it comes up over a sheet or the film player too
+        // (`CameraRequest`).
+        .onChange(of: requested?.id, initial: true) { _, _ in CameraRequest.changed(requested) }
+        #else
         .cameraPresenter(Binding(
             get: { requested },
             set: { if $0 == nil { CameraStreams.shared.requested = nil } }
         ))
+        #endif
     }
 
     #if os(iOS) || os(tvOS)

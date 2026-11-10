@@ -166,7 +166,13 @@ final class NotificationHandler: NSObject, UNUserNotificationCenterDelegate, @un
                 UserDefaults.standard.set("remote", forKey: "section")
                 #endif
             default:
-                if tvID != nil { UserDefaults.standard.set("settings", forKey: "section") }
+                if tvID != nil {
+                    #if os(iOS)
+                    // iPhone and iPad: Settings opens that TV's page (`SettingsView`).
+                    UserDefaults.standard.set(tvID, forKey: "settingsTV")
+                    #endif
+                    UserDefaults.standard.set("settings", forKey: "section")
+                }
             }
         }
     }

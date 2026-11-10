@@ -127,8 +127,17 @@ struct AllDevicesView: View {
         .sheet(item: $openLight) { l in LightSheet(lightID: l.id).macResizable(width: 520, height: 640) }
         .sheet(item: $openDevice) { d in NavigationStack { DeviceDetailView(deviceID: d.id, inSheet: true) }.macResizable() }
         .sheet(item: $openTV) { t in
-            NavigationStack { TVDetailView(tvID: t.id) }.macResizable()
-                #if os(tvOS)
+            NavigationStack {
+                TVDetailView(tvID: t.id)
+                    #if os(iOS)
+                    .toolbar { ToolbarItem(placement: .cancellationAction) { Button(role: .close) { openTV = nil } } }
+                    #endif
+            }.macResizable()
+                #if os(iOS)
+                // iPhone and iPad: what it says back shows over it too (the screen's own alert can't while it's open).
+                // A sheet of its own that's open (Now Playing) shows it instead.
+                .sheetBanner(afterOwnSheets: true)
+                #elseif os(tvOS)
                 // Apple TV: what it says back shows over it (the screen's own alert can't while it's open).
                 .sheetBanner()
                 #endif
@@ -142,9 +151,9 @@ struct AllDevicesView: View {
                 #else
                 .frame(width: 360, height: 300)
                 #endif
-                #if os(tvOS)
-                // Apple TV: a key that can't reach the TV says so over the remote (the screen's own alert can't show
-                // while it's open, so the key seemed to do nothing).
+                #if os(iOS) || os(tvOS)
+                // A key that can't reach the TV says so over the remote (the screen's own alert can't show while it's
+                // open, so the key seemed to do nothing).
                 .sheetBanner()
                 #endif
         }

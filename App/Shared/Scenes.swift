@@ -260,7 +260,12 @@ struct ScenesStrip: View {
             .focusSection()
             #endif
             .sheet(item: $editing) { s in
-                NavigationStack { SceneEditor(scene: s, isNew: false) }
+                NavigationStack {
+                    SceneEditor(scene: s, isNew: false)
+                        #if os(iOS)
+                        .toolbar { ToolbarItem(placement: .cancellationAction) { Button(role: .close) { editing = nil } } }
+                        #endif
+                }
                     #if os(macOS)
                     .frame(minWidth: 460, minHeight: 560)
                     #endif

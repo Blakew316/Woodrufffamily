@@ -824,8 +824,9 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
         c.present(alert, animated: true)
     }
 
-    /// The screen to show it over: the topmost one.
-    private static func top() -> UIViewController? {
+    /// The screen to show it over: the topmost one. (A camera asked for by a tapped alert goes over it too:
+    /// `CameraRequest`.)
+    static func top() -> UIViewController? {
         let scene = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
             .first { $0.activationState == .foregroundActive } ?? UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
         var vc = scene?.windows.first { $0.isKeyWindow }?.rootViewController ?? scene?.windows.first?.rootViewController
