@@ -657,9 +657,22 @@ private struct WatchPageShape: ViewModifier {
     @Binding var metrics: WatchMetrics
     /// The page's height without the bars at its top (what's left under them).
     @State private var under: CGFloat = 0
+    #if os(iOS)
+    /// The page has moved far enough for its rows to have come up to the bars at its top (the banner has gone by).
+    @State private var rowsUp = false
+    #endif
 
     func body(content: Content) -> some View {
-        content
+        #if os(iOS)
+        // How far the page moves before its first row reaches the bars at its top.
+        let reach = max(60, metrics.rowsTop(stills: false) - metrics.top - 12)
+        #endif
+        return content
+            #if os(iOS)
+            .onScrollGeometryChange(for: Bool.self, of: { g in g.contentOffset.y + g.contentInsets.top > reach }) { _, up in
+                rowsUp = up
+            }
+            #endif
             // The page itself, measured where it runs under the bars at its top: its whole height. (Measured outside
             // that, it came without them: the banner stopped short of the page's foot, and everything on it sat that
             // much too high.)
@@ -678,6 +691,12 @@ private struct WatchPageShape: ViewModifier {
                 if metrics.height > 0 { metrics.top = max(0, metrics.height - h) }
             }
             #if os(iOS)
+            // iPhone and iPad: the banner's picture runs clear up to the top of the screen, behind the clock and the
+            // TV's name. (iOS fades whatever scrolls under the bars at a page's top into the page behind it: a band
+            // of the app's blue across the banner's top.) Once the rows have come up to the bars it does again, so
+            // they read under the clock.
+            .scrollEdgeEffectHidden(!rowsUp, for: .top)
+            .toolbarBackgroundVisibility(rowsUp ? .automatic : .hidden, for: .navigationBar)
             .background { IconBackdrop() }
             .environment(\.colorScheme, .dark)
             #endif
