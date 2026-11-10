@@ -117,13 +117,13 @@ struct MiniPlayerView: View {
         .fixedSize(horizontal: false, vertical: true)
         .background(Color(nsColor: .windowBackgroundColor), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).strokeBorder(.separator))
-        // Close, where a window's close button is: in the corner, clear of the picture.
+        // Close, where a window's close button is: small, in the corner, clear of the picture.
         .overlay(alignment: .topLeading) {
             Button { dismissWindow(id: "mini") } label: {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.system(size: 13))
+                Image(systemName: "xmark")
+                    .font(.system(size: 10, weight: .bold))
                     .foregroundStyle(.secondary)
-                    .padding(4)
+                    .frame(width: 24, height: 24)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)

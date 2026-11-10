@@ -390,8 +390,9 @@ struct LightSheet: View {
         return abs(lk - (l.isHome ? k : l.clampKelvin(k))) < 80
     }
 
-    /// Why an unreachable light might be, in a line.
-    static func offlineHint(_ l: GoveeLight) -> String {
+    /// Why an unreachable light might be, in a line. (On the main actor: the Mac asks whether Apple Home can be
+    /// reached at all.)
+    @MainActor static func offlineHint(_ l: GoveeLight) -> String {
         if l.isCync { return "Not answering in Cync. Check it’s switched on at the wall; it comes back here by itself." }
         if l.isHome {
             #if os(iOS) || os(tvOS)

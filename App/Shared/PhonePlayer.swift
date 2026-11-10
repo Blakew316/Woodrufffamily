@@ -1115,10 +1115,14 @@ final class MacPlayer: NSObject, NSWindowDelegate {
         titleBar(shown: false)
     }
 
-    /// Fades the title bar in or out: the view that holds the window's three buttons and its title. (Out of sight,
-    /// it's still there: the window is moved by it, and the pointer brings it back before anything is clicked.)
+    /// Fades the title bar in or out: the window's three buttons and its title. (Out of sight, it's still there:
+    /// the window is moved by it, and the pointer brings it back before anything is clicked.)
     private func titleBar(shown: Bool) {
-        guard let bar = window?.standardWindowButton(.closeButton)?.superview, (bar.alphaValue > 0.5) != shown else { return }
+        // The whole bar: the highest view over the close button that the film's own view isn't inside as well
+        // (however the Mac nests the buttons and the title in it).
+        guard let w = window, let film = w.contentView, var bar = w.standardWindowButton(.closeButton)?.superview else { return }
+        while let above = bar.superview, !film.isDescendant(of: above) { bar = above }
+        guard (bar.alphaValue > 0.5) != shown else { return }
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.25
             bar.animator().alphaValue = shown ? 1 : 0
