@@ -349,6 +349,12 @@ final class PushRelay {
                 g.addTask {
                     var env = t.env == "production" ? "production" : "development"
                     var (code, reason) = await self.post(message, token: t, env: env, id: id, auth: auth)
+                    // It didn't get to Apple, or Apple was busy: once more a second later (the same alert: a second
+                    // copy replaces the first).
+                    if code == 0 || code == 429 || code >= 500 {
+                        try? await Task.sleep(nanoseconds: 1_000_000_000)
+                        (code, reason) = await self.post(message, token: t, env: env, id: id, auth: auth)
+                    }
                     var moved = false
                     // An address for the other service (an iPhone that signed up with the wrong one): try that one, and keep it.
                     if reason == "BadDeviceToken" {

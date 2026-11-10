@@ -396,10 +396,15 @@ final class NestAlerts {
             var focus: CGRect?
             var shown: URL?
             var made: (file: URL, focus: CGRect?, image: CGImage, still: Data?)?
-            if let got { made = await CameraEventMedia.keepEventPicture(got.file, key: short, title: title) }
+            // Where the camera's picture changed around the event (the stream's last few seconds, on the Mac that
+            // keeps them), and Apple's object detector where this Mac has it: the small picture zooms in on who or
+            // what was there, as Google Home's does.
+            if VehicleWatch.watchesHere { VehicleDetector.shared.prepare() }
+            let moved = StreamMoment.moved(camera: camera, happened: happened ?? received)
+            if let got { made = await CameraEventMedia.keepEventPicture(got.file, key: short, title: title, moved: moved) }
             // What came couldn't be read (a clip cut short): the camera's latest picture instead.
             if made == nil, let jpeg = CameraStreams.shared.latestStill(camera), let u = CameraEventMedia.jpegFile(jpeg, name: "frame-kept-\(short)") {
-                made = await CameraEventMedia.keepEventPicture(u, key: short, title: title)
+                made = await CameraEventMedia.keepEventPicture(u, key: short, title: title, moved: moved)
                 if made != nil { PushRelay.log.notice("picture for \(body, privacy: .public): \(got == nil ? "none came" : "it couldn’t be read", privacy: .public), the camera’s latest picture instead") }
             }
             if let made {

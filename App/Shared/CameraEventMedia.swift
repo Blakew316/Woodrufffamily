@@ -362,11 +362,14 @@ enum CameraEventMedia {
     /// The Mac: the event's picture made ready to go out, from [file] (Google's snapshot or clip, or a frame of the
     /// stream): kept full size under [key] for the iPhones to fetch, where its subject is ([title]: the person for
     /// "Person seen", nothing for motion: the whole picture), and a still for the widget. Decoded once.
-    static func keepEventPicture(_ file: URL, key: String, title: String) async -> (file: URL, focus: CGRect?, image: CGImage, still: Data?)? {
+    /// [moved]: where the camera's picture changed around the event, when the Mac knows (`StreamMoment.moved`).
+    static func keepEventPicture(_ file: URL, key: String, title: String, moved: SubjectCrop.Moved? = nil) async -> (file: URL, focus: CGRect?, image: CGImage, still: Data?)? {
         guard let image = await picture(file, maxSide: 1600), let out = eventFile(key),
               let full = jpeg(image, quality: 0.85), (try? full.write(to: out, options: .atomic)) != nil else { return nil }
         let look = max(image.width, image.height) > 1280 ? (scaled(image, maxSide: 1280) ?? image) : image
-        let focus = SubjectCrop.unitFocus(in: look, kind: SubjectCrop.kind(title))
+        // (The looking takes a moment with the Mac's detector: off the main thread.)
+        let kind = SubjectCrop.kind(title)
+        let focus = await Task.detached(priority: .userInitiated) { SubjectCrop.unitFocus(in: look, kind: kind, moved: moved) }.value
         let still = scaled(image, maxSide: 480).flatMap { jpeg($0, quality: 0.75) }
         return (out, focus, image, still)
     }

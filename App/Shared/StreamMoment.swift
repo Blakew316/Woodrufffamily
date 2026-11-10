@@ -3,6 +3,7 @@ import Foundation
 import CoreGraphics
 import ImageIO
 import Vision
+import WoodruffKit
 
 /// The Mac that sends the family's alerts: an alert's picture as the moment it happened, the way Google Home's shows
 /// what happened. Google's message comes seconds after the event, and by then the camera's live picture often shows
@@ -68,6 +69,24 @@ enum StreamMoment {
         let why = kind == .person ? "no person found" : chosen.changed ? "the most changed" : "nearest its time"
         note(name, why, frame: chosen.at, event: at)
         return Pick(file: chosen.file, why: why)
+    }
+
+    /// Where [camera]'s picture changed around its event at [happened] (Google's time): each frame from a second
+    /// before it to a few seconds after, against how the picture looked just before that. nil when this Mac kept no
+    /// frames from then, or nothing changed. For the alert's small picture, which zooms in there (`SubjectCrop`).
+    @MainActor
+    static func moved(camera: String, happened: Date) -> SubjectCrop.Moved? {
+        guard FrameGrabber.keepsMoments else { return nil }
+        let at = min(happened, Date())
+        let from = at.addingTimeInterval(-lead)
+        let frames = CameraStreams.shared.moments(camera, since: from.addingTimeInterval(-3))
+        guard let earlier = frames.last(where: { $0.at < from }) ?? frames.first else { return nil }
+        let near = frames.filter { $0.at >= from && $0.at <= at.addingTimeInterval(motionAfter) }
+        // A frame where most of the picture differs is the light changing (night vision coming on), not somebody.
+        let grids = near.map { EventFocus.changed($0.grey, since: earlier.grey) }.filter { EventFocus.share($0) <= 0.34 }
+        let cells = EventFocus.any(grids)
+        guard cells.count == FrameGrabber.greyWidth * FrameGrabber.greyHeight, cells.contains(true) else { return nil }
+        return SubjectCrop.Moved(cells: cells, width: FrameGrabber.greyWidth, height: FrameGrabber.greyHeight)
     }
 
     /// Of [frames], the one where Vision finds the largest, surest person (the share of the picture they fill, times

@@ -1,6 +1,9 @@
 import Foundation
 import CoreGraphics
 import Vision
+#if os(macOS)
+import WoodruffKit
+#endif
 
 /// Where a camera alert's subject is in its picture (the person for "Person seen", an animal, else whatever stands
 /// out), framed with room around it, so the alert's small picture shows who or what was seen rather than the whole
@@ -10,6 +13,14 @@ import Vision
 enum SubjectCrop {
     /// [whole]: the whole picture, never cropped (a motion alert, as Google Home shows it).
     enum Kind: Sendable { case person, animal, other, whole }
+
+    /// Where a camera's picture changed around its event: the cells of a small grid, row by row from the top. The Mac
+    /// that sends the alerts knows it, from the last few seconds of the stream it keeps (`StreamMoment.moved`).
+    struct Moved: Sendable {
+        var cells: [Bool]
+        var width: Int
+        var height: Int
+    }
 
     /// The kind an alert's title names: "Person seen" and "Someone’s at the door" are a person; "Vehicle seen" and a
     /// package are whatever stands out; "Motion seen" is the whole picture.
@@ -23,9 +34,11 @@ enum SubjectCrop {
 
     /// The subject's framing as a unit rectangle with its origin at the top left (what a notification attachment's
     /// thumbnail is clipped to); nil when nothing is found, or the framing would be most of the picture anyway.
-    static func unitFocus(in image: CGImage, kind: Kind) -> CGRect? {
+    /// [moved]: where the picture changed around the event, when that's known: of several figures, the one there is
+    /// who the alert is about; with nobody found, whatever changed there is.
+    static func unitFocus(in image: CGImage, kind: Kind, moved: Moved? = nil) -> CGRect? {
         let w = CGFloat(image.width), h = CGFloat(image.height)
-        guard kind != .whole, w > 0, h > 0, let f = framing(in: image, kind: kind) else { return nil }
+        guard kind != .whole, w > 0, h > 0, let f = framing(in: image, kind: kind, moved: moved) else { return nil }
         return CGRect(x: f.minX / w, y: f.minY / h, width: f.width / w, height: f.height / h)
     }
 
@@ -39,21 +52,21 @@ enum SubjectCrop {
     }
 
     /// The framing in the image's pixels (top-left origin, as CGImage cropping counts them).
-    private static func framing(in image: CGImage, kind: Kind) -> CGRect? {
-        guard let box = subjectBox(in: image, kind: kind) else { return nil }
+    private static func framing(in image: CGImage, kind: Kind, moved: Moved?) -> CGRect? {
+        guard let box = subjectBox(in: image, kind: kind, moved: moved) else { return nil }
         let w = CGFloat(image.width), h = CGFloat(image.height)
         // Vision's box is in unit coordinates with the origin at the bottom left: flipped to the top left here.
         let pixels = CGRect(x: box.minX * w, y: (1 - box.maxY) * h, width: box.width * w, height: box.height * h)
         return frame(pixels, in: CGSize(width: w, height: h))
     }
 
-    /// [box] with room around it, between square and 4:3 (wider for a wide subject), at least a third of the
+    /// [box] with room around it, between square and 4:3 (wider for a wide subject), at least a good quarter of the
     /// picture's height so a far-off figure isn't blown up into a blur, kept inside the picture.
     static func frame(_ box: CGRect, in size: CGSize) -> CGRect? {
         let iw = size.width, ih = size.height
         guard iw > 0, ih > 0, box.width > 0, box.height > 0 else { return nil }
         var w = box.width * 1.5, h = box.height * 1.3
-        let least = max(min(iw, ih) * 0.34, 96)
+        let least = max(min(iw, ih) * 0.28, 96)
         if w < least { w = least }
         if h < least { h = least }
         if w < h { w = h }
@@ -69,26 +82,58 @@ enum SubjectCrop {
     }
 
     /// Vision's box round what the alert is about (several of them together), in unit coordinates, bottom-left origin.
-    private static func subjectBox(in image: CGImage, kind: Kind) -> CGRect? {
+    private static func subjectBox(in image: CGImage, kind: Kind, moved: Moved?) -> CGRect? {
         let handler = VNImageRequestHandler(cgImage: image, options: [:])
         var boxes: [CGRect] = []
         switch kind {
         case .person:
+            #if os(macOS)
+            // The Mac with Apple's object detector (Vehicle Alerts') asks it first: it makes out the small, far-off
+            // figures Vision's own person finder misses (on the driveway that found the person in one alert of ten).
+            var found = VehicleDetector.people(in: image) ?? []
+            if found.isEmpty { found = people(handler) }
+            // Of several, the ones where the picture changed (a walker, not a post taken for a figure), as one box.
+            let listed = found.map { (box: turned($0.box), confidence: Double($0.confidence)) }
+            if let who = EventFocus.subject(listed, changed: moved?.cells, width: moved?.width ?? 0, height: moved?.height ?? 0) {
+                boxes = [turned(who)]
+            }
+            #else
             boxes = people(handler).map { $0.box }
+            #endif
         case .animal:
             let animals = VNRecognizeAnimalsRequest()
             if (try? handler.perform([animals])) != nil {
                 boxes = (animals.results ?? []).filter { $0.confidence >= 0.3 }.map { $0.boundingBox }
             }
+            if boxes.isEmpty, let changed = patch(moved) { boxes = [changed] }
             if boxes.isEmpty { boxes = salient(handler) }
         case .other:
-            boxes = salient(handler)
+            if let changed = patch(moved) { boxes = [changed] } else { boxes = salient(handler) }
         case .whole:
             return nil
         }
+        // Nobody found: whoever it was is where the picture changed, when that's known.
+        if boxes.isEmpty, kind == .person, let changed = patch(moved) { boxes = [changed] }
         boxes = boxes.filter { !$0.isNull && $0.width > 0 && $0.height > 0 }
         guard let first = boxes.first else { return nil }
         return boxes.dropFirst().reduce(first) { $0.union($1) }
+    }
+
+    /// A box measured down from the picture's top as one measured up from its bottom (Vision's way), and back.
+    private static func turned(_ r: CGRect) -> CGRect {
+        let y: CGFloat = 1 - r.maxY
+        return CGRect(x: r.minX, y: y, width: r.width, height: r.height)
+    }
+
+    /// The patch of the picture that changed around the event, in Vision's measure; nil when that isn't known (any
+    /// device but the Mac that sends the alerts), nothing did, or the whole picture did (the light).
+    private static func patch(_ moved: Moved?) -> CGRect? {
+        #if os(macOS)
+        guard let moved, let p = EventFocus.patch(moved.cells, width: moved.width, height: moved.height) else { return nil }
+        return turned(p)
+        #else
+        return nil
+        #endif
     }
 
     /// The people Vision finds in [handler]'s picture, each with how sure it is (unit coordinates, bottom-left origin):

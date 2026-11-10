@@ -199,17 +199,20 @@ final class VehicleWatch {
         return CGImageSourceCreateImageAtIndex(src, 0, nil)
     }
 
-    /// The picture as 64×36 brightness values (0–255).
+    /// The picture as 64×36 brightness values (0–255), row by row from its top.
     private nonisolated static func grey(_ image: CGImage) -> [Float]? {
         var px = [UInt8](repeating: 0, count: gw * gh)
-        guard let ctx = CGContext(data: &px, width: gw, height: gh, bitsPerComponent: 8, bytesPerRow: gw,
-                                  space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue) else { return nil }
-        ctx.interpolationQuality = .medium
-        ctx.draw(image, in: CGRect(x: 0, y: 0, width: gw, height: gh))
-        // CGContext's rows run bottom to top: flipped so row 0 is the picture's top, like the crop's coordinates.
-        var out = [Float](repeating: 0, count: gw * gh)
-        for y in 0..<gh { for x in 0..<gw { out[y * gw + x] = Float(px[(gh - 1 - y) * gw + x]) } }
-        return out
+        let drawn = px.withUnsafeMutableBytes { buffer -> Bool in
+            guard let ctx = CGContext(data: buffer.baseAddress, width: gw, height: gh, bitsPerComponent: 8, bytesPerRow: gw,
+                                      space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue) else { return false }
+            ctx.interpolationQuality = .medium
+            ctx.draw(image, in: CGRect(x: 0, y: 0, width: gw, height: gh))
+            return true
+        }
+        // A bitmap's memory starts at the picture's top: the rows as they are. (They were turned over here, on the
+        // belief that it starts at the bottom: where the picture changed was then looked for in the wrong half, so a
+        // car coming up the drive counted as "nothing moved there".)
+        return drawn ? px.map { Float($0) } : nil
     }
 
     /// The picture with a box drawn where a vehicle was found (for the frames kept to look at later).
@@ -285,6 +288,13 @@ final class VehicleDetector {
     }
     @ObservationIgnored private var model: Model?
     @ObservationIgnored private var lastTry = Date.distantPast
+    /// The model once it's ready, for whoever asks from any thread (an alert's picture is looked at off the main one).
+    private nonisolated static let readyLock = NSLock()
+    nonisolated(unsafe) private static var readyModel: Model?
+    private nonisolated static var ready: Model? {
+        get { readyLock.lock(); defer { readyLock.unlock() }; return readyModel }
+        set { readyLock.lock(); readyModel = newValue; readyLock.unlock() }
+    }
 
     private nonisolated static let address = URL(string: "https://ml-assets.apple.com/coreml/models/Image/ObjectDetection/YOLOv3/YOLOv3Int8LUT.mlmodel")!
     private nonisolated static let name = "YOLOv3Int8LUT"
@@ -303,6 +313,7 @@ final class VehicleDetector {
             switch result {
             case .success(let m):
                 self.model = m
+                VehicleDetector.ready = m
                 self.state = .ready
                 VehicleWatch.log.notice("vehicle detector: ready")
             case .failure(let error):
@@ -343,13 +354,29 @@ final class VehicleDetector {
     /// four overlapping parts of it (which finds the small ones at the street, and more at night).
     func vehicles(in image: CGImage) async -> [VehicleSighting]? {
         guard let model else { return nil }
-        return await Task.detached(priority: .utility) { VehicleDetector.find(in: image, with: model) }.value
+        return await Task.detached(priority: .utility) { VehicleDetector.find(in: image, with: model, kinds: VehicleDetector.kinds, fine: false) }.value
     }
 
-    private nonisolated static func find(in image: CGImage, with model: Model) -> [VehicleSighting] {
+    /// The people in [image], each with how sure the detector is, in Vision's own measure (shares of the picture, up
+    /// from its bottom left); nil when the detector isn't ready on this Mac. For a camera alert's picture
+    /// (`SubjectCrop`): it makes out the small, far-off figures Vision's own person finder misses. Looked for in the
+    /// whole picture, in four parts of it and in nine smaller ones (a child across the street is a few pixels tall).
+    nonisolated static func people(in image: CGImage) -> [(box: CGRect, confidence: Float)]? {
+        guard let model = ready else { return nil }
+        let found = VehicleSighting.merged(find(in: image, with: model, kinds: ["person"], fine: true).filter { $0.confidence >= 0.35 })
+        return found.map { s in
+            let fromBottom: CGFloat = 1 - s.box.maxY
+            return (box: CGRect(x: s.box.minX, y: fromBottom, width: s.box.width, height: s.box.height), confidence: Float(s.confidence))
+        }
+    }
+
+    private nonisolated static func find(in image: CGImage, with model: Model, kinds: Set<String>, fine: Bool) -> [VehicleSighting] {
         let w = CGFloat(image.width), h = CGFloat(image.height)
         var parts = [CGRect(x: 0, y: 0, width: 1, height: 1)]
         for (x, y) in [(0.0, 0.0), (0.4, 0.0), (0.0, 0.4), (0.4, 0.4)] { parts.append(CGRect(x: x, y: y, width: 0.6, height: 0.6)) }
+        if fine {
+            for y in [0.0, 0.3, 0.6] { for x in [0.0, 0.3, 0.6] { parts.append(CGRect(x: x, y: y, width: 0.4, height: 0.4)) } }
+        }
         var found: [VehicleSighting] = []
         for part in parts {
             let whole = part.width >= 1

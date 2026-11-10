@@ -338,7 +338,7 @@ final class FrameGrabber: NSObject, RTCVideoRenderer, @unchecked Sendable {
     private static let momentEvery: TimeInterval = 0.5
     private static let momentBytes = 8_000_000
     private static let momentSide = 1280
-    private static let greyWidth = 64, greyHeight = 36
+    static let greyWidth = 64, greyHeight = 36
     /// Made one at a time, in the background, for every camera.
     private static let momentQueue = DispatchQueue(label: "com.woodruff.family.camera-moments", qos: .utility)
 

@@ -5,7 +5,8 @@ import WidgetKit
 /// Runs the moment a camera or doorbell push arrives (Woodruff can be closed): puts the picture of the event in the
 /// notification, as Google Home does. The small picture the Mac sent in the push goes in at once, so the alert always
 /// has one; then, at the same time, Google's clip or snapshot and the Mac Studio's full-size picture of the event are
-/// asked for, and the first to come replaces it. Twenty seconds at most: the alert never waits longer than that.
+/// asked for, and the first to come replaces it. Four seconds at most for that when the alert has the Mac's small
+/// picture (twenty when it has none): the alert never waits longer than that.
 final class NotificationService: UNNotificationServiceExtension, @unchecked Sendable {
     private let lock = NSLock()
     private var handler: ((UNNotificationContent) -> Void)?
@@ -23,8 +24,11 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
         var doorbell: Bool
     }
 
-    /// How long the full picture is waited for (iOS allows about 30 seconds in all).
+    /// How long the full picture is waited for (iOS allows about 30 seconds in all) when the alert has no picture yet.
     private static let budget: TimeInterval = 20
+    /// And when it already has the Mac's small picture: the alert shows within a few seconds. (Away from home the Mac
+    /// Studio's full picture can't be reached at all, and every alert was held the whole twenty seconds for it.)
+    private static let quick: TimeInterval = 4
 
     override func didReceive(_ request: UNNotificationRequest, withContentHandler contentHandler: @escaping (UNNotificationContent) -> Void) {
         let c = (request.content.mutableCopy() as? UNMutableNotificationContent) ?? UNMutableNotificationContent()
@@ -38,7 +42,6 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
         CameraEventMedia.notePushKey(key)
         let macFocus = CameraEventMedia.focus(text("f"))
         let title = request.content.title
-        let deadline = Date().addingTimeInterval(Self.budget)
 
         // The Mac's small picture first: whatever happens next, the alert has it.
         let thumbFile = thumb.flatMap { CameraEventMedia.thumbnailFile($0) }
@@ -54,7 +57,9 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
         }
         // The hard stop: the alert goes with what it has. Set before anything is written to the shared container, so a
         // write held up there can't hold the alert back.
-        DispatchQueue.global().asyncAfter(deadline: .now() + Self.budget + 1) { [weak self] in self?.finish() }
+        let wait = hasPicture ? Self.quick : Self.budget
+        let deadline = Date().addingTimeInterval(wait)
+        DispatchQueue.global().asyncAfter(deadline: .now() + wait + 1) { [weak self] in self?.finish() }
         // The widgets' line has the event and the push's picture at once (they reload when the alert is shown): the
         // doorbell's Live Activity, which the Mac starts a moment after this push, shows this ring, not an older one.
         let line = Self.widgetLine(camera: camera, name: request.content.body, ring: text("ring") != nil)
