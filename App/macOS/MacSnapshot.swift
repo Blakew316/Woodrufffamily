@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import WoodruffKit
 
 /// Pictures of the Mac app's own windows, taken by the app itself, to check its screens from Terminal without anyone
@@ -6,11 +7,12 @@ import WoodruffKit
 ///
 ///     open -n -a "Woodruff Family" --args -demo YES -macSnapshot /path/to/a/folder
 ///
-/// Home, Watch and Settings are opened in turn, then the remote's panel and this Mac's Settings window (⌘,), and
-/// every window the app is showing is written as a PNG in that folder each time (home.png, watch.png, settings.png,
-/// remote.png, mac-settings.png; a second window is home-2.png, and so on); "done.txt" is written last, a line for
-/// each picture saying how it was made. With -route title as well, Watch opens on a title's page. Nothing happens
-/// unless the app was opened with -macSnapshot (this launch's own argument, never a saved setting).
+/// Home, Watch and Settings are opened in turn, then the remote's panel, a title's page and this Mac's Settings
+/// window (⌘,), and every window the app is showing is written as a PNG in that folder each time (home.png,
+/// watch.png, settings.png, remote.png, title.png, mac-settings.png; a second window is home-2.png, and so on);
+/// "done.txt" is written last, with a line for each picture saying how it was made and lines for what a picture
+/// drawn by the app can't show. Nothing happens unless the app was opened with -macSnapshot (this launch's own
+/// argument, never a saved setting).
 @MainActor
 enum MacSnapshot {
     private static var asked = false
@@ -32,13 +34,22 @@ enum MacSnapshot {
                 lines += shoot(section.rawValue, into: folder)
                 lines += facts(section.rawValue)
             }
-            // The remote's panel, open beside Home.
+            // The remote's panel, open beside Home. (Opened without its slide: with the screen locked nothing
+            // animates, and the panel stayed where its slide starts, just outside the window.)
             UserDefaults.standard.set(AppSection.home.rawValue, forKey: "section")
-            Fleet.shared.remotePanel = true
+            still { Fleet.shared.remotePanel = true }
             try? await Task.sleep(nanoseconds: 3_000_000_000)
             lines += shoot("remote", into: folder)
             lines += facts("remote")
-            Fleet.shared.remotePanel = false
+            still { Fleet.shared.remotePanel = false }
+            // A title's page on Watch (the sample show), pushed without its slide for the same reason.
+            UserDefaults.standard.set(AppSection.watch.rawValue, forKey: "section")
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            still { MacNav.shared.push("Backyard Science", backTo: "Watch", TitleSheet(id: "t_backyard_science")) }
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
+            lines += shoot("title", into: folder)
+            lines += facts("title")
+            still { MacNav.shared.reset() }
             // This Mac's Settings window: opened as ⌘, opens it, by the app menu's own item.
             if let menu = NSApp.mainMenu?.items.first?.submenu,
                let i = menu.items.firstIndex(where: { $0.keyEquivalent == "," }) {
@@ -50,6 +61,14 @@ enum MacSnapshot {
             }
             try? (lines.joined(separator: "\n") + "\n").write(to: folder.appendingPathComponent("done.txt"), atomically: true, encoding: .utf8)
         }
+    }
+
+    /// A change made without animation: with the screen locked nothing animates, and what slides in (a page, the
+    /// remote's panel) stays where its slide starts.
+    private static func still(_ change: () -> Void) {
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction, change)
     }
 
     /// Every window the app is showing, written as [name].png, [name]-2.png…: a line for each, saying what was

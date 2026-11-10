@@ -196,8 +196,7 @@ struct WatchView: View {
         // shows (a Mac reads its own library even with sample TVs).
         .onChange(of: shown == nil, initial: true) { _, _ in
             guard !routedTitle, UserDefaults.standard.string(forKey: "route") == "title", let h = shown else { return }
-            let all = (h.featured ?? []) + (h.recent ?? [])
-            guard let id = all.first(where: { $0.id == "t_backyard_science" })?.id ?? all.first?.id else { return }
+            guard let id = Demo.isOn ? "t_backyard_science" : ((h.featured ?? []) + (h.recent ?? [])).first?.id else { return }
             routedTitle = true
             openTitle = id
         }
