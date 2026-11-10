@@ -216,18 +216,6 @@ struct OpenHomeIntent: AppIntent {
     }
 }
 
-/// The same, for the Lock Screen's Woodruff button, which is a switch that's always on (iOS draws a control in its
-/// own colour only while it's on): whichever way it's flipped, it opens Woodruff to Home.
-struct OpenHomeSwitchIntent: SetValueIntent {
-    static let title: LocalizedStringResource = "Open Woodruff"
-    static let openAppWhenRun: Bool = true
-    @Parameter(title: "On") var value: Bool
-    @MainActor func perform() async throws -> some IntentResult {
-        UserDefaults.standard.set("home", forKey: "section")
-        return .result()
-    }
-}
-
 // MARK: - Speakers and lights (Control Center)
 
 struct LightsOffControlIntent: LiveActivityIntent {
