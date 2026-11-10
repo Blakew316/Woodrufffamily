@@ -235,7 +235,7 @@ enum MacActions {
                 }
             }
             guard !failed.isEmpty else { return }
-            fleet.say(targets.count == 1 ? "Couldn't do that" : "Didn’t Reach Every TV", failed.joined(separator: "\n"))
+            fleet.alert(targets.count == 1 ? "Couldn't do that" : "Didn’t Reach Every TV", failed.joined(separator: "\n"))
         }
     }
 
@@ -310,7 +310,7 @@ enum MacActions {
         Task {
             let (asked, failed) = await fleet.pushUpdateToAll()
             if !failed.isEmpty {
-                fleet.say("Update All", failed.joined(separator: "\n"))
+                fleet.alert("Update All", failed.joined(separator: "\n"))
             } else if asked == 0 {
                 fleet.say("Update All", "No Android TV is on right now.")
             } else {

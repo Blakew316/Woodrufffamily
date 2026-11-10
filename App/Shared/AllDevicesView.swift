@@ -21,6 +21,10 @@ struct AllDevicesView: View {
     private final class TapLog { var at: [String: Date] = [:] }
     /// Settings → General: devices that have no room, under Other at the end (off unless asked for).
     @AppStorage("allDevices.showOther") private var showOther = false
+    #if os(macOS)
+    /// The Mac: the page this is on (Back from a TV's page opened here says its name).
+    @Environment(\.macPageTitle) private var pageTitle
+    #endif
 
     /// The family's rooms first, in this order and spelled like this; any other room after them, by name.
     static let order = ["Master Bedroom", "Living Room", "Haley's Sewing Room", "Elliott's Room", "Kyler's Room", "Kitchen", "Laundry Room"]
@@ -121,28 +125,21 @@ struct AllDevicesView: View {
         .onChange(of: home.speakers.count) { _, _ in store.zones(); ArcRoom.place() }
         .onChange(of: home.lights.count) { _, _ in store.zones(); ArcRoom.place() }
         .onChange(of: store.all.count) { _, _ in ArcRoom.place() }
+        // The Mac has no sheets here: a tile's controls and a TV's small remote open in a popover pointing at the tile
+        // (`tile`), and a TV's page goes on the window's page stack (`open`).
+        #if !os(macOS)
         .sheet(item: $openSpeaker) { r in
-            NavigationStack { SpeakerDetailView(speakerID: r.id, inSheet: true) }.presentationBackground(.clear).macResizable()
+            NavigationStack { SpeakerDetailView(speakerID: r.id, inSheet: true) }.presentationBackground(.clear)
         }
-        .sheet(item: $openLight) { l in LightSheet(lightID: l.id).macResizable(width: 520, height: 640) }
-        .sheet(item: $openDevice) { d in NavigationStack { DeviceDetailView(deviceID: d.id, inSheet: true) }.macResizable() }
+        .sheet(item: $openLight) { l in LightSheet(lightID: l.id) }
+        .sheet(item: $openDevice) { d in NavigationStack { DeviceDetailView(deviceID: d.id, inSheet: true) } }
         .sheet(item: $openTV) { t in
             NavigationStack {
                 TVDetailView(tvID: t.id)
                     #if os(iOS)
                     .toolbar { ToolbarItem(placement: .cancellationAction) { Button(role: .close) { openTV = nil } } }
-                    #elseif os(macOS)
-                    // The Mac's sheet had no way out.
-                    .toolbar { ToolbarItem(placement: .cancellationAction) { Button(role: .close) { openTV = nil }.keyboardShortcut(.cancelAction) } }
                     #endif
             }
-                #if os(macOS)
-                // A stack of its own: a page opened in it (Smoothness Report) goes on it, with Back to this TV, not
-                // on the window's stack behind the sheet (its link did nothing).
-                .environment(\.macPageStack, false)
-                .environment(\.macPageTitle, fleet.tv(t.id)?.name ?? "TV")
-                #endif
-                .macResizable()
                 #if os(iOS)
                 // iPhone and iPad: what it says back shows over it too (the screen's own alert can't while it's open).
                 // A sheet of its own that's open (Now Playing) shows it instead.
@@ -158,23 +155,16 @@ struct AllDevicesView: View {
                 // On iOS 26's own glass sheet: no background of the app's making over it.
                 .presentationDetents([.height(300)])
                 .presentationDragIndicator(.visible)
-                #elseif os(tvOS)
+                #else
                 // Apple TV: a panel in the middle of the screen, over the page (a sheet there has no heights to stop
                 // at, so the iPhone's low strip came out as a slab across the whole screen).
                 .presentationBackground(.clear)
-                #else
-                .frame(width: 360, height: 300)
-                // The Mac's sheet had no way out: Done (Esc too), in the corner above the keys.
-                .overlay(alignment: .topTrailing) {
-                    Button("Done") { miniTV = nil }.keyboardShortcut(.cancelAction).buttonStyle(.glass).padding(12)
-                }
                 #endif
-                #if os(iOS) || os(tvOS)
                 // A key that can't reach the TV says so over the remote (the screen's own alert can't show while it's
                 // open, so the key seemed to do nothing).
                 .sheetBanner()
-                #endif
         }
+        #endif
         .confirmationDialog("Unlock \(confirmUnlock?.name ?? "")?", isPresented: Binding(get: { confirmUnlock != nil }, set: { if !$0 { confirmUnlock = nil } }), titleVisibility: .visible) {
             Button("Unlock") { if let d = confirmUnlock { store.send(d, .lock(false)) }; confirmUnlock = nil }
         }
@@ -297,7 +287,43 @@ struct AllDevicesView: View {
         .accessibilityHint("Tap to turn on or off. Touch and hold for its controls.")
         // Touch and hold isn't there for VoiceOver: its controls as an action.
         .accessibilityAction(named: "Controls") { open(item) }
+        #if os(macOS)
+        // The Mac: a TV's small remote, or anything else's controls, in a popover pointing at its tile.
+        .modifier(MacTilePopover(isOpen: popoverOpen(item), close: { closePopover(item) }) { popoverContent(item) })
+        #endif
     }
+
+    #if os(macOS)
+    /// Whether [item]'s popover is open: a TV's small remote, or the controls of anything else.
+    private func popoverOpen(_ item: Item) -> Bool {
+        switch item {
+        case .tv(let tv): return miniTV?.id == tv.id
+        case .speaker(let s): return openSpeaker?.id == s.id
+        case .light(let l): return openLight?.id == l.id
+        case .device(let d): return openDevice?.id == d.id
+        }
+    }
+
+    /// [item]'s popover closed itself. (Only its own: a click on another tile may already have opened that one's.)
+    private func closePopover(_ item: Item) {
+        guard popoverOpen(item) else { return }
+        switch item {
+        case .tv: miniTV = nil
+        case .speaker: openSpeaker = nil
+        case .light: openLight = nil
+        case .device: openDevice = nil
+        }
+    }
+
+    @ViewBuilder private func popoverContent(_ item: Item) -> some View {
+        switch item {
+        case .tv(let tv): MiniRemote(tvID: tv.id).background { ArtBackdrop(url: nil) }.homePopover()
+        case .speaker(let s): SpeakerPopover(room: s)
+        case .light(let l): LightPopover(light: l)
+        case .device(let d): DevicePopover(device: d)
+        }
+    }
+    #endif
 
     private struct Facts {
         var name: String
@@ -422,7 +448,14 @@ struct AllDevicesView: View {
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         #endif
         switch item {
-        case .tv(let tv): openTV = TitleRef(id: tv.id)
+        case .tv(let tv):
+            #if os(macOS)
+            // The Mac: the TV's page goes on the window's page stack, with Back to where it was opened from (Esc
+            // too, as it closed the sheet).
+            MacNav.shared.push(tv.name, backTo: pageTitle, TVDetailView(tvID: tv.id).background { MacEscBack() })
+            #else
+            openTV = TitleRef(id: tv.id)
+            #endif
         case .speaker(let s): openSpeaker = s
         case .light(let l): openLight = l
         case .device(let d): openDevice = d
@@ -464,6 +497,8 @@ struct DeviceGlyph: View {
     var tint: Color
     /// How much larger than the standard size the picture is drawn (All Devices fills its tiles with it).
     var scale: CGFloat = 1
+    /// What keeps moving while it's on (a speaker's sound, a bulb breathing, a fan turning) rests with the window.
+    @AmbientResting private var resting: Bool
 
     /// Drawn as the product itself (no circle behind it).
     private var drawn: Bool {
@@ -500,7 +535,7 @@ struct DeviceGlyph: View {
                 Image(systemName: on ? "hifispeaker.fill" : "hifispeaker")
                     .font(.system(size: 20 * scale, weight: .semibold))
                     .foregroundStyle(on ? tint : .secondary)
-                    .symbolEffect(.variableColor.iterative, options: .repeating, isActive: on)
+                    .symbolEffect(.variableColor.iterative, options: .repeating, isActive: on && !resting)
                     .symbolEffect(.bounce, value: on)
             }
         case .thermostat(let d):
@@ -530,7 +565,7 @@ struct DeviceGlyph: View {
                 .font(.system(size: 21 * scale, weight: .semibold))
                 .foregroundStyle(on ? tint : .secondary)
                 .shadow(color: on ? tint.opacity(0.9) : .clear, radius: 8)
-                .symbolEffect(.breathe, options: .repeating, isActive: on)
+                .symbolEffect(.breathe, options: .repeating, isActive: on && !resting)
                 .symbolEffect(.bounce, value: on)
         case .device(let kind, let running, let symbol):
             if running && ApplianceArt.animates(kind) && kind != .fridge && kind != .fan {
@@ -541,7 +576,7 @@ struct DeviceGlyph: View {
                 Image(systemName: "fan.fill")
                     .font(.system(size: 20 * scale, weight: .semibold))
                     .foregroundStyle(on ? tint : .secondary)
-                    .symbolEffect(.rotate, options: .repeating, isActive: on)
+                    .symbolEffect(.rotate, options: .repeating, isActive: on && !resting)
             } else {
                 Image(systemName: symbolFor(kind, on: on) ?? symbol)
                     .font(.system(size: 20 * scale, weight: .semibold))
@@ -599,12 +634,13 @@ struct TVPicture: View {
     var on: Bool
     var playing: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @AmbientResting private var resting: Bool
 
     var body: some View {
         GeometryReader { g in
             let w = g.size.width, h = g.size.height
             let panelH = h * 0.8
-            TimelineView(.animation(minimumInterval: 1.0 / 24, paused: !(on && playing) || reduceMotion || !Fleet.shared.isActive)) { ctx in
+            TimelineView(.animation(minimumInterval: 1.0 / 24, paused: !(on && playing) || reduceMotion || resting)) { ctx in
                 let t = ctx.date.timeIntervalSinceReferenceDate
                 ZStack(alignment: .top) {
                     // Its two slim feet, behind the panel, starting just below it.
@@ -663,6 +699,7 @@ struct TVPicture: View {
 struct EcobeePicture: View {
     var device: HomeDevice
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @AmbientResting private var resting: Bool
 
     private var cooling: Bool { device.action == "cooling" }
     private var heating: Bool { device.action == "heating" }
@@ -692,7 +729,7 @@ struct EcobeePicture: View {
             let heatLook = heating || (mode == "heat" && !cooling)
             let accent: Color = heatLook ? .orange : mode == "off" ? .gray : Color(red: 0.16, green: 0.5, blue: 1)
             // Moving only while it heats or cools, and never in the tiny chip (always on screen, it would run all day).
-            TimelineView(.animation(minimumInterval: 1.0 / 10, paused: tiny || !(cooling || heating) || reduceMotion || !Fleet.shared.isActive)) { ctx in
+            TimelineView(.animation(minimumInterval: 1.0 / 10, paused: tiny || !(cooling || heating) || reduceMotion || resting)) { ctx in
                 let t = ctx.date.timeIntervalSinceReferenceDate
                 let pulse = reduceMotion ? 0.5 : (sin(t * 2) + 1) / 2
                 ZStack {
@@ -795,6 +832,7 @@ struct DreoFanPicture: View {
     /// 0…1.
     var speed: Double
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @AmbientResting private var resting: Bool
 
     var body: some View {
         if pedestal { pedestalFan } else { tableFan }
@@ -808,7 +846,7 @@ struct DreoFanPicture: View {
             Circle().fill(LinearGradient(colors: rim, startPoint: .topLeading, endPoint: .bottomTrailing))
             Circle().fill(Color(white: 0.04)).padding(d * 0.045)
             // The blades behind the grille, turning while it's on.
-            TimelineView(.animation(minimumInterval: 1.0 / 30, paused: !on || reduceMotion || !Fleet.shared.isActive)) { ctx in
+            TimelineView(.animation(minimumInterval: 1.0 / 30, paused: !on || reduceMotion || resting)) { ctx in
                 let turn = on && !reduceMotion ? ctx.date.timeIntervalSinceReferenceDate * (200 + 500 * max(0.1, speed)) : 0
                 ZStack {
                     FanBlades()
@@ -967,6 +1005,7 @@ struct SoundbarPicture: View {
     var on: Bool
     var tint: Color
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @AmbientResting private var resting: Bool
 
     var body: some View {
         // Only the sound moves: the bar and its grille are drawn once, the ripples behind them 15 times a second.
@@ -980,7 +1019,7 @@ struct SoundbarPicture: View {
                 g.fill(Path(ellipseIn: glow), with: .color(.white.opacity(on ? 0.3 : 0.18)))
             }
             if on {
-                TimelineView(.animation(minimumInterval: 1.0 / 15, paused: reduceMotion || !Fleet.shared.isActive)) { ctx in
+                TimelineView(.animation(minimumInterval: 1.0 / 15, paused: reduceMotion || resting)) { ctx in
                     let t = ctx.date.timeIntervalSinceReferenceDate
                     Canvas { g, size in
                         let w = size.width, h = size.height
@@ -1042,8 +1081,9 @@ struct SoundbarPicture: View {
 }
 
 /// A small remote for one TV, from All Devices: what it's playing, play or pause, back and ahead, mute and volume. On
-/// iPhone and iPad it sits on the sheet's own Liquid Glass; on the Mac on a glass card of its own. On Apple TV it's a
-/// panel in the middle of the screen with keys the size a TV needs (`tvPanel`).
+/// iPhone and iPad it sits on the sheet's own Liquid Glass; on the Mac it's a popover pointing at the TV's tile (glass
+/// keys on the popover's plain backdrop, with no slab of glass of its own under them). On Apple TV it's a panel in the
+/// middle of the screen with keys the size a TV needs (`tvPanel`).
 struct MiniRemote: View {
     var tvID: String
     #if os(tvOS)
@@ -1093,10 +1133,12 @@ struct MiniRemote: View {
         // The sheet is the glass (iOS 26 gives a sheet this short its own): nothing drawn behind the keys here.
         .frame(maxHeight: .infinity)
         #else
-        .glass(RoundedRectangle(cornerRadius: 34, style: .continuous))
-        .padding(.horizontal, 12)
-        .padding(.bottom, 8)
-        .frame(maxHeight: .infinity, alignment: .bottom)
+        // The Mac's popover: as large as the remote itself, with Done in its corner (Esc, or a click elsewhere, too).
+        // The popover is the surface: glass under the glass keys was glass on glass.
+        .overlay(alignment: .topTrailing) {
+            Button("Done") { dismiss() }.keyboardShortcut(.cancelAction).buttonStyle(.glass).padding(12)
+        }
+        .frame(width: 320)
         #endif
         #endif
     }
@@ -1191,9 +1233,9 @@ struct MiniRemote: View {
 
     /// The TV's connection, or why there isn't one (a key that did nothing used to say nothing).
     private func client() -> TVClient? {
-        guard let tv = fleet.tv(tvID) else { fleet.say("TV Not Found", "That TV isn’t in Woodruff any more."); return nil }
+        guard let tv = fleet.tv(tvID) else { fleet.alert("TV Not Found", "That TV isn’t in Woodruff any more."); return nil }
         guard let c = fleet.client(for: tv) else {
-            fleet.say("Can’t Reach \(tv.name)", tv.online ? "Try again in a moment." : "It’s off or still turning on. Try again in a moment.")
+            fleet.alert("Can’t Reach \(tv.name)", tv.online ? "Try again in a moment." : "It’s off or still turning on. Try again in a moment.")
             return nil
         }
         return c

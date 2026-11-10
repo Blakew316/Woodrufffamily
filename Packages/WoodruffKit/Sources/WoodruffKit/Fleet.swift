@@ -79,7 +79,17 @@ public struct Banner: Identifiable, Hashable, Sendable {
     public var id = UUID()
     public var title: String
     public var message: String
-    public init(title: String, message: String) { self.title = title; self.message = message }
+    /// Something went wrong, or an answer that was asked for (`Fleet.show`, `Fleet.alert`): it's shown until it's
+    /// dismissed. A result that only confirms (`Fleet.say`: "Sent") isn't one: the Mac shows those as a line in its
+    /// window that goes by itself. (iPhone and Apple TV show both as alerts.)
+    public var isAlert: Bool
+    /// When it was said. The Mac drops one it only finds later (said with no window open to show it).
+    public var at = Date()
+    public init(title: String, message: String, isAlert: Bool = false) {
+        self.title = title
+        self.message = message
+        self.isAlert = isAlert
+    }
 }
 
 /// Everything the app knows about the family's TVs, and every action on them.
@@ -550,7 +560,7 @@ public final class Fleet {
                 let h = try await pair(c, replacing: false)
                 banner = Banner(title: "Paired", message: "\(h.name) is connected.")
             } catch let e as AlreadyPaired {
-                banner = Banner(title: "Not Paired", message: e.localizedDescription)
+                banner = Banner(title: "Not Paired", message: e.localizedDescription, isAlert: true)
             } catch { show(error) }
         }
     }
@@ -1376,12 +1386,20 @@ public final class Fleet {
 
     // MARK: Messages
 
+    /// Something went wrong: the error's own words.
     public func show(_ error: Error) {
-        banner = Banner(title: "Couldn't do that", message: error.localizedDescription)
+        banner = Banner(title: "Couldn't do that", message: error.localizedDescription, isAlert: true)
     }
 
+    /// A result that only confirms ("Sent", "Paired"). The Mac shows these quietly (see `Banner.isAlert`).
     public func say(_ title: String, _ message: String) {
         banner = Banner(title: title, message: message)
+    }
+
+    /// Something that went wrong, or needs doing, in the app's own words, or an answer that was asked for: shown
+    /// until it's dismissed, on the Mac too.
+    public func alert(_ title: String, _ message: String) {
+        banner = Banner(title: title, message: message, isAlert: true)
     }
 
     public var menuBarSymbol: String {

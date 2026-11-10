@@ -26,10 +26,11 @@ struct BespokeAppliance: View {
     var running: Bool
     var alert = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @AmbientResting private var resting: Bool
 
     var body: some View {
         let moves = running && model != .fridge && !reduceMotion
-        TimelineView(.animation(minimumInterval: 1.0 / 20, paused: !moves || !Fleet.shared.isActive)) { tl in
+        TimelineView(.animation(minimumInterval: 1.0 / 20, paused: !moves || resting)) { tl in
             let t = moves ? tl.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 3600) : 0.3
             Canvas { ctx, size in
                 // A soft light behind it, so its detail shows on a dark tile even while it's idle.

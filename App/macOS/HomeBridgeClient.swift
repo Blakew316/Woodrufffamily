@@ -183,7 +183,7 @@ final class HomeBridgeClient {
             let ok = await post("/device", HomeBridge.DeviceRequest(id: id, command: command))
             if !ok {
                 // (The Mac's Settings lists Devices itself: there's no Smart Home page to go through, as on iPhone.)
-                Fleet.shared.say("Apple Home Didn’t Answer", "Woodruff Home Helper isn’t responding on this Mac. Settings → Devices can open it.")
+                Fleet.shared.alert("Apple Home Didn’t Answer", "Woodruff Home Helper isn’t responding on this Mac. Settings → Devices can open it.")
             }
             await quickLook()
         }

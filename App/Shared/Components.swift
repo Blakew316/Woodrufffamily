@@ -393,6 +393,28 @@ struct Placeholder: View {
     var body: some View { RoundedRectangle(cornerRadius: corner, style: .continuous).fill(.quaternary) }
 }
 
+// MARK: - Ambient motion
+
+/// Whether ambient motion rests where it's read (`@AmbientResting private var resting: Bool` in the view that moves):
+/// Home's drifting backdrop, a fan's blades, a washer's drum, sound rising from a speaker. It rests while the app isn't
+/// in use (its windows hidden, minimised or covered; an iPhone or Apple TV in the background), as it always did, and
+/// on the Mac also while the window it's in isn't the one in use: another app in front, or a film playing in a window
+/// of its own. (A sheet or popover is a window of its own, so what moves inside it follows that one.)
+@propertyWrapper
+struct AmbientResting: DynamicProperty {
+    #if os(macOS)
+    @Environment(\.appearsActive) private var appearsActive
+    #endif
+
+    @MainActor var wrappedValue: Bool {
+        #if os(macOS)
+        return !Fleet.shared.isActive || !appearsActive
+        #else
+        return !Fleet.shared.isActive
+        #endif
+    }
+}
+
 // MARK: - Zoom transitions
 
 private struct ZoomNamespaceKey: EnvironmentKey { static let defaultValue: Namespace.ID? = nil }

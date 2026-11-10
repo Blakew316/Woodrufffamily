@@ -31,45 +31,6 @@ struct AmbientArtwork: View {
     }
 }
 
-// MARK: - Hover tilt
-
-/// Tilts a tile a little toward the pointer, with a moving highlight, like Apple TV's focus.
-struct HoverTilt: ViewModifier {
-    var cornerRadius: CGFloat = 24
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var point: CGPoint?
-    @State private var size: CGSize = .zero
-
-    func body(content: Content) -> some View {
-        let dx = reduceMotion ? 0 : point.map { ($0.x / max(size.width, 1)) - 0.5 } ?? 0
-        let dy = reduceMotion ? 0 : point.map { ($0.y / max(size.height, 1)) - 0.5 } ?? 0
-        content
-            .overlay {
-                if let point {
-                    RadialGradient(colors: [.white.opacity(0.16), .clear], center: UnitPoint(x: point.x / max(size.width, 1), y: point.y / max(size.height, 1)),
-                                   startRadius: 0, endRadius: max(size.width, size.height) * 0.7)
-                        .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-                        .allowsHitTesting(false)
-                        .blendMode(.plusLighter)
-                }
-            }
-            .rotation3DEffect(.degrees(Double(-dy) * 6), axis: (x: 1, y: 0, z: 0), perspective: 0.6)
-            .rotation3DEffect(.degrees(Double(dx) * 6), axis: (x: 0, y: 1, z: 0), perspective: 0.6)
-            .animation(.spring(response: 0.35, dampingFraction: 0.75), value: point)
-            .onGeometryChange(for: CGSize.self) { $0.size } action: { size = $0 }
-            .onContinuousHover { phase in
-                switch phase {
-                case .active(let p): point = p
-                case .ended: point = nil
-                }
-            }
-    }
-}
-
-extension View {
-    func hoverTilt(cornerRadius: CGFloat = 24) -> some View { modifier(HoverTilt(cornerRadius: cornerRadius)) }
-}
-
 // MARK: - Mini player
 
 /// A small always-on-top player (⌘⇧M), like Music's mini player. Its window is plain (no title bar, no background of
@@ -430,4 +391,211 @@ enum MacPairingBackup {
             fleet.restorePairings(snap.hubs.map { Hub(id: $0.id, name: $0.name, connection: TVConnection(base: $0.base, key: $0.key)) })
         }
     }
+}
+
+// MARK: - Status
+
+/// What the app says back when it only confirms ("Sent", "Paired", "Updating"), on the Mac: a line at the foot of the
+/// window that shows for a few seconds and goes by itself, in place of an alert to answer. (What went wrong is still
+/// an alert: `SheetBanner`.) On a material, not glass: it's something to read, not a control.
+struct MacStatusLine: View {
+    var banner: Banner
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(banner.title).font(.subheadline.weight(.semibold))
+            if !banner.message.isEmpty {
+                Text(banner.message).font(.subheadline).foregroundStyle(.secondary)
+                    .lineLimit(4)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .multilineTextAlignment(.leading)
+        .padding(.horizontal, 18).padding(.vertical, 9)
+        .background { RoundedRectangle(cornerRadius: 20, style: .continuous).fill(.regularMaterial) }
+        .overlay { RoundedRectangle(cornerRadius: 20, style: .continuous).strokeBorder(.white.opacity(0.12)) }
+        .shadow(color: .black.opacity(0.22), radius: 12, y: 5)
+        // As wide as what it says, up to this (longer wraps).
+        .frame(maxWidth: 460)
+        .padding(.horizontal, 20)
+        // Nothing to click: what's under it stays in reach.
+        .allowsHitTesting(false)
+        .accessibilityElement(children: .combine)
+    }
+
+    /// How long it shows: long enough to read, the longer the more it says.
+    static func seconds(_ b: Banner) -> Double {
+        min(9, max(3.5, 2 + Double(b.title.count + b.message.count) / 18))
+    }
+
+    /// Read out by VoiceOver as it shows (it's gone again in seconds).
+    static func announce(_ b: Banner) {
+        guard let window = MainWindow.current else { return }
+        NSAccessibility.post(element: window, notification: .announcementRequested,
+                             userInfo: [.announcement: b.message.isEmpty ? b.title : "\(b.title). \(b.message)",
+                                        .priority: NSAccessibilityPriorityLevel.medium.rawValue])
+    }
+}
+
+// MARK: - Popovers
+
+extension View {
+    /// [content] in a popover pointing at this view while [item] is the one with [id]: a tile's controls open from the
+    /// tile that was clicked, not as a sheet over the whole window. (Esc, or a click anywhere else, closes it.)
+    func macPopover<Item: Identifiable, Content: View>(
+        _ item: Binding<Item?>, for id: Item.ID, arrowEdge: Edge = .trailing, @ViewBuilder content: @escaping () -> Content
+    ) -> some View {
+        modifier(MacTilePopover(isOpen: item.wrappedValue?.id == id, arrowEdge: arrowEdge, close: {
+            // Only its own closing clears it: a click on another tile may already have opened that one's.
+            if item.wrappedValue?.id == id { item.wrappedValue = nil }
+        }, content: content))
+    }
+}
+
+/// A popover pointing at the view while [isOpen]; [close] is called when it's closed from the popover's side (Esc, a
+/// click elsewhere, its own close button). A click on the view itself while its popover is open closes it, as a click
+/// anywhere else does, and then asks for it again: that one is turned down, so a second click closes it and it stays
+/// closed.
+struct MacTilePopover<PopoverContent: View>: ViewModifier {
+    var isOpen: Bool
+    var arrowEdge: Edge
+    var close: () -> Void
+    var popoverContent: () -> PopoverContent
+    @State private var shown = false
+    /// When the popover was last closed from its own side.
+    @State private var closedAt = Date.distantPast
+
+    init(isOpen: Bool, arrowEdge: Edge = .trailing, close: @escaping () -> Void, @ViewBuilder content: @escaping () -> PopoverContent) {
+        self.isOpen = isOpen
+        self.arrowEdge = arrowEdge
+        self.close = close
+        self.popoverContent = content
+    }
+
+    func body(content: Content) -> some View {
+        content
+            .onChange(of: isOpen, initial: true) { _, open in
+                if !open { shown = false }
+                else if Date().timeIntervalSince(closedAt) < 0.35 { close() }
+                else { shown = true }
+            }
+            .popover(isPresented: Binding(get: { shown }, set: { on in
+                guard !on, shown else { return }
+                shown = false
+                closedAt = Date()
+                close()
+            }), arrowEdge: arrowEdge, content: popoverContent)
+            // The view going (scrolled out of a long page) takes its popover with it: not open again when it's back.
+            .onDisappear { if isOpen { close() } }
+    }
+}
+
+extension View {
+    /// What a popover opened from one of Home's tiles has: dark like Home (its frame and arrow too), whatever the
+    /// Mac's appearance.
+    func homePopover() -> some View {
+        environment(\.colorScheme, .dark).preferredColorScheme(.dark)
+    }
+}
+
+/// A thing's controls in a popover: its name at the top (a sheet had it in its title bar) and its page under it, at a
+/// size that suits a popover. The pages are the dark ones, with their own backdrop behind them.
+struct MacControls<Content: View>: View {
+    var title: String
+    var width: CGFloat = 420
+    var height: CGFloat = 600
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        content
+            .safeAreaBar(edge: .top, spacing: 0) {
+                Text(title).font(.headline).lineLimit(1)
+                    .frame(maxWidth: .infinity)
+                    .padding(.horizontal, 16).padding(.top, 14).padding(.bottom, 8)
+            }
+            .frame(width: width, height: height)
+            .homePopover()
+    }
+}
+
+/// A speaker's controls, as its tile's popover shows them.
+struct SpeakerPopover: View {
+    var room: SonosRoom
+    var body: some View {
+        MacControls(title: room.name, width: 440, height: 640) { SpeakerDetailView(speakerID: room.id) }
+    }
+}
+
+/// A light's controls, as its tile's popover shows them (its name and its close button are its own), over the dark
+/// backdrop the speakers' and devices' pages have.
+struct LightPopover: View {
+    var light: GoveeLight
+    var body: some View {
+        LightSheet(lightID: light.id)
+            .frame(width: 400, height: 620)
+            .background { ArtBackdrop(url: nil) }
+            .homePopover()
+    }
+}
+
+/// A device's controls, as its tile's popover shows them.
+struct DevicePopover: View {
+    var device: HomeDevice
+    var body: some View {
+        MacControls(title: device.name) { DeviceDetailView(deviceID: device.id) }
+    }
+}
+
+/// Esc goes back a page, on a page that used to be a sheet (a title in Watch, a TV's page from All Devices, Wi-Fi from
+/// Home), as it closed the sheet: wherever the focus is, but not while a camera fills the window (it takes Esc first)
+/// or the remote is out (there Esc is the TV's Back).
+struct MacEscBack: View {
+    @Environment(Fleet.self) private var fleet
+
+    var body: some View {
+        if CameraStreams.shared.full == nil && !fleet.remotePanel {
+            Button("Back") { MacNav.shared.pop() }
+                .keyboardShortcut(.cancelAction).opacity(0).frame(width: 0, height: 0).accessibilityHidden(true)
+        }
+    }
+}
+
+/// A popover shown from the window's root that points at a control anywhere in the window. A popover attached to the
+/// control itself closes whenever the control is made anew, and one in the window's toolbar is made anew every time
+/// the toolbar redraws (the thermostat's flashed open and vanished there). So the control only marks where it is
+/// (`MacAnchor`), and when it's clicked the root is told where that is in its own space.
+@MainActor
+enum MacPopoverRoot {
+    /// The window's root view, as AppKit has it (a `MacAnchor` behind it).
+    static weak var view: NSView?
+
+    /// Where [control] is in the root's own space, measured from its top left as SwiftUI measures; nil when either
+    /// isn't in the window.
+    static func rect(of control: NSView?) -> CGRect? {
+        guard let control, let root = view, let window = root.window, control.window === window else { return nil }
+        return root.convert(control.bounds, from: control)
+    }
+}
+
+/// Marks where a view is in the window, for `MacPopoverRoot`: an empty AppKit view behind it, handed to [found].
+struct MacAnchor: NSViewRepresentable {
+    var found: (NSView) -> Void
+
+    func makeNSView(context: Context) -> NSView {
+        let view = Mark()
+        found(view)
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) { found(nsView) }
+
+    /// Measured from its top left, as SwiftUI measures.
+    private final class Mark: NSView {
+        override var isFlipped: Bool { true }
+    }
+}
+
+/// The view a `MacAnchor` found, kept in `@State` (nothing redraws for it).
+final class MacAnchorBox {
+    weak var view: NSView?
 }

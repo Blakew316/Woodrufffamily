@@ -264,7 +264,7 @@ struct WoodruffApp: App {
                     } else if let local = pairingLinkIsLocal(url) {
                         if local { fleet.handle(url: url) }
                         // A link for a TV elsewhere (from a web page, a message) can't add one, or put another in its place.
-                        else { fleet.say("Not Paired", "That link isn’t for a TV on this Wi‑Fi. Pair from the TV’s Phone screen.") }
+                        else { fleet.alert("Not Paired", "That link isn’t for a TV on this Wi‑Fi. Pair from the TV’s Phone screen.") }
                     }
                 }
                 .onContinueUserActivity("com.woodruff.family.remote") { a in
@@ -534,7 +534,9 @@ struct RootView: View {
             NestCameras.shared.cameras.first { $0.id == id }
                 ?? NestCameras.Camera(id: id, name: "Camera", room: nil, doorbell: false, webRTC: true)
         }
+        #if !os(macOS)
         let banner = fleet.banner
+        #endif
         // Read here so the window notices the moment the thermostat pill is tapped.
         let thermostatOpen = ThermostatUI.shared.open
         Group {
@@ -548,19 +550,35 @@ struct RootView: View {
                 #endif
             }
         }
+        #if os(macOS)
+        // What the app says back, on the Mac: a result that only confirms ("Sent") is a line at the foot of the window
+        // that goes by itself; what went wrong is still an alert; and anything said while the window was closed is
+        // dropped, not shown whenever it next opens.
+        .windowBanner()
+        #else
         .alert(item: Binding(get: { banner }, set: { fleet.banner = $0 })) { b in
             Alert(title: Text(b.title), message: Text(b.message), dismissButton: .default(Text("OK")))
         }
+        #endif
         // The thermostat controls, from the pill in Home's header (iPhone) or the toolbar (Mac). Shown from here, the
         // window's root, so the screen redrawing (it does every second or two while the TVs report) can't close it.
+        #if os(macOS)
+        // The Mac: a popover pointing at the pill (where it was when it was clicked: `MacPopoverRoot`), not a sheet.
+        .background { MacAnchor { MacPopoverRoot.view = $0 }.allowsHitTesting(false) }
+        .popover(isPresented: Binding(get: { thermostatOpen }, set: { open in
+            ThermostatUI.shared.open = open
+            if !open { ThermostatUI.shared.closedAt = Date() }
+        }), attachmentAnchor: ThermostatUI.shared.popoverAnchor, arrowEdge: .bottom) {
+            ThermostatPanel()
+        }
+        #else
         // (Not on iPad, where they come out of the pill itself as a popover: `ThermostatChip`.)
         .sheet(isPresented: Binding(get: { thermostatOpen && !PillPanels.popOver }, set: { ThermostatUI.shared.open = $0 })) {
             ThermostatPanel()
-                #if os(iOS) || os(tvOS)
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
-                #endif
         }
+        #endif
         #if os(iOS)
         // iPhone and iPad: opened from the topmost screen, so it comes up over a sheet or the film player too
         // (`CameraRequest`).

@@ -1294,7 +1294,7 @@ struct EveryTVSection: View {
             for tv in targets { g.addTask { await EveryTVSection.press(key, on: tv, fleet: f) } }
             for await problem in g { if let problem { failed.append(problem) } }
         }
-        if !failed.isEmpty { fleet.say("Didn’t Reach Every TV", failed.sorted().joined(separator: "\n")) }
+        if !failed.isEmpty { fleet.alert("Didn’t Reach Every TV", failed.sorted().joined(separator: "\n")) }
     }
 
     /// Presses [key] on [tv]: nil when it went through, else what went wrong.

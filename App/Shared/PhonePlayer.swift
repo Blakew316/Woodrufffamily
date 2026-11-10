@@ -144,7 +144,7 @@ final class PhonePlayback {
         guard let c = fleet.hubClient() else { fleet.show(TVError.notPaired); return nil }
         let ext = (a.key as NSString).pathExtension.lowercased()
         if unplayable.contains(ext) {
-            fleet.say("Can’t Play on \(deviceName)", "It’s an \(ext.uppercased()) file, which Apple’s player can’t open. Play it on a TV instead.")
+            fleet.alert("Can’t Play on \(deviceName)", "It’s an \(ext.uppercased()) file, which Apple’s player can’t open. Play it on a TV instead.")
             return nil
         }
         return PhonePlay(source: .url(c.streamURL(a.key)), key: a.key, title: a.title, start: start)

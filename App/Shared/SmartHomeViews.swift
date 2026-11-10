@@ -29,14 +29,19 @@ struct SpeakersSection: View {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 170), spacing: 14)], spacing: 14) {
                     ForEach(shown) { r in
                         SpeakerTile(room: r) { open = r }
+                            #if os(macOS)
+                            // The Mac: its controls in a popover pointing at its tile.
+                            .macPopover($open, for: r.id) { SpeakerPopover(room: r) }
+                            #endif
                     }
                 }
             }
+            #if !os(macOS)
             .sheet(item: $open) { r in
                 NavigationStack { SpeakerDetailView(speakerID: r.id, inSheet: true) }
                     .presentationBackground(.clear)
-                    .macResizable()
             }
+            #endif
         }
     }
 }
@@ -193,13 +198,19 @@ struct LightsSection: View {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 14)], spacing: 14) {
                     ForEach(shown) { l in
                         LightTile(light: l) { open = l }
+                            #if os(macOS)
+                            // The Mac: its controls in a popover pointing at its tile.
+                            .macPopover($open, for: l.id) { LightPopover(light: l) }
+                            #endif
                     }
                 }
                 if let e = home.goveeError {
                     Text(e).font(.footnote).foregroundStyle(.secondary)
                 }
             }
-            .sheet(item: $open) { l in LightSheet(lightID: l.id).macResizable(width: 520, height: 640) }
+            #if !os(macOS)
+            .sheet(item: $open) { l in LightSheet(lightID: l.id) }
+            #endif
         }
     }
 }

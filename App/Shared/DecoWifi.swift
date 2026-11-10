@@ -453,12 +453,24 @@ final class LocalTrust: NSObject, URLSessionDelegate, @unchecked Sendable {
 struct WifiSection: View {
     private let deco = DecoWifi.shared
     @State private var open = false
+    #if os(macOS)
+    /// The Mac: the page this card is on (Back from the Wi‑Fi page says its name).
+    @Environment(\.macPageTitle) private var pageTitle
+    #endif
 
     var body: some View {
         if deco.connected && !deco.nodes.isEmpty {
             VStack(alignment: .leading, spacing: 10) {
                 Text("Wi‑Fi").font(.title3.bold())
-                Button { open = true } label: {
+                Button {
+                    #if os(macOS)
+                    // The Mac: the Wi‑Fi page goes on the window's page stack (Back or Esc returns from it), not a
+                    // sheet.
+                    MacNav.shared.push("Wi‑Fi", backTo: pageTitle, WifiView().background { MacEscBack() })
+                    #else
+                    open = true
+                    #endif
+                } label: {
                     VStack(alignment: .leading, spacing: 10) {
                         HStack(spacing: 8) {
                             Circle().fill(deco.internetUp == false ? Palette.attention : deco.internetUp == true ? Color.green : Color.secondary).frame(width: 9, height: 9)
@@ -487,7 +499,9 @@ struct WifiSection: View {
                 .buttonStyle(.plain)
                 .glass(RoundedRectangle(cornerRadius: 22, style: .continuous))
             }
-            .sheet(isPresented: $open) { NavigationStack { WifiView(inSheet: true) }.macResizable() }
+            #if !os(macOS)
+            .sheet(isPresented: $open) { NavigationStack { WifiView(inSheet: true) } }
+            #endif
         }
     }
 }

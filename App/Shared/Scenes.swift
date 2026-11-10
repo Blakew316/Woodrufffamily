@@ -286,7 +286,7 @@ struct ScenesStrip: View {
         Task {
             let problems = await SceneRunner.run(s)
             withAnimation(.smooth(duration: 0.25)) { running = nil; done = s.id }
-            if !problems.isEmpty { fleet.say(s.name, problems.joined(separator: " ")) }
+            if !problems.isEmpty { fleet.alert(s.name, problems.joined(separator: " ")) }
             try? await Task.sleep(nanoseconds: 2_000_000_000)
             if done == s.id { withAnimation(.smooth(duration: 0.3)) { done = nil } }
         }

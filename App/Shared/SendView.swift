@@ -262,7 +262,7 @@ struct SendView: View {
 
     private func send() {
         guard let c = fleet.hubClient() else { fleet.show(TVError.notPaired); return }
-        guard hasRecipient else { fleet.say("Who Gets It?", "Pick at least one TV or phone under To."); return }
+        guard hasRecipient else { fleet.alert("Who Gets It?", "Pick at least one TV or phone under To."); return }
         let (title, body) = split(message)
         let anyTV = to.allTVs || !to.tvs.isEmpty
         let tvList: [String]? = to.allTVs ? nil : to.tvs.map { $0 == c.hub.id ? "this" : $0 }
@@ -285,7 +285,7 @@ struct SendView: View {
                     fleet.say("Pinned on Every TV", "It shows on each TV’s Home as soon as it’s on.")
                 } else {
                     // Said honestly: the TVs took the message, but none were on to show it and no phone was reached.
-                    fleet.say("Not Delivered Yet", "No TV or phone was reached just now. Turn on “Keep on Every TV’s Home” to leave it for when they’re on.")
+                    fleet.alert("Not Delivered Yet", "No TV or phone was reached just now. Turn on “Keep on Every TV’s Home” to leave it for when they’re on.")
                 }
             } catch { fleet.show(error) }
             sending = false
@@ -414,7 +414,7 @@ struct OpenLinkView: View {
     private func open() {
         let url = address
         guard !url.isEmpty, !opening else { return }
-        guard valid else { fleet.say("Not a Link", "Type or paste the whole address, like youtube.com/watch?v=…"); return }
+        guard valid else { fleet.alert("Not a Link", "Type or paste the whole address, like youtube.com/watch?v=…"); return }
         guard let c = target else { fleet.show(TVError.notPaired); return }
         opening = true
         Task {

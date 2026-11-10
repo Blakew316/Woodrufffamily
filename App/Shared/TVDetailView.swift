@@ -309,7 +309,7 @@ struct TVDetailView: View {
         }
         waking = false
         let name = fleet.tv(tvID)?.name ?? "The TV"
-        fleet.say("Still Off", "\(name) didn’t answer after the wake-up. On an LG, turn on Quick Start+ and “Turn on via Wi‑Fi” in its settings, then try again.")
+        fleet.alert("Still Off", "\(name) didn’t answer after the wake-up. On an LG, turn on Quick Start+ and “Turn on via Wi‑Fi” in its settings, then try again.")
     }
 
     private func run(_ op: @escaping () async throws -> Void) { Task { do { try await op() } catch { fleet.show(error) } } }
@@ -833,27 +833,62 @@ struct PairFoundTVView: View {
 
 /// Shows the fleet's banner (a result or an error) over a sheet: the window's own alert can't appear while a sheet
 /// covers it, so a failure inside one went unseen until it closed. While the sheet is up it takes the banner itself.
+///
+/// On the Mac it's also what the window itself shows them with (`windowBanner`), and there only what went wrong (or
+/// was asked for) is an alert: a result that only confirms ("Sent") is a line at the foot of the window, or of the
+/// sheet, that goes by itself (`MacStatusLine`).
 struct SheetBanner: ViewModifier {
     @Environment(Fleet.self) private var fleet
     @State private var shown: Banner?
     /// The sheet opens sheets of its own that show the banner too (a TV's page: Now Playing over it). One of those
     /// that's open takes it first: this one, under it, could only show it once that closed. Left alone, it's shown here.
     var afterOwnSheets = false
+    #if os(macOS)
+    /// The Mac's window itself, not a sheet over it: a sheet that's open takes the banner first, and whatever was said
+    /// while the window was closed (or hidden with the app) is dropped, not kept for when it next opens.
+    var window = false
+    /// The result being shown as a line that goes by itself.
+    @State private var status: Banner?
+    #endif
+
+    /// Whether a sheet over this one gets the banner first.
+    private var waits: Bool {
+        #if os(macOS)
+        return afterOwnSheets || window
+        #else
+        return afterOwnSheets
+        #endif
+    }
+
+    /// The Mac's window looks at once at what's there as it opens (to drop it); a sheet only at what's said from then on.
+    private var looksAtOnce: Bool {
+        #if os(macOS)
+        return window
+        #else
+        return false
+        #endif
+    }
 
     func body(content: Content) -> some View {
         content
-            .onChange(of: fleet.banner) { _, b in
+            .onChange(of: fleet.banner, initial: looksAtOnce) { _, b in
                 guard let b else { return }
-                guard afterOwnSheets else {
-                    shown = b
+                #if os(macOS)
+                // Said a while ago, with no window open to show it (this one has only just opened), or while Woodruff
+                // is hidden: dropped. (One said as the window opens, by the link that opened it, is seconds old at most.)
+                if window, Date().timeIntervalSince(b.at) > 3 || NSApp.isHidden {
                     fleet.banner = nil
+                    return
+                }
+                #endif
+                guard waits else {
+                    take(b)
                     return
                 }
                 Task { @MainActor in
                     try? await Task.sleep(nanoseconds: 100_000_000)
                     guard fleet.banner == b else { return }
-                    shown = b
-                    fleet.banner = nil
+                    take(b)
                 }
             }
             .alert(shown?.title ?? "", isPresented: Binding(get: { shown != nil }, set: { if !$0 { shown = nil } }), presenting: shown) { _ in
@@ -861,10 +896,44 @@ struct SheetBanner: ViewModifier {
             } message: { b in
                 Text(b.message)
             }
+            #if os(macOS)
+            .overlay(alignment: .bottom) {
+                if let s = status {
+                    MacStatusLine(banner: s)
+                        // Clear of what's playing at the foot of the window's pages.
+                        .padding(.bottom, window ? 76 : 16)
+                        .transition(.opacity)
+                        .task(id: s.id) {
+                            try? await Task.sleep(nanoseconds: UInt64(MacStatusLine.seconds(s) * 1_000_000_000))
+                            guard !Task.isCancelled else { return }
+                            withAnimation(.easeIn(duration: 0.4)) { status = nil }
+                        }
+                }
+            }
+            #endif
+    }
+
+    /// Shows [b] here, and takes it from the fleet.
+    private func take(_ b: Banner) {
+        fleet.banner = nil
+        #if os(macOS)
+        // A result that only confirms: a line that goes by itself, read out by VoiceOver as it shows.
+        if !b.isAlert {
+            withAnimation(.easeOut(duration: 0.2)) { status = b }
+            MacStatusLine.announce(b)
+            return
+        }
+        #endif
+        shown = b
     }
 }
 
 extension View {
     /// See `SheetBanner`: for the content of a sheet or full-screen cover.
     func sheetBanner(afterOwnSheets: Bool = false) -> some View { modifier(SheetBanner(afterOwnSheets: afterOwnSheets)) }
+
+    #if os(macOS)
+    /// See `SheetBanner`: for the Mac's window itself.
+    func windowBanner() -> some View { modifier(SheetBanner(window: true)) }
+    #endif
 }

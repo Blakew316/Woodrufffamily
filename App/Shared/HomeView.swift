@@ -535,7 +535,7 @@ struct HomeTVTile: View, Equatable {
     static let macBig = false
     #endif
     @Environment(Fleet.self) private var fleet
-    /// Home's tiles are being arranged: the hover lift and tilt rest (the tile is being moved or resized).
+    /// Home's tiles are being arranged: the hover lift rests (the tile is being moved or resized).
     @Environment(\.homeArranging) private var arranging
     var tv: FleetTV
     var height: CGFloat = 230
@@ -551,7 +551,7 @@ struct HomeTVTile: View, Equatable {
     private func dropped(_ urls: [URL]) {
         guard let hub = fleet.hub(tv.id) ?? fleet.hub(tv.hubID) else {
             // Dropped and nothing happened, with no word why.
-            fleet.say("Couldn’t Add to Family Memories", "Woodruff can’t reach \(tv.name) right now. Check it’s on, then try again.")
+            fleet.alert("Couldn’t Add to Family Memories", "Woodruff can’t reach \(tv.name) right now. Check it’s on, then try again.")
             return
         }
         let c = TVClient(hub: hub, routeID: "this")
@@ -580,6 +580,16 @@ struct HomeTVTile: View, Equatable {
     }
     @State private var renaming = false
     @State private var newName = ""
+
+    /// The Mac: the tile's glass lights up under the pointer (the system's own highlight on glass), resting while the
+    /// tiles are arranged. Elsewhere it's still glass: the tile takes the taps.
+    private var glassResponds: Bool {
+        #if os(macOS)
+        return !arranging
+        #else
+        return false
+        #endif
+    }
 
     var body: some View {
         // Only what's on the TV right now (`nowPlaying`): a TV that's off, has stopped, or was left paused shows no
@@ -652,7 +662,7 @@ struct HomeTVTile: View, Equatable {
         .frame(height: height)
         .background {
             if pictured { RoundedRectangle(cornerRadius: 24, style: .continuous).fill(Color.black) }
-            else { Color.clear.glass(RoundedRectangle(cornerRadius: 24, style: .continuous), interactive: false) }
+            else { Color.clear.glass(RoundedRectangle(cornerRadius: 24, style: .continuous), interactive: glassResponds) }
         }
         .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 24, style: .continuous).strokeBorder(.white.opacity(hot ? 0.18 : 0.06)))
@@ -662,7 +672,6 @@ struct HomeTVTile: View, Equatable {
         .animation(.spring(response: 0.3, dampingFraction: 0.8), value: hot)
         .contentShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
         #if os(macOS)
-        .modifier(TileTilt(enabled: !arranging))
         .dropDestination(for: URL.self) { urls, _ in
             dropped(urls)
             return true
@@ -800,16 +809,18 @@ struct LibrarySearchResults: View {
 /// Home's background: a slow, quiet gradient in the app's blues that drifts over half a minute. Always blue: what's
 /// playing doesn't tint it.
 struct HomeBackdrop: View {
-    @Environment(Fleet.self) private var fleet
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Home's scrolling: the drift rests while the page moves.
     var scroller: HomeScroller? = nil
     /// Low Power Mode: the drift rests.
     @State private var lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled
+    /// The app isn't in use, or (the Mac) its window isn't the one in use: the drift rests.
+    @AmbientResting private var away: Bool
 
     var body: some View {
-        // Also resting while the window can't be seen (hidden, minimised, covered) or the app is in the background.
-        let resting = reduceMotion || lowPower || (scroller?.scrolling ?? false) || !fleet.isActive
+        // Also resting while the window can't be seen (hidden, minimised, covered), while the app is in the background,
+        // and on the Mac while another window or app is the one in use.
+        let resting = reduceMotion || lowPower || (scroller?.scrolling ?? false) || away
         ZStack {
             // The app icon's colours: steel blue at the top fading to deep navy, its cyan glowing softly in the middle.
             IconPalette.deep
@@ -842,45 +853,6 @@ struct HomeBackdrop: View {
         }
     }
 }
-
-#if os(macOS)
-/// The Mac's hover tilt (as `hoverTilt()`), resting while the tile is being resized, so the corner grip never
-/// fights a tile that's turning under the pointer.
-private struct TileTilt: ViewModifier {
-    var enabled: Bool
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var point: CGPoint?
-    @State private var size: CGSize = .zero
-
-    func body(content: Content) -> some View {
-        let at = enabled ? point : nil
-        let dx = reduceMotion ? 0 : at.map { ($0.x / max(size.width, 1)) - 0.5 } ?? 0
-        let dy = reduceMotion ? 0 : at.map { ($0.y / max(size.height, 1)) - 0.5 } ?? 0
-        content
-            .overlay {
-                if let at {
-                    RadialGradient(colors: [.white.opacity(0.16), .clear], center: UnitPoint(x: at.x / max(size.width, 1), y: at.y / max(size.height, 1)),
-                                   startRadius: 0, endRadius: max(size.width, size.height) * 0.7)
-                        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
-                        .allowsHitTesting(false)
-                        .blendMode(.plusLighter)
-                }
-            }
-            .rotation3DEffect(.degrees(Double(-dy) * 6), axis: (x: 1, y: 0, z: 0), perspective: 0.6)
-            .rotation3DEffect(.degrees(Double(dx) * 6), axis: (x: 0, y: 1, z: 0), perspective: 0.6)
-            .animation(.spring(response: 0.35, dampingFraction: 0.75), value: at)
-            .onGeometryChange(for: CGSize.self) { $0.size } action: { size = $0 }
-            .onContinuousHover { phase in
-                switch phase {
-                case .active(let p): point = p
-                case .ended: point = nil
-                }
-            }
-    }
-}
-
-#endif
-
 
 /// Home's pull to refresh: everything asked again at once, back when the slowest has answered (or given up).
 @MainActor

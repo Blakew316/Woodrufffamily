@@ -285,6 +285,10 @@ struct SurroundCard: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                #if os(macOS)
+                // The Mac: what it is, in a popover pointing at its row.
+                .macPopover($picked, for: p.id) { partInfo(p).frame(width: 320).homePopover() }
+                #endif
                 if p.id != room.parts.last?.id { Divider() }
             }
             if room.parts.contains(where: { $0.role == .leftRear || $0.role == .rightRear }) {
@@ -322,17 +326,22 @@ struct SurroundCard: View {
             }
         }
         .animation(.smooth, value: sound)
+        #if !os(macOS)
         .sheet(item: $picked) { p in
-            VStack(spacing: 14) {
-                Text(p.roleName).font(.title3.bold())
-                Text(p.model.map { "Sonos \($0)" } ?? "Sonos").foregroundStyle(.secondary)
-                if let h = p.host { LabeledContent("Address", value: h) }
-                LabeledContent("ID", value: p.id).font(.footnote.monospaced())
-            }
-            .padding(24)
-            .presentationDetents([.height(220)])
-            .macResizable(width: 380, height: 240, minWidth: 300, minHeight: 200)
+            partInfo(p).presentationDetents([.height(220)])
         }
+        #endif
+    }
+
+    /// What one of the room's speakers is: its part in the room, its model, its address and its id.
+    private func partInfo(_ p: SonosPart) -> some View {
+        VStack(spacing: 14) {
+            Text(p.roleName).font(.title3.bold())
+            Text(p.model.map { "Sonos \($0)" } ?? "Sonos").foregroundStyle(.secondary)
+            if let h = p.host { LabeledContent("Address", value: h) }
+            LabeledContent("ID", value: p.id).font(.footnote.monospaced())
+        }
+        .padding(24)
     }
 
     /// Sends a setting; if the speaker says no, shows why and reads the real settings back (so the switch

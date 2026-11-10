@@ -14,13 +14,14 @@ struct ApplianceArt: View {
     /// and far less work than every frame of the display).
     var minimumInterval: Double = 1.0 / 30
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @AmbientResting private var resting: Bool
 
     static func animates(_ k: HomeDevice.Kind) -> Bool {
         [.washer, .dryer, .dishwasher, .oven, .fridge, .aircon, .vacuum, .fan].contains(k)
     }
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: minimumInterval, paused: !running || reduceMotion || !Fleet.shared.isActive)) { tl in
+        TimelineView(.animation(minimumInterval: minimumInterval, paused: !running || reduceMotion || resting)) { tl in
             let t = running && !reduceMotion ? tl.date.timeIntervalSinceReferenceDate : 0
             Canvas { ctx, size in draw(&ctx, size, t) }
         }

@@ -471,15 +471,41 @@ private struct PlayingWatcher: View {
 struct TitleRef: Hashable, Identifiable { var id: String }
 
 extension View {
-    /// A title's sheet: on Apple TV its own page over the whole screen (Menu closes it), elsewhere a sheet.
+    /// A title's page: on Apple TV its own page over the whole screen (Menu closes it), on the Mac a page on the
+    /// window's own stack (Back returns from it), on iPhone and iPad a sheet.
     @ViewBuilder func titleSheet<C: View>(_ item: Binding<TitleRef?>, @ViewBuilder content: @escaping (TitleRef) -> C) -> some View {
         #if os(tvOS)
         fullScreenCover(item: item) { content($0).presentationBackground(.clear) }
+        #elseif os(macOS)
+        modifier(MacTitlePage(item: item, page: content))
         #else
         sheet(item: item, content: content)
         #endif
     }
 }
+
+#if os(macOS)
+/// The Mac: a title opens as a page on the window's page stack, under Woodruff's bar with Back, not as a sheet over
+/// the window.
+private struct MacTitlePage<Page: View>: ViewModifier {
+    @Binding var item: TitleRef?
+    var page: (TitleRef) -> Page
+    /// The page it's opened from (Back says its name).
+    @Environment(\.macPageTitle) private var here
+    /// What the page it's opened from does when a title is marked watched. The title's page is drawn on the window's
+    /// stack, where this doesn't reach by itself (a sheet had it from the page that showed it): it's handed on.
+    @Environment(\.watchChanged) private var watchChanged
+
+    func body(content: Content) -> some View {
+        content.onChange(of: item) { _, ref in
+            guard let ref else { return }
+            item = nil
+            MacNav.shared.push(TitleCache.shared.tile(ref.id)?.title ?? "Title", backTo: here,
+                               page(ref).environment(\.watchChanged, watchChanged))
+        }
+    }
+}
+#endif
 struct LibraryRef: Hashable {
     var place: String
     /// Opened from a genre's row: the list filtered to it.
@@ -1081,9 +1107,6 @@ struct PosterTile: View {
             }
         }
         .buttonStyle(PressScale(scale: 0.96))
-        #if os(macOS)
-        .hoverTilt(cornerRadius: 12)
-        #endif
         .contextMenu { TitleMenu(title: title) }
         #endif
     }
@@ -1301,7 +1324,7 @@ enum PlayRouter {
             // that asked has closed.
             NativePlayer.shared.present(p)
             #else
-            // In a player window of its own, straight away (it opens over the title page, which closes behind it).
+            // In a player window of its own, straight away (it opens over the title's page).
             MacPlayer.shared.present(p)
             #endif
             return true
@@ -1316,7 +1339,7 @@ enum PlayRouter {
             do {
                 // The client tells the fleet, which asks the TV again at once and a moment later.
                 let r = try await c.start(a, on: id, fromStart: fromStart)
-                if r.started?.bool == false { fleet.say("Ready on \(name)", r.message ?? "Open Woodruff on \(name) to start it.") }
+                if r.started?.bool == false { fleet.alert("Ready on \(name)", r.message ?? "Open Woodruff on \(name) to start it.") }
                 try? await Task.sleep(nanoseconds: 1_500_000_000)
                 await fleet.refresh()
             } catch { fleet.show(error) }
@@ -1347,10 +1370,14 @@ enum PlayRouter {
 
 /// A film's or show's page, as a sheet: backdrop, Play, the story, seasons and episodes. Opened again, it shows at once
 /// what it showed last time (and reads the title again behind it); opened from a tile, the tile's picture and name are
-/// at its top while the rest loads. (On Apple TV it's a page over the whole screen: `tvPage`.)
+/// at its top while the rest loads. (On Apple TV it's a page over the whole screen: `tvPage`. On the Mac it's a page on
+/// the window's page stack: `titleSheet`.)
 struct TitleSheet: View {
     @Environment(Fleet.self) private var fleet
+    #if !os(macOS)
+    // (Not read on the Mac: there it changes whenever a page on the window's stack redraws, and this page with it.)
     @Environment(\.dismiss) private var dismiss
+    #endif
     @Environment(\.watchChanged) private var watchChanged
     var id: String
     /// The title as the TV answered here (until then, what it said the last time this title was opened shows).
@@ -1364,12 +1391,16 @@ struct TitleSheet: View {
     @State private var episodesNote: String?
     /// Why the title couldn't be read (with Try Again, instead of a spinner that never ends).
     @State private var failed: String?
-    #if os(macOS)
-    /// How tall the sheet's contents are (its window follows them).
-    @State private var macContentHeight: CGFloat = 0
-    #endif
 
     private var client: (any WatchSource)? { WatchSources.current(fleet) }
+
+    /// A play went out: the sheet closes, so what's playing shows. (The Mac's page stays where it is: what's playing
+    /// shows at its foot, and a film played here opens in a window of its own.)
+    private func played() {
+        #if !os(macOS)
+        dismiss()
+        #endif
+    }
 
     /// What's shown: the answer read here, else the one kept from the last time this title was opened.
     private func details(_ c: (any WatchSource)?) -> TitleDetails? { d ?? TitleCache.shared.details(hub: c?.sourceID, id: id) }
@@ -1633,7 +1664,7 @@ struct TitleSheet: View {
         let c = client
         let shown = details(c)
         let season = self.season(of: shown)
-        NavigationStack {
+        sheetStack {
             ScrollView {
                 VStack(spacing: 0) {
                     if let d = shown {
@@ -1670,13 +1701,13 @@ struct TitleSheet: View {
                                     }
                                     ForEach(episodes) { e in
                                         EpisodeRow(episode: e, still: c?.artURL(e.still, small: true), show: d.title, poster: d.poster,
-                                                   changed: { watchChanged(); Task { await loadEpisodes() } }, played: { dismiss() })
+                                                   changed: { watchChanged(); Task { await loadEpisodes() } }, played: { played() })
                                     }
                                 }
                                 if let films = d.films, !films.isEmpty {
                                     Text("In This Collection").font(.title3.bold()).padding(.top, 8)
                                     ForEach(films) { e in
-                                        EpisodeRow(episode: e, still: c?.artURL(e.still, small: true), changed: { watchChanged(); Task { await load() } }, played: { dismiss() })
+                                        EpisodeRow(episode: e, still: c?.artURL(e.still, small: true), changed: { watchChanged(); Task { await load() } }, played: { played() })
                                     }
                                 }
                             }
@@ -1713,42 +1744,55 @@ struct TitleSheet: View {
                     }
                 }
                 #if os(macOS)
-                // How tall it all is, so the window is as tall as what it shows (up to a point, then it scrolls).
-                .onGeometryChange(for: CGFloat.self, of: { $0.size.height.rounded() }) { h in
-                    if abs(h - macContentHeight) > 1 { macContentHeight = h }
-                }
+                // The Mac's page: what the sheet showed, as one piece in the middle of the page, as wide as its banner
+                // reads well (the banner runs to its edges), never a sliver while the title loads. A plain fill
+                // behind it (it's what the page is about, not something to float in glass).
+                .frame(maxWidth: Self.macWidth)
+                .frame(minHeight: 480, alignment: .top)
+                .background { Color.black.opacity(0.22) }
+                .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, 20)
+                .padding(.top, 8)
+                .padding(.bottom, 24)
                 #endif
             }
             #if os(macOS)
             // The app's blues behind it, as on Home, Watch and Settings.
             .background { IconBackdrop() }
-            #endif
+            #else
             .ignoresSafeArea(edges: .top)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button(role: .close) { dismiss() } } }
+            #endif
             .task { await load() }
             // The episodes of the season picked (and of the first one shown, as soon as the title shows).
             .task(id: "\(shown?.id ?? "")|\(season)") { await loadEpisodes() }
             // Its Play made ready to start at once.
             .task(id: warmPlay?.key) { if let p = warmPlay { PhonePlayback.warm(p) } }
         }
-        // Errors from here (a play that failed, Mark as Watched) show over the sheet, not hidden behind it.
-        .sheetBanner()
         #if os(macOS)
         // Light text on the blues, as everywhere else in the app.
         .environment(\.colorScheme, .dark)
-        .frame(width: Self.macWidth, height: macHeight)
+        // Esc goes back a page, as it closed the sheet.
+        .background { MacEscBack() }
+        #else
+        // Errors from here (a play that failed, Mark as Watched) show over the sheet, not hidden behind it.
+        .sheetBanner()
+        #endif
+    }
+
+    /// The sheet's own stack (for its close button). The Mac's page is on the window's stack already.
+    @ViewBuilder private func sheetStack<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        #if os(macOS)
+        content()
+        #else
+        NavigationStack { content() }
         #endif
     }
 
     #if os(macOS)
-    /// The Mac's window: as wide as a 16:9 banner reads well, and as tall as what it shows, between a floor (so a
-    /// title still loading isn't a sliver) and most of the screen.
+    /// The Mac's page: as wide as a 16:9 banner reads well.
     static let macWidth: CGFloat = 700
-    private var macHeight: CGFloat {
-        let screen = (NSScreen.main?.visibleFrame.height ?? 900) - 120
-        let tallest = max(480, min(860, screen))
-        return min(tallest, max(480, macContentHeight))
-    }
     #endif
 
     private func top(_ d: TitleDetails, _ c: (any WatchSource)?) -> SheetTop {
@@ -1808,9 +1852,9 @@ struct TitleSheet: View {
     private func playButtons(_ top: SheetTop) -> some View {
         HStack(spacing: 10) {
             // Closes once the play has gone out; if there's nowhere to play it, stays open and says why.
-            if let p = top.play { CapsuleButton(title: p.label ?? "Play", symbol: "play.fill") { if PlayRouter.start(p, fleet: fleet) { dismiss() } } }
+            if let p = top.play { CapsuleButton(title: p.label ?? "Play", symbol: "play.fill") { if PlayRouter.start(p, fleet: fleet) { played() } } }
             if let r = top.restart {
-                Button { if PlayRouter.start(r, fleet: fleet, fromStart: true) { dismiss() } } label: {
+                Button { if PlayRouter.start(r, fleet: fleet, fromStart: true) { played() } } label: {
                     Image(systemName: "arrow.counterclockwise").font(.headline).foregroundStyle(.white)
                         .frame(width: 40, height: 40).glass(Circle()).environment(\.colorScheme, .dark)
                 }
@@ -1820,7 +1864,7 @@ struct TitleSheet: View {
                 .help(r.label ?? "Start Over")
                 #endif
             }
-            if let p = top.play { PlayOnButton(action: p, film: top.isFilm ? top.title : nil, poster: top.poster, then: { dismiss() }) }
+            if let p = top.play { PlayOnButton(action: p, film: top.isFilm ? top.title : nil, poster: top.poster, then: { played() }) }
         }
     }
 

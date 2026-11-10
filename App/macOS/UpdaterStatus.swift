@@ -133,7 +133,7 @@ final class UpdaterStatus {
     /// nothing, rather than leaving an old answer for whenever the window next opens.
     private func tell(_ fleet: Fleet, _ title: String, _ message: String) {
         guard let w = MainWindow.current, w.isVisible || w.isMiniaturized else { return }
-        fleet.say(title, message)
+        fleet.alert(title, message)
     }
 
     /// launchctl's answer to Check Now: read status.json at once (the updater may already say it's running).

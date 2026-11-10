@@ -373,7 +373,7 @@ struct RemoteView: View {
                         if let s = try? await fleet.client(for: t)?.typeField() { withAnimation(.snappy) { field = s } }
                     }
                 } catch RemoteKeys.Failure.powerNeedsPairing(let name) {
-                    if !all { fleet.say("Power", RemoteKeys.Failure.powerNeedsPairing(name).localizedDescription) }
+                    if !all { fleet.alert("Power", RemoteKeys.Failure.powerNeedsPairing(name).localizedDescription) }
                 } catch {
                     if !all && n == 0 { fleet.show(error) }
                 }

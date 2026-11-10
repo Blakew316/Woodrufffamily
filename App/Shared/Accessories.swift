@@ -29,12 +29,20 @@ struct DevicesSection: View {
             VStack(alignment: .leading, spacing: 14) {
                 if titled { Text("Devices").font(.title2.bold()) }
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 14)], spacing: 14) {
-                    ForEach(shown) { d in DeviceTile(device: d) { open = d } }
+                    ForEach(shown) { d in
+                        DeviceTile(device: d) { open = d }
+                            #if os(macOS)
+                            // The Mac: its controls in a popover pointing at its tile.
+                            .macPopover($open, for: d.id) { DevicePopover(device: d) }
+                            #endif
+                    }
                 }
             }
+            #if !os(macOS)
             .sheet(item: $open) { d in
-                NavigationStack { DeviceDetailView(deviceID: d.id, inSheet: true) }.macResizable()
+                NavigationStack { DeviceDetailView(deviceID: d.id, inSheet: true) }
             }
+            #endif
         }
     }
 }
@@ -404,6 +412,7 @@ struct FanControls: View {
     @State private var speed: Double = 0
     @State private var editing = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @AmbientResting private var resting: Bool
 
     var body: some View {
         // How many turns the blades make a second.
@@ -411,7 +420,7 @@ struct FanControls: View {
         VStack(spacing: 14) {
             // 30 frames a second is plenty for the blades, until they turn so fast that each frame's step would look
             // like turning backwards: then 60.
-            TimelineView(.animation(minimumInterval: rate > 2.5 ? 1.0 / 60 : 1.0 / 30, paused: device.isOn != true || reduceMotion || !Fleet.shared.isActive)) { tl in
+            TimelineView(.animation(minimumInterval: rate > 2.5 ? 1.0 / 60 : 1.0 / 30, paused: device.isOn != true || reduceMotion || resting)) { tl in
                 Image(systemName: "fan.fill")
                     .font(.system(size: 54))
                     .rotationEffect(.degrees(reduceMotion ? 0 : tl.date.timeIntervalSinceReferenceDate * 360 * rate))
@@ -610,7 +619,8 @@ struct ThermostatControls: View {
 /// temperature), on iPhone beside Home's title (compact). Click or tap it for every control.
 /// The thermostat panel's state, kept outside the pill: the pill sits in the Mac's toolbar and Home's header,
 /// which redraw every second or two while the TVs report, and a pop-over or a value held inside it was lost on
-/// every redraw (the controls flashed open and vanished). The panel opens from the window itself instead.
+/// every redraw (the controls flashed open and vanished). The panel opens from the window itself instead: a sheet on
+/// iPhone, and on the Mac a popover that the window's root shows, pointing at where the pill was when it was clicked.
 @Observable @MainActor
 final class ThermostatUI {
     static let shared = ThermostatUI()
@@ -619,6 +629,20 @@ final class ThermostatUI {
     /// The set temperature being changed with − and + (shown at once, sent a moment after the last click).
     var pending: Double?
     @ObservationIgnored var sendSoon: Task<Void, Never>?
+
+    #if os(macOS)
+    /// Mac: where the pill that was clicked is, in the window's root (see `MacPopoverRoot`).
+    @ObservationIgnored var anchor: CGRect?
+    /// Mac: when the controls' popover last closed. A click on the pill while it's open closes it, and mustn't open
+    /// it again.
+    @ObservationIgnored var closedAt = Date.distantPast
+
+    /// Mac: where the controls' popover points: the pill that was clicked, else the top right of the window.
+    var popoverAnchor: PopoverAttachmentAnchor {
+        if let anchor { return .rect(.rect(anchor)) }
+        return .point(.topTrailing)
+    }
+    #endif
 }
 
 struct ThermostatChip: View {
@@ -631,6 +655,10 @@ struct ThermostatChip: View {
     private let store = AccessoryStore.shared
     private let ui = ThermostatUI.shared
     @State private var hovering = false
+    #if os(macOS)
+    /// Mac: where this pill is in the window, for its controls' popover.
+    @State private var mark = MacAnchorBox()
+    #endif
 
     /// The set temperature the − and + change (Mac, in Heat or Cool).
     private struct Nudge {
@@ -651,6 +679,11 @@ struct ThermostatChip: View {
             Button {
                 #if os(iOS) || os(tvOS)
                 UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                #endif
+                #if os(macOS)
+                // A click on the pill while its popover is open has just closed it: it stays closed.
+                if Date().timeIntervalSince(ui.closedAt) < 0.35 { return }
+                ui.anchor = MacPopoverRoot.rect(of: mark.view)
                 #endif
                 ui.open = true
             } label: {
@@ -707,6 +740,9 @@ struct ThermostatChip: View {
         // The pill going (Home being arranged, another tab) takes its popover with it: forgotten too, or the controls
         // would open by themselves when the pill came back.
         .onDisappear { if PillPanels.popOver { ui.open = false } }
+        #elseif os(macOS)
+        // Where the pill is in the window: its controls' popover points here.
+        .background { MacAnchor { mark.view = $0 }.allowsHitTesting(false) }
         #endif
     }
 

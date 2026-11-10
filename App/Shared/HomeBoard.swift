@@ -229,7 +229,7 @@ struct HomeScrollSpot: Equatable {
 private struct HomeArrangingKey: EnvironmentKey { static let defaultValue = false }
 private struct InHomeBoardKey: EnvironmentKey { static let defaultValue = false }
 extension EnvironmentValues {
-    /// Home's tiles are being arranged: a tile's own hover lift and tilt rest.
+    /// Home's tiles are being arranged: a tile's own hover lift rests.
     var homeArranging: Bool {
         get { self[HomeArrangingKey.self] }
         set { self[HomeArrangingKey.self] = newValue }
@@ -413,11 +413,14 @@ struct HomeBoard: View, Equatable {
             // Gone mid-drag (another room picked, another tab): Home's scrolling isn't left held still.
             if drag != nil || resize != nil { layout.draggingTile = nil }
         }
+        // (The Mac shows these as popovers pointing at the tile: see `tileView`.)
+        #if !os(macOS)
         .sheet(item: $openSpeaker) { r in
-            NavigationStack { SpeakerDetailView(speakerID: r.id, inSheet: true) }.presentationBackground(.clear).macResizable()
+            NavigationStack { SpeakerDetailView(speakerID: r.id, inSheet: true) }.presentationBackground(.clear)
         }
-        .sheet(item: $openLight) { l in LightSheet(lightID: l.id).macResizable(width: 520, height: 640) }
-        .sheet(item: $openDevice) { d in NavigationStack { DeviceDetailView(deviceID: d.id, inSheet: true) }.macResizable() }
+        .sheet(item: $openLight) { l in LightSheet(lightID: l.id) }
+        .sheet(item: $openDevice) { d in NavigationStack { DeviceDetailView(deviceID: d.id, inSheet: true) } }
+        #endif
         .cameraPresenter($openCamera)
     }
 
@@ -457,15 +460,25 @@ struct HomeBoard: View, Equatable {
             HomeTVTile(tv: tv, height: size.height) { openTV(tv.id) }
                 .equatable()
                 .modifier(TVZoom(id: tv.id, zoom: zoom, zoomed: zoomed))
+        // The Mac: a speaker's, a light's or a device's controls open in a popover pointing at its tile.
         case .speaker(let r):
             SpeakerTile(room: r) { openSpeaker = r }
                 .equatable()
+                #if os(macOS)
+                .macPopover($openSpeaker, for: r.id) { SpeakerPopover(room: r) }
+                #endif
         case .light(let l):
             LightTile(light: l) { openLight = l }
                 .equatable()
+                #if os(macOS)
+                .macPopover($openLight, for: l.id) { LightPopover(light: l) }
+                #endif
         case .device(let d):
             DeviceTile(device: d) { openDevice = d }
                 .equatable()
+                #if os(macOS)
+                .macPopover($openDevice, for: d.id) { DevicePopover(device: d) }
+                #endif
         }
     }
 
@@ -753,6 +766,7 @@ private struct Jiggle: ViewModifier {
     var active: Bool
     var seed: Int
     var size: CGSize
+    @AmbientResting private var resting: Bool
 
     @ViewBuilder func body(content: Content) -> some View {
         // Only while arranging: a paused timeline around every tile still cost a pass over each one at rest.
@@ -765,7 +779,7 @@ private struct Jiggle: ViewModifier {
 
     private func wobbling(_ content: Content) -> some View {
         // 60 a second at most: the wobble is only a degree or so, and ProMotion's 120 just doubled the work.
-        TimelineView(.animation(minimumInterval: 1.0 / 60, paused: !Fleet.shared.isActive)) { ctx in
+        TimelineView(.animation(minimumInterval: 1.0 / 60, paused: resting)) { ctx in
             let t = ctx.date.timeIntervalSinceReferenceDate
             let phase = Double(seed % 628) / 100
             let speed = 24 + Double(seed % 9)

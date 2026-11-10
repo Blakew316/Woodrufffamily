@@ -9,11 +9,11 @@ enum JoinTV {
         let q = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
         guard let u = q.first(where: { $0.name == "u" })?.value.flatMap(URL.init(string:)),
               let t = q.first(where: { $0.name == "t" })?.value else {
-            fleet.say("Can’t Connect", "That code isn’t from Woodruff on an Apple TV.")
+            fleet.alert("Can’t Connect", "That code isn’t from Woodruff on an Apple TV.")
             return
         }
         guard let code = FamilyCode.load().record?.code else {
-            fleet.say("Can’t Connect", "This device doesn’t have the family’s settings yet.")
+            fleet.alert("Can’t Connect", "This device doesn’t have the family’s settings yet.")
             return
         }
         var r = URLRequest(url: u.appendingPathComponent("join"))
@@ -27,10 +27,10 @@ enum JoinTV {
                 fleet.say("Apple TV Connected", "The family’s TVs and settings are coming over to it.")
             } else {
                 let why = ((try? JSONSerialization.jsonObject(with: d)) as? [String: Any])?["error"] as? String
-                fleet.say("Can’t Connect", why ?? "The Apple TV didn’t take the code. Show the code on it again and scan it.")
+                fleet.alert("Can’t Connect", why ?? "The Apple TV didn’t take the code. Show the code on it again and scan it.")
             }
         } catch {
-            fleet.say("Can’t Reach the Apple TV", "Make sure this device and the Apple TV are on the same Wi‑Fi.")
+            fleet.alert("Can’t Reach the Apple TV", "Make sure this device and the Apple TV are on the same Wi‑Fi.")
         }
     }
 }
