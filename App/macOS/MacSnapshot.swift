@@ -30,12 +30,14 @@ enum MacSnapshot {
                 UserDefaults.standard.set(section.rawValue, forKey: "section")
                 try? await Task.sleep(nanoseconds: 5_000_000_000)
                 lines += shoot(section.rawValue, into: folder)
+                lines += facts(section.rawValue)
             }
             // The remote's panel, open beside Home.
             UserDefaults.standard.set(AppSection.home.rawValue, forKey: "section")
             Fleet.shared.remotePanel = true
             try? await Task.sleep(nanoseconds: 3_000_000_000)
             lines += shoot("remote", into: folder)
+            lines += facts("remote")
             Fleet.shared.remotePanel = false
             // This Mac's Settings window: opened as ⌘, opens it, by the app menu's own item.
             if let menu = NSApp.mainMenu?.items.first?.submenu,
@@ -53,7 +55,7 @@ enum MacSnapshot {
     /// Every window the app is showing, written as [name].png, [name]-2.png…: a line for each, saying what was
     /// written and how, or why it couldn't be. The main window is first.
     private static func shoot(_ name: String, into folder: URL) -> [String] {
-        var windows = NSApp.windows.filter { $0.isVisible && $0.contentView != nil && $0.frame.width > 300 && $0.frame.height > 200 }
+        var windows = NSApp.windows.filter { $0.isVisible && $0.contentView != nil && $0.frame.width > 200 && $0.frame.height > 150 }
         if let main = MainWindow.current, let i = windows.firstIndex(of: main) {
             windows.remove(at: i)
             windows.insert(main, at: 0)
@@ -82,6 +84,32 @@ enum MacSnapshot {
                 return "\(file) (\(title)): \(error.localizedDescription)"
             }
         }
+    }
+
+    /// What a picture drawn by the app can't show (its glass and some controls come out blank): the main window's
+    /// toolbar items, the search fields in it, and every window the app is showing.
+    private static func facts(_ name: String) -> [String] {
+        var lines: [String] = []
+        if let window = MainWindow.current {
+            let items = window.toolbar?.items.map { $0.itemIdentifier.rawValue.components(separatedBy: ".").last ?? "?" } ?? []
+            lines.append("\(name) toolbar: \(items.isEmpty ? "none" : items.joined(separator: ", "))")
+            let fields = searchFields(in: window.contentView?.superview)
+            lines.append("\(name) search fields: \(fields.isEmpty ? "none" : fields.joined(separator: "; "))")
+        }
+        let windows = NSApp.windows.filter(\.isVisible).map { "\(type(of: $0)) “\($0.title)” \(Int($0.frame.width))×\(Int($0.frame.height))" }
+        lines.append("\(name) windows: \(windows.joined(separator: "; ")); remote panel \(Fleet.shared.remotePanel ? "on" : "off")")
+        return lines
+    }
+
+    /// The search fields under [view]: each one's size, whether it's hidden, and its prompt.
+    private static func searchFields(in view: NSView?) -> [String] {
+        guard let view else { return [] }
+        var found: [String] = []
+        if let field = view as? NSSearchField {
+            found.append("\(Int(field.frame.width))×\(Int(field.frame.height))\(field.isHiddenOrHasHiddenAncestor ? " hidden" : "") “\(field.placeholderString ?? "")”")
+        }
+        for sub in view.subviews { found += searchFields(in: sub) }
+        return found
     }
 
     /// The window as the system draws it (glass, materials and scrolling lists included), asked of the window server

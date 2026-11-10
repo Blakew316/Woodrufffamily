@@ -7,6 +7,8 @@ struct WatchView: View {
     @Environment(Fleet.self) private var fleet
     @Namespace private var zoom
     @State private var home: WatchHome?
+    /// The screenshot run's title has been opened (once).
+    @State private var routedTitle = false
     @State private var error: String?
     @State private var page = 0
     @State private var openTitle: String?
@@ -190,7 +192,15 @@ struct WatchView: View {
                 await load()
             }
         }
-        .onAppear { if UserDefaults.standard.string(forKey: "route") == "title" { openTitle = "t_backyard_science" } }
+        // The screenshot run (-route title) opens a title's page: the sample show, or the first title a real library
+        // shows (a Mac reads its own library even with sample TVs).
+        .onChange(of: home == nil, initial: true) { _, _ in
+            guard !routedTitle, UserDefaults.standard.string(forKey: "route") == "title", let h = home else { return }
+            let all = (h.featured ?? []) + (h.recent ?? [])
+            guard let id = all.first(where: { $0.id == "t_backyard_science" })?.id ?? all.first?.id else { return }
+            routedTitle = true
+            openTitle = id
+        }
         // How long Watch takes to show its titles (Settings → General → Speed).
         .background { TimingProbe(name: "Watch", ready: shown != nil) }
     }
@@ -2400,9 +2410,9 @@ struct LibraryGrid: View {
     }
 }
 
-/// Search Movies and TV Shows: the Search tab's page on iPhone and iPad. Its field is iOS's own for a Search tab (where
-/// the tab bar is on iPhone, at the top of the page on iPad), put on the tab view itself (`RootView`); what's typed
-/// there shows its results here as shelves.
+/// Search Movies and TV Shows: the Search tab's page on iPhone and iPad. On iPhone its field is under the page's name
+/// (`PhoneSearchField`); on iPad it's the tab view's own, in the top bar (`RootView`). What's typed shows its results
+/// here as shelves.
 struct SearchPage: View {
     @Environment(Fleet.self) private var fleet
     @Environment(\.watchChanged) private var watchChanged
@@ -2431,6 +2441,8 @@ struct SearchPage: View {
         }
         .navigationTitle("Search")
         #if os(iOS)
+        // iPhone: the field under the page's name, always there. (iPad's is the tab view's own, in the top bar.)
+        .modifier(PhoneSearchField())
         // Scrolling the results puts the keyboard away.
         .scrollDismissesKeyboard(.immediately)
         .onGeometryChange(for: CGFloat.self, of: { $0.size.width }) { w in fitPosters(w) }
@@ -2465,6 +2477,24 @@ struct SearchPage: View {
     }
     #endif
 }
+
+#if os(iOS)
+/// iPhone's search field for the Search tab: under the page's name, always showing. (On iPad the field is the tab
+/// view's own: `RootView`.)
+private struct PhoneSearchField: ViewModifier {
+    @Bindable private var search = PhoneSearch.shared
+
+    func body(content: Content) -> some View {
+        if UIDevice.current.userInterfaceIdiom == .pad {
+            content
+        } else {
+            content
+                .searchable(text: $search.query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Movies and TV Shows")
+                .autocorrectionDisabled()
+        }
+    }
+}
+#endif
 
 /// What [query] finds in Movies and TV Shows, as shelves (or why nothing came back). Opening a title is the page's
 /// (its `openTitle`). [again]: asked again when it changes.

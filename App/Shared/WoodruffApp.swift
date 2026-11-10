@@ -453,8 +453,8 @@ struct PadCommands: Commands {
 #endif
 
 #if os(iOS)
-/// What's typed in the Search tab's field on iPhone and iPad. Kept outside the views: the field is the tab view's own
-/// (iOS puts it where the tab bar is once the Search tab is picked), and the Search tab's page reads what's typed.
+/// What's typed in the Search tab's field on iPhone and iPad. Kept outside the views: on iPad the field is the tab
+/// view's own (in the top bar), on iPhone the Search page's, and the Search page reads what's typed either way.
 @Observable @MainActor
 final class PhoneSearch {
     static let shared = PhoneSearch()
@@ -620,18 +620,19 @@ struct RootView: View {
                 #endif
             }
             #if os(iOS)
-            // Search, the tab bar's own: apart from the other tabs, at the bar's end. Picked on iPhone, the tab bar
-            // becomes its search field; on iPad the field is at the top of its page.
-            Tab(value: AppSection.search, role: .search) {
+            // Search. On iPad it's the tab view's own Search tab: its field sits in the top bar, whichever tab is
+            // showing. On iPhone it's a tab like the others, with its field at the top of its page: an iPhone's own
+            // Search tab needs the tab view itself to be searchable, and iOS then shows that field on Watch's page too.
+            Tab("Search", systemImage: "magnifyingglass", value: AppSection.search, role: Self.pad ? .search : nil) {
                 PhoneTabPage(section: .search)
             }
             #endif
         }
         // On iPad the tabs float at the top and turn into a sidebar, like the Mac's; on iPhone, the usual tab bar.
-        .modifier(TabsStyle())
+        .tabViewStyle(.sidebarAdaptable)
         #if os(iOS)
-        // The Search tab's field is the tab view's own (`searchable` on the tab view: the tab with the search role
-        // gets it). Picking the tab starts a search; closing the search goes back to the tab before.
+        // iPad: the Search tab's field is the tab view's own (`searchable` on the tab view: the tab with the search
+        // role gets it). Picking the tab starts a search; closing the search goes back to the tab before.
         .modifier(TabViewSearch(onSearch: selection.wrappedValue == .search))
         // iPhone: the tab bar tucks away while a page scrolls down, and comes back on the way up.
         .modifier(TabBarTucksAway())
@@ -640,37 +641,28 @@ struct RootView: View {
         #endif
     }
 
-    /// iPad: the tabs float at the top and can turn into a sidebar. iPhone: the plain tab bar. (Told it could become
-    /// a sidebar, an iPhone also showed the tab view's search field at the top of the other tabs' pages.)
-    private struct TabsStyle: ViewModifier {
-        func body(content: Content) -> some View {
-            #if os(iOS)
-            if UIDevice.current.userInterfaceIdiom == .pad {
-                content.tabViewStyle(.sidebarAdaptable)
-            } else {
-                content.tabViewStyle(.tabBarOnly)
-            }
-            #else
-            content.tabViewStyle(.sidebarAdaptable)
-            #endif
-        }
-    }
-
     #if os(iOS)
-    /// The tab view's search field, for its Search tab. A modifier of its own, so typing redraws this and the Search
-    /// page, not the window's root.
+    /// An iPad (whatever its window's width).
+    private static let pad = UIDevice.current.userInterfaceIdiom == .pad
+
+    /// iPad: the tab view's search field, for its Search tab. (Not on iPhone, whose Search page has its own field:
+    /// `SearchPage`.) A modifier of its own, so typing redraws this and the Search page, not the window's root.
     private struct TabViewSearch: ViewModifier {
         /// The Search tab is the one showing.
         var onSearch: Bool
         @Bindable private var search = PhoneSearch.shared
 
         func body(content: Content) -> some View {
-            content
-                .searchable(text: $search.query, prompt: "Movies and TV Shows")
-                // Names of films and shows: no corrections while the Search tab is the one typed in. (Only then: this
-                // reaches every field in the tabs.)
-                .autocorrectionDisabled(onSearch)
-                .tabViewSearchActivation(.searchTabSelection)
+            if UIDevice.current.userInterfaceIdiom == .pad {
+                content
+                    .searchable(text: $search.query, prompt: "Movies and TV Shows")
+                    // Names of films and shows: no corrections while the Search tab is the one typed in. (Only then:
+                    // this reaches every field in the tabs.)
+                    .autocorrectionDisabled(onSearch)
+                    .tabViewSearchActivation(.searchTabSelection)
+            } else {
+                content
+            }
         }
     }
 
