@@ -788,6 +788,37 @@ private struct MacWatchSearch: ViewModifier {
     }
 }
 
+/// Home | Watch | Settings in the Mac window's toolbar, the size of Home's room tabs: the same type and the same
+/// room round each name, so the bar and the tabs under it match. One piece of glass with the three in it; the one
+/// showing is lit. Picking one goes to its first page.
+private struct MacSectionBar: View {
+    /// The section lit (none on a TV's, a speaker's or a light's own page).
+    var shown: AppSection?
+    var pick: (AppSection) -> Void
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(AppSection.mac) { s in
+                let on = shown == s
+                Button { pick(s) } label: {
+                    Text(s.title)
+                        .font(.title3.weight(.semibold))
+                        .padding(.horizontal, 20).padding(.vertical, 10)
+                        .foregroundStyle(Color.primary.opacity(on ? 1 : 0.8))
+                        .background { if on { Capsule().fill(Color.primary.opacity(0.18)) } }
+                        .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(on ? .isSelected : [])
+            }
+        }
+        // The same size of type as Home's tabs (Home draws everything a size up).
+        .dynamicTypeSize(.xxLarge)
+        .glass(Capsule(), interactive: false)
+        .animation(.smooth(duration: 0.2), value: shown)
+    }
+}
+
 /// Mac: the window's own toolbar (Back while it goes somewhere, the page's name or on Home the greeting, Home | Watch
 /// | Settings in the middle, the thermostat, Edit Home on Home, the remote, and Watch's search), the page under it,
 /// and the remote as a sidebar on the right that slides out when it's wanted. Watch keeps one row of its own above
@@ -1076,16 +1107,15 @@ struct MacRoot: View {
         // (Only where there's room beside Home | Watch | Settings: the greeting from a middling window up, at its full
         // size from a fairly wide one, and the weather with it in a wide one.)
         if onHome && width >= 1040 {
-            ToolbarItem(placement: .navigation) { MacToolbarGreeting(weather: width >= 1400, large: width >= 1160) }
+            ToolbarItem(placement: .navigation) { MacToolbarGreeting(weather: width >= 1430, large: width >= 1160) }
                 .sharedBackgroundVisibility(.hidden)
         }
+        // Home | Watch | Settings, the size of Home's own tabs under it (it was the system's small switch). It draws
+        // its own glass.
         ToolbarItem(placement: .principal) {
-            Picker("Section", selection: sectionChoice) {
-                ForEach(AppSection.mac) { s in Text(s.title).tag(AppSection?.some(s)) }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
+            MacSectionBar(shown: shownSection) { go(to: $0.rawValue) }
         }
+        .sharedBackgroundVisibility(.hidden)
         // The thermostat, level with Edit Home and the remote, as tall as they are: on the pages that had it in the
         // row under the toolbar (Home's and Watch's first pages). It draws its own glass.
         if thermostatInToolbar {
@@ -1117,12 +1147,6 @@ struct MacRoot: View {
         if MacActions.canGoBack && query.isEmpty { return "Back (⌘[)" }
         if !query.isEmpty { return "Back to \(rootTitle) (⌘[)" }
         return "Back"
-    }
-
-    /// The toolbar's Home | Watch | Settings: picking one goes to its first page.
-    private var sectionChoice: Binding<AppSection?> {
-        let shown = shownSection
-        return Binding(get: { shown }, set: { if let s = $0 { go(to: s.rawValue) } })
     }
 
     /// The remote's panel, out or put away: the toolbar's button, on every page (⌥⌘R and the TVs menu too).
