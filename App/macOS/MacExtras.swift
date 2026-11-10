@@ -74,9 +74,33 @@ struct MenuBarFleetView: View {
     }
 }
 
-/// Menu commands: Check for Updates, Settings (⌘,), Open Woodruff (⌘N), refresh, the remote's keys, and ⌘1–⌘4 to
-/// pick a TV. (The Mini Player is in the Window menu by itself, as a window of its own: its key, ⇧⌘M, is on its
-/// scene.)
+/// What the menu bar and the window's toolbar share: Watch's search and the Command Palette, and what the window
+/// shows now (so View can tick its section, and Find is there to choose while there's a search field). Kept outside
+/// the window, as `MacNav` keeps its pages, so the menus can reach it.
+@Observable @MainActor
+final class MacBar {
+    static let shared = MacBar()
+    /// What's typed in the toolbar's search field (Watch's). Its results take the place of Watch's first page.
+    var query = "" {
+        didSet { if query.isEmpty != oldValue.isEmpty { hasQuery = !query.isEmpty } }
+    }
+    /// Whether anything is typed there. It changes only when that does, so a menu item that goes by it (Back) isn't
+    /// drawn again at every letter.
+    private(set) var hasQuery = false
+    /// The Command Palette is showing.
+    var palette = false
+    /// Goes up each time Find is chosen: the window puts the cursor in its search field.
+    var finds = 0
+    /// The section the window shows (none on a TV's own page). View ticks it.
+    var section: AppSection?
+    /// The toolbar has its search field now (Watch's first page, or its search results).
+    var searchShown = false
+}
+
+/// Menu commands: Check for Updates, Open Woodruff (⌘N), Find (⌘F); in View the sections (⌘1–⌘3), Back (⌘[) and the
+/// Command Palette (⌘K); and the TVs menu: refresh (⌘R), the remote's keys, and ⌥⌘1–⌥⌘4 to pick a TV. (Settings…,
+/// ⌘,, is the system's own item for the Settings window. The Mini Player is in the Window menu by itself, as a
+/// window of its own: its key, ⇧⌘M, is on its scene.)
 struct WoodruffCommands: Commands {
     var fleet: Fleet
     var body: some Commands {
@@ -90,23 +114,38 @@ struct WoodruffCommands: Commands {
         CommandGroup(replacing: .newItem) {
             Button("Open Woodruff") { MainWindowOpener.show() }.keyboardShortcut("n", modifiers: .command)
         }
+        // Edit > Find: the cursor goes to the toolbar's search field (Watch's), while there is one.
+        CommandGroup(after: .pasteboard) {
+            Divider()
+            FindCommand()
+        }
+        // View: the sections, as the toolbar has them (the one showing is ticked), then Back and the Command Palette.
+        CommandGroup(before: .toolbar) {
+            SectionCommands()
+            Divider()
+            BackCommand()
+            Button("Command Palette…") { MacActions.showPalette() }
+                .keyboardShortcut("k", modifiers: .command)
+        }
         CommandMenu("TVs") {
             Button("Refresh All") { Task { await fleet.refresh(); await fleet.loadAllHealth() } }
-                .keyboardShortcut("r", modifiers: [.command, .shift])
+                .keyboardShortcut("r", modifiers: .command)
             Button("Update Every Android TV") { MacActions.updateAll(fleet) }
-            // The remote from any page (its button is on Home only).
+            // The remote from the keyboard (its button is in the toolbar).
             Button("Remote") { withAnimation(.smooth) { fleet.remotePanel.toggle() } }
                 .keyboardShortcut("r", modifiers: [.command, .option])
             Divider()
-            Button(tvName(0)) { pick(0) }.keyboardShortcut("1", modifiers: .command)
-            Button(tvName(1)) { pick(1) }.keyboardShortcut("2", modifiers: .command)
-            Button(tvName(2)) { pick(2) }.keyboardShortcut("3", modifiers: .command)
-            Button(tvName(3)) { pick(3) }.keyboardShortcut("4", modifiers: .command)
+            // The TV the remote, Watch and Send act on: ⌥⌘1–4, with the remote's other keys (⌘1–3 are the sections).
+            Button(tvName(0)) { pick(0) }.keyboardShortcut("1", modifiers: [.command, .option])
+            Button(tvName(1)) { pick(1) }.keyboardShortcut("2", modifiers: [.command, .option])
+            Button(tvName(2)) { pick(2) }.keyboardShortcut("3", modifiers: [.command, .option])
+            Button(tvName(3)) { pick(3) }.keyboardShortcut("4", modifiers: [.command, .option])
             Divider()
             Button("Play / Pause") { send("playpause") }.keyboardShortcut("p", modifiers: [.command, .option])
             // ⇧⌘H: ⌥⌘H is the Mac's own Hide Others, which always took it first.
             Button("Home") { send("home") }.keyboardShortcut("h", modifiers: [.command, .shift])
-            Button("Mute") { send("mute") }.keyboardShortcut("m", modifiers: [.command, .option])
+            // No key of its own: ⌥⌘M is the Mac's own Minimize All (M in the remote's panel still mutes).
+            Button("Mute") { send("mute") }
             Button("Volume Up") { send("volup") }.keyboardShortcut(.upArrow, modifiers: [.command, .option])
             Button("Volume Down") { send("voldown") }.keyboardShortcut(.downArrow, modifiers: [.command, .option])
         }
@@ -133,7 +172,45 @@ struct WoodruffCommands: Commands {
     }
 }
 
-/// What the Mac's keyboard, menus and command palette do to the TVs, done the way the remote does it.
+// The menu items that follow the window, each a view of its own: a view is drawn again when what it reads changes
+// (the section showing, whether there's a search field, whether there's a page to go back to), so the menu bar never
+// shows an old tick or an item greyed that shouldn't be.
+
+/// View's Home, Watch and Settings (⌘1–3): the one the window shows is ticked. Choosing one goes to its first page.
+private struct SectionCommands: View {
+    var body: some View {
+        let shown = MacBar.shared.section
+        item(.home, "1", shown)
+        item(.watch, "2", shown)
+        item(.settings, "3", shown)
+    }
+
+    private func item(_ section: AppSection, _ key: KeyEquivalent, _ shown: AppSection?) -> some View {
+        Toggle(section.title, isOn: Binding(get: { shown == section }, set: { _ in MacActions.open(section) }))
+            .keyboardShortcut(key, modifiers: .command)
+    }
+}
+
+/// View > Back (⌘[), there to choose while a page is open on the window's stack or Watch's search results show.
+private struct BackCommand: View {
+    var body: some View {
+        Button("Back") { MacActions.backFromMenu() }
+            .keyboardShortcut("[", modifiers: .command)
+            .disabled(!MacActions.canGoBack)
+    }
+}
+
+/// Edit > Find (⌘F), there to choose while the toolbar has its search field.
+private struct FindCommand: View {
+    var body: some View {
+        Button("Find") { MacActions.find() }
+            .keyboardShortcut("f", modifiers: .command)
+            .disabled(!MacBar.shared.searchShown)
+    }
+}
+
+/// What the Mac's keyboard, menus and command palette do to the TVs, done the way the remote does it, and what the
+/// menus do to Woodruff's own window (its sections, Back, Find and the Command Palette).
 @MainActor
 enum MacActions {
     /// [key] on the remote's TV, or on every TV that's on when the remote is set to All TVs.
@@ -175,11 +252,56 @@ enum MacActions {
         }
     }
 
-    /// The family's Settings, in Woodruff's own window (opened again if it was closed), with a camera filling it put
-    /// away as a click on Settings in the bar puts it away. (⌘, opens this Mac's own Settings window instead.)
-    static func openSettings() {
+    /// The family's Settings, in Woodruff's own window. (⌘, opens this Mac's own Settings window instead.)
+    static func openSettings() { open(.settings) }
+
+    /// A section's first page (⌘1–3, and View's Home, Watch and Settings), in Woodruff's own window, opened again if
+    /// it was closed: a camera filling it is put away, a page opened on top is closed and Watch's search is cleared,
+    /// as a click on the section in the toolbar does.
+    static func open(_ section: AppSection) {
         if CameraStreams.shared.full != nil { CameraStreams.shared.full = nil }
-        UserDefaults.standard.set(AppSection.settings.rawValue, forKey: "section")
+        MacNav.shared.reset()
+        if !MacBar.shared.query.isEmpty { MacBar.shared.query = "" }
+        UserDefaults.standard.set(section.rawValue, forKey: "section")
+        MainWindowOpener.show()
+    }
+
+    /// Whether there's somewhere to go back to: a page opened on the window's stack, or Watch's search results.
+    static var canGoBack: Bool { !MacNav.shared.path.isEmpty || MacBar.shared.hasQuery }
+
+    /// Back (the toolbar's button): the page on top closes; with none, Watch's search results give way to Watch.
+    static func back() {
+        if !MacNav.shared.path.isEmpty {
+            MacNav.shared.pop()
+        } else if !MacBar.shared.query.isEmpty {
+            withAnimation(.smooth(duration: 0.25)) { MacBar.shared.query = "" }
+        }
+    }
+
+    /// Woodruff's own window is the one in front, with no sheet over it: not while the Mini Player or a film's
+    /// window is, and not under a sheet (which has the keyboard, and whose pages have their own Back).
+    private static var windowInFront: Bool {
+        guard let window = MainWindow.current else { return false }
+        return window.isMainWindow && window.attachedSheet == nil
+    }
+
+    /// View > Back (⌘[): as the toolbar's button, while Woodruff's own window is the one in front. A page inside
+    /// Settings has its own Back and ⌘[ too: there's nothing on the window's stack then, so this is greyed and leaves
+    /// the keys to it.
+    static func backFromMenu() {
+        if windowInFront { back() }
+    }
+
+    /// Edit > Find (⌘F): the cursor goes to the toolbar's search field.
+    static func find() {
+        if windowInFront { MacBar.shared.finds += 1 }
+    }
+
+    /// View > Command Palette (⌘K), in Woodruff's own window (opened again if it was closed). Not over another sheet,
+    /// and not before a TV is paired (the window has only its welcome then).
+    static func showPalette() {
+        guard MainWindow.current?.attachedSheet == nil, !Fleet.shared.hubs.isEmpty else { return }
+        MacBar.shared.palette = true
         MainWindowOpener.show()
     }
 

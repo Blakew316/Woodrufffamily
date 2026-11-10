@@ -675,24 +675,30 @@ struct FleetSideEffects: View {
 }
 
 #if os(macOS)
-/// See `MacRoot.pageChrome`.
-struct MacPageChrome<Bar: View, Bottom: View>: ViewModifier {
-    var bar: Bar
+/// See `MacRoot.rootChrome`.
+struct MacPageChrome<Header: View, Bottom: View>: ViewModifier {
+    var header: Header
+    /// The room between the header and the page: none when there's no header (the page starts right under the toolbar).
+    var headerSpacing: CGFloat?
+    /// The window's toolbar over this page: see-through (hidden) where the page's backdrop and its own row run up
+    /// under it; the system's own (automatic) where the page scrolls straight under the toolbar, so what passes under
+    /// the title and the buttons stays readable.
+    var toolbarBackground: Visibility
     var bottom: Bottom
 
     func body(content: Content) -> some View {
         content
-            .safeAreaBar(edge: .top) { bar }
+            .safeAreaBar(edge: .top, spacing: headerSpacing) { header }
             .safeAreaInset(edge: .bottom) { bottom }
-            .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
-            .toolbar(removing: .title)
+            .toolbarBackgroundVisibility(toolbarBackground, for: .windowToolbar)
             .environment(\.macPageStack, true)
     }
 }
 
-/// Mac: a glass sidebar (Home, Watch, Send, Memories, Settings, and the TVs like rooms), Woodruff's own bar across the
-/// top of the page (search on the left; the remote, Edit Home and the thermostat on the right; Back under the search
-/// when there's somewhere to go back to), and the remote as a sidebar on the right that slides out when it's wanted.
+/// Mac: the window's own toolbar (Back, the page's name, Home | Watch | Settings in the middle, Edit Home on Home, the
+/// remote, and Watch's search), the page under it, and the remote as a sidebar on the right that slides out when it's
+/// wanted. Home and Watch keep one row of their own above the page (`headerRow`): Home's greeting and the thermostat;
+/// Watch's Movies | TV Shows, the TV it plays on and the thermostat.
 struct MacRoot: View {
     @Environment(Fleet.self) private var fleet
     @Binding var selection: AppSection
@@ -700,22 +706,27 @@ struct MacRoot: View {
     @State private var deviceSelection: String?
     private let home = SmartHome.shared
     private let nav = MacNav.shared
+    private let bar = MacBar.shared
     private let layout = HomeLayout.shared
-    @State private var palette = false
-    @State private var query = ""
-    /// How wide the page area is: the search field, the greeting and the thermostat get shorter as it narrows so
-    /// everything stays in one row.
+    /// How wide the page area is: the greeting and the thermostat get shorter as it narrows so everything stays in
+    /// one row.
     @State private var width: CGFloat = 1000
     private var narrow: Bool { width < 760 }
-    /// Bumped by every click in the sidebar, so the page it opens starts fresh (Home's open TV closes, and so on).
+    /// Bumped by every pick in the toolbar, so the page it opens starts fresh (Home's open TV closes, and so on).
     @State private var visit = 0
-    /// Where the sidebar last went, and when: one click calls `go(to:)` twice (the list's selection and the click).
+    /// Where the toolbar last went, and when: the same place again straight away is the same click.
     @State private var lastGo = SidebarGo()
     /// The remote's sidebar has the keyboard (arrows, Return, Esc, H, M, + and − go to the TV).
     @FocusState private var remoteFocused: Bool
+    /// The toolbar's search field has the cursor (Find, ⌘F, puts it there), and its search is in use.
+    @FocusState private var searchFocused: Bool
+    @State private var searching = false
     @AppStorage("macWelcomeShown") private var welcomeShown = false
 
     private var section: AppSection { selection == .remote ? .home : selection }
+
+    /// What's typed in the toolbar's search field (Watch's): its results take the first page's place while there's any.
+    private var query: String { bar.query }
 
     /// The camera filling everything right of the sidebar (one that's still in the camera list).
     private var fullCamera: NestCameras.Camera? {
@@ -732,35 +743,47 @@ struct MacRoot: View {
         section == .home && tvSelection == nil && deviceSelection == nil && query.isEmpty && nav.path.isEmpty
     }
 
-    /// Watch's own page (not a list opened from it): its Movies | TV Shows and the TV it plays on sit in the top bar.
-    private var onWatch: Bool {
-        section == .watch && tvSelection == nil && deviceSelection == nil && query.isEmpty && nav.path.isEmpty
-    }
+    /// Watch's library showing: Movies or TV Shows (picked in the row above Watch's first page).
     @AppStorage("watch.section") private var watchSection = "movies"
 
     /// Watch and anything opened from it (its lists, its search): Watch's blue background.
     private var inWatch: Bool { section == .watch && tvSelection == nil && deviceSelection == nil }
 
-    /// Settings' own page: no thermostat row under the bar, so the page sits right under it.
+    /// Settings' own page: no row above it, so the page sits right under the toolbar.
     private var onSettings: Bool {
         section == .settings && tvSelection == nil && deviceSelection == nil && query.isEmpty && nav.path.isEmpty
     }
 
+    /// The section lit in the toolbar (none on a TV's, a speaker's or a light's own page).
+    private var shownSection: AppSection? {
+        tvSelection == nil && (deviceSelection == nil || deviceSelection?.hasPrefix("set:") == true) ? section : nil
+    }
+
+    /// Watch's first page, or its search results over it: the toolbar has the search field (a list opened from Watch
+    /// has a field of its own).
+    private var showsSearch: Bool { inWatch && nav.path.isEmpty }
+
     var body: some View {
         @Bindable var fleet = fleet
         @Bindable var nav = nav
+        @Bindable var bar = bar
         let camera = fullCamera
-        // No sidebar: Home, Watch, Send, Memories and Settings are the glass bar at the top of the page.
+        // No sidebar: Home, Watch and Settings are in the middle of the window's toolbar.
         Group {
             NavigationStack(path: $nav.path) {
                 root
                     .id(visit)
                     .environment(\.macPageTitle, query.isEmpty ? rootTitle : "Search")
-                    .modifier(pageChrome)
+                    // The window's title is the page's name; under it on Watch, the library showing.
+                    .navigationTitle(query.isEmpty ? rootTitle : "Search")
+                    .navigationSubtitle(rootSubtitle)
+                    .modifier(rootChrome)
                     .navigationDestination(for: PageRoute.self) { page in
                         page.view
+                            // Back is the toolbar's own button (below), on every page alike.
                             .navigationBarBackButtonHidden(true)
-                            .modifier(pageChrome)
+                            .navigationTitle(page.title)
+                            .modifier(openedChrome)
                     }
             }
             .environment(\.macPageStack, true)
@@ -775,23 +798,45 @@ struct MacRoot: View {
                         .transition(.opacity)
                 }
             }
-            // The window's own toolbar stays (hiding it took the close, minimize and full-screen buttons with it on
-            // every page that has no title of its own), see-through and without a title, so Woodruff's bar shows.
-            .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
-            .toolbar(removing: .title)
+            // The window's own toolbar, once for every page (not one per page: the same buttons stay put as pages
+            // open and close). Each page says whether it's see-through over it (`MacPageChrome`).
+            .toolbar { windowToolbar }
+            // Watch's search is the toolbar's own field: there on Watch's first page and over its results, and
+            // taken out everywhere else. (One field for the window: a second one in a page crashes AppKit.)
+            .toolbar(removing: showsSearch ? nil : .search)
+            .searchable(text: $bar.query, isPresented: $searching, placement: .toolbar, prompt: Text("Movies and TV Shows"))
+            .searchFocused($searchFocused)
             // Never narrower than Home's tiles: the window stops shrinking before anything is clipped.
             .frame(minWidth: 480)
             .onGeometryChange(for: CGFloat.self) { ($0.size.width / 20).rounded() * 20 } action: { width = $0 }
+            // Each time Home's first page shows: the weather if it's been a while, and a fresh one-liner.
+            .task(id: onHome) {
+                guard onHome else { return }
+                HomeWeather.shared.refresh()
+                HomeGreeting.shared.refresh()
+            }
         }
-        .sheet(isPresented: $palette) { CommandPalette().sheetBanner().macResizable(width: 620, height: 480) }
-        .background {
-            Button("Command Palette") { palette = true }.keyboardShortcut("k", modifiers: .command).opacity(0).frame(width: 0, height: 0)
-        }
+        // ⌘K, or View > Command Palette.
+        .sheet(isPresented: $bar.palette) { CommandPalette().sheetBanner().macResizable(width: 620, height: 480) }
         // A search starts from the page you're on; going to another section (from here, a notification or a widget)
         // starts it at its first page.
-        .onChange(of: query) { old, new in if old.isEmpty && !new.isEmpty { nav.reset() } }
+        .onChange(of: query) { old, new in
+            guard old.isEmpty && !new.isEmpty else { return }
+            nav.reset()
+            // Search is Watch's: its results show there, wherever it was started.
+            if selection != .watch { selection = .watch }
+        }
         // Leaving Watch leaves its search behind (the field is only there): no other page opens on old results.
-        .onChange(of: selection) { _, new in nav.reset(); if new != .watch && !query.isEmpty { query = "" } }
+        .onChange(of: selection) { _, new in nav.reset(); if new != .watch && !query.isEmpty { bar.query = "" } }
+        // The menu bar follows the window: View ticks the section showing, and Edit > Find is there to choose while
+        // the search field is. Find (⌘F) puts the cursor in it.
+        .onChange(of: shownSection, initial: true) { _, now in bar.section = now }
+        .onChange(of: showsSearch, initial: true) { _, now in bar.searchShown = now }
+        .onDisappear { bar.searchShown = false }
+        .onChange(of: bar.finds) { _, _ in
+            searching = true
+            searchFocused = true
+        }
         .background { FleetSideEffects() }
         .onAppear { SmartHome.shared.onChange = { WidgetSync.update(fleet) } }
         .sheet(isPresented: Binding(get: { !welcomeShown && !Demo.isOn }, set: { if !$0 { welcomeShown = true } })) { MacWelcome().macResizable(width: 520, height: 420) }
@@ -804,21 +849,17 @@ struct MacRoot: View {
         .inspector(isPresented: $fleet.remotePanel) {
             RemoteView(embedded: true)
                 .inspectorColumnWidth(min: 300, ideal: 320, max: 380)
-                // Opened (the bar, ⌥⌘R, a TV's Remote button): the keyboard drives it straight away, without a
+                // Opened (the toolbar, ⌥⌘R, a TV's Remote button): the keyboard drives it straight away, without a
                 // click into it first.
                 .focused($remoteFocused)
                 .onAppear { remoteFocused = true }
         }
     }
 
-    /// The page the sidebar picked (or the search's results), under anything opened from it.
+    /// The page the toolbar picked (or the search's results: the toolbar's Back, or Esc in the field, leaves them),
+    /// under anything opened from it.
     @ViewBuilder private var root: some View {
-        if !query.isEmpty {
-            LibrarySearchResults(query: query)
-                .safeAreaBar(edge: .top, spacing: 0) {
-                    MacBackRow(title: "Search", backTo: rootTitle) { withAnimation(.smooth(duration: 0.25)) { query = "" } }
-                }
-        }
+        if !query.isEmpty { LibrarySearchResults(query: query) }
         // .id: a new item gets a fresh page (no name or level left over from the last one).
         else if let d = deviceSelection, d.hasPrefix("spk:") { SpeakerDetailView(speakerID: String(d.dropFirst(4))).id(d) }
         else if let d = deviceSelection, d.hasPrefix("light:") { LightDetailView(lightID: String(d.dropFirst(6))).id(d) }
@@ -833,18 +874,17 @@ struct MacRoot: View {
         }
     }
 
-    /// Where the sidebar takes you, always: that section's (or TV's, speaker's, light's) first page, with the search
+    /// Where the toolbar takes you, always: that section's (or TV's, speaker's, light's) first page, with the search
     /// cleared, anything opened on top closed, and a camera filling the window put away.
     private func go(to v: String) {
-        // The same place again straight away is the same click (its selection, then the click itself): the page it
-        // opened isn't started over a second time.
+        // The same place again straight away is the same click: the page it opened isn't started over a second time.
         let now = Date()
         if lastGo.target == v && now.timeIntervalSince(lastGo.at) < 0.4 { return }
         lastGo.target = v
         lastGo.at = now
         if CameraStreams.shared.full != nil { withAnimation(.smooth(duration: 0.25)) { CameraStreams.shared.full = nil } }
         nav.reset()
-        if !query.isEmpty { query = "" }
+        if !query.isEmpty { bar.query = "" }
         layout.stopArranging()
         visit += 1
         if v.hasPrefix("tv:") { deviceSelection = nil; tvSelection = String(v.dropFirst(3)) }
@@ -856,44 +896,86 @@ struct MacRoot: View {
         }
     }
 
-    // MARK: The bar
+    // MARK: The toolbar
 
-    /// The remote's button (the remote slides out at the right).
-    private var remoteButton: some View {
-        Button { withAnimation(.smooth) { fleet.remotePanel.toggle() } } label: {
-                    Image(systemName: "appletvremote.gen4")
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(fleet.remotePanel ? Color.white : .primary)
-                        .frame(width: 44, height: 44)
-                        .contentShape(Circle())
-                        .glass(Circle(), tint: fleet.remotePanel ? .accentColor : nil)
-                }
-                .buttonStyle(PressScale())
+    /// The window's toolbar: Back at the left, ahead of the page's name; Home | Watch | Settings in the middle; then
+    /// Edit Home (on Home) and the remote. Watch's search field comes after them (`searchable`, in `body`).
+    @ToolbarContentBuilder private var windowToolbar: some ToolbarContent {
+        ToolbarItem(placement: .navigation) {
+            Button { MacActions.back() } label: { Label("Back", systemImage: "chevron.backward") }
+                .disabled(!MacActions.canGoBack)
+                .help(backHelp)
+        }
+        ToolbarItem(placement: .principal) {
+            Picker("Section", selection: sectionChoice) {
+                ForEach(AppSection.mac) { s in Text(s.title).tag(AppSection?.some(s)) }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+        }
+        if onHome {
+            ToolbarItem(placement: .primaryAction) { editHomeButton }
+            // Apart from the remote's button: the two aren't a pair.
+            ToolbarSpacer(.fixed, placement: .primaryAction)
+        }
+        ToolbarItem(placement: .primaryAction) {
+            Toggle(isOn: remoteOpen) { Label("Remote", systemImage: "appletvremote.gen4") }
+                .toggleStyle(.button)
                 .help("Remote (⌥⌘R)")
-                .accessibilityLabel("Remote")
+        }
     }
 
-    /// Home's Edit Home / Done, as tall as the greeting.
-    private var editHomeButton: some View {
-        Button { layout.arranging ? layout.stopArranging() : layout.startArranging() } label: {
-                        Text(layout.arranging ? "Done" : "Edit Home")
-                            .font(.system(size: 14, weight: .semibold))
-                            .foregroundStyle(layout.arranging ? Color.white : .primary)
-                            .padding(.horizontal, 18)
-                            .frame(height: 44)
-                            .contentShape(Capsule())
-                            .glass(Capsule(), tint: layout.arranging ? .accentColor : nil)
-                    }
-                    .buttonStyle(PressScale())
+    /// Where the toolbar's Back goes ("Back to Watch"), for its tooltip.
+    private var backHelp: String {
+        if let open = nav.path.last { return "Back to \(open.backTo) (⌘[)" }
+        if !query.isEmpty { return "Back to \(rootTitle) (⌘[)" }
+        return "Back"
     }
 
-    /// What every page in the window has, its first page and every page opened on it alike, so nothing jumps from
-    /// page to page: Woodruff's bar on top (with an opened page's Back under it), what's playing at the bottom, the
-    /// window's toolbar see-through and without a title. Each page needs its own: an opened page is drawn over
-    /// anything put on the stack around it (the bar and what's playing vanished on opened pages), and a page opened
-    /// from an opened page only goes on the window's stack when it says so (`macPageStack`).
-    private var pageChrome: MacPageChrome<some View, some View> {
-        MacPageChrome(bar: topBar, bottom: nowPlaying)
+    /// The toolbar's Home | Watch | Settings: picking one goes to its first page.
+    private var sectionChoice: Binding<AppSection?> {
+        let shown = shownSection
+        return Binding(get: { shown }, set: { if let s = $0 { go(to: s.rawValue) } })
+    }
+
+    /// The remote's panel, out or put away: the toolbar's button, on every page (⌥⌘R and the TVs menu too).
+    private var remoteOpen: Binding<Bool> {
+        let open = fleet.remotePanel
+        return Binding(get: { open }, set: { now in withAnimation(.smooth) { fleet.remotePanel = now } })
+    }
+
+    /// Home's Edit Home, and Done while its tiles are being arranged.
+    @ViewBuilder private var editHomeButton: some View {
+        if layout.arranging {
+            Button("Done") { layout.stopArranging() }
+                .buttonStyle(.glassProminent)
+        } else {
+            Button("Edit Home") { layout.startArranging() }
+        }
+    }
+
+    // MARK: The page's own row
+
+    /// The first page is Home's own, or Watch's own, whatever is opened on top of it: it keeps a row of its own above
+    /// it (`headerRow`). Not by what's on top (as `onHome` goes): the row stays as it is under an opened page, so the
+    /// page doesn't move as one opens or closes over it.
+    private var homeRow: Bool { section == .home && tvSelection == nil && deviceSelection == nil && query.isEmpty }
+    private var watchRow: Bool { inWatch && query.isEmpty }
+
+    /// What the window's first page has around it: its own row on top (Home's and Watch's; nothing on Settings or
+    /// over search results, which start right under the toolbar), what's playing at the bottom, and the window's
+    /// toolbar see-through (not over search results, which scroll straight under it).
+    private var rootChrome: MacPageChrome<some View, some View> {
+        MacPageChrome(header: rootHeader, headerSpacing: homeRow || watchRow ? nil : 0,
+                      toolbarBackground: query.isEmpty ? .hidden : .automatic, bottom: nowPlaying)
+    }
+
+    /// The same for a page opened on it, which starts right under the toolbar and scrolls under it (the toolbar is
+    /// the system's own there). Each page needs its own: an opened page is drawn over anything put on the stack
+    /// around it (what's playing vanished on opened pages), and a page opened from an opened page only goes on the
+    /// window's stack when it says so (`macPageStack`).
+    private var openedChrome: MacPageChrome<EmptyView, some View> {
+        MacPageChrome(header: EmptyView(), headerSpacing: 0, toolbarBackground: .automatic, bottom: nowPlaying)
     }
 
     /// What's playing, at the bottom of a page (not on Home, a TV's or a device's page, or with the remote open).
@@ -903,7 +985,7 @@ struct MacRoot: View {
         }
     }
 
-    /// The name of the page the sidebar picked (for Back).
+    /// The name of the page the toolbar picked (the window's title, and where Back goes from a page opened on it).
     private var rootTitle: String {
         if let d = deviceSelection, d.hasPrefix("spk:") { return home.speaker(String(d.dropFirst(4)))?.name ?? "Speaker" }
         if let d = deviceSelection, d.hasPrefix("light:") { return home.light(String(d.dropFirst(6)))?.name ?? "Light" }
@@ -912,102 +994,79 @@ struct MacRoot: View {
         return section.title
     }
 
-    /// Search on the left; on Home, the greeting with the weather in the middle; the remote, Edit Home (on Home)
-    /// and the thermostat on the right, at any window size. (Back sits at the top of each opened page, under this.)
-    private var topBar: some View {
-        let greeting = onHome && width >= 900
-        // Wide enough: the greeting sits in the very middle of the page, between the remote and Edit Home at the far left
-        // and the thermostat at the far right. Narrower, it sits between them in the row (centred, it would collide).
-        let centred = greeting && width >= 1150
-        // Home scrolled down: the greeting goes and the bar closes up over it.
-        let quiet = centred && MacHomeScroll.shared.scrolledDown
-        let watchBarHidden = onWatch && MacWatchScroll.shared.barHidden
-        return VStack(alignment: .leading, spacing: onSettings ? 0 : 10) {
-            // Where to go, in the middle at the very top: one glass bar the size of the pills under it.
-            HStack {
-                Spacer(minLength: 0)
-                MacSectionBar(current: tvSelection == nil && (deviceSelection == nil || deviceSelection?.hasPrefix("set:") == true) ? section : nil) { s in
-                    go(to: s.rawValue)
-                }
-                Spacer(minLength: 0)
-            }
-            .frame(height: 46)
-            HStack(spacing: 10) {
-                // The sidebar's own button (in the window's title bar) shows it again when it's hidden: no second one here.
-                // A page opened from another: Back, at the very left of this bar.
-                if let open = nav.path.last {
-                    Button { MacNav.shared.pop() } label: {
-                        HStack(spacing: 5) {
-                            Image(systemName: "chevron.left").font(.body.weight(.semibold))
-                            Text(open.backTo).lineLimit(1)
-                        }
-                        .padding(.horizontal, 4)
-                    }
-                    .buttonStyle(.glass)
-                    .controlSize(.large)
-                    .keyboardShortcut("[", modifiers: .command)
-                    .help("Back to \(open.backTo) (⌘[)")
-                    // Clear of the window's close, minimise and zoom buttons when the sidebar is hidden.
+    /// Under the window's title: on Watch the library showing, and over its search results what's searched.
+    private var rootSubtitle: String {
+        guard inWatch else { return "" }
+        if !query.isEmpty { return "Movies and TV Shows" }
+        return watchSection == "shows" ? "TV Shows" : "Movies"
+    }
 
-                }
-                // Home: the remote and Edit Home at the far left, the greeting in the middle, the thermostat at the right.
-                if onHome {
-                    remoteButton
-                    editHomeButton
-                }
-                // Search only on Watch, where it finds movies and shows, and not on a page opened from it: a list
-                // (Movies, TV Shows) has a search field of its own, and this one sat above it as a second.
-                if section == .watch && nav.path.isEmpty {
-                    MacSearchField(text: $query, prompt: narrow || greeting ? "Search" : "Search Movies and TV Shows")
-                        .frame(minWidth: 120, idealWidth: greeting ? 240 : 300, maxWidth: 320)
-                }
+    @ViewBuilder private var rootHeader: some View {
+        if homeRow || watchRow { headerRow }
+    }
+
+    /// Watch's Movies | TV Shows.
+    private var libraryPicker: some View {
+        Picker("Library", selection: $watchSection) {
+            Text("Movies").tag("movies")
+            Text("TV Shows").tag("shows")
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .fixedSize()
+    }
+
+    /// The row above Home's and Watch's first page, under the toolbar. On Home, the greeting with the weather in the
+    /// middle and the thermostat at the right; on Watch, Movies | TV Shows, the TV it plays on and the thermostat.
+    private var headerRow: some View {
+        let greeting = homeRow && width >= 900
+        // Wide enough: the greeting sits in the very middle of the page, with the thermostat at the far right.
+        // Narrower, it sits beside the thermostat in the row (centred, it would collide).
+        let centred = greeting && width >= 1150
+        // Home scrolled down: the greeting goes and the row closes up over it.
+        let quiet = centred && MacHomeScroll.shared.scrolledDown
+        let watchBarHidden = watchRow && MacWatchScroll.shared.barHidden
+        // Wide enough: Movies | TV Shows sits in the very middle too, under the toolbar's Home | Watch | Settings.
+        let libraryCentred = watchRow && width >= 1150
+        return ZStack {
+            HStack(spacing: 10) {
                 Spacer(minLength: 8)
                 if greeting && !centred {
                     MacGreetingPill(compact: width < 1150)
                         .transition(.opacity.combined(with: .scale(scale: 0.96)))
                     Spacer(minLength: 8)
                 }
-                if onWatch {
-                    Picker("Library", selection: $watchSection) {
-                        Text("Movies").tag("movies")
-                        Text("TV Shows").tag("shows")
+                if watchRow {
+                    if !libraryCentred {
+                        libraryPicker
+                        Spacer(minLength: 8)
                     }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                    .fixedSize()
-                    Spacer(minLength: 8)
                     TVPicker()
                 }
-                // The remote's button is on Home only (⌥⌘R and the TVs menu open it anywhere).
                 ThermostatChip(compact: narrow || (greeting && width < 1150), height: 44)
             }
-            // Always the same height, so the pages below never jump as the bar's contents change (Settings has no row
-            // here at all, so its page starts right under the bar at the top).
-            .frame(height: onSettings ? 0 : 46)
-            // Watch scrolled down: Movies | TV Shows and the rest of this row fade away (back when it scrolls up).
-            .opacity(onSettings || watchBarHidden ? 0 : 1)
-            .allowsHitTesting(!onSettings && !watchBarHidden)
-            .overlay {
-                // In the middle of the row, between Edit Home and the thermostat (no extra room under the row for it).
-                if centred {
-                    MacGreetingHero()
-                        .offset(y: quiet ? -8 : 0)
-                        .opacity(quiet ? 0 : 1)
-                        .scaleEffect(quiet ? 0.94 : 1)
-                        .transition(.opacity.combined(with: .scale(scale: 0.96)))
-                }
+            if libraryCentred { libraryPicker }
+        }
+        // Always the same height, so the page below never jumps as the row's contents change.
+        .frame(height: 46)
+        // Watch scrolled down: Movies | TV Shows and the rest of this row fade away (back when it scrolls up).
+        .opacity(watchBarHidden ? 0 : 1)
+        .allowsHitTesting(!watchBarHidden)
+        .overlay {
+            // In the middle of the row, beside the thermostat (no extra room under the row for it).
+            if centred {
+                MacGreetingHero()
+                    .offset(y: quiet ? -8 : 0)
+                    .opacity(quiet ? 0 : 1)
+                    .scaleEffect(quiet ? 0.94 : 1)
+                    .transition(.opacity.combined(with: .scale(scale: 0.96)))
             }
         }
         .padding(.horizontal, 18)
         .padding(.top, 4)
-        .padding(.bottom, centred && !quiet ? 14 : (onSettings ? 0 : 8))
+        .padding(.bottom, centred && !quiet ? 14 : 8)
         .animation(.smooth(duration: 0.3), value: greeting)
-        .task(id: onHome) {
-            guard onHome else { return }
-            HomeWeather.shared.refresh()
-            HomeGreeting.shared.refresh()
-        }
-        // Dragging the bar's empty space moves the window, like a title bar.
+        // Dragging the row's empty space moves the window, as the toolbar above it does.
         .background { Color.clear.contentShape(Rectangle()).gesture(WindowDragGesture()) }
     }
 }
@@ -1113,38 +1172,6 @@ struct WindowActivityWatcher: NSViewRepresentable {
 
 
 #if os(macOS)
-/// The Mac's search, at the top left of Woodruff's bar (⌘F to jump to it; Esc clears it).
-struct MacSearchField: View {
-    @Binding var text: String
-    var prompt: String
-    @FocusState private var focused: Bool
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-            TextField(prompt, text: $text)
-                .textFieldStyle(.plain)
-                .focused($focused)
-                .onExitCommand { text = ""; focused = false }
-            if !text.isEmpty {
-                Button { text = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Clear Search")
-            }
-        }
-        .font(.system(size: 14))
-        .padding(.horizontal, 16)
-        // As tall as the greeting beside it.
-        .frame(height: 44)
-        .glass(Capsule(), interactive: false)
-        .contentShape(Capsule())
-        .onTapGesture { focused = true }
-        .background { Button("") { focused = true }.keyboardShortcut("f", modifiers: .command).opacity(0) }
-    }
-}
-#endif
-
-#if os(macOS)
 /// The menu bar icon. It's there even with every window closed, so it opens Woodruff's window when a camera or
 /// doorbell alert is clicked and no window is open to show the camera in.
 struct MenuBarIcon: View {
@@ -1205,52 +1232,6 @@ enum MacSettingsPage: String, CaseIterable, Identifiable {
         case .accounts: ConnectionsView(hub: HubSettings.shared)
         case .general: GeneralSettingsView(hub: HubSettings.shared)
         }
-    }
-}
-#endif
-
-
-#if os(macOS) || os(tvOS)
-/// The Mac's way around (in place of a sidebar): Home, Watch, Send, Memories and Settings in one liquid-glass bar the
-/// height of the pills beside it, the page you're on lit, the light sliding to the one you pick.
-struct MacSectionBar: View {
-    var current: AppSection?
-    var go: (AppSection) -> Void
-    @Namespace private var lit
-
-    var body: some View {
-        HStack(spacing: 2) {
-            ForEach(AppSection.mac) { s in
-                let on = current == s
-                Button { go(s) } label: {
-                    Text(s.title)
-                        .font(.system(size: 13.5 * macScale, weight: on ? .bold : .semibold))
-                        .foregroundStyle(on ? IconPalette.white : IconPalette.ice)
-                        .padding(.horizontal, 16 * macScale)
-                        .frame(height: 36 * macScale)
-                        .background {
-                            if on {
-                                Capsule().fill(IconPalette.cyan.opacity(0.25))
-                                    .overlay(Capsule().strokeBorder(IconPalette.cyan.opacity(0.6), lineWidth: 0.75))
-                                    .shadow(color: IconPalette.cyan.opacity(0.4), radius: 8)
-                                    .matchedGeometryEffect(id: "lit", in: lit)
-                            }
-                        }
-                        .contentShape(Capsule())
-                }
-                #if os(tvOS)
-                .buttonStyle(TVBarButtonStyle())
-                #else
-                .buttonStyle(.plain)
-                #endif
-                .accessibilityAddTraits(on ? .isSelected : [])
-            }
-        }
-        .padding(4 * macScale)
-        .frame(height: 44 * macScale)
-        .glass(Capsule(), tint: IconPalette.cyan.opacity(0.08))
-        .overlay(Capsule().strokeBorder(IconPalette.cyan.opacity(0.35), lineWidth: 0.75))
-        .animation(.spring(response: 0.35, dampingFraction: 0.82), value: current)
     }
 }
 #endif
