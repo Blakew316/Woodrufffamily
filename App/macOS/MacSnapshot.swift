@@ -7,9 +7,9 @@ import WoodruffKit
 ///
 ///     open -n -a "Woodruff Family" --args -demo YES -macSnapshot /path/to/a/folder
 ///
-/// Home, Watch and Settings are opened in turn, then the remote's panel, a title's page and this Mac's Settings
-/// window (⌘,), and every window the app is showing is written as a PNG in that folder each time (home.png,
-/// watch.png, settings.png, remote.png, title.png, mac-settings.png; a second window is home-2.png, and so on);
+/// Home, Watch and Settings are opened in turn, then the remote's panel and this Mac's Settings window (⌘,), and
+/// every window the app is showing is written as a PNG in that folder each time (home.png, watch.png, settings.png,
+/// remote.png, mac-settings.png; a second window is home-2.png, and so on);
 /// "done.txt" is written last, with a line for each picture saying how it was made and lines for what a picture
 /// drawn by the app can't show. Nothing happens unless the app was opened with -macSnapshot (this launch's own
 /// argument, never a saved setting).
@@ -42,23 +42,6 @@ enum MacSnapshot {
             lines += shoot("remote", into: folder)
             lines += facts("remote")
             still { Fleet.shared.remotePanel = false }
-            // A title's page on Watch (the sample show), pushed without its slide for the same reason. Its title is
-            // read first, as it is when a title is opened a second time, so the page shows it at once: what a page
-            // reads after it opens fades in, and with the screen locked nothing fades.
-            UserDefaults.standard.set(AppSection.watch.rawValue, forKey: "section")
-            try? await Task.sleep(nanoseconds: 3_000_000_000)
-            let sample = "t_backyard_science"
-            if let source = WatchSources.current(Fleet.shared), let details = try? await source.title(sample) {
-                TitleCache.shared.keep(details, hub: source.sourceID, id: sample)
-                lines.append("title read: \(details.title)")
-            } else {
-                lines.append("title read: failed")
-            }
-            still { MacNav.shared.push("Backyard Science", backTo: "Watch", TitleSheet(id: sample)) }
-            try? await Task.sleep(nanoseconds: 5_000_000_000)
-            lines += shoot("title", into: folder)
-            lines += facts("title")
-            still { MacNav.shared.reset() }
             // This Mac's Settings window: opened as ⌘, opens it, by the app menu's own item.
             if let menu = NSApp.mainMenu?.items.first?.submenu,
                let i = menu.items.firstIndex(where: { $0.keyEquivalent == "," }) {
