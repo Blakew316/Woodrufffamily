@@ -6,10 +6,11 @@ import WoodruffKit
 ///
 ///     open -n -a "Woodruff Family" --args -demo YES -macSnapshot /path/to/a/folder
 ///
-/// Home, Watch and Settings are opened in turn and every window the app is showing is written as a PNG in that
-/// folder (home.png, watch.png, settings.png; a second window is home-2.png, and so on); "done.txt" is written last,
-/// a line for each picture saying how it was made. Nothing happens unless the app was opened with -macSnapshot (this
-/// launch's own argument, never a saved setting).
+/// Home, Watch and Settings are opened in turn, then the remote's panel and this Mac's Settings window (⌘,), and
+/// every window the app is showing is written as a PNG in that folder each time (home.png, watch.png, settings.png,
+/// remote.png, mac-settings.png; a second window is home-2.png, and so on); "done.txt" is written last, a line for
+/// each picture saying how it was made. With -route title as well, Watch opens on a title's page. Nothing happens
+/// unless the app was opened with -macSnapshot (this launch's own argument, never a saved setting).
 @MainActor
 enum MacSnapshot {
     private static var asked = false
@@ -29,6 +30,21 @@ enum MacSnapshot {
                 UserDefaults.standard.set(section.rawValue, forKey: "section")
                 try? await Task.sleep(nanoseconds: 5_000_000_000)
                 lines += shoot(section.rawValue, into: folder)
+            }
+            // The remote's panel, open beside Home.
+            UserDefaults.standard.set(AppSection.home.rawValue, forKey: "section")
+            Fleet.shared.remotePanel = true
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            lines += shoot("remote", into: folder)
+            Fleet.shared.remotePanel = false
+            // This Mac's Settings window: opened as ⌘, opens it, by the app menu's own item.
+            if let menu = NSApp.mainMenu?.items.first?.submenu,
+               let i = menu.items.firstIndex(where: { $0.keyEquivalent == "," }) {
+                menu.performActionForItem(at: i)
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                lines += shoot("mac-settings", into: folder)
+            } else {
+                lines.append("mac-settings: no Settings… item in the app menu")
             }
             try? (lines.joined(separator: "\n") + "\n").write(to: folder.appendingPathComponent("done.txt"), atomically: true, encoding: .utf8)
         }
