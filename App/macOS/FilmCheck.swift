@@ -10,6 +10,10 @@ import WoodruffKit
 ///   half a minute more, then closes. Nothing is kept for Continue Watching.
 /// - "probe": every film in the library is asked of Google for its first byte, to see which it sends right now and
 ///   which it refuses with its daily limit.
+/// - "ask:<film>": Google is asked for more and more of the film (2 bytes, 64 KB … to the end of the file), by this
+///   Mac and through each paired TV, and only its answer's first lines are read: how much it will send right now, and
+///   whether it treats the TVs differently.
+/// - "who": which Google account and client this Mac reads Drive with, and each TV's client.
 /// - "copytest": whether Google lets the app make a copy in its own folder in Drive, tried with the smallest video
 ///   (the copy is removed again).
 /// - "copy:<film>": a copy of the film is made in the app's own folder, played as above, then removed.
@@ -24,8 +28,8 @@ enum FilmCheck {
     private static var window: NSWindow?
     private static var asked = false
 
-    /// How long each film plays from its start, and again from its middle.
-    private static let fromStart: Double = 60
+    /// How long each film plays from its start (-filmCheckSeconds says otherwise), and again from its middle.
+    private static var fromStart: Double = 60
     private static let fromMiddle: Double = 30
 
     private static let files = "https://www.googleapis.com/drive/v3/files"
@@ -37,6 +41,10 @@ enum FilmCheck {
               let names = UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)["filmCheck"] as? String,
               !names.isEmpty else { return }
         asked = true
+        let given = UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)["filmCheckSeconds"]
+        if let seconds = (given as? String).flatMap({ Double($0) }) ?? (given as? NSNumber)?.doubleValue, seconds >= 10 {
+            fromStart = min(seconds, 4 * 3600)
+        }
         Task {
             // The app's own start comes first (the TVs, the settings arriving from the family's other devices).
             try? await Task.sleep(nanoseconds: 8_000_000_000)
@@ -46,6 +54,10 @@ enum FilmCheck {
                 guard GoogleDrive.signedIn else { note("\(name): Google Drive isn’t signed in on this Mac"); continue }
                 if name == "probe" {
                     await probe()
+                } else if name == "who" {
+                    await who()
+                } else if name.hasPrefix("ask:") {
+                    await ask(String(name.dropFirst(4)))
                 } else if name == "copytest" {
                     await copyTest()
                 } else if name.hasPrefix("copy:") {
@@ -248,6 +260,99 @@ enum FilmCheck {
             }
         }
         return said.joined(separator: "; ")
+    }
+
+    // MARK: What Google answers
+
+    /// Parts of a film to ask for, smallest first: Google's answer to each shows how much it will send right now.
+    private static let direct: [(String, String)] = [
+        ("2 bytes", "bytes=0-1"), ("64 KB", "bytes=0-65535"), ("1 MB", "bytes=0-1048575"), ("4 MB", "bytes=0-4194303"),
+        ("8 MB", "bytes=0-8388607"), ("64 MB", "bytes=0-67108863"), ("1 GB", "bytes=0-1073741823"), ("to the end", "bytes=0-"),
+    ]
+    private static let relayed: [(String, String)] = [
+        ("2 bytes", "bytes=0-1"), ("8 MB", "bytes=0-8388607"), ("64 MB", "bytes=0-67108863"), ("to the end", "bytes=0-"),
+    ]
+
+    /// Google asked for more and more of the film, by this Mac and through each paired TV (which asks with its own
+    /// sign-in). Only each answer's first lines are read: nothing is downloaded.
+    private static func ask(_ name: String) async {
+        guard let film = await find(name) else { return }
+        var mine: [String] = []
+        for (what, range) in direct {
+            let a = await answer(film.id, range: range)
+            mine.append("\(what) \(a)")
+        }
+        note("\(film.title), asked of Google by this Mac: " + mine.joined(separator: "; "))
+        for hub in Fleet.shared.hubs {
+            var theirs: [String] = []
+            for (what, range) in relayed {
+                var r = URLRequest(url: TVClient(hub: hub, routeID: "this").streamURL("drive:\(film.id)"))
+                r.setValue(range, forHTTPHeaderField: "Range")
+                r.timeoutInterval = 25
+                let a = await answer(to: r, on: URLSession.woodruff)
+                theirs.append("\(what) \(a)")
+                // A TV that's off isn't asked the rest.
+                if a.hasPrefix("couldn’t be asked") { break }
+            }
+            note("\(film.title), asked of Google by \(hub.name): " + theirs.joined(separator: "; "))
+        }
+    }
+
+    /// What Google answers this Mac when asked for [range] of Drive file [id].
+    private static func answer(_ id: String, range: String) async -> String {
+        guard let signIn = try? await GoogleDrive.token() else { return "couldn’t be asked (no sign-in)" }
+        var r = URLRequest(url: GoogleDrive.mediaURL(id))
+        r.setValue("Bearer \(signIn)", forHTTPHeaderField: "Authorization")
+        r.setValue(range, forHTTPHeaderField: "Range")
+        r.timeoutInterval = 25
+        return await answer(to: r, on: URLSession.shared)
+    }
+
+    /// The answer to [r]: sent (and what it started to send is dropped), or refused with the reason given.
+    private static func answer(to r: URLRequest, on session: URLSession) async -> String {
+        do {
+            let (bytes, resp) = try await session.bytes(for: r)
+            let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+            if code == 200 || code == 206 {
+                bytes.task.cancel()
+                return "sent (\(code))"
+            }
+            var body = Data()
+            for try await b in bytes {
+                body.append(b)
+                if body.count >= 2048 { break }
+            }
+            bytes.task.cancel()
+            var why = GoogleDrive.reason(body)
+            if why.isEmpty {
+                why = String(String(decoding: body, as: UTF8.self).replacingOccurrences(of: "\n", with: " ").prefix(120))
+            }
+            return "refused (\(code)\(why.isEmpty ? "" : " " + why))"
+        } catch {
+            let ns = error as NSError
+            return "couldn’t be asked (\(ns.domain) \(ns.code))"
+        }
+    }
+
+    /// Which Google account and client this Mac reads Drive with, and each TV's client: a client is told by the
+    /// digits its id starts with (its project's number at Google).
+    private static func who() async {
+        if GoogleDrive.email == nil { await GoogleDrive.loadEmail() }
+        var said = ["this Mac reads Drive as \(GoogleDrive.email ?? "an account Google didn’t name") with client \(project(GoogleDrive.clientID))"]
+        for hub in Fleet.shared.hubs {
+            let got = try? await TVClient(hub: hub, routeID: "this").sharedKey("google")
+            if let key = got ?? nil, let id = key.split(separator: "\n").first {
+                said.append("\(hub.name) has client \(project(String(id)))")
+            } else {
+                said.append("\(hub.name) didn’t say")
+            }
+        }
+        note("who: " + said.joined(separator: "; "))
+    }
+
+    private static func project(_ client: String?) -> String {
+        guard let first = client?.split(separator: "-").first, !first.isEmpty else { return "none" }
+        return String(first)
     }
 
     // MARK: Which films Google sends
