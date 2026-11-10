@@ -1010,14 +1010,71 @@ struct Billboard: View {
     /// iPhone, iPad and the Mac: the picture a title's banner shows. On a page taller than it's wide (a phone held
     /// upright) its poster, which is that shape; otherwise its wide picture.
     private func cinemaArt(_ t: Title) -> URL? {
+        #if os(iOS)
+        // iPhone and iPad: the poster's full-size copy (the one its tiles show is 342 points across, soft at this size).
+        if showsPoster(t) { return fullSize(client?.artURL(t.poster)) }
+        #endif
         let upright = metrics.height > metrics.width * 1.15
         return client?.artURL(upright ? (t.poster ?? t.backdrop) : (t.backdrop ?? t.poster))
     }
 
     /// The title's picture, filling the page.
-    private func cinemaPicture(_ t: Title) -> some View {
+    @ViewBuilder private func cinemaPicture(_ t: Title) -> some View {
+        #if os(iOS)
+        if showsPoster(t) {
+            posterPicture(t)
+        } else {
+            Color.clear.overlay { Artwork(url: cinemaArt(t), maxPixel: 2400) }.clipped()
+        }
+        #else
         Color.clear.overlay { Artwork(url: cinemaArt(t), maxPixel: 2400) }.clipped()
+        #endif
     }
+
+    #if os(iOS)
+    /// iPhone and iPad held upright: the banner shows the title's poster (when it has one).
+    private func showsPoster(_ t: Title) -> Bool {
+        metrics.height > metrics.width * 1.15 && t.poster != nil
+    }
+
+    /// TMDB's full-size copy of a picture it also has small copies of. Any other picture is left as it is.
+    private func fullSize(_ url: URL?) -> URL? {
+        guard let url, url.host == "image.tmdb.org" else { return url }
+        let address = url.absoluteString
+        for small in ["/t/p/w154/", "/t/p/w185/", "/t/p/w342/", "/t/p/w500/", "/t/p/w780/"] where address.contains(small) {
+            return URL(string: address.replacingOccurrences(of: small, with: "/t/p/original/")) ?? url
+        }
+        return url
+    }
+
+    /// iPhone and iPad held upright: the title's poster, whole across the page's width, from just under the bars at
+    /// the page's top (so nothing of it is behind the clock and the TV's name). It was enlarged to the page's height:
+    /// its sides cut off, its top behind the bars, and soft, as it was the small copy its tiles show. Above it, behind
+    /// the bars, its top edge carries on softly (mirrored and stretched, so only its top edge's colours, not what's
+    /// in the picture); under everything, a soft copy of it fills the page, for the rows to sit on.
+    private func posterPicture(_ t: Title) -> some View {
+        let w = metrics.width, h = (w * 1.5).rounded(), top = metrics.top
+        let small = client?.artURL(t.poster)
+        return Color.clear
+            .overlay { BlurredArtwork(url: small, radius: 30, opaque: true, maxPixel: 256) }
+            .overlay(alignment: .top) {
+                BlurredArtwork(url: small, radius: 20, opaque: true, maxPixel: 256)
+                    .frame(width: w, height: h)
+                    .scaleEffect(x: 1, y: -3, anchor: .top)
+                    .offset(y: top)
+            }
+            .overlay(alignment: .top) {
+                // The copy its tiles show at once (it's kept), then its full-size copy over that as it arrives (and
+                // nothing over it if that one can't be had: the copy it has stays).
+                Color.clear.frame(width: w, height: h)
+                    .overlay { Artwork(url: small, maxPixel: 512) }
+                    .overlay { CachedImage(url: cinemaArt(t), maxPixel: 2400) { Color.clear } failure: { Color.clear } }
+                    .clipped()
+                    .offset(y: top)
+            }
+            .clipped()
+    }
+    #endif
 
     /// Over the picture, as the Apple TV's banner has them: the system's material rising from its foot (whole behind
     /// the rows that sit over it, thinning out above the first row's heading, so the rows' names read over any
