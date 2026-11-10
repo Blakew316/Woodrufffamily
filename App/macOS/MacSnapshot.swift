@@ -42,10 +42,19 @@ enum MacSnapshot {
             lines += shoot("remote", into: folder)
             lines += facts("remote")
             still { Fleet.shared.remotePanel = false }
-            // A title's page on Watch (the sample show), pushed without its slide for the same reason.
+            // A title's page on Watch (the sample show), pushed without its slide for the same reason. Its title is
+            // read first, as it is when a title is opened a second time, so the page shows it at once: what a page
+            // reads after it opens fades in, and with the screen locked nothing fades.
             UserDefaults.standard.set(AppSection.watch.rawValue, forKey: "section")
             try? await Task.sleep(nanoseconds: 3_000_000_000)
-            still { MacNav.shared.push("Backyard Science", backTo: "Watch", TitleSheet(id: "t_backyard_science")) }
+            let sample = "t_backyard_science"
+            if let source = WatchSources.current(Fleet.shared), let details = try? await source.title(sample) {
+                TitleCache.shared.keep(details, hub: source.sourceID, id: sample)
+                lines.append("title read: \(details.title)")
+            } else {
+                lines.append("title read: failed")
+            }
+            still { MacNav.shared.push("Backyard Science", backTo: "Watch", TitleSheet(id: sample)) }
             try? await Task.sleep(nanoseconds: 5_000_000_000)
             lines += shoot("title", into: folder)
             lines += facts("title")
