@@ -490,6 +490,16 @@ let tapWord = "Select"
 let tapWord = "Tap"
 #endif
 
+/// Where the accounts for lights, fans and appliances are, for a line that sends someone there. The Mac's Settings has
+/// Devices in its own list; iPhone and iPad have it inside Smart Home; an Apple TV can't sign in to them itself.
+#if os(macOS)
+let devicesSettingsPath = "Settings → Devices"
+#elseif os(tvOS)
+let devicesSettingsPath = "Settings → Smart Home → Devices on an iPhone"
+#else
+let devicesSettingsPath = "Settings → Smart Home → Devices"
+#endif
+
 struct EmptyState: View {
     var symbol: String
     var title: String

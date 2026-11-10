@@ -160,7 +160,7 @@ final class Dreo {
                 try await login()
                 return try await request(method, path, query: query, body: body, auth: auth, retried: true)
             }
-            throw OAuthRelay.Failure.refused(auth ? "Dreo signed Woodruff out. Sign in again in Settings → Smart Home → Devices."
+            throw OAuthRelay.Failure.refused(auth ? "Dreo signed Woodruff out. Sign in again in \(devicesSettingsPath)."
                                                   : "Dreo didn’t accept that email and password.")
         }
         guard code == 200 else { throw OAuthRelay.Failure.refused((json["msg"] as? String).map { "Dreo: \($0)" } ?? "Dreo answered \(code).") }
@@ -369,7 +369,7 @@ final class Dreo {
         guard let f = fans[sn] else {
             // Shown from last time, but Dreo hasn't answered since the app opened: ask now, then carry it out
             // (a tap used to do nothing at all here).
-            guard connected else { error = "Sign in to Dreo in Settings → Smart Home → Devices."; return }
+            guard connected else { error = "Sign in to Dreo in \(devicesSettingsPath)."; return }
             Task {
                 await refresh(full: true)
                 if fans[sn] != nil { send(d, cmd) } else if error == nil { error = "Dreo doesn’t list \(d.name) any more." }

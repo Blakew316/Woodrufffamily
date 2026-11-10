@@ -915,7 +915,7 @@ private struct ThermostatSetup: View {
                     .buttonStyle(.glassProminent)
                 }
             } else {
-                Text("Add your ecobee in the Home app (Add Accessory, then scan the code on the thermostat or in the ecobee app) and it shows up here, ready to control. It can also come in through Samsung SmartThings (Settings → Smart Home → Devices).")
+                Text("Add your ecobee in the Home app (Add Accessory, then scan the code on the thermostat or in the ecobee app) and it shows up here, ready to control. It can also come in through Samsung SmartThings (\(devicesSettingsPath)).")
                     .font(.callout).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -923,7 +923,7 @@ private struct ThermostatSetup: View {
             #else
             // On the Mac the ecobee comes from Apple Home through Woodruff Home Helper (or from SmartThings).
             HomeBridgeStatusView()
-            Text("It can also come in through Samsung SmartThings: add the ecobee in the SmartThings app (Add Device → Thermostat → ecobee) and connect SmartThings in Settings → Smart Home → Devices.")
+            Text("It can also come in through Samsung SmartThings: add the ecobee in the SmartThings app (Add Device → Thermostat → ecobee) and connect SmartThings in \(devicesSettingsPath).")
                 .font(.footnote).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             if st.connected { lookAgain }

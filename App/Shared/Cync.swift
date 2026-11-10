@@ -188,7 +188,7 @@ final class Cync {
         guard let refresh = Keychain.get("cync.refresh") else { throw Failure("Sign in to Cync again.") }
         let (code, j) = try await post("/v2/user/token/refresh", ["refresh_token": refresh])
         guard code == 200, let access = j["access_token"] as? String else {
-            throw Failure("Cync signed Woodruff out. Sign in again in Settings → Smart Home → Devices.")
+            throw Failure("Cync signed Woodruff out. Sign in again in \(devicesSettingsPath).")
         }
         Keychain.set(access, for: "cync.access")
         if let r = j["refresh_token"] as? String { Keychain.set(r, for: "cync.refresh") }

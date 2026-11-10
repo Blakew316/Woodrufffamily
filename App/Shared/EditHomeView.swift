@@ -335,7 +335,12 @@ struct EditHomeView: View {
                         }
                         .onDelete { offsets in for i in offsets.sorted(by: >) { layout.toggleFavorite(layout.favorites[i]) } }
                 } header: { Text("Favorites") } footer: {
+                    #if os(macOS)
+                    // (A Mac with a mouse has no swipe: the tile's own menu takes it out.)
+                    Text("Favorites come first on Home. Drag to reorder. To remove one, right-click it on Home and choose Remove from Favorites. On Home itself, Edit lets you drag and resize every tile.")
+                    #else
                     Text("Favorites come first on Home. Drag to reorder; swipe to remove. On Home itself, Edit lets you drag and resize every tile.")
+                    #endif
                 }
 
                 Section {
