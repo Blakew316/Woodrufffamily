@@ -1172,9 +1172,9 @@ struct MacRoot: View {
 
     /// Home's or Watch's first page, with nothing opened on top: the toolbar has the thermostat.
     private var thermostatInToolbar: Bool { (homeRow || watchRow) && nav.path.isEmpty }
-    /// Without its − and + where the toolbar is short of room: a small window, or Watch's (which has the search
-    /// field too) in a middling one.
-    private var thermostatCompact: Bool { narrow || width < 1100 || (inWatch && width < 1500) }
+    /// Without its − and + only where the toolbar is short of room: a small window. (On Watch it's the same pill as
+    /// on Home.)
+    private var thermostatCompact: Bool { narrow || width < 1100 }
 
     /// Where the toolbar's Back goes ("Back to Watch"), for its tooltip.
     private var backHelp: String {

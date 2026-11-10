@@ -37,6 +37,10 @@ struct WatchView: View {
     #else
     @State private var posterWidth: CGFloat = 112
     #endif
+    #if !os(tvOS)
+    /// iPhone, iPad and the Mac: the page's size and the sizes of what's on it (`WatchMetrics`).
+    @State private var metrics = WatchMetrics()
+    #endif
     /// Every title of each, for its banner and rows, and when it was read.
     @State private var sectionTitles: [String: [Title]] = [:]
     @State private var sectionRead: [String: Date] = [:]
@@ -93,12 +97,31 @@ struct WatchView: View {
                 shelfStack(shown, client)
             }
             #else
-            shelfStack(shown, client)
+            // iPhone, iPad and the Mac: laid out as the Apple TV's. The banner (the whole page) first, then the rows,
+            // the first of them over the banner's foot.
+            VStack(alignment: .leading, spacing: 28) {
+                cinemaTop(shown, client)
+                shelfStack(shown, client)
+            }
             #endif
         }
         #if os(tvOS)
         // Apple TV: the page's scrolling, in the banner's hands (back on its Play, the page goes back to its top).
         .modifier(WatchScrollReader())
+        #else
+        // The banner runs up under the bars at the page's top (the Mac window's toolbar, the phone's title bar).
+        .ignoresSafeArea(.container, edges: .top)
+        // The page's size, for everything on it: it follows a window as it's resized and a phone as it turns.
+        .onGeometryChange(for: WatchMetrics.self, of: { g in
+            WatchMetrics(width: g.size.width.rounded(), height: g.size.height.rounded(),
+                         top: g.safeAreaInsets.top.rounded(), bottom: g.safeAreaInsets.bottom.rounded())
+        }) { metrics = $0 }
+        #endif
+        #if os(iOS)
+        // iPhone and iPad: the page is the dark room the Apple TV's is, over the app's blues, whatever the device's
+        // own appearance: its banner's shade and the rows over its foot are drawn for that.
+        .background { IconBackdrop() }
+        .environment(\.colorScheme, .dark)
         #endif
         .scrollIndicators(.hidden)
         #if os(macOS)
@@ -113,7 +136,13 @@ struct WatchView: View {
         .onDisappear { MacWatchScroll.shared.reset() }
         #endif
         .onGeometryChange(for: CGFloat.self, of: { $0.size.width }) { w in fitPosters(w) }
+        #if os(tvOS)
         .environment(\.posterWidth, posterWidth)
+        #else
+        // The page's own sizes, for its rows and tiles (a poster's width with them).
+        .environment(\.posterWidth, metrics.width > 0 ? metrics.poster : posterWidth)
+        .environment(\.watchMetrics, metrics.width > 0 ? metrics : nil)
+        #endif
         #if os(iOS)
         .toolbar {
             ToolbarItem(placement: .principal) {
@@ -210,14 +239,6 @@ struct WatchView: View {
     /// bar's own tab on iPhone and iPad: `SearchPage`.)
     @ViewBuilder private func shelfStack(_ shown: WatchHome?, _ client: (any WatchSource)?) -> some View {
         LazyVStack(alignment: .leading, spacing: 28) {
-            #if os(iOS)
-            // iPhone: Movies | TV Shows at the top of the page (on iPad the switch is in the bar at the top).
-            if sizeClass != .regular {
-                sectionPicker
-                    .padding(.horizontal)
-                    .padding(.top, 8)
-            }
-            #endif
             if let h = shown {
                 content(h, client)
             } else if let error {
@@ -244,24 +265,13 @@ struct WatchView: View {
         let titles = sectionTitles[place] ?? []
         let watchingIDs = Set((h.continue ?? []).filter { ($0.kind == "show") == (place == "shows") }.compactMap(\.titleId))
         let worked = shelves.get(place: place, titles: titles, shown: watchingIDs)
-        #if !os(tvOS)
-        // Until the whole list is read, the library's own featured titles, so the banner shows at once.
-        // (Apple TV's banner is above the rows, in tvBanner.)
-        let featured = worked.featured.isEmpty ? (h.featured ?? []).filter { ($0.kind == "show") == (place == "shows") } : worked.featured
-        if !featured.isEmpty {
-            Billboard(titles: featured, page: $page, client: client).id(place)
-        }
-        #endif
+        // (The banner is above the rows: `tvBanner` on Apple TV, `cinemaTop` elsewhere.)
         let watching = (h.continue ?? []).filter { !removed.contains($0.key) && ($0.kind == "show") == (place == "shows") }
         if !watching.isEmpty {
-            #if os(tvOS)
-            // Apple TV: wide stills, each its title's own wide picture (the row's titles have them).
+            // Wide stills, each its title's own wide picture (the row's titles have them).
             ShelfRow("Continue Watching") {
                 ForEach(watching) { ContinueTile(item: $0, poster: client?.artURL($0.poster), still: client?.artURL(worked.wide[$0.titleId ?? ""])) }
             }
-            #else
-            ShelfRow("Continue Watching") { ForEach(watching) { ContinueTile(item: $0, poster: client?.artURL($0.poster)) } }
-            #endif
         }
         ForEach(worked.rows, id: \.name) { row in
             ShelfRow(row.name, all: LibraryRef(place: place, genre: row.genre, sort: row.name == "Top Rated" ? "rated" : row.name == "Recently Added" ? "recent" : nil)) {
@@ -276,6 +286,48 @@ struct WatchView: View {
             }
         }
     }
+
+    #if !os(tvOS)
+    /// iPhone, iPad and the Mac: the banner, the whole page, with the first row over its foot, as the Apple TV's. (It
+    /// was a card across the top of the page.) Until the library has something for it, just room for the bars at
+    /// the page's top.
+    @ViewBuilder private func cinemaTop(_ shown: WatchHome?, _ client: (any WatchSource)?) -> some View {
+        let m = metrics
+        let place = self.place
+        let titles = sectionTitles[place] ?? []
+        let watching = (shown?.continue ?? []).filter { ($0.kind == "show") == (place == "shows") }
+        let worked = shelves.get(place: place, titles: titles, shown: Set(watching.compactMap(\.titleId)))
+        // Until the whole list is read, the library's own featured titles, so the banner shows at once.
+        let featured = worked.featured.isEmpty ? (shown?.featured ?? []).filter { ($0.kind == "show") == (place == "shows") } : worked.featured
+        // The first row is Continue Watching's stills when there's anything in it (less what was just taken off it
+        // here), else a row of posters, which is taller and so starts higher.
+        let rowsTop = m.rowsTop(stills: watching.contains(where: { !removed.contains($0.key) }))
+        // How far the page has to move before the banner has faded away.
+        let fade = max(300, m.height * 0.6)
+        ZStack(alignment: .top) {
+            if m.width > 0, shown != nil, !featured.isEmpty {
+                Billboard(titles: featured, page: $page, client: client, metrics: m, rowsTop: rowsTop)
+                    .id(place)
+                    // Fading out as the page moves down to the rows (and back in on the way up), as the Apple TV's.
+                    .visualEffect { c, p in c.opacity(max(0, min(1, 1 + p.frame(in: .scrollView).minY / fade))) }
+                    // The banner is the whole page; the rows start at `rowsTop` (the stack puts 28 points between
+                    // the banner and them).
+                    .padding(.bottom, rowsTop - 28 - m.banner)
+            } else {
+                // No banner (yet): the page starts under the bars at its top.
+                Color.clear.frame(height: m.top)
+            }
+            #if os(iOS)
+            // iPhone: Movies | TV Shows over the banner's top, under the title bar (on iPad it's in the bar).
+            if sizeClass != .regular {
+                sectionPicker
+                    .padding(.horizontal)
+                    .padding(.top, max(m.top, 59) + 8)
+            }
+            #endif
+        }
+    }
+    #endif
 
     #if os(tvOS)
     /// Apple TV: the banner, the whole screen, with the first row over its foot, far enough up that all of the row
@@ -576,6 +628,63 @@ enum TVWatch {
     static func shelfHeight(words: CGFloat) -> CGFloat { shelfLift + still * 9 / 16 + 16 + words }
 }
 
+#if !os(tvOS)
+/// Watch's sizes on iPhone, iPad and the Mac, where the page is laid out as the Apple TV's: the banner the whole page,
+/// its name, Play and Details at its lower left, and the first row over its foot. Apple TV's own sizes are for a
+/// screen 1920 points across. These are the same shares of this page's width, never smaller than reads on a phone
+/// and never larger than Apple TV's own. They are worked out from the page's size, so they follow a window as it's
+/// resized and a phone as it turns.
+struct WatchMetrics: Equatable, Sendable {
+    /// The page's width; its height down to whatever covers its foot (a tab bar, what's playing); and how much the
+    /// bars at its top and its foot cover.
+    var width: CGFloat = 0
+    var height: CGFloat = 0
+    var top: CGFloat = 0
+    var bottom: CGFloat = 0
+
+    /// Apple TV's [tv] points, as this page's share of them.
+    private func share(_ tv: CGFloat, least: CGFloat) -> CGFloat { min(tv, max(least, (width * tv / 1920).rounded())) }
+
+    /// A poster's width (it's half as tall again) and a wide still's (16 by 9).
+    var poster: CGFloat { share(250, least: 112) }
+    var still: CGFloat { share(400, least: 220) }
+    /// Between the tiles of a row, and from the page's edge to its words and its rows' first tiles.
+    var gap: CGFloat { share(40, least: 10) }
+    var side: CGFloat { share(100, least: 20) }
+    /// Type: a row's heading; the banner's name, the line about it and its story; a tile's name and the line under it.
+    var heading: CGFloat { share(38, least: 20) }
+    var name: CGFloat { share(76, least: 30) }
+    var line: CGFloat { share(26, least: 13) }
+    var story: CGFloat { share(25, least: 13) }
+    var tile: CGFloat { share(25, least: 13) }
+    var tileLine: CGFloat { share(21, least: 11) }
+
+    /// How tall the words under a tile are: its name on up to two lines and the line under it.
+    var tileWords: CGFloat { (tile * 2.5 + tileLine * 1.3 + 2).rounded() }
+    /// Between a row's heading and its tiles.
+    var headingGap: CGFloat { max(10, (gap / 2).rounded()) }
+
+    /// The banner's height: the whole page, down behind what covers its foot.
+    var banner: CGFloat { height + bottom }
+    /// Where the first row starts, from the top of the page: far enough up that all of it shows above the page's
+    /// foot (a row of wide stills, or the taller row of posters), and never above the page's middle.
+    func rowsTop(stills: Bool) -> CGFloat {
+        let picture = stills ? still * 9 / 16 : poster * 1.5
+        let row = heading * 1.25 + headingGap + picture + 8 + tileWords
+        return max((height * 0.4).rounded(), (height - row - 14).rounded())
+    }
+}
+
+private struct WatchMetricsKey: EnvironmentKey { static let defaultValue: WatchMetrics? = nil }
+extension EnvironmentValues {
+    /// On Watch's own page (not in its lists or its search): the page's sizes, for its rows and tiles.
+    var watchMetrics: WatchMetrics? {
+        get { self[WatchMetricsKey.self] }
+        set { self[WatchMetricsKey.self] = newValue }
+    }
+}
+#endif
+
 /// Apple TV draws posters and stills two or three times the size a phone does, on a screen up to 4K: TMDB's larger
 /// copy of each (a poster 500 across in place of 342, a still 780 in place of 300). Any other picture is left as it is.
 private func tvLarge(_ url: URL?) -> URL? {
@@ -635,6 +744,11 @@ struct Billboard: View {
     /// Apple TV: where the first row under the banner starts, from the top of the screen. The banner's words and
     /// buttons sit just above it.
     var rowsTop: CGFloat = TVWatch.stillsTop
+    #else
+    /// iPhone, iPad and the Mac: the page's sizes, and where the first row under the banner starts, from the top of
+    /// the page. The banner's words and buttons sit just above it.
+    var metrics = WatchMetrics()
+    var rowsTop: CGFloat = 0
     #endif
     /// What each featured title is about (the wide banner shows it), read once each.
     @State private var overviews: [String: String] = [:]
@@ -662,30 +776,7 @@ struct Billboard: View {
             .onChange(of: titles.count) { _, n in if page >= n { page = 0 } }
     }
 
-    #if os(iOS)
-    private var pages: some View {
-        // iPad: the wide banner, as on the Mac (the words and buttons on the left, the picture on the right), short
-        // enough that Continue Watching shows under it. iPhone: the picture's own shape, across the screen.
-        let wide = sizeClass == .regular
-        return TabView(selection: $page) {
-            ForEach(Array(titles.enumerated()), id: \.offset) { i, t in
-                Group { if wide { wideCard(t) } else { card(t) } }.tag(i)
-            }
-        }
-        .tabViewStyle(.page(indexDisplayMode: .never))
-        .aspectRatio(wide ? (width > 1000 ? 2.7 : 2.1) : 16.0 / 9.0, contentMode: .fit)
-        .padding(.horizontal, wide ? 24 : 16)
-        .onGeometryChange(for: CGFloat.self, of: { $0.size.width }) { width = $0 }
-        // On to the next after 12 seconds, as on the TV (a swipe starts the 12 seconds again). Not with VoiceOver on (it
-        // would change under the finger reading it) or Reduce Motion: then only a swipe turns it.
-        .task(id: "\(page)|\(voiceOver || reduceMotion)") {
-            guard !voiceOver, !reduceMotion else { return }
-            try? await Task.sleep(nanoseconds: 12_000_000_000)
-            guard !Task.isCancelled, titles.count > 1 else { return }
-            withAnimation(.easeInOut(duration: 0.7)) { page = (page + 1) % titles.count }
-        }
-    }
-    #elseif os(tvOS)
+    #if os(tvOS)
     /// Apple TV: the whole screen, edge to edge, as the TV app's own banner: one title at a time that moves on by
     /// itself, its picture behind, its words and Play and Details over the lower left, just above the first row, which
     /// sits over the banner's foot (`rowsTop`) so that all of it shows.
@@ -725,22 +816,72 @@ struct Billboard: View {
         }
     }
     #else
-    /// The Mac has no swiping pages (a plain TabView there is a strip of blank tabs): one card at a time that moves
-    /// on by itself; the dots pick one.
+    /// iPhone, iPad and the Mac: the banner as the Apple TV's. One title at a time that moves on by itself (a swipe
+    /// turns it on iPhone and iPad, the dots pick one on the Mac): its picture the whole page; its name, the line
+    /// about it, its story and Play and Details over the lower left, just above the first row, which sits over the
+    /// banner's foot (`rowsTop`) so that all of it shows. Its sizes are the page's (`WatchMetrics`), so it follows a
+    /// window as it's resized. (It was a card across the top of the page.)
     private var pages: some View {
-        ZStack {
-            if let t = titles[safe: page] ?? titles.first {
-                wideCard(t).id(t.id).transition(.opacity)
+        let m = metrics
+        let t = titles[safe: page] ?? titles.first
+        return ZStack(alignment: .bottomLeading) {
+            if let t { cinemaPicture(t).id(t.id).transition(.opacity) }
+            // The same for every title, so they stay while the picture changes under them.
+            cinemaScrims.zIndex(1)
+            if let t {
+                // A click on the picture opens the title's page (above the rows only: under them it's theirs).
+                Color.clear.contentShape(Rectangle())
+                    .frame(height: max(0, rowsTop))
+                    .frame(maxHeight: .infinity, alignment: .top)
+                    .onTapGesture { open(t) }
+                    .contextMenu { TitleMenu(title: t) }
+                    .zIndex(2)
+                VStack(alignment: .leading, spacing: max(12, (m.name * 0.3).rounded())) {
+                    cinemaWords(t).id(t.id).transition(.opacity)
+                    // Play and Details: one pair that stays while the picture and the words over them change.
+                    cinemaButtons(t)
+                }
+                // In line with the rows' tiles, and clear of the first row's heading.
+                .padding(.horizontal, m.side)
+                .padding(.bottom, m.banner - rowsTop + max(16, (m.heading * 0.9).rounded()))
+                .zIndex(3)
             }
         }
-        // The window's whole width, a third as tall: it grows and shrinks with the window, and the rows show under it.
-        .aspectRatio(3.0, contentMode: .fit)
-        .padding(.horizontal, 20)
-        .task(id: page) {
+        .frame(height: m.banner)
+        .frame(maxWidth: .infinity)
+        .clipped()
+        #if os(iOS)
+        // A swipe across the banner turns it (the page still scrolls under the same finger).
+        .simultaneousGesture(DragGesture(minimumDistance: 30).onEnded { v in
+            guard titles.count > 1, abs(v.translation.width) > abs(v.translation.height) * 1.5 else { return }
+            withAnimation(.easeInOut(duration: 0.5)) {
+                page = (page + (v.translation.width < 0 ? 1 : titles.count - 1)) % titles.count
+            }
+        })
+        #endif
+        .task(id: "\(page)|\(holdsStill)") {
+            // The next title's picture made ready meanwhile (it fills the page), so it fades in whole instead of as a
+            // grey placeholder its picture then fades into.
+            if titles.count > 1, let next = titles[safe: (page + 1) % titles.count],
+               let art = cinemaArt(next), ImageStore.shared.cached(art, maxPixel: 2400) == nil {
+                Task(priority: .utility) { _ = await ImageStore.shared.image(art, maxPixel: 2400) }
+            }
+            // Not with VoiceOver on (it would change under the finger reading it) or Reduce Motion: then only a
+            // swipe turns it.
+            guard !holdsStill else { return }
             try? await Task.sleep(nanoseconds: 12_000_000_000)
             guard !Task.isCancelled, titles.count > 1 else { return }
             withAnimation(.easeInOut(duration: 0.7)) { page = (page + 1) % titles.count }
         }
+    }
+
+    /// The banner doesn't turn by itself: VoiceOver or Reduce Motion is on (iPhone and iPad).
+    private var holdsStill: Bool {
+        #if os(iOS)
+        return voiceOver || reduceMotion
+        #else
+        return false
+        #endif
     }
     #endif
 
@@ -821,62 +962,74 @@ struct Billboard: View {
         .onPlayPauseCommand { if let p = t.play { PlayRouter.start(p, fleet: fleet) } }
     }
     #else
-    /// The Mac's and iPad's banner, as on the TV: the words on the left, the whole 16:9 picture on the right in a
-    /// rounded frame, over a blurred copy of it filling the banner.
-    private func wideCard(_ t: Title) -> some View {
-        let art = client?.artURL(t.backdrop ?? t.poster)
-        return GeometryReader { g in
-            let inset: CGFloat = 18
-            let picH = g.size.height - inset * 2
-            let picW = min(g.size.width * 0.62, picH * 16 / 9)
-            ZStack {
-                BlurredArtwork(url: art, radius: 40, maxPixel: 900).opacity(0.75)
-                Color.black.opacity(0.45)
-                HStack(spacing: 24) {
-                    // From the top: the name, its facts, Play and Details, then what it's about.
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(t.title).font(.system(size: max(22, min(40, g.size.height * 0.11)), weight: .bold))
-                            .foregroundStyle(.white).lineLimit(2).minimumScaleFactor(0.7)
-                        Text(meta(t)).font(.callout.weight(.medium)).foregroundStyle(.white.opacity(0.8)).lineLimit(1)
-                        HStack(spacing: 10) {
-                            if let p = t.play {
-                                CapsuleButton(title: p.label ?? "Play", symbol: "play.fill") { PlayRouter.start(p, fleet: fleet) }
-                            }
-                            CapsuleButton(title: "Details", symbol: nil, prominent: false) { open(t) }
-                        }
-                        .padding(.top, 4)
-                        if let o = overviews[t.id], !o.isEmpty {
-                            Text(o).font(.body).foregroundStyle(.white.opacity(0.85))
-                                .lineLimit(max(2, Int((g.size.height - 190) / 22)))
-                                .fixedSize(horizontal: false, vertical: true)
-                                .padding(.top, 8)
-                                .transition(.opacity)
-                        }
-                        Spacer(minLength: 0)
-                    }
-                    .padding(.top, 10)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    Color.clear
-                        .overlay { Artwork(url: art, maxPixel: 1800) }
-                        .frame(width: picW, height: picW * 9 / 16)
-                        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                        .shadow(color: .black.opacity(0.35), radius: 14, y: 6)
-                }
-                .padding(.leading, 28).padding(.trailing, inset).padding(.vertical, inset)
-            }
-        }
-        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-        .contentShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-        #if os(tvOS)
-        .modifier(TVFocusTile())
-        .onTapGesture { open(t) }
-        #else
-        .onTapGesture { open(t) }
-        .contextMenu { TitleMenu(title: t) }
-        #endif
-        .task(id: t.id) { await overview(t) }
+    /// iPhone, iPad and the Mac: the picture a title's banner shows. On a page taller than it's wide (a phone held
+    /// upright) its poster, which is that shape; otherwise its wide picture.
+    private func cinemaArt(_ t: Title) -> URL? {
+        let upright = metrics.height > metrics.width * 1.15
+        return client?.artURL(upright ? (t.poster ?? t.backdrop) : (t.backdrop ?? t.poster))
     }
 
+    /// The title's picture, filling the page.
+    private func cinemaPicture(_ t: Title) -> some View {
+        Color.clear.overlay { Artwork(url: cinemaArt(t), maxPixel: 2400) }.clipped()
+    }
+
+    /// Over the picture, as the Apple TV's banner has them: the system's material rising from its foot (whole behind
+    /// the rows that sit over it, thinning out above the first row's heading, so the rows' names read over any
+    /// picture), and a shade from the left for the words.
+    private var cinemaScrims: some View {
+        // How far up the page the first row starts, from the bottom (0 to 1).
+        let rows = metrics.banner > 0 ? max(0.1, min(0.7, (metrics.banner - rowsTop) / metrics.banner)) : 0.4
+        return ZStack {
+            Rectangle().fill(.regularMaterial)
+                .mask {
+                    LinearGradient(stops: [.init(color: .black, location: 0), .init(color: .black, location: rows),
+                                           .init(color: .black.opacity(0.35), location: rows + 0.1),
+                                           .init(color: .clear, location: rows + 0.22)],
+                                   startPoint: .bottom, endPoint: .top)
+                }
+            LinearGradient(stops: [.init(color: .black.opacity(0.7), location: 0), .init(color: .black.opacity(0.25), location: 0.5),
+                                   .init(color: .clear, location: 0.8)], startPoint: .leading, endPoint: .trailing)
+        }
+        .allowsHitTesting(false)
+    }
+
+    /// The words over the picture's lower left, as the Apple TV's: the name large, what it is, what it's about.
+    private func cinemaWords(_ t: Title) -> some View {
+        let m = metrics
+        return VStack(alignment: .leading, spacing: max(6, (m.name * 0.18).rounded())) {
+            Text(t.title)
+                .font(.system(size: m.name, weight: .heavy))
+                .foregroundStyle(.white)
+                .lineLimit(2)
+                .minimumScaleFactor(0.6)
+                .shadow(color: .black.opacity(0.5), radius: 12)
+            Text(meta(t)).font(.system(size: m.line, weight: .semibold)).foregroundStyle(.white.opacity(0.9)).lineLimit(1)
+            if let o = overviews[t.id], !o.isEmpty {
+                Text(o)
+                    .font(.system(size: m.story, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.9))
+                    .lineLimit(2)
+                    .frame(maxWidth: max(280, m.width * 0.43), alignment: .leading)
+                    .transition(.opacity)
+            }
+        }
+        .task(id: t.id) { await overview(t) }
+        // (A click on the words goes through to the picture, which opens the title's page.)
+        .allowsHitTesting(false)
+    }
+
+    /// Play and Details, under the words: larger on a larger page.
+    private func cinemaButtons(_ t: Title) -> some View {
+        let grow = min(1.7, max(1, metrics.line / 13))
+        return HStack(spacing: 10) {
+            if let p = t.play {
+                CapsuleButton(title: p.label ?? "Play", symbol: "play.fill") { PlayRouter.start(p, fleet: fleet) }
+            }
+            CapsuleButton(title: "Details", symbol: nil, prominent: false) { open(t) }
+        }
+        .scaleEffect(grow, anchor: .bottomLeading)
+    }
     #endif
 
     /// The title's story, from the details kept from an earlier look or read now.
@@ -911,51 +1064,13 @@ struct Billboard: View {
                 #endif
             }
         }
-        #if os(macOS)
-        .padding(.trailing, 44).padding(.bottom, 26)
-        #else
-        #if os(tvOS)
         // Level with Play and Details, at the other side.
+        #if os(tvOS)
         .padding(.trailing, 90).padding(.bottom, 1080 - rowsTop + 66)
         #else
-        .padding(.trailing, 30).padding(.bottom, 14)
-        #endif
+        .padding(.trailing, metrics.side).padding(.bottom, metrics.banner - rowsTop + max(22, metrics.heading))
         #endif
         .animation(.snappy, value: page)
-    }
-
-    private func card(_ t: Title) -> some View {
-        ZStack(alignment: .bottomLeading) {
-            Color.clear.overlay { Artwork(url: client?.artURL(t.backdrop ?? t.poster), maxPixel: 1800) }.clipped()
-            // Darker toward the bottom, for the words.
-            LinearGradient(stops: [.init(color: .clear, location: 0.45), .init(color: .black.opacity(0.8), location: 1)],
-                           startPoint: .top, endPoint: .bottom)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(t.title).font(.title3.bold()).foregroundStyle(.white).lineLimit(1).shadow(color: .black.opacity(0.4), radius: 6)
-                Text(meta(t)).font(.caption.weight(.medium)).foregroundStyle(.white.opacity(0.8)).lineLimit(1)
-                // Drawn at 85%, they'd be 34 points tall under a finger: each takes a touch a little past its edge (44).
-                HStack(spacing: 8) {
-                    if let p = t.play {
-                        CapsuleButton(title: p.label ?? "Play", symbol: "play.fill", reach: 6) { PlayRouter.start(p, fleet: fleet) }
-                    }
-                    CapsuleButton(title: "Details", symbol: nil, prominent: false, reach: 6) { open(t) }
-                }
-                .controlSize(.small)
-                .scaleEffect(0.85, anchor: .leading)
-                .padding(.top, 2)
-            }
-            .padding(.horizontal, 14)
-            .padding(.bottom, 10)
-        }
-        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-        #if os(tvOS)
-        .modifier(TVFocusTile())
-        .onTapGesture { open(t) }
-        #else
-        .onTapGesture { open(t) }
-        .contextMenu { TitleMenu(title: t) }
-        #endif
     }
 
     /// Its sheet, with this card's picture and name at the top while the rest loads.
@@ -980,19 +1095,46 @@ struct ShelfRow<Content: View>: View {
     init(_ title: String, all: LibraryRef? = nil, @ViewBuilder content: () -> Content) {
         self.title = title; self.all = all; self.content = content()
     }
+    #if !os(tvOS)
+    /// On Watch's own page (iPhone, iPad, the Mac): the page's sizes, which the row's follow. Its lists and search
+    /// have none, and keep their own.
+    @Environment(\.watchMetrics) private var metrics
+    #endif
     /// The name's size. (Apple TV: 38 points, as the TV app's rows. The phone's style is 57 points on a TV.)
     private var titleFont: Font {
         #if os(tvOS)
         return TVWatch.heading
         #else
-        return .title2.bold()
+        return metrics.map { Font.system(size: $0.heading, weight: .bold) } ?? Font.title2.bold()
         #endif
     }
     private var chevronFont: Font {
         #if os(tvOS)
         return .system(size: 26, weight: .bold)
         #else
-        return .headline.weight(.bold)
+        return metrics.map { Font.system(size: ($0.heading * 0.68).rounded(), weight: .bold) } ?? Font.headline.weight(.bold)
+        #endif
+    }
+    /// Between its tiles; from the page's edge to its heading and its first tile; between its heading and its tiles.
+    private var gap: CGFloat {
+        #if os(tvOS)
+        return TVWatch.gap
+        #else
+        return metrics?.gap ?? 10
+        #endif
+    }
+    private var inset: CGFloat {
+        #if os(tvOS)
+        return 20
+        #else
+        return metrics?.side ?? 20
+        #endif
+    }
+    private var headingGap: CGFloat {
+        #if os(tvOS)
+        return 10
+        #else
+        return metrics?.headingGap ?? 10
         #endif
     }
     /// The shelf's name, with a chevron when it opens everything in it.
@@ -1003,7 +1145,7 @@ struct ShelfRow<Content: View>: View {
         }
     }
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: headingGap) {
             Group {
                 if let all {
                     #if os(macOS)
@@ -1018,7 +1160,7 @@ struct ShelfRow<Content: View>: View {
                     Text(title).font(titleFont)
                 }
             }
-            .padding(.horizontal, 20)
+            .padding(.horizontal, inset)
             ScrollView(.horizontal) {
                 #if os(tvOS)
                 FirstFocusRow(spacing: TVWatch.gap, alignment: .top) { content }
@@ -1026,9 +1168,9 @@ struct ShelfRow<Content: View>: View {
                     .padding(.horizontal, 20)
                     .padding(.vertical, 30)
                 #else
-                LazyHStack(alignment: .top, spacing: 10) { content }
+                LazyHStack(alignment: .top, spacing: gap) { content }
                     .scrollTargetLayout()
-                    .padding(.horizontal, 20)
+                    .padding(.horizontal, inset)
                 #endif
             }
             .scrollIndicators(.hidden)
@@ -1094,9 +1236,15 @@ struct PosterTile: View {
                     }
                     .background { PosterShadow() }
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(title.title).font(.footnote.weight(.semibold)).lineLimit(1)
+                    // On Watch's own page: its name on up to two lines (room kept for both, so a row's tiles are
+                    // all one height), in the page's sizes, as the Apple TV's. Elsewhere, one line as before.
+                    Text(title.title)
+                        .font(metrics.map { Font.system(size: $0.tile, weight: .semibold) } ?? Font.footnote.weight(.semibold))
+                        .lineLimit(metrics == nil ? 1 : 2, reservesSpace: metrics != nil)
+                        .multilineTextAlignment(.leading)
                     if let caption = title.caption {
-                        Text(caption).font(.caption).foregroundStyle(Color.accentColor).lineLimit(1)
+                        Text(caption).font(metrics.map { Font.system(size: $0.tileLine) } ?? Font.caption)
+                            .foregroundStyle(Color.accentColor).lineLimit(1)
                     }
                 }
                 .frame(width: width, alignment: .leading)
@@ -1106,6 +1254,11 @@ struct PosterTile: View {
         .contextMenu { TitleMenu(title: title) }
         #endif
     }
+
+    #if !os(tvOS)
+    /// On Watch's own page (iPhone, iPad, the Mac): the page's sizes.
+    @Environment(\.watchMetrics) private var metrics
+    #endif
 
     #if os(tvOS)
     @Environment(\.displayScale) private var displayScale
@@ -1174,30 +1327,44 @@ struct ContinueTile: View {
     var item: ContinueItem
     /// Its poster's address, as Watch worked it out.
     var poster: URL?
-    #if os(tvOS)
-    /// Apple TV: its title's wide picture, when it has one (the tile is a still there, as the TV app's Up Next).
+    /// Its title's wide picture, when it has one (the tile is a wide still, as the TV app's Up Next).
     var still: URL? = nil
+    #if os(tvOS)
     @Environment(\.displayScale) private var displayScale
+    #else
+    /// On Watch's own page (iPhone, iPad, the Mac): the page's sizes.
+    @Environment(\.watchMetrics) private var metrics
     #endif
 
     var body: some View {
         #if os(tvOS)
         tvLockup
         #else
+        // iPhone, iPad and the Mac: a wide still, as the Apple TV's. The title's own wide picture with how far it got
+        // across its foot, then its name and what's next or what's left under it. A click goes on from where it got
+        // to. (It was a poster.)
+        let w = metrics?.still ?? 220, h = w * 9 / 16
         Button {
             PlayRouter.start(item.play, fleet: fleet)
         } label: {
-            VStack(alignment: .leading, spacing: 6) {
-                Color.clear.frame(width: width, height: width * 1.5)
-                    .overlay { Artwork(url: poster, maxPixel: 512) }
-                    // How far it got, across the poster's foot on a soft shade (as the TV app's Up Next). No play disc:
-                    // it sat on the poster's own title, and a tap already goes on playing.
+            VStack(alignment: .leading, spacing: 8) {
+                Color.clear.frame(width: w, height: h)
+                    .overlay {
+                        if let still {
+                            Artwork(url: still, maxPixel: 900)
+                        } else {
+                            // No wide picture: its poster whole, over a soft copy of itself.
+                            BlurredArtwork(url: poster, radius: 30, maxPixel: 256)
+                            Artwork(url: poster, contentMode: .fit, maxPixel: 512)
+                        }
+                    }
+                    // How far it got, across the still's foot on a soft shade.
                     .overlay(alignment: .bottom) {
                         if item.progress > 0 {
                             Capsule().fill(.white.opacity(0.3)).frame(height: 4)
-                                .overlay(alignment: .leading) { Capsule().fill(.white).frame(width: (width - 16) * item.progress) }
-                                .frame(width: width - 16)
-                                .padding(.bottom, 9).padding(.top, 26)
+                                .overlay(alignment: .leading) { Capsule().fill(.white).frame(width: (w - 24) * item.progress) }
+                                .frame(width: w - 24)
+                                .padding(.bottom, 10).padding(.top, 28)
                                 .frame(maxWidth: .infinity)
                                 .background { LinearGradient(colors: [.clear, .black.opacity(0.6)], startPoint: .top, endPoint: .bottom) }
                         }
@@ -1205,10 +1372,14 @@ struct ContinueTile: View {
                     .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                     .background { PosterShadow() }
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(item.name).font(.footnote.weight(.semibold)).lineLimit(1)
-                    Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    Text(item.name)
+                        .font(metrics.map { Font.system(size: $0.tile, weight: .semibold) } ?? Font.footnote.weight(.semibold))
+                        .lineLimit(2).multilineTextAlignment(.leading)
+                    Text(subtitle).font(metrics.map { Font.system(size: $0.tileLine) } ?? Font.caption)
+                        .foregroundStyle(.secondary).lineLimit(1)
                 }
-                .frame(width: width, alignment: .leading)
+                // The same room under every still (a name on two lines fits), so the row's tiles are all one height.
+                .frame(width: w, height: metrics?.tileWords, alignment: .topLeading)
             }
         }
         .buttonStyle(PressScale(scale: 0.96))
@@ -2604,10 +2775,8 @@ struct WatchPlaceholder: View {
 final class ShelfCache {
     struct Worked {
         var featured: [Title]; var rows: [(name: String, genre: String?, titles: [Title])]
-        #if os(tvOS)
-        /// Apple TV: each title's wide picture, by title (Continue Watching's stills).
+        /// Each title's wide picture, by title (Continue Watching's stills).
         var wide: [String: String] = [:]
-        #endif
     }
     private var lastTitles: [Title] = []
     private var lastShown: Set<String> = []
@@ -2621,9 +2790,7 @@ final class ShelfCache {
         if titles != lastTitles || shown != lastShown || day != lastDay || place != lastPlace {
             lastTitles = titles; lastShown = shown; lastDay = day; lastPlace = place
             value = Worked(featured: WatchRows.featured(titles, section: place), rows: WatchRows.rows(titles, shown: shown))
-            #if os(tvOS)
             value.wide = Dictionary(titles.compactMap { t in t.backdrop.map { (t.id, $0) } }, uniquingKeysWith: { first, _ in first })
-            #endif
         }
         return value
     }
