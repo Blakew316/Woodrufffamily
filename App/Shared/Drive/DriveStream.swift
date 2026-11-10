@@ -53,10 +53,20 @@ final class DriveStream: NSObject {
         return asset
     }
 
-    /// Drive's own address with the sign-in in the request's header, for the player to fetch and buffer itself:
-    /// far faster for big films than answering its requests one by one (as the Android TVs' player does). Nil
-    /// without a kept token lasting at least [minLife] seconds (then the asset above is used). [expires] is when the
-    /// sign-in it was given runs out (seconds since 1970): the player's requests are refused after that.
+    /// What it has asked Google for so far and been sent ("3.2 GB in 41 requests, 3.1 GB sent"), for the Macs' log.
+    func askedNow() -> String {
+        let l = loader
+        return streamQueue.sync { l.tally }
+    }
+
+    /// Not used for playing any more: the player fetching from Drive's own address asks Google for everything from
+    /// where it is to the end of the film each time it starts, seeks or reconnects, which the app can't change, and
+    /// the day it was used Google refused the big films for the rest of the day
+    /// (downloadQuotaExceeded). The asset above asks for a piece at a time instead.
+    ///
+    /// Drive's own address with the sign-in in the request's header, for the player to fetch and buffer itself. Nil
+    /// without a kept token lasting at least [minLife] seconds. [expires] is when the sign-in it was given runs out
+    /// (seconds since 1970): the player's requests are refused after that.
     nonisolated static func directAsset(fileID: String, minLife: Double = 900) -> (asset: AVURLAsset, expires: Double)? {
         guard let kept = GoogleDrive.cachedTokenUntil(minLife: minLife) else { return nil }
         let asset = AVURLAsset(url: GoogleDrive.mediaURL(fileID),
@@ -72,8 +82,7 @@ final class DriveStream: NSObject {
     /// further on), kept for a while for the player. Asked again for the same file, it does nothing.
     static func prefetch(fileID: String) {
         Task {
-            // Long enough for Play to use Drive's address directly (directAsset), and for most of an hour before the
-            // sign-in the player is given has to be renewed (a renewal pauses the picture for a moment).
+            // One that lasts: the film's first minutes then never wait for a new sign-in.
             guard let token = try? await GoogleDrive.token(minLife: 2700) else { return }
             streamQueue.async { Prefetch.start(fileID, token: token) }
         }
@@ -284,22 +293,62 @@ private final class PartFetch: StreamTask {
 
 /// Answers each part the player asks for: from what was fetched ahead where it can, else from Google, handing the
 /// bytes over as they arrive. Everything here runs on the stream queue.
+///
+/// Google is asked for one piece of the file at a time, never for "everything from here to the end", even when
+/// that is what the player asks for. The player drops what it asked for all the time (every seek, every time it
+/// has read far enough ahead), and Google appears to count the whole of what a request asked for against the
+/// file's daily limit however little of it was sent (rclone's manual says so of its own piece-by-piece reading):
+/// asked to the end each time, an 80 GB film was refused for the rest of the day after a few plays.
 private final class Loader: NSObject, AVAssetResourceLoaderDelegate, StreamTask {
     let fileID: String
 
-    /// A part being fetched, by its data task.
+    /// The first piece asked for when the player asks for something, and the largest: each next piece is twice the
+    /// last, so a long read is few requests and a dropped one never asked for much more than it was sent.
+    private static let firstPart: Int64 = 32 << 20
+    private static let largestPart: Int64 = 128 << 20
+
+    /// A piece being fetched, by its data task.
     private final class Load {
         let request: AVAssetResourceLoadingRequest
         let retried: Bool
         let task: URLSessionDataTask
         /// Times it has been asked for again after a slow or dropped connection.
         let attempts: Int
+        /// The size of piece this was (the next is twice it), and the bytes it asked Google for.
+        let part: Int64
+        let asked: Int64
+        /// The bytes of it that have arrived, and whether Google sent the whole file instead of the piece.
+        var got: Int64 = 0
+        var whole = false
         /// Google's refusal (its status and the reason it sent), read whole before anything is decided.
         var status = 0
         var body = Data()
-        init(request: AVAssetResourceLoadingRequest, retried: Bool, task: URLSessionDataTask, attempts: Int) {
+        init(request: AVAssetResourceLoadingRequest, retried: Bool, task: URLSessionDataTask, attempts: Int, part: Int64, asked: Int64) {
             self.request = request; self.retried = retried; self.task = task; self.attempts = attempts
+            self.part = part; self.asked = asked
         }
+    }
+
+    /// The file's size, once Google has said.
+    private var total: Int64?
+    /// What has been asked of Google for this film and what it sent, for the Macs' log.
+    private var requests = 0
+    private var askedBytes: Int64 = 0
+    private var sentBytes: Int64 = 0
+
+    var tally: String {
+        "\(Self.size(askedBytes)) in \(requests == 1 ? "1 request" : "\(requests) requests"), \(Self.size(sentBytes)) sent"
+    }
+
+    private static func size(_ bytes: Int64) -> String {
+        bytes >= 1_000_000_000 ? String(format: "%.1f GB", Double(bytes) / 1e9) : String(format: "%.0f MB", Double(bytes) / 1e6)
+    }
+
+    /// One past the last byte the player asked for, or nil when it asked for everything to the end of the file.
+    private static func wantedEnd(_ d: AVAssetResourceLoadingDataRequest) -> Int64? {
+        if d.requestsAllDataToEndOfResource { return nil }
+        let (end, overflow) = d.requestedOffset.addingReportingOverflow(Int64(d.requestedLength))
+        return overflow ? nil : end
     }
 
     /// What Google said when it last refused this file for good (shown instead of the player's timeout).
@@ -314,12 +363,12 @@ private final class Loader: NSObject, AVAssetResourceLoaderDelegate, StreamTask 
     /// A part that failed for the connection's sake (or Google was busy): asked for again from where it got to, after
     /// a moment, three times at most before the player is told.
     private func again(_ load: Load, after delay: Double? = nil) {
-        let req = load.request, next = load.attempts + 1, retried = load.retried
+        let req = load.request, next = load.attempts + 1, retried = load.retried, part = load.part
         streamQueue.asyncAfter(deadline: .now() + (delay ?? 0.5 * Double(next))) { [weak self] in
             guard let self, !req.isCancelled, !req.isFinished else { return }
-            if let token = GoogleDrive.cachedToken() { self.send(req, token: token, retried: retried, attempts: next) }
+            if let token = GoogleDrive.cachedToken() { self.send(req, token: token, retried: retried, attempts: next, part: part) }
             // A fresh token first: still counted, so a connection that never answers isn't asked for ever.
-            else { self.fetch(req, retried: false, attempts: next) }
+            else { self.fetch(req, retried: false, attempts: next, part: part) }
         }
     }
     private var loads: [Int: Load] = [:]
@@ -389,18 +438,19 @@ private final class Loader: NSObject, AVAssetResourceLoaderDelegate, StreamTask 
         return false
     }
 
-    /// A current token (a fresh one after Google refused the last), then the part asked for.
-    private func fetch(_ req: AVAssetResourceLoadingRequest, retried: Bool, attempts: Int = 0) {
+    /// A current token (a fresh one after Google refused the last), then the next piece of what [req] asked for,
+    /// [part] bytes at most.
+    private func fetch(_ req: AVAssetResourceLoadingRequest, retried: Bool, attempts: Int = 0, part: Int64 = Loader.firstPart) {
         // Usually in memory: sent at once, without waiting for the main thread.
         if !retried, let token = GoogleDrive.cachedToken() {
-            send(req, token: token, retried: false, attempts: attempts)
+            send(req, token: token, retried: false, attempts: attempts, part: part)
             return
         }
         Task {
             do {
                 if retried { await GoogleDrive.dropToken() }
                 let token = try await GoogleDrive.token()
-                streamQueue.async { self.send(req, token: token, retried: retried, attempts: attempts) }
+                streamQueue.async { self.send(req, token: token, retried: retried, attempts: attempts, part: part) }
             } catch {
                 let ns = error as NSError
                 await MainActor.run { Diagnostics.shared.notePlayback("Drive sign-in couldn’t be renewed (\(ns.domain) \(ns.code))") }
@@ -411,26 +461,42 @@ private final class Loader: NSObject, AVAssetResourceLoaderDelegate, StreamTask 
         }
     }
 
-    private func send(_ req: AVAssetResourceLoadingRequest, token: String, retried: Bool, attempts: Int = 0) {
+    /// Asks Google for the next piece of what [req] asked for: from where the player has got to, [part] bytes at
+    /// most, and never past what the player asked for or the end of the file.
+    private func send(_ req: AVAssetResourceLoadingRequest, token: String, retried: Bool, attempts: Int = 0, part: Int64 = Loader.firstPart) {
         guard !req.isCancelled, !req.isFinished else { return }
         var start: Int64 = 0
-        var end: Int64?
+        // Only what the file is, when no data is asked for: its first two bytes are enough.
+        var end: Int64 = 1
         if let d = req.dataRequest {
             start = d.currentOffset != 0 ? d.currentOffset : d.requestedOffset
-            if !d.requestsAllDataToEndOfResource { end = d.requestedOffset + Int64(d.requestedLength) - 1 }
-        } else {
-            // Only what the file is: its first two bytes are enough.
-            end = 1
+            end = start + part - 1
+            if let wanted = Self.wantedEnd(d) { end = min(end, wanted - 1) }
+            if let size = total ?? Prefetch.cache[fileID]?.total, size > 0 { end = min(end, size - 1) }
+            // Nothing of it left to ask for.
+            if end < start { req.finishLoading(); return }
         }
         var r = URLRequest(url: GoogleDrive.mediaURL(fileID))
         r.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        r.setValue("bytes=\(start)-\(end.map(String.init) ?? "")", forHTTPHeaderField: "Range")
+        r.setValue("bytes=\(start)-\(end)", forHTTPHeaderField: "Range")
         if acknowledge { r.url = GoogleDrive.mediaURL(fileID, acknowledgeAbuse: true) }
         r.timeoutInterval = 45
         let t = streamSession.dataTask(with: r)
-        loads[t.taskIdentifier] = Load(request: req, retried: retried, task: t, attempts: attempts)
+        loads[t.taskIdentifier] = Load(request: req, retried: retried, task: t, attempts: attempts, part: part, asked: end - start + 1)
         StreamRouter.shared.handlers[t.taskIdentifier] = self
+        requests += 1
+        askedBytes += end - start + 1
         t.resume()
+    }
+
+    /// Whether the player's request wants more of the file than the piece that has just arrived.
+    private func wantsMore(_ load: Load) -> Bool {
+        guard let d = load.request.dataRequest, !load.whole, load.got > 0 else { return false }
+        let at = d.currentOffset
+        if let wanted = Self.wantedEnd(d), at >= wanted { return false }
+        if let size = total ?? Prefetch.cache[fileID]?.total, size > 0 { return at < size }
+        // The file's size not known: it has ended when Google sent less than it was asked for.
+        return load.got >= load.asked
     }
 
     func received(_ dataTask: URLSessionDataTask, response: URLResponse, _ answer: @escaping (URLSession.ResponseDisposition) -> Void) {
@@ -441,7 +507,7 @@ private final class Loader: NSObject, AVAssetResourceLoaderDelegate, StreamTask 
                 loads[dataTask.taskIdentifier] = nil
                 answer(.cancel)
                 Task { @MainActor in Diagnostics.shared.notePlayback("Drive answered 401 (sign-in refused)") }
-                fetch(load.request, retried: true)
+                fetch(load.request, retried: true, part: load.part)
                 return
             }
             // Anything else: Google's reason is read in full first (its body), then acted on when it's done.
@@ -449,6 +515,8 @@ private final class Loader: NSObject, AVAssetResourceLoaderDelegate, StreamTask 
             answer(.allow)
             return
         }
+        load.whole = code == 200
+        if let size = DriveStream.total(response) { total = size }
         if let info = load.request.contentInformationRequest {
             let mime = DriveStream.mime(response)
             // A file Apple's player can't open: said at once, instead of the player reading on before giving up.
@@ -458,8 +526,8 @@ private final class Loader: NSObject, AVAssetResourceLoaderDelegate, StreamTask 
                 if !load.request.isCancelled && !load.request.isFinished { fail(load.request, GoogleDrive.Failure(why)) }
                 return
             }
-            let total = DriveStream.total(response) ?? (code == 200 ? max(0, response.expectedContentLength) : 0)
-            DriveStream.fill(info, total: total, mime: mime)
+            let length = DriveStream.total(response) ?? (code == 200 ? max(0, response.expectedContentLength) : 0)
+            DriveStream.fill(info, total: length, mime: mime)
         }
         answer(.allow)
     }
@@ -476,6 +544,8 @@ private final class Loader: NSObject, AVAssetResourceLoaderDelegate, StreamTask 
             dataTask.cancel()
             return
         }
+        load.got += Int64(data.count)
+        sentBytes += Int64(data.count)
         load.request.dataRequest?.respond(with: data)
     }
 
@@ -493,7 +563,13 @@ private final class Loader: NSObject, AVAssetResourceLoaderDelegate, StreamTask 
             again(load)
             return
         }
-        if let error { fail(req, error) } else { req.finishLoading() }
+        if let error { fail(req, error); return }
+        // This piece is in: the next one (twice the size) while the player's request wants more of the file.
+        if wantsMore(load) {
+            fetch(req, retried: false, part: min(load.part * 2, Self.largestPart))
+        } else {
+            req.finishLoading()
+        }
     }
 
     /// Google refused a part. Busy (its rate limits, a server error): asked again after a growing pause. A file it

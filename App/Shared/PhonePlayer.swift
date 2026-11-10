@@ -309,19 +309,12 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
         case .url(let u):
             item = AVPlayerItem(url: u)
         case .drive(let id):
-            // Drive's address straight to the player when the sign-in is fresh: the player's own fetching and
-            // buffering, smooth on big films. Else (or a kind of file Apple's player can't open, said precisely by
-            // the other way) answered request by request (DriveStream).
-            let listed = DriveLibrary.shared.listedFile(id)
-            if DriveStream.unplayable(listed?.mimeType) == nil, let direct = DriveStream.directAsset(fileID: id) {
-                item = AVPlayerItem(asset: direct.asset)
-                directID = id
-                directExpires = direct.expires
-            } else {
-                let s = DriveStream(fileID: id)
-                stream = s
-                item = AVPlayerItem(asset: s.asset())
-            }
+            // Always answered request by request (DriveStream), which asks Google for a piece of the film at a
+            // time. Drive's own address is no longer handed to the player: fetching by itself it asks Google for
+            // the whole rest of the film again and again, and Google then refused the big films for the day.
+            let s = DriveStream(fileID: id)
+            stream = s
+            item = AVPlayerItem(asset: s.asset())
         }
         metadata = [Self.titleItem(play.title)]
         item.externalMetadata = metadata
@@ -436,16 +429,22 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
     }
 
     /// How it went, for the Macs' diagnostics log: which way it was read, how long it took to start, stalls,
-    /// dropped frames and how fast Drive sent it.
+    /// dropped frames and how fast Drive sent it; and for a film read from Drive, how much Google was asked for
+    /// (what its daily limit for a file counts).
     private func notePlayback(_ p: AVPlayer, _ play: PhonePlay) {
-        guard let events = p.currentItem?.accessLog()?.events, !events.isEmpty else { return }
+        let asked = stream.map { "asked Google for \($0.askedNow())" }
+        guard let events = p.currentItem?.accessLog()?.events, !events.isEmpty else {
+            // The player keeps no figures of its own for a film it was handed piece by piece.
+            if let asked { Diagnostics.shared.notePlayback("\(play.title) via request by request: \(asked)") }
+            return
+        }
         let stalls = events.reduce(0) { $0 + max(0, $1.numberOfStalls) }
         let dropped = events.reduce(0) { $0 + max(0, $1.numberOfDroppedVideoFrames) }
         let speed = events.last.map { max(0, $0.observedBitrate) / 1_000_000 } ?? 0
         let start = events.first.map { max(0, $0.startupTime) } ?? 0
         let via = directID != nil ? "Drive’s address" : stream != nil ? "request by request" : "a download or the TV"
         let mode = switchWait.map { String(format: ", %.1f s for the TV’s picture mode", $0) } ?? ""
-        Diagnostics.shared.notePlayback("\(play.title) via \(via): started in \(String(format: "%.1f", start)) s\(mode), \(stalls) stalls, \(dropped) dropped frames, \(String(format: "%.0f", speed)) Mb/s")
+        Diagnostics.shared.notePlayback("\(play.title) via \(via): started in \(String(format: "%.1f", start)) s\(mode), \(stalls) stalls, \(dropped) dropped frames, \(String(format: "%.0f", speed)) Mb/s" + (asked.map { ", \($0)" } ?? ""))
     }
 
     /// The file is open: to the resume point and playing.
