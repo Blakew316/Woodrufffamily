@@ -22,6 +22,14 @@ struct SendView: View {
     @State private var to = Recipients()
     @State private var sending = false
     @FocusState private var focused: Bool
+    #if os(macOS)
+    /// Files are being dragged over the page.
+    @State private var dropTargeted = false
+    /// Files dropped on the page, on their way to the TV: "Sending 2 of 3…".
+    @State private var sendingFiles: String?
+    /// False while the page is out of sight under one opened from it (Settings keeps it there): nowhere to drop then.
+    @Environment(\.isEnabled) private var isEnabled
+    #endif
 
     var body: some View {
         #if os(macOS)
@@ -79,13 +87,19 @@ struct SendView: View {
                     }
                     .padding(.horizontal, 20).padding(.bottom, 16)
                 }
-                .glass(RoundedRectangle(cornerRadius: 24, style: .continuous))
+                // What's being written is content: a plain fill with a hairline round it, not glass. The glass is its
+                // Send button's (and the three cards' under it, which are buttons themselves).
+                .background(.quinary, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 24, style: .continuous).strokeBorder(.quaternary, lineWidth: 1).allowsHitTesting(false)
+                }
 
                 VStack(alignment: .leading, spacing: 12) {
                     Text("Also Send").font(.headline).foregroundStyle(.secondary)
                     HStack(spacing: 14) {
                         PageLink("Photos & Files") { FilesView() } label: {
-                            SendCard(symbol: "folder.fill", tint: .blue, title: "Photos & Files", detail: "Put them on a TV")
+                            SendCard(symbol: "folder.fill", tint: .blue, title: "Photos & Files",
+                                     detail: sendingFiles ?? (dropTargeted ? "Drop to send" : "Put them on a TV"))
                         }
                         .buttonStyle(.plain)
                         PageLink("Open a Link") { OpenLinkView() } label: {
@@ -107,6 +121,43 @@ struct SendView: View {
         }
         .task { await loadPhones() }
         .onAppear { focused = true }
+        // Files dropped anywhere on the page go to the TV, as Photos & Files' Upload sends them.
+        .dropDestination(for: URL.self) { urls, _ in
+            guard isEnabled else { return false }
+            sendFiles(urls)
+            return true
+        } isTargeted: { dropTargeted = $0 && isEnabled }
+        .overlay {
+            if dropTargeted {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .strokeBorder(Color.accentColor, lineWidth: 3)
+                    .padding(6)
+                    .allowsHitTesting(false)
+            }
+        }
+    }
+
+    /// Files dropped on the page go into the TV's storage (the first it lists), where Photos & Files shows them.
+    private func sendFiles(_ urls: [URL]) {
+        guard !urls.isEmpty else { return }
+        guard let c = fleet.hubClient() else { fleet.show(TVError.notPaired); return }
+        guard sendingFiles == nil else { fleet.say("One Moment", "Wait for the file being sent to finish, then try again."); return }
+        sendingFiles = "Sending…"
+        Task {
+            defer { sendingFiles = nil }
+            do {
+                guard let root = try await c.roots().first else { throw TVError.badAnswer("\(c.hub.name) didn’t list any storage.") }
+                for (i, url) in urls.enumerated() {
+                    if urls.count > 1 { sendingFiles = "Sending \(i + 1) of \(urls.count)…" }
+                    let access = url.startAccessingSecurityScopedResource()
+                    defer { if access { url.stopAccessingSecurityScopedResource() } }
+                    let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Double.init) ?? 0
+                    if let free = root.free, size > free { throw TVError.badAnswer("\(url.lastPathComponent) is \(formatBytes(size)); there’s \(formatBytes(free)) free.") }
+                    _ = try await c.upload(file: url, to: root.path, name: url.lastPathComponent)
+                }
+                fleet.say("Sent to \(c.hub.name)", urls.count == 1 ? "\(urls[0].lastPathComponent) is in \(root.name)." : "\(urls.count) files are in \(root.name).")
+            } catch { fleet.show(error) }
+        }
     }
     #endif
 
@@ -396,8 +447,26 @@ struct FilesView: View {
     @State private var progress: String?
     @State private var saving: URL?
     @State private var previewing: URL?
-    /// The file under the pointer (for Space → Quick Look on the Mac): kept where moving the pointer redraws nothing.
-    @State private var hover = HoverSpot()
+    #if os(macOS)
+    /// The file or folder picked on the Mac, as in Finder (a click, or the arrow keys): a double-click, Return and
+    /// Space act on it.
+    @State private var selection: FileEntry.ID?
+    /// Goes up each time the one picked moves other than by a click (the arrow keys among the icons, the way back up
+    /// out of a folder): it's then scrolled into view. A click never scrolls anything.
+    @State private var reveal = 0
+    /// Files are being dragged over the page: the files show they're where it would go.
+    @State private var dropTargeted = false
+    /// How many icons fit across (the up and down arrows move the one picked a row), and how tall the icons' part of
+    /// the page is (a click anywhere in it that isn't on an icon picks nothing).
+    @State private var iconsAcross = 1
+    @State private var iconsHeight: CGFloat = 0
+    /// The icon clicked last, and when: a second click on it soon after is a double-click.
+    @State private var lastClick: (id: FileEntry.ID, at: Date)?
+    /// The list is wide enough for the dates beside the names.
+    @State private var showsDates = true
+    /// The files have the keyboard (the arrow keys move the one picked).
+    @FocusState private var filesFocused: Bool
+    #endif
     /// What's shown, worked out again only when the folder, the search or a view option changes (not at every redraw:
     /// sorting a big folder by name the way Files does is slow).
     @State private var shown: [FileEntry] = []
@@ -486,9 +555,17 @@ struct FilesView: View {
                     .shimmer()
                 }
             } else if layout == .grid {
+                #if os(macOS)
+                macFiles(client)
+                #else
                 gridView(client)
+                #endif
             } else {
+                #if os(macOS)
+                macFiles(client)
+                #else
                 listView(client)
+                #endif
             }
         }
         #if os(macOS)
@@ -550,16 +627,24 @@ struct FilesView: View {
         #if canImport(QuickLook)
         .quickLookPreview($previewing)
         #endif
-        #if !os(tvOS)
-        .dropDestination(for: URL.self) { urls, _ in upload(urls); return true }
-        #endif
         #if os(macOS)
-        .focusable()
-        .focusEffectDisabled()
-        // Space over a file is Quick Look. Asked for through the app's own Space handler, which has every Space
-        // before any page does (for the TV's play and pause): a key press here never arrived.
-        .onAppear { SpaceKey.page = { if let f = hover.file, !f.dir { quickLook(f); return true }; return false } }
+        // Files dragged in go into the folder shown; while they're over the page, the files show they're the place.
+        .dropDestination(for: URL.self) { urls, _ in
+            upload(urls)
+            return true
+        } isTargeted: { dropTargeted = $0 }
+        // Space is Quick Look for the file picked, as in Finder. Asked for through the app's own Space handler, which
+        // has every Space before any page does (for the TV's play and pause): a key press here never arrived.
+        .onAppear { SpaceKey.page = { spaceKey() } }
         .onDisappear { SpaceKey.page = nil }
+        // Another folder: nothing is picked, except on the way back up, where the folder you came out of is (as in
+        // Finder).
+        .onChange(of: listing?.path) { old, _ in
+            selection = old.flatMap { was in shown.first { $0.dir && (was == $0.path || was.hasPrefix($0.path + "/")) } }?.id
+            if selection != nil { reveal += 1 }
+        }
+        #elseif !os(tvOS)
+        .dropDestination(for: URL.self) { urls, _ in upload(urls); return true }
         #endif
         .onChange(of: filter) { _, _ in refreshShown() }
         .onChange(of: show) { _, _ in refreshShown() }
@@ -570,7 +655,7 @@ struct FilesView: View {
         #endif
     }
 
-    /// Quick Look: downloads the file and previews it (Space on the Mac over a file, or Quick Look in its menu).
+    /// Quick Look: downloads the file and previews it (Space on the Mac with a file picked, or Quick Look in its menu).
     private func quickLook(_ f: FileEntry) {
         guard let c = client else { fleet.show(TVError.notPaired); return }
         guard progress == nil else { return }
@@ -684,7 +769,6 @@ struct FilesView: View {
 
     @ViewBuilder private func tile(_ f: FileEntry, _ client: TVClient?) -> some View {
         let label = tileLabel(kind: kindOf(f, client), title: f.name, lines: [shortDate(f), f.dir ? nil : formatBytes(f.size)].compactMap { $0 })
-            .onHover { [hover] inside in if inside { hover.file = f } else if hover.file?.id == f.id { hover.file = nil } }
         Group {
             if f.dir { Button { open(f.path) } label: { label }.buttonStyle(PressScale(scale: 0.95)) }
             else { Menu { menu(f) } label: { label }.menuStyle(.button).buttonStyle(.plain) }
@@ -731,13 +815,7 @@ struct FilesView: View {
             Button("Use for Slideshow") { withTV { c in try await c.slideshow(folder: f.path, start: false); fleet.say("Slideshow", "The slideshow on \(c.hub.name) shows \(f.name) now.") } }
         }
         if f.isMedia {
-            Button {
-                withTV { c in
-                    let r = try await c.play(path: f.path)
-                    if r.started?.bool == false { fleet.say("Ready on \(c.hub.name)", r.message ?? "Open Woodruff on \(c.hub.name) to start it.") }
-                    else if let m = r.message { fleet.say("Playing on \(c.hub.name)", m) }
-                }
-            } label: { Text("Play on TV") }
+            Button { playOnTV(f) } label: { Text("Play on TV") }
         }
         if f.isImage {
             Button("Set as TV Background") { withTV { c in try await c.background(f.path); fleet.say("Background Set", "\(f.name) is \(c.hub.name)’s background.") } }
@@ -748,6 +826,15 @@ struct FilesView: View {
         }
         Divider()
         Button("Delete", role: .destructive) { deleting = f }
+    }
+
+    /// A photo, a video or music plays on the TV (its menu's Play on TV, and a double-click on the Mac).
+    private func playOnTV(_ f: FileEntry) {
+        withTV { c in
+            let r = try await c.play(path: f.path)
+            if r.started?.bool == false { fleet.say("Ready on \(c.hub.name)", r.message ?? "Open Woodruff on \(c.hub.name) to start it.") }
+            else if let m = r.message { fleet.say("Playing on \(c.hub.name)", m) }
+        }
     }
 
     private func act(_ op: @escaping () async throws -> Void) { Task { do { try await op() } catch { fleet.show(error) } } }
@@ -846,6 +933,309 @@ struct FilesView: View {
             } catch { fleet.show(error) }
         }
     }
+
+    #if os(macOS)
+    // MARK: The Mac, as Finder does it
+
+    /// A folder on the way down to the one shown.
+    private struct Crumb {
+        var name: String
+        var path: String
+    }
+
+    /// The file or folder picked, while it's among those shown.
+    private var picked: FileEntry? {
+        guard let id = selection else { return nil }
+        return shown.first { $0.id == id }
+    }
+
+    /// The one a right-click or a double-click in the list is on.
+    private func entry(_ ids: Set<FileEntry.ID>) -> FileEntry? {
+        guard let id = ids.first else { return nil }
+        return shown.first { $0.id == id }
+    }
+
+    /// A double-click, or Return: a folder opens; a photo, a video or music plays on the TV; any other file shows in
+    /// Quick Look (what was first in each one's menu).
+    private func openItem(_ f: FileEntry) {
+        if f.dir { open(f.path) } else if f.isMedia { playOnTV(f) } else { quickLook(f) }
+    }
+
+    /// Return (⌘↓ too, among the icons): opens the one picked.
+    private func openPicked() -> KeyPress.Result {
+        guard let f = picked else { return .ignored }
+        openItem(f)
+        return .handled
+    }
+
+    /// Space: Quick Look for the file picked, or the one showing put away again, as in Finder. False with no file
+    /// picked: the press is then the TV's play and pause, as on every other page.
+    private func spaceKey() -> Bool {
+        if previewing != nil {
+            previewing = nil
+            return true
+        }
+        guard let f = picked, !f.dir else { return false }
+        quickLook(f)
+        return true
+    }
+
+    /// The Mac's files, laid out as a Finder window: where you are across the top (a folder above is a click away),
+    /// the files as a list or as icons with one picked at a time, and how many there are along the bottom.
+    private func macFiles(_ client: TVClient?) -> some View {
+        VStack(spacing: 0) {
+            macPath
+            ScrollViewReader { proxy in
+                Group {
+                    if layout == .grid { macIcons(client) } else { macList(client) }
+                }
+                // The one picked comes into view when the arrow keys among the icons move it, and on the way back up
+                // out of a folder. (In the list, the system does it for its own arrow keys.)
+                .onChange(of: reveal) { _, _ in
+                    if let id = selection { proxy.scrollTo(id) }
+                }
+            }
+            .overlay {
+                // Files dragged over the page: a ring around where they'd go, as a Finder window shows it.
+                if dropTargeted {
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .strokeBorder(Color.accentColor, lineWidth: 3)
+                        .allowsHitTesting(false)
+                }
+            }
+            macStatus
+        }
+    }
+
+    /// The folders from the storage's own down to the one shown, each with where it is.
+    private var crumbs: [Crumb] {
+        guard let l = listing else { return [] }
+        let top = root?.path ?? l.path
+        var out = [Crumb(name: root?.name ?? "Photos & Files", path: top)]
+        guard l.path != top else { return out }
+        let rest = l.path.dropFirst(top.count)
+        if l.path.hasPrefix(top), top.hasSuffix("/") || rest.hasPrefix("/") {
+            var at = top.hasSuffix("/") ? String(top.dropLast()) : top
+            for part in rest.split(separator: "/") {
+                at += "/\(part)"
+                out.append(Crumb(name: String(part), path: at))
+            }
+            // The folder just above is where the TV says it is.
+            if out.count > 1, let parent = l.parent { out[out.count - 2].path = parent }
+        } else {
+            // Not under the storage as it's named (the TV gave the folder another way): the folder above, and this one.
+            if let parent = l.parent, parent != top { out.append(Crumb(name: (parent as NSString).lastPathComponent, path: parent)) }
+            out.append(Crumb(name: (l.path as NSString).lastPathComponent, path: l.path))
+        }
+        return out
+    }
+
+    /// Where you are, from the storage down, as Finder's path bar has it: a folder above is a click away.
+    private var macPath: some View {
+        let crumbs = self.crumbs
+        return HStack(spacing: 6) {
+            ForEach(Array(crumbs.enumerated()), id: \.offset) { i, crumb in
+                if i > 0 {
+                    Image(systemName: "chevron.right").font(.caption2.weight(.semibold)).foregroundStyle(.tertiary)
+                        .accessibilityHidden(true)
+                }
+                if i == crumbs.count - 1 {
+                    Text(crumb.name).fontWeight(.semibold).lineLimit(1).truncationMode(.middle).layoutPriority(1)
+                } else {
+                    macCrumb(crumb, above: i == crumbs.count - 2)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 16).padding(.top, 2).padding(.bottom, 6)
+    }
+
+    /// A folder above, in the path: a click goes there. The one just above has Finder's ⌘↑ too.
+    @ViewBuilder private func macCrumb(_ crumb: Crumb, above: Bool) -> some View {
+        let button = Button(crumb.name) { open(crumb.path) }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+        if above {
+            button.keyboardShortcut(.upArrow, modifiers: .command).help("Enclosing Folder (⌘↑)")
+        } else {
+            button
+        }
+    }
+
+    /// Along the bottom, as Finder's status bar: what's being sent or fetched, else how many items and how much room.
+    private var macStatus: some View {
+        HStack(spacing: 8) {
+            if let progress {
+                ProgressView().controlSize(.small)
+                Text(progress).lineLimit(1).truncationMode(.middle)
+            } else {
+                Text(footer)
+            }
+        }
+        .font(.callout)
+        .foregroundStyle(.secondary)
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 16).padding(.vertical, 7)
+    }
+
+    /// What a right-click on empty space has: the same as Add.
+    @ViewBuilder private var macAddItems: some View {
+        Button("Upload…") { importing = true }.disabled(progress != nil)
+        Button("New Folder…") { askFolder = true }.disabled(progress != nil)
+    }
+
+    /// The list: a click picks a row (the arrow keys move it), a double-click opens it, a right-click has its commands.
+    private func macList(_ client: TVClient?) -> some View {
+        List(selection: $selection) {
+            ForEach(shown) { f in macRow(f, client) }
+        }
+        .listStyle(.inset)
+        .contextMenu(forSelectionType: FileEntry.ID.self) { ids in
+            if let f = entry(ids) { menu(f) } else if ids.isEmpty { macAddItems }
+        } primaryAction: { ids in
+            if let f = entry(ids) { openItem(f) }
+        }
+        // No ring round the whole list when it has the keyboard (Finder has none): the row picked shows it.
+        .focusEffectDisabled()
+        .focused($filesFocused)
+        .onAppear { filesFocused = true }
+        // Return opens the one picked, as a double-click does (once, however long it's held). Space is the app's own
+        // handler's; it's here too for a press that does reach the list.
+        .onKeyPress(.return, phases: .down) { _ in openPicked() }
+        .onKeyPress(.space, phases: .down) { _ in spaceKey() ? .handled : .ignored }
+        .onGeometryChange(for: Bool.self) { $0.size.width >= 440 } action: { showsDates = $0 }
+    }
+
+    /// A row as Finder's list has one: the icon and the name, then when it was changed and how big it is.
+    private func macRow(_ f: FileEntry, _ client: TVClient?) -> some View {
+        HStack(spacing: 10) {
+            FileGlyph(kind: kindOf(f, client), size: 30).frame(width: 32, height: 30)
+            Text(f.name).lineLimit(1).truncationMode(.middle)
+            Spacer(minLength: 12)
+            Group {
+                if showsDates { Text(shortDate(f) ?? "").frame(width: 84, alignment: .trailing) }
+                Text(f.dir ? "--" : formatBytes(f.size)).frame(width: 78, alignment: .trailing)
+            }
+            .foregroundStyle(.secondary)
+            .monospacedDigit()
+            .lineLimit(1)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    /// The icons: a click picks one (the arrow keys move it), a double-click opens it, a right-click has its commands.
+    /// There's no system grid that keeps a selection, so this is laid out as Apple's own sample of one is: the grid
+    /// takes the keyboard (with no ring round it), and its keys move what's picked.
+    private func macIcons(_ client: TVClient?) -> some View {
+        ScrollView {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 108, maximum: 150), spacing: 10, alignment: .top)], spacing: 28) {
+                ForEach(shown) { f in macTile(f, client).id(f.id) }
+            }
+            // How many fit across, as the grid works it out, for the up and down arrows.
+            .onGeometryChange(for: Int.self) { max(1, Int(($0.size.width + 10) / 118)) } action: { iconsAcross = $0 }
+            .padding(.horizontal, 16).padding(.vertical, 8)
+            .frame(maxWidth: .infinity, minHeight: iconsHeight, alignment: .top)
+            // A click that isn't on an icon picks nothing; a right-click there has what Add has.
+            .background {
+                Color.clear.contentShape(Rectangle())
+                    .onTapGesture {
+                        selection = nil
+                        filesFocused = true
+                    }
+                    .contextMenu { macAddItems }
+                    .accessibilityHidden(true)
+            }
+            .focusable()
+            .focusEffectDisabled()
+            .focused($filesFocused)
+            .onAppear { filesFocused = true }
+            .onKeyPress { press in macIconsKey(press) }
+        }
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { iconsHeight = $0 }
+    }
+
+    /// An icon as Finder shows one picked: a plate behind the picture, the name on the selection colour.
+    private func macTile(_ f: FileEntry, _ client: TVClient?) -> some View {
+        let on = selection == f.id
+        let lines = [shortDate(f), f.dir ? nil : formatBytes(f.size)].compactMap { $0 }
+        return VStack(spacing: 3) {
+            FileGlyph(kind: kindOf(f, client), size: 92)
+                .frame(width: 96, height: 96, alignment: .bottom)
+                .padding(4)
+                .background { if on { RoundedRectangle(cornerRadius: 8, style: .continuous).fill(.quaternary) } }
+            Text(f.name)
+                .font(.callout)
+                .lineLimit(2)
+                .truncationMode(.middle)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 5).padding(.vertical, 1)
+                // The system's own selection style: the highlight colour while the icons have the keyboard in the
+                // front window and grey otherwise, and the name on it takes the colour that goes with each.
+                .background(on ? AnyShapeStyle(.selection) : AnyShapeStyle(.clear), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+            ForEach(lines, id: \.self) { Text($0).font(.footnote).foregroundStyle(.secondary).lineLimit(1) }
+        }
+        .frame(maxWidth: .infinity, alignment: .top)
+        .contentShape(Rectangle())
+        .onTapGesture { clicked(f) }
+        .contextMenu { menu(f) }
+        // VoiceOver: one item with its name, date and size, that opens as a double-click does.
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(on ? [.isButton, .isSelected] : .isButton)
+        .accessibilityAction { openItem(f) }
+    }
+
+    /// A click on an icon picks it at once (nothing waits to see whether a second is coming); a second click on it
+    /// within the system's double-click time opens it.
+    private func clicked(_ f: FileEntry) {
+        let now = Date()
+        if let last = lastClick, last.id == f.id, now.timeIntervalSince(last.at) <= NSEvent.doubleClickInterval {
+            lastClick = nil
+            openItem(f)
+        } else {
+            lastClick = (f.id, now)
+            selection = f.id
+            filesFocused = true
+        }
+    }
+
+    /// The keyboard among the icons: the arrows move the one picked (up and down by a row); Return, or ⌘↓ as in
+    /// Finder, opens it.
+    private func macIconsKey(_ press: KeyPress) -> KeyPress.Result {
+        let command = press.modifiers.contains(.command)
+        // A key held down keeps moving the one picked, but opens it only once.
+        let held = press.phase == .repeat
+        switch press.key {
+        case .leftArrow: movePick(by: -1)
+        case .rightArrow: movePick(by: 1)
+        case .upArrow:
+            // ⌘↑ is the folder above: the path has it.
+            if command { return .ignored }
+            movePick(by: -iconsAcross)
+        case .downArrow:
+            if command { return held ? .handled : openPicked() }
+            movePick(by: iconsAcross)
+        case .return: return held ? .handled : openPicked()
+        // (The app's own Space handler has it first; here for a press that does reach the icons.)
+        case .space: return held || spaceKey() ? .handled : .ignored
+        default: return .ignored
+        }
+        return .handled
+    }
+
+    /// The one picked moves by [step] icons (to the first when there's none yet). Down from above a short last row
+    /// lands on its last icon.
+    private func movePick(by step: Int) {
+        var j = 0
+        if let i = shown.firstIndex(where: { $0.id == selection }) {
+            j = i + step
+            if step > 1, j >= shown.count, i / step < (shown.count - 1) / step { j = shown.count - 1 }
+        }
+        guard shown.indices.contains(j) else { return }
+        selection = shown[j].id
+        reveal += 1
+    }
+    #endif
 }
 
 /// A file from a TV kept on this device: downloaded under a name that's safe here, never over a file already there.
@@ -885,12 +1275,6 @@ enum LocalCopy {
         return dest
     }
     #endif
-}
-
-/// The file under the pointer in the TV's files. A plain box: the pointer moving over the icons changes it all the time,
-/// and nothing on screen shows it.
-final class HoverSpot {
-    var file: FileEntry?
 }
 
 /// File icons drawn the way Apple's Files app draws them: the two-tone blue folder, a photo's own picture
