@@ -201,6 +201,8 @@ struct WoodruffApp: App {
                     VehicleWatch.shared.start()
                     // The cameras' pictures for the family's Apple TVs (the Mac Studio only).
                     CameraShare.shared.start()
+                    // A film played by the app itself, when it was opened with -filmCheck (see `FilmCheck`).
+                    FilmCheck.startIfAsked()
                     #endif
                     DecoWifi.shared.start()
                     // Siri learns the family's light, room, speaker and TV names (and again whenever they change).

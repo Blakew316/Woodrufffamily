@@ -802,6 +802,28 @@ final class DriveLibrary: WatchSource {
         return [all[0], all[all.count / 2], all[all.count - 1]]
     }
 
+    #if os(macOS)
+    /// Films with [text] in the title (any case), a title that is exactly [text] first; "largest" is the film with
+    /// the biggest file. For `FilmCheck`.
+    func films(named text: String) -> [(id: String, title: String)] {
+        let want = text.lowercased()
+        if want == "largest" {
+            var best: (id: String, title: String, size: Int64)?
+            for e in saved.movies {
+                guard let file = e.file, let size = listedFile(file)?.size.flatMap({ Int64($0) }) else { continue }
+                if size > (best?.size ?? 0) { best = (id: file, title: e.title, size: size) }
+            }
+            return best.map { [(id: $0.id, title: $0.title)] } ?? []
+        }
+        var all: [(id: String, title: String)] = []
+        for e in saved.movies {
+            guard let file = e.file, e.title.lowercased().contains(want) else { continue }
+            if e.title.lowercased() == want { all.insert((id: file, title: e.title), at: 0) } else { all.append((id: file, title: e.title)) }
+        }
+        return all
+    }
+    #endif
+
     /// The app's own copies of films are looked through once each launch (`GoogleDrive.removeOldCopies`).
     @ObservationIgnored private var copiesLookedAt = false
 
