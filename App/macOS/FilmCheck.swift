@@ -1,15 +1,24 @@
 import AVKit
 import WoodruffKit
 
-/// A film played by the app itself, to check from Terminal that this Mac plays it from Google Drive:
+/// Films played and asked after by the app itself, to check from Terminal how this Mac gets them from Google Drive:
 ///
 ///     open -a "Woodruff Family" --args -filmCheck "Dune"
 ///
-/// (Several, one after another: "Dune|Avatar". "largest" is the film with the biggest file, "id:…" a Drive file.)
-/// Each plays with the sound off for a minute, jumps to the middle and plays half a minute more, then closes. Nothing
-/// is kept for Continue Watching. What happened is written as "Film check" lines to
-/// ~/Library/Logs/Woodruff Family/film-check.log and to the diagnostics log: how long it took to start, whether it
-/// kept playing, and what was asked of Google.
+/// Several things can be asked for, one after another, with | between them:
+/// - a film's name (or "id:…", a Drive file): it plays with the sound off for a minute, jumps to the middle and plays
+///   half a minute more, then closes. Nothing is kept for Continue Watching.
+/// - "probe": every film in the library is asked of Google for its first byte, to see which it sends right now and
+///   which it refuses with its daily limit.
+/// - "copytest": whether Google lets the app make a copy in its own folder in Drive, tried with the smallest video
+///   (the copy is removed again).
+/// - "copy:<film>": a copy of the film is made in the app's own folder, played as above, then removed.
+///   "keepcopy:<film>" leaves it there (the app plays it when Google refuses the film itself, and removes it two days
+///   on).
+///
+/// A film Google refuses is also asked for through each paired TV, which asks Google with the TV's own sign-in.
+/// What happened is written as "Film check" lines to ~/Library/Logs/Woodruff Family/film-check.log and, shortened,
+/// to the diagnostics log.
 @MainActor
 enum FilmCheck {
     private static var window: NSWindow?
@@ -18,6 +27,8 @@ enum FilmCheck {
     /// How long each film plays from its start, and again from its middle.
     private static let fromStart: Double = 60
     private static let fromMiddle: Double = 30
+
+    private static let files = "https://www.googleapis.com/drive/v3/files"
 
     /// Once the app is up: nothing unless the app was opened with -filmCheck (this launch's own argument, never a
     /// saved setting).
@@ -31,35 +42,47 @@ enum FilmCheck {
             try? await Task.sleep(nanoseconds: 8_000_000_000)
             for part in names.split(separator: "|") {
                 let name = part.trimmingCharacters(in: .whitespaces)
-                if !name.isEmpty { await check(name) }
+                if name.isEmpty { continue }
+                guard GoogleDrive.signedIn else { note("\(name): Google Drive isn’t signed in on this Mac"); continue }
+                if name == "probe" {
+                    await probe()
+                } else if name == "copytest" {
+                    await copyTest()
+                } else if name.hasPrefix("copy:") {
+                    await copied(String(name.dropFirst(5)), keep: false)
+                } else if name.hasPrefix("keepcopy:") {
+                    await copied(String(name.dropFirst(9)), keep: true)
+                } else if let film = await find(name) {
+                    _ = await play(film.id, film.title)
+                }
             }
             note("finished")
         }
     }
 
-    private static func check(_ name: String) async {
-        guard GoogleDrive.signedIn else { note("\(name): Google Drive isn’t signed in on this Mac"); return }
-        var film: (id: String, title: String)?
-        if name.hasPrefix("id:") {
-            film = (id: String(name.dropFirst(3)), title: name)
-        } else {
+    /// The film asked for by name (or "id:…"), read from Drive again when the library kept here doesn't have it.
+    private static func find(_ name: String) async -> (id: String, title: String)? {
+        if name.hasPrefix("id:") { return (id: String(name.dropFirst(3)), title: name) }
+        var film = DriveLibrary.shared.films(named: name).first
+        if film == nil {
+            await DriveLibrary.shared.refresh(force: true)
             film = DriveLibrary.shared.films(named: name).first
-            if film == nil {
-                await DriveLibrary.shared.refresh(force: true)
-                film = DriveLibrary.shared.films(named: name).first
-            }
         }
-        guard let film else {
-            note("\(name): no film of that name among \(DriveLibrary.shared.titleCount) titles")
-            return
-        }
-        let play = PhonePlay(source: .drive(film.id), key: "drive:\(film.id)", title: film.title, start: 0)
-        let stream = DriveStream(fileID: film.id, name: film.title)
+        if film == nil { note("\(name): no film of that name among \(DriveLibrary.shared.titleCount) titles") }
+        return film
+    }
+
+    // MARK: Playing
+
+    /// Plays Drive file [id] from its start, then from its middle, and writes down how it went. True when both played.
+    private static func play(_ id: String, _ title: String) async -> Bool {
+        let play = PhonePlay(source: .drive(id), key: "drive:\(id)", title: title, start: 0)
+        let stream = DriveStream(fileID: id, name: title)
         let item = AVPlayerItem(asset: stream.asset())
         PhonePlayback.quickStart(item)
         let p = AVPlayer(playerItem: item)
         p.isMuted = true
-        show(p, film.title)
+        show(p, title)
         defer {
             p.pause()
             p.replaceCurrentItem(with: nil)
@@ -73,24 +96,28 @@ enum FilmCheck {
         while item.status == .unknown, Date().timeIntervalSince(began) < limit {
             try? await Task.sleep(nanoseconds: 50_000_000)
         }
-        guard item.status == .readyToPlay else { failed(play, "didn’t open", item, stream, began); return }
+        guard item.status == .readyToPlay else { await failed(play, id, "didn’t open", item, stream, began); return false }
         PhonePlayback.startPlaying(p)
-        guard await moving(p, item, near: 0, within: limit) != nil else { failed(play, "didn’t start", item, stream, began); return }
+        guard await moving(p, item, near: 0, within: limit) != nil else { await failed(play, id, "didn’t start", item, stream, began); return false }
         let started = Date().timeIntervalSince(began)
         PhonePlayback.playing(item)
         let first = await watch(p, item, for: fromStart)
-        guard first.ok else { failed(play, "stopped", item, stream, began); return }
-        note("\(film.title) (\(about(item, stream))): started in \(String(format: "%.1f", started)) s; \(first.words); asked Google for \(stream.askedNow())")
+        guard first.ok else { await failed(play, id, "stopped", item, stream, began); return false }
+        note("\(title) (\(about(item, stream))): started in \(String(format: "%.1f", started)) s; \(first.words); asked Google for \(stream.askedNow())")
 
         // From the middle, as after a jump along the bar.
         let length = item.duration.seconds
-        guard length.isFinite, length > 600 else { return }
+        guard length.isFinite, length > 600 else { return true }
         let jumped = Date()
         jump(p, to: length / 2)
-        guard let again = await moving(p, item, near: length / 2, within: 45) else { failed(play, "didn’t play from the middle", item, stream, jumped); return }
+        guard let again = await moving(p, item, near: length / 2, within: 45) else {
+            await failed(play, id, "didn’t play from the middle", item, stream, jumped)
+            return false
+        }
         let second = await watch(p, item, for: fromMiddle)
-        guard second.ok else { failed(play, "stopped after the jump to the middle", item, stream, jumped); return }
-        note("\(film.title), from the middle: playing again in \(String(format: "%.1f", again)) s; \(second.words); asked Google for \(stream.askedNow())")
+        guard second.ok else { await failed(play, id, "stopped after the jump to the middle", item, stream, jumped); return false }
+        note("\(title), from the middle: playing again in \(String(format: "%.1f", again)) s; \(second.words); asked Google for \(stream.askedNow())")
+        return true
     }
 
     /// A jump asked for without waiting on it (the kind that reports back doesn't return until the picture is there).
@@ -146,14 +173,16 @@ enum FilmCheck {
         var bits: [String] = []
         let size = item.presentationSize
         if size.width > 0 { bits.append("\(Int(size.width))×\(Int(size.height))") }
-        if let bytes = stream.sizeNow() { bits.append(String(format: "%.1f GB", Double(bytes) / 1_073_741_824)) }
+        if let bytes = stream.sizeNow() { bits.append(gb(bytes)) }
         if let r = PhonePlayback.rates(stream, item) {
             bits.append(String(format: "needs %.0f Mb/s, arrived at up to %.0f Mb/s", r.needs, r.fastest))
         }
         return bits.isEmpty ? "nothing known of the file" : bits.joined(separator: ", ")
     }
 
-    private static func failed(_ play: PhonePlay, _ what: String, _ item: AVPlayerItem, _ stream: DriveStream, _ began: Date) {
+    private static func gb(_ bytes: Int64) -> String { String(format: "%.1f GB", Double(bytes) / 1_073_741_824) }
+
+    private static func failed(_ play: PhonePlay, _ id: String, _ what: String, _ item: AVPlayerItem, _ stream: DriveStream, _ began: Date) async {
         var words = "no reason was given"
         if let refused = stream.refusalNow() {
             words = refused
@@ -164,6 +193,11 @@ enum FilmCheck {
         }
         let after = String(format: "%.0f", Date().timeIntervalSince(began))
         note("\(play.title): \(what) after \(after) s (\(PhonePlayback.errorTrail(item))): \(words); asked Google for \(stream.askedNow())")
+        // Google's daily limit: whether the TVs, with their own sign-ins, are sent the same file right now.
+        if stream.overLimitNow() {
+            let tvs = await throughTVs(id)
+            note("\(play.title), asked for through the TVs: \(tvs)")
+        }
     }
 
     private static func show(_ p: AVPlayer, _ title: String) {
@@ -181,12 +215,176 @@ enum FilmCheck {
         window = w
     }
 
-    private static func note(_ words: String) {
+    // MARK: Through the TVs
+
+    /// Drive file [id]'s first byte asked of each paired TV's own stream (the TV asks Google with its sign-in): what
+    /// each answered.
+    private static func throughTVs(_ id: String) async -> String {
+        let hubs = Fleet.shared.hubs
+        guard !hubs.isEmpty else { return "no TV is paired with this Mac" }
+        var said: [String] = []
+        for hub in hubs {
+            var r = URLRequest(url: TVClient(hub: hub, routeID: "this").streamURL("drive:\(id)"))
+            r.setValue("bytes=0-0", forHTTPHeaderField: "Range")
+            r.timeoutInterval = 25
+            do {
+                let (bytes, resp) = try await URLSession.woodruff.bytes(for: r)
+                let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+                if code == 200 || code == 206 {
+                    bytes.task.cancel()
+                    said.append("\(hub.name) was sent it (\(code))")
+                    continue
+                }
+                var body = Data()
+                for try await b in bytes {
+                    body.append(b)
+                    if body.count >= 200 { break }
+                }
+                bytes.task.cancel()
+                said.append("\(hub.name) answered \(code) \(String(decoding: body, as: UTF8.self))")
+            } catch {
+                let ns = error as NSError
+                said.append("\(hub.name) couldn’t be asked (\(ns.domain) \(ns.code))")
+            }
+        }
+        return said.joined(separator: "; ")
+    }
+
+    // MARK: Which films Google sends
+
+    /// Every film's first byte asked of Google, one after another.
+    private static func probe() async {
+        var all = DriveLibrary.shared.films()
+        if all.isEmpty {
+            await DriveLibrary.shared.refresh(force: true)
+            all = DriveLibrary.shared.films()
+        }
+        var sent = 0
+        var refused: [(id: String, title: String)] = [], unknown: [String] = []
+        for film in all {
+            let answer = await GoogleDrive.sends(film.id)
+            if answer == true {
+                sent += 1
+            } else if answer == false {
+                refused.append(film)
+            } else {
+                unknown.append(film.title)
+            }
+        }
+        let sum = "probe: of \(all.count) films Google sends \(sent) right now, refuses \(refused.count) with its daily limit, and \(unknown.count) couldn’t be asked"
+        var more = ""
+        if !refused.isEmpty { more += "; refused: " + refused.map { $0.title }.joined(separator: " | ") }
+        if !unknown.isEmpty { more += "; couldn’t be asked: " + unknown.prefix(30).joined(separator: " | ") }
+        note(sum, more: more)
+        // The first few refused films, asked for through the TVs.
+        for film in refused.prefix(3) {
+            let tvs = await throughTVs(film.id)
+            note("\(film.title), asked for through the TVs: \(tvs)")
+        }
+    }
+
+    // MARK: Copies
+
+    /// A file's name and size as Drive has them now.
+    private static func facts(_ id: String) async -> (name: String, size: Int64)? {
+        var c = URLComponents(string: "\(files)/\(id)")!
+        c.queryItems = [.init(name: "fields", value: "name,size"), .init(name: "supportsAllDrives", value: "true")]
+        guard let j = try? await GoogleDrive.get(c.url!) else { return nil }
+        return (name: j["name"] as? String ?? "", size: Int64(j["size"] as? String ?? "") ?? 0)
+    }
+
+    /// Free space in the signed-in account's Drive: nil when it couldn't be read, `Int64.max` when Google sets no limit.
+    private static func room() async -> Int64? {
+        guard let url = URL(string: "https://www.googleapis.com/drive/v3/about?fields=storageQuota"),
+              let j = try? await GoogleDrive.get(url), let q = j["storageQuota"] as? [String: Any] else { return nil }
+        guard let limit = Int64(q["limit"] as? String ?? "") else { return Int64.max }
+        return limit - (Int64(q["usage"] as? String ?? "") ?? 0)
+    }
+
+    private static func roomWords(_ free: Int64?) -> String {
+        guard let free else { return "Drive’s free space couldn’t be read" }
+        return free == Int64.max ? "Drive has no limit on space" : "\(gb(free)) free in Drive"
+    }
+
+    private static func remove(_ id: String) async -> Bool {
+        guard let signIn = try? await GoogleDrive.token(), let url = URL(string: "\(files)/\(id)") else { return false }
+        var r = URLRequest(url: url)
+        r.httpMethod = "DELETE"
+        r.setValue("Bearer \(signIn)", forHTTPHeaderField: "Authorization")
+        r.timeoutInterval = 30
+        guard let (_, resp) = try? await URLSession.shared.data(for: r) else { return false }
+        return ((resp as? HTTPURLResponse)?.statusCode ?? 0) / 100 == 2
+    }
+
+    /// Whether Google lets the app make a copy in its own folder at all: tried with the smallest video in Drive, read
+    /// back, and removed.
+    private static func copyTest() async {
+        var c = URLComponents(string: files)!
+        c.queryItems = [.init(name: "q", value: "mimeType contains 'video/' and trashed = false"),
+                        .init(name: "orderBy", value: "quotaBytesUsed"), .init(name: "pageSize", value: "20"),
+                        .init(name: "fields", value: "files(id,name,size)")]
+        let listed = (try? await GoogleDrive.get(c.url!))?["files"] as? [[String: Any]] ?? []
+        var small: (id: String, name: String, size: Int64)?
+        for f in listed {
+            guard let id = f["id"] as? String, let size = Int64(f["size"] as? String ?? ""), size > 0 else { continue }
+            small = (id: id, name: f["name"] as? String ?? "", size: size)
+            break
+        }
+        let free = await room()
+        guard let small else { note("copytest: no small video was found to try a copy with (\(roomWords(free)))"); return }
+        let mb = String(format: "%.1f", Double(small.size) / 1_048_576)
+        let began = Date()
+        do {
+            let copy = try await GoogleDrive.makeCopy(of: small.id)
+            let took = String(format: "%.1f", Date().timeIntervalSince(began))
+            let reads = await GoogleDrive.sends(copy)
+            let removed = await remove(copy)
+            var read = "the copy couldn’t be read"
+            if reads == true { read = "Google sends the copy" } else if reads == false { read = "Google refuses the copy too" }
+            note("copytest: Google made a copy of a \(mb) MB video in \(took) s; \(read); \(removed ? "the copy was removed" : "the copy couldn’t be removed"); \(roomWords(free))")
+        } catch {
+            let why = (error as? GoogleDrive.Failure)?.message ?? error.localizedDescription
+            note("copytest: Google wouldn’t make a copy of a \(mb) MB video: \(why) (\(roomWords(free)))")
+        }
+    }
+
+    /// A copy of the film made in the app's own folder and played. Removed afterwards unless [keep].
+    private static func copied(_ name: String, keep: Bool) async {
+        guard let film = await find(name) else { return }
+        let size = await facts(film.id)?.size ?? 0
+        let free = await room()
+        // Room for it with some to spare: Drive's space is the family's mail and photos too.
+        let spare: Int64 = 30 << 30
+        if let free, free != Int64.max, size > 0, free < size + spare {
+            note("\(film.title): no copy made, it is \(gb(size)) and \(roomWords(free))")
+            return
+        }
+        let began = Date()
+        do {
+            let copy = try await GoogleDrive.makeCopy(of: film.id)
+            note("\(film.title): Google made a copy (\(gb(size))) in \(String(format: "%.0f", Date().timeIntervalSince(began))) s; \(roomWords(free))")
+            let played = await play(copy, "\(film.title) (the copy)")
+            if keep {
+                note("\(film.title): the copy is kept for two days" + (played ? "" : ", though it didn’t play"))
+            } else {
+                let removed = await remove(copy)
+                note("\(film.title): \(removed ? "the copy was removed" : "the copy couldn’t be removed")")
+            }
+        } catch {
+            let why = (error as? GoogleDrive.Failure)?.message ?? error.localizedDescription
+            note("\(film.title): no copy (\(gb(size))): \(why) (\(roomWords(free)))")
+        }
+    }
+
+    // MARK: Writing it down
+
+    /// [words] to both logs; [more] only to the film check's own (the diagnostics log travels with the family's settings).
+    private static func note(_ words: String, more: String = "") {
         let line = "Film check, \(words)"
-        Diagnostics.shared.notePlayback(line)
+        Diagnostics.shared.notePlayback(String(line.prefix(700)))
         guard let lib = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first else { return }
         let file = lib.appendingPathComponent("Logs/Woodruff Family/film-check.log")
-        let data = Data("\(ISO8601DateFormatter.plain.string(from: Date()))\tbuild \(AppBuild.label)\t\(line)\n".utf8)
+        let data = Data("\(ISO8601DateFormatter.plain.string(from: Date()))\tbuild \(AppBuild.label)\t\(line)\(more)\n".utf8)
         try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
         if let h = try? FileHandle(forWritingTo: file) {
             defer { try? h.close() }

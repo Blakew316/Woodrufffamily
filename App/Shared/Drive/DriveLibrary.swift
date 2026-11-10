@@ -803,18 +803,18 @@ final class DriveLibrary: WatchSource {
     }
 
     #if os(macOS)
-    /// Films with [text] in the title (any case), a title that is exactly [text] first; "largest" is the film with
-    /// the biggest file. For `FilmCheck`.
+    /// Every film's file, for `FilmCheck`.
+    func films() -> [(id: String, title: String)] {
+        var all: [(id: String, title: String)] = []
+        for e in saved.movies {
+            if let file = e.file { all.append((id: file, title: e.title)) }
+        }
+        return all
+    }
+
+    /// Films with [text] in the title (any case), a title that is exactly [text] first. For `FilmCheck`.
     func films(named text: String) -> [(id: String, title: String)] {
         let want = text.lowercased()
-        if want == "largest" {
-            var best: (id: String, title: String, size: Int64)?
-            for e in saved.movies {
-                guard let file = e.file, let size = listedFile(file)?.size.flatMap({ Int64($0) }) else { continue }
-                if size > (best?.size ?? 0) { best = (id: file, title: e.title, size: size) }
-            }
-            return best.map { [(id: $0.id, title: $0.title)] } ?? []
-        }
         var all: [(id: String, title: String)] = []
         for e in saved.movies {
             guard let file = e.file, e.title.lowercased().contains(want) else { continue }
