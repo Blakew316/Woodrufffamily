@@ -1071,6 +1071,10 @@ struct CameraLiveView: View {
     /// Mac, opened from an alert: its picture of the moment, shown until the stream is live.
     @State private var alertPicture: NSImage?
     #endif
+    #if os(tvOS)
+    /// Apple TV: the remote is on the picture (the only place it can be), so its buttons are heard there.
+    @FocusState private var onPicture: Bool
+    #endif
     private let streams = CameraStreams.shared
 
     var body: some View {
@@ -1124,6 +1128,8 @@ struct CameraLiveView: View {
             // Esc closes it wherever the focus is (onExitCommand only hears it while something in it has focus).
             .background { Button("Close") { close() }.keyboardShortcut(.cancelAction).opacity(0).frame(width: 0, height: 0).accessibilityHidden(true) }
             .task(id: streams.replay?.key) { await loadAlertPicture() }
+            #elseif os(tvOS)
+            tvBody(player)
             #else
             phoneBody(player)
             #endif
@@ -1136,6 +1142,11 @@ struct CameraLiveView: View {
             streams.hide(camera.id)
             streams.unfocus()
         }
+        #if os(tvOS)
+        // Apple TV: the screen saver stays away while a camera is open (it came up over the picture).
+        .onAppear { TVAwake.hold() }
+        .onDisappear { TVAwake.release() }
+        #endif
     }
 
     private func close() {
@@ -1192,6 +1203,70 @@ struct CameraLiveView: View {
         return camera.online ? .red : .gray
         #endif
     }
+
+    #if os(tvOS)
+    /// Apple TV: how the picture stands, under the camera's name. Opened from an alert, it also says what the remote's
+    /// Play/Pause button goes to (the live picture, or back to the alert's moment).
+    private var tvStatus: String {
+        guard replay != nil else { return subtitle }
+        return subtitle + (showLive ? " · Play/Pause for Replay" : " · Play/Pause for Live")
+    }
+
+    /// Apple TV: the picture fills the screen, with the camera's name and how it stands at the top left. No card and
+    /// no buttons to move between: Menu closes it, and when it was opened from an alert, Play/Pause goes between the
+    /// alert's moment (shown first) and the live picture.
+    private func tvBody(_ player: LivePlayer) -> some View {
+        ZStack(alignment: .topLeading) {
+            ZStack {
+                Color.black
+                // The live picture is under the alert's moment from the start (hidden by it), so Live is there at once.
+                LiveWebView(player: player)
+                if let r = replay, !showLive {
+                    EventReplayView(replay: r) { withAnimation(.smooth(duration: 0.25)) { showLive = true } }
+                }
+            }
+            .ignoresSafeArea()
+            // A shade from the very top behind the name, so it reads on any scene.
+            VStack(spacing: 0) {
+                LinearGradient(colors: [.black.opacity(0.6), .clear], startPoint: .top, endPoint: .bottom)
+                    .frame(height: 260)
+                Spacer(minLength: 0)
+            }
+            .ignoresSafeArea()
+            .allowsHitTesting(false)
+            VStack(alignment: .leading, spacing: 6) {
+                Text(camera.name).font(.system(size: 40, weight: .bold)).lineLimit(1)
+                HStack(spacing: 10) {
+                    if showLive || replay == nil {
+                        Circle().fill(dotColor).frame(width: 12, height: 12)
+                    }
+                    Text(tvStatus).font(.system(size: 27, weight: .medium)).lineLimit(1)
+                }
+                .foregroundStyle(.white.opacity(0.85))
+            }
+            .foregroundStyle(.white)
+            .shadow(color: .black.opacity(0.4), radius: 4)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // Fades in over the page (the cover itself comes without a slide), and out as it closes.
+        .opacity(appeared ? 1 : 0)
+        // The picture is what the remote is on (nothing marks it: there's nowhere else to go), so the remote's
+        // Play/Pause and Menu buttons are heard here.
+        .focusable()
+        .focusEffectDisabled()
+        .focused($onPicture)
+        .onPlayPauseCommand {
+            guard replay != nil else { return }
+            withAnimation(.smooth(duration: 0.25)) { showLive.toggle() }
+        }
+        .onExitCommand { close() }
+        .presentationBackground(.clear)
+        .onAppear {
+            onPicture = true
+            withAnimation(.easeOut(duration: 0.25)) { appeared = true }
+        }
+    }
+    #endif
 
     /// iPhone and iPad: the camera floats in the middle of the screen as one rounded picture over the dimmed, blurred
     /// app, with its name over the top of the picture and small controls in its corners. Tap outside it or swipe it
@@ -1304,6 +1379,29 @@ struct CameraLiveView: View {
     }
     #endif
 }
+
+#if os(tvOS)
+/// Apple TV: holds the screen saver off while a camera is open (with nothing pressed on the remote for a few minutes
+/// it came up over the picture), and lets it come again as it would once every open camera has closed.
+@MainActor
+enum TVAwake {
+    private static var holds = 0
+    /// Whether it was already held off before the first camera opened (put back as it was).
+    private static var before = false
+
+    static func hold() {
+        if holds == 0 { before = UIApplication.shared.isIdleTimerDisabled }
+        holds += 1
+        UIApplication.shared.isIdleTimerDisabled = true
+    }
+
+    static func release() {
+        guard holds > 0 else { return }
+        holds -= 1
+        if holds == 0 { UIApplication.shared.isIdleTimerDisabled = before }
+    }
+}
+#endif
 
 #if os(iOS) || os(tvOS)
 typealias StageView = UIView
@@ -1968,6 +2066,15 @@ struct CamerasPhoneView: View {
             }
             if let e = nest.error { Section { Text(e).foregroundStyle(Palette.attention) } }
             if let hub, hub.s != nil {
+                #if os(tvOS)
+                // Apple TV: how the TVs' own camera keys stand, as a plain line. Their page is one of Accounts' (keys to
+                // type, a sign-in that opens a browser), and an Apple TV has no Accounts pages.
+                Section {
+                    LabeledContent("Camera Keys on the TVs", value: hub.s?.nest?.statusText ?? "")
+                } footer: {
+                    Text("Managed from the iPhone or Mac.")
+                }
+                #else
                 // The TVs' own camera keys and alerts (the same page as Accounts → Nest Cameras), right from here. Only
                 // once their settings are read, as on Accounts: that page's fields would be blank before.
                 Section {
@@ -1975,6 +2082,7 @@ struct CamerasPhoneView: View {
                         IconRow(symbol: "", color: .clear, title: "Camera Keys on the TVs", value: hub.s?.nest?.statusText)
                     }
                 }
+                #endif
             }
         }
         .familyFormStyle()
@@ -2179,6 +2287,9 @@ struct EventReplayView: View {
                 ProgressView().tint(.white)
             }
         }
+        #if !os(tvOS)
+        // (Apple TV's camera has no buttons over its picture: Play/Pause goes to the live picture, and going back to
+        // the alert's moment from there asks for it again.)
         .overlay(alignment: .bottomLeading) {
             if failed {
                 Button("Retry") { failed = false; attempt += 1 }
@@ -2187,6 +2298,7 @@ struct EventReplayView: View {
                     .padding(10)
             }
         }
+        #endif
         .task(id: "\(replay.key)#\(attempt)") { await load() }
     }
 

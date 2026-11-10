@@ -119,8 +119,13 @@ extension EnvironmentValues {
     }
 }
 
-/// Settings → Smart Devices: everything besides the TVs, and the accounts they sign in with.
+/// Settings → Smart Devices: everything besides the TVs, and how the accounts they use stand on this Apple TV. There's
+/// no Accounts page to open here: an Apple TV can't sign in to them (it gets each sign-in from the family's iPhones and
+/// Macs) and has nowhere to copy a key to, so each account is a plain line that says so.
 private struct TVSmartDevices: View {
+    /// This Apple TV's sign-ins (their keys are in the Keychain: read as the page shows, not at every redraw).
+    @State private var device = DeviceSignIns()
+
     var body: some View {
         List {
             Section {
@@ -130,8 +135,20 @@ private struct TVSmartDevices: View {
                 PageLink("Scenes") { ScenesSettingsView() } label: { Text("Scenes") }
             }
             Section {
-                PageLink("Accounts") { ConnectionsView(hub: HubSettings.shared) } label: { Text("Accounts") }
+                LabeledContent("Govee", value: status(device.govee))
+                LabeledContent("Samsung SmartThings", value: status(device.smartThings))
+                LabeledContent("Dreo", value: status(device.dreo))
+            } header: {
+                Text("Accounts")
+            } footer: {
+                Text("Managed from the iPhone or Mac.")
             }
         }
+        .onAppear {
+            let now = DeviceSignIns.read()
+            if now != device { device = now }
+        }
     }
+
+    private func status(_ signedIn: Bool) -> String { signedIn ? "Signed In" : "Not Set Up" }
 }

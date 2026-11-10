@@ -1041,6 +1041,75 @@ final class DriveLibrary: WatchSource {
     }
 }
 
+#if os(tvOS)
+// MARK: What the Apple TV's player says about a film
+
+extension DriveLibrary {
+    /// What the player's title and info panel say about what's playing.
+    struct PlayerInfo {
+        /// A film's name; an episode's show.
+        var title: String
+        /// Under it: a film's year; an episode's season, number and name ("S2 E4 · The Pilot").
+        var subtitle: String?
+        /// The film's story (for an episode its show's, until its own has been looked up: `playerDetails`).
+        var story: String?
+        var genres: [String] = []
+        /// An episode's show's year (a film's is its subtitle).
+        var year: Int?
+    }
+
+    /// What's kept here about [key], with nothing asked of Drive or TMDB. Nil when the library can't say which film or
+    /// episode it is: one played from a TV, a film in a collection, an episode with neither a number nor a name, a
+    /// place a TV sent that hasn't been matched to its title yet.
+    func playerInfo(_ key: String) -> PlayerInfo? {
+        guard key.hasPrefix("drive:"), let s = saved.spots[key] ?? context[key],
+              let e = s.titleId.flatMap({ entry($0) }) else { return nil }
+        switch e.kind {
+        case "movie":
+            return PlayerInfo(title: e.title, subtitle: e.year.map { String($0) }, story: e.overview, genres: e.genres)
+        case "show":
+            let which = [s.code, s.episode].compactMap { $0?.isEmpty == false ? $0 : nil }.joined(separator: " · ")
+            guard !which.isEmpty else { return nil }
+            return PlayerInfo(title: e.title, subtitle: which, story: e.overview, genres: e.genres, year: e.year)
+        default:
+            return nil
+        }
+    }
+
+    /// The rest about an episode, which may ask Drive and TMDB (what they've answered before is kept): its own story,
+    /// and the episode after it in its season, to go on to from where that one was left off. Nothing for a film.
+    func playerDetails(_ key: String) async -> (story: String?, next: PlayAction?) {
+        guard key.hasPrefix("drive:"), let s = saved.spots[key] ?? context[key], s.kind == "show",
+              let show = s.titleId.flatMap({ entry($0) }), show.kind == "show" else { return (nil, nil) }
+        var story: String?
+        if let tm = show.tmdb, let n = TitleNames.episodeNumber(s.title, season: nil), let season = n.season {
+            story = await TMDB.shared.season(tm, season)[n.number]?.overview
+        }
+        // Its season's episodes in order: as listed since the app opened, else listed now, from the folder the episode
+        // is in (as kept from an earlier listing, else asked of Drive). Listing them is what a title's page does.
+        if !seasonLists.values.contains(where: { $0.contains(key) }) {
+            let file = String(key.dropFirst(6))
+            var folder = saved.folders.first(where: { $0.value.contains(where: { $0.id == file }) })?.key
+            if folder == nil,
+               let j = try? await GoogleDrive.get(URL(string: "\(GoogleDrive.filesBase)/\(file)?fields=parents&supportsAllDrives=true")!) {
+                folder = (j["parents"] as? [String])?.first
+            }
+            if let folder {
+                // Episodes kept straight in the show's folder are its one season ("inside").
+                let id = folder == show.id ? "inside" : folder
+                let season = (await seasons(of: show)).first(where: { $0.id == id }) ?? SeasonFolder(id: id, name: "", number: nil)
+                _ = try? await episodeList(show, season: season)
+            }
+        }
+        guard let list = seasonLists.values.first(where: { $0.contains(key) }), let i = list.firstIndex(of: key),
+              i + 1 < list.count, let after = context[list[i + 1]] else { return (story, nil) }
+        let next = list[i + 1]
+        return (story, PlayAction(key: next, title: after.title, position: resumePosition(next) ?? 0, label: nil,
+                                  duration: nil, resume: true, latest: nil))
+    }
+}
+#endif
+
 // Read field by field, so a field added later (or one missing) never loses the library, the progress or the rest.
 
 extension DriveLibrary.Entry {

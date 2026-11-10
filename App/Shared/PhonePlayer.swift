@@ -325,6 +325,18 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
     /// Times the system has said memory is short during this film, and what listens for it.
     private var memoryWarnings = 0
     private var memoryWatch: NSObjectProtocol?
+    #if os(tvOS)
+    /// Apple TV: what the player's title and info panel say about the film in words (`describe`), and its picture once
+    /// that has come (`artwork`). Together they are `metadata`, whichever comes first.
+    private var infoItems: [AVMetadataItem] = []
+    private var artItem: AVMetadataItem?
+    /// The episode after the one playing, when the library knows it.
+    private var nextUp: PlayAction?
+    /// Next Episode is showing over the picture.
+    private var offeringNext = false
+    /// Hears a film play to its end (kept from the first film on, as `memoryWatch` is).
+    private var endWatch: NSObjectProtocol?
+    #endif
 
     private static func titleItem(_ title: String) -> AVMetadataItem {
         let t = AVMutableMetadataItem()
@@ -333,6 +345,103 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
         t.extendedLanguageTag = "und"
         return t
     }
+
+    #if os(tvOS)
+    /// One line of the Apple TV player's info panel.
+    private static func infoItem(_ identifier: AVMetadataIdentifier, _ value: String) -> AVMetadataItem {
+        let t = AVMutableMetadataItem()
+        t.identifier = identifier
+        t.value = value as NSString
+        t.extendedLanguageTag = "und"
+        return t
+    }
+
+    /// What the player says about [info] in words: its name over the bar with a line under it (a film's year; an
+    /// episode's season, number and name under its show's), and in the info panel [story], the genre and, for an
+    /// episode, its show's year.
+    private static func infoItems(_ info: DriveLibrary.PlayerInfo, story: String?) -> [AVMetadataItem] {
+        var out = [titleItem(info.title)]
+        if let line = info.subtitle, !line.isEmpty { out.append(infoItem(.iTunesMetadataTrackSubTitle, line)) }
+        if let story, !story.isEmpty { out.append(infoItem(.commonIdentifierDescription, story)) }
+        if !info.genres.isEmpty { out.append(infoItem(.quickTimeMetadataGenre, info.genres.prefix(2).joined(separator: ", "))) }
+        // A date in the middle of the year, so no time zone shows the year before or after.
+        if let year = info.year { out.append(infoItem(.commonIdentifierCreationDate, "\(year)-07-01T12:00:00Z")) }
+        return out
+    }
+
+    /// Apple TV: what the library knows about the film goes into the player's title and info panel: its story, year
+    /// and genre, and for an episode its show, season and number. At once from what's kept here; an episode's own
+    /// story, and the episode after it (for Next Episode), once they've been looked up.
+    private func describe(_ play: PhonePlay) {
+        nextUp = nil
+        offeringNext = false
+        artItem = nil
+        guard let info = DriveLibrary.shared.playerInfo(play.key) else {
+            // The library can't say what it is (a film from a TV, one in a collection): its name, as before.
+            infoItems = [Self.titleItem(play.title)]
+            metadata = infoItems
+            return
+        }
+        infoItems = Self.infoItems(info, story: info.story)
+        metadata = infoItems
+        Task { @MainActor [weak self] in
+            let more = await DriveLibrary.shared.playerDetails(play.key)
+            guard let self, self.current?.id == play.id else { return }
+            if let story = more.story, !story.isEmpty {
+                self.infoItems = Self.infoItems(info, story: story)
+                self.metadata = self.infoItems + (self.artItem.map { [$0] } ?? [])
+                self.item?.externalMetadata = self.metadata
+            }
+            self.nextUp = more.next
+            self.offerNext()
+        }
+    }
+
+    /// Apple TV: Next Episode over the picture for the last part of an episode, when the library knows the one after
+    /// it: its last twentieth, three minutes at most. By then the episode counts as watched (`DriveLibrary.played`),
+    /// so going on to the next leaves this one done. Looked at as it plays (with where it has got to) and whenever
+    /// it's moved to another place.
+    private func offerNext() {
+        guard let c = controller, let p = player else { return }
+        var near = false
+        if nextUp != nil, begun, let length = p.currentItem?.duration.seconds, length.isFinite, length > 0 {
+            let left = length - p.currentTime().seconds
+            near = left.isFinite && left > 0 && left <= min(length * 0.05, 180)
+        }
+        guard near != offeringNext else { return }
+        offeringNext = near
+        if near {
+            c.contextualActions = [UIAction(title: "Next Episode") { [weak self] _ in self?.playNext() }]
+        } else {
+            c.contextualActions = []
+        }
+    }
+
+    /// Next Episode was chosen: the episode after this one, started as Play starts any other (this one closes first,
+    /// with where it got to kept). Once the button's own press is over: it belongs to the player being closed.
+    private func playNext() {
+        guard let next = nextUp, let play = PhonePlayback.play(next, fleet: Fleet.shared) else { return }
+        // Asked once (a second press while it closes starts nothing more).
+        nextUp = nil
+        Task { @MainActor [weak self] in self?.present(play) }
+    }
+
+    /// Start Over, in the player's bar: from the beginning, playing.
+    private func startOver() {
+        guard begun, let p = player else { return }
+        resumeAt = nil
+        p.seek(to: .zero)
+        p.play()
+    }
+
+    /// Apple TV: the film played to its end. The player closes, back to the page it was started from. Nothing is
+    /// marked here: closing keeps where it got to (`finish`), and a film that got to its end is marked watched by that.
+    private func playedToEnd(_ ended: AVPlayerItem?) {
+        guard let ended, ended === item, let c = controller, !c.isBeingDismissed,
+              let under = c.presentingViewController else { return }
+        under.dismiss(animated: true)
+    }
+    #endif
 
     /// A sign-in lasts an hour, and the one Drive's address was given may have had much less left (a fixed 40 minutes
     /// let a film whose sign-in had 30 left stop, and go on the slower way). Five minutes before it runs out: the same
@@ -420,6 +529,10 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
             item = AVPlayerItem(asset: s.asset())
         }
         metadata = [Self.titleItem(play.title)]
+        #if os(tvOS)
+        // Apple TV: with what the library knows about it, for the player's info panel.
+        describe(play)
+        #endif
         item.externalMetadata = metadata
         memoryWarnings = 0
         PlayCrumb.note(play.title, "opening", detail: PlayCrumb.memoryLeft)
@@ -429,6 +542,17 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
                 MainActor.assumeIsolated { self?.memoryShort() }
             }
         }
+        #if os(tvOS)
+        // Apple TV: a film that plays to its end closes the player (it stayed on its last frame). Heard for every
+        // item, since the one playing can change mid-film; `playedToEnd` acts only on the one playing now.
+        if endWatch == nil {
+            endWatch = NotificationCenter.default.addObserver(forName: Notification.Name.AVPlayerItemDidPlayToEndTime,
+                                                              object: nil, queue: .main) { [weak self] note in
+                let ended = note.object as? AVPlayerItem
+                MainActor.assumeIsolated { self?.playedToEnd(ended) }
+            }
+        }
+        #endif
 
         PhonePlayback.quickStart(item)
 
@@ -449,6 +573,10 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
         #if os(tvOS)
         // The TV switches to the film's frame rate and dynamic range (Match Content), which the start waits for.
         c.appliesPreferredDisplayCriteriaAutomatically = true
+        // Start Over, in the player's bar beside its own controls (a bar of pictures, so it has one).
+        c.transportBarCustomMenuItems = [UIAction(title: "Start Over", image: UIImage(systemName: "arrow.counterclockwise")) { [weak self] _ in
+            self?.startOver()
+        }]
         #endif
         c.modalPresentationStyle = .fullScreen
         c.onGone = { [weak self] in self?.closed() }
@@ -457,6 +585,9 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
             MainActor.assumeIsolated {
                 self?.report()
                 self?.crumb()
+                #if os(tvOS)
+                self?.offerNext()
+                #endif
             }
         }
         if let art = play.art { poster(art, on: c, play: play) }
@@ -761,7 +892,13 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
             a.value = data as NSData
             a.dataType = kCMMetadataBaseDataType_JPEG as String
             a.extendedLanguageTag = "und"
+            #if os(tvOS)
+            // Apple TV: beside what the info panel says about the film in words (`describe`).
+            self.artItem = a
+            self.metadata = self.infoItems + [a]
+            #else
             self.metadata = [Self.titleItem(play.title), a]
+            #endif
             self.item?.externalMetadata = self.metadata
         }
     }
@@ -885,6 +1022,12 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
         directExpires = 0
         item = nil
         metadata = []
+        #if os(tvOS)
+        infoItems = []
+        artItem = nil
+        nextUp = nil
+        offeringNext = false
+        #endif
         resumeAt = nil
         switchWait = nil
         renew?.cancel()

@@ -159,9 +159,9 @@ struct AllDevicesView: View {
                 .presentationDetents([.height(300)])
                 .presentationDragIndicator(.visible)
                 #elseif os(tvOS)
-                .presentationDetents([.height(300)])
+                // Apple TV: a panel in the middle of the screen, over the page (a sheet there has no heights to stop
+                // at, so the iPhone's low strip came out as a slab across the whole screen).
                 .presentationBackground(.clear)
-                .presentationDragIndicator(.visible)
                 #else
                 .frame(width: 360, height: 300)
                 // The Mac's sheet had no way out: Done (Esc too), in the corner above the keys.
@@ -1042,13 +1042,32 @@ struct SoundbarPicture: View {
 }
 
 /// A small remote for one TV, from All Devices: what it's playing, play or pause, back and ahead, mute and volume. On
-/// iPhone and iPad it sits on the sheet's own Liquid Glass; elsewhere on a glass card of its own.
+/// iPhone and iPad it sits on the sheet's own Liquid Glass; on the Mac on a glass card of its own. On Apple TV it's a
+/// panel in the middle of the screen with keys the size a TV needs (`tvPanel`).
 struct MiniRemote: View {
     var tvID: String
+    #if os(tvOS)
+    /// Apple TV, beside the picture on Now Playing: the panel alone (no dimmed page behind it), saying what the TV says
+    /// it's playing, as that page does.
+    var beside = false
+    private enum Key: Hashable { case back, play, ahead, quieter, mute, louder }
+    /// The key the remote is on (it starts on play or pause).
+    @FocusState private var onKey: Key?
+    #endif
     @Environment(Fleet.self) private var fleet
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
+        #if os(tvOS)
+        if beside {
+            tvPanel
+        } else {
+            // Alone: in the middle of the screen, the page behind it dimmed a little.
+            tvPanel
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background { Color.black.opacity(0.35).ignoresSafeArea() }
+        }
+        #else
         let tv = fleet.tv(tvID)
         let p = tv?.nowPlaying
         VStack(spacing: 18) {
@@ -1079,7 +1098,69 @@ struct MiniRemote: View {
         .padding(.bottom, 8)
         .frame(maxHeight: .infinity, alignment: .bottom)
         #endif
+        #endif
     }
+
+    #if os(tvOS)
+    /// Apple TV: the remote as one glass panel: the TV's name, what it's playing and how far along, then two rows of
+    /// three keys of one size (back, play or pause, ahead; volume down, mute, volume up), so the remote moves straight
+    /// across a row and straight up or down between them. It starts on play or pause, and the remote's own Play/Pause
+    /// button plays or pauses from any key. (Menu closes the sheet it's in.)
+    private var tvPanel: some View {
+        let tv = fleet.tv(tvID)
+        // On Now Playing, what the TV says it's playing; alone, only what's on it now (as its tile says).
+        let p = beside ? tv?.playing : tv?.nowPlaying
+        let playing = p?.isPlaying == true
+        let more = [p?.subtitle, p?.app].compactMap { $0?.isEmpty == false ? $0 : nil }.joined(separator: " · ")
+        return VStack(spacing: 30) {
+            VStack(spacing: 6) {
+                Text(tv?.name ?? "TV")
+                    .font(.system(size: 27, weight: .semibold)).foregroundStyle(.white.opacity(0.7)).lineLimit(1)
+                Text(tv?.online == false ? "Turning on…" : p?.title ?? "Nothing Playing")
+                    .font(.system(size: 40, weight: .bold)).lineLimit(2).multilineTextAlignment(.center)
+                if !more.isEmpty {
+                    Text(more).font(.system(size: 27, weight: .medium)).foregroundStyle(.white.opacity(0.7)).lineLimit(1)
+                }
+            }
+            if let p { LiveProgress(playing: p, tint: .white) }
+            VStack(spacing: 26) {
+                HStack(spacing: 26) {
+                    tvKey(.back, "gobackward.10", "Back 10 Seconds") { await media("back10") }
+                    tvKey(.play, playing ? "pause.fill" : "play.fill", playing ? "Pause" : "Play") { await press("playpause") }
+                    tvKey(.ahead, "goforward.30", "Ahead 30 Seconds") { await media("fwd30") }
+                }
+                HStack(spacing: 26) {
+                    tvKey(.quieter, "speaker.minus.fill", "Volume Down") { await press("voldown") }
+                    tvKey(.mute, "speaker.slash.fill", "Mute") { await mute() }
+                    tvKey(.louder, "speaker.plus.fill", "Volume Up") { await press("volup") }
+                }
+            }
+        }
+        .foregroundStyle(.white)
+        .frame(width: 622)
+        .padding(.horizontal, 56).padding(.vertical, 46)
+        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 48, style: .continuous))
+        .focusSection()
+        .defaultFocus($onKey, Key.play)
+        // (Asked for as it shows as well: Now Playing has its bar's buttons above, where the remote could start.)
+        .onAppear { onKey = .play }
+        .onPlayPauseCommand { Task { await press("playpause") } }
+    }
+
+    /// One of the panel's keys: its picture on a platter 190 by 116 points.
+    private func tvKey(_ key: Key, _ symbol: String, _ label: String, _ action: @escaping () async -> Void) -> some View {
+        Button {
+            Task { await action() }
+        } label: {
+            Image(systemName: symbol)
+                .font(.system(size: 44, weight: .semibold))
+                .frame(width: 190, height: 116)
+        }
+        .buttonStyle(TVRemoteKeyStyle())
+        .focused($onKey, equals: key)
+        .accessibilityLabel(label)
+    }
+    #endif
 
     private func key(_ symbol: String, _ label: String, big: Bool = false, _ action: @escaping () async -> Void) -> some View {
         Button {
@@ -1128,3 +1209,27 @@ struct MiniRemote: View {
         }
     }
 }
+
+#if os(tvOS)
+/// A key on the Apple TV's remote panel. It sits on the panel's glass as a soft platter with a white picture (not glass
+/// of its own: glass doesn't show through glass); the one the remote is on is a white platter with a dark picture, a
+/// little larger, with a shadow under it.
+private struct TVRemoteKeyStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View { Face(configuration: configuration) }
+
+    private struct Face: View {
+        let configuration: ButtonStyleConfiguration
+        @Environment(\.isFocused) private var focused
+
+        var body: some View {
+            configuration.label
+                .foregroundStyle(focused ? Color.black : Color.white)
+                .background { Capsule().fill(Color.white.opacity(focused ? 1 : 0.16)) }
+                .scaleEffect(configuration.isPressed ? 0.96 : (focused ? 1.08 : 1))
+                .shadow(color: .black.opacity(focused ? 0.4 : 0), radius: 18, y: 10)
+                .animation(.spring(response: 0.3, dampingFraction: 0.8), value: focused)
+                .animation(.spring(response: 0.25, dampingFraction: 0.6), value: configuration.isPressed)
+        }
+    }
+}
+#endif

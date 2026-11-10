@@ -337,11 +337,19 @@ struct NowPlayingSheet: View {
     var body: some View {
         let tv = tvID.flatMap { fleet.tv($0) } ?? fleet.selected
         // The title and the controls follow what the TV says; the pictures only what's playing now (plain black for a
-        // TV that's off, or a title left paused).
+        // TV that's off, or a title left paused). (On Apple TV its remote panel reads what the TV says for itself.)
+        #if !os(tvOS)
         let p = tv?.playing
+        #endif
         let art = tv?.nowPlaying
         NavigationStack {
             GeometryReader { geo in
+                #if os(tvOS)
+                // Apple TV: the picture beside the TV's remote panel, both the size a TV screen needs (the iPhone's
+                // column below came out 512 points wide in the middle of it). The whole width under the bar leads to
+                // the panel's keys, so Down from any of the bar's buttons reaches them.
+                tvPage(tv, art).frame(width: geo.size.width, height: geo.size.height).focusSection()
+                #else
                 #if os(iOS)
                 // iPhone on its side, or a sheet too short for it all one above another: the picture beside the controls.
                 let low = heightClass == .compact || (geo.size.height < 560 && geo.size.width > geo.size.height)
@@ -395,6 +403,7 @@ struct NowPlayingSheet: View {
                     }
                     .frame(width: geo.size.width, height: geo.size.height)
                 }
+                #endif
             }
             .foregroundStyle(.white)
             .background { backdrop(art) }
@@ -442,6 +451,23 @@ struct NowPlayingSheet: View {
         .frame(minWidth: 480, idealWidth: 480, maxWidth: .infinity, minHeight: macSheetHeight(720), idealHeight: macSheetHeight(720), maxHeight: .infinity)
         #endif
     }
+
+    #if os(tvOS)
+    /// Apple TV: the picture of what's playing (or the TV's own screen) on the left, when there is one, and the TV's
+    /// remote panel on the right: its title, how far along it is, and the keys (`MiniRemote`), where the remote starts.
+    private func tvPage(_ tv: FleetTV?, _ art: NowPlaying?) -> some View {
+        HStack(spacing: 70) {
+            if art != nil || showScreen {
+                picture(art)
+                    .frame(width: 800, height: 450)
+                    .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+                    .overlay { RoundedRectangle(cornerRadius: 28, style: .continuous).strokeBorder(.white.opacity(0.08)) }
+                    .shadow(color: .black.opacity(0.5), radius: 30, y: 16)
+            }
+            if let tv { MiniRemote(tvID: tv.id, beside: true) }
+        }
+    }
+    #endif
 
     private func otherTVs(than tv: FleetTV) -> [FleetTV] {
         fleet.tvs.filter { $0.id != tv.id && !$0.isUnpaired }

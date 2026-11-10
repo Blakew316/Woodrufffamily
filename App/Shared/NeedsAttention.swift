@@ -47,7 +47,19 @@ struct NeedsAttentionSection: View {
             Section {
                 ForEach(list) { issue in
                     if issue.inAccounts {
+                        #if os(tvOS)
+                        // Apple TV has no Accounts page to open: it can't sign in (each sign-in comes to it from the
+                        // family's iPhones and Macs), so the row says where it's put right. The remote can still land
+                        // on it (a page of nothing else leaves it nowhere to be); a click does nothing.
+                        Button {} label: {
+                            VStack(alignment: .leading, spacing: 3) {
+                                row(issue)
+                                Text("Managed from the iPhone or Mac.").font(.footnote).foregroundStyle(.secondary)
+                            }
+                        }
+                        #else
                         PageLink("Accounts") { ConnectionsView(hub: hub) } label: { row(issue) }
+                        #endif
                     } else {
                         row(issue)
                     }
