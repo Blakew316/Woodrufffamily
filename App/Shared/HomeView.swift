@@ -574,7 +574,7 @@ struct HomeTVTile: View, Equatable {
                 try await c.showMemory(last)
                 fleet.say("Added to Family Memories", "Showing on \(tv.name).")
             } catch {
-                fleet.say("Added to Family Memories", "They’re in Memories, but \(tv.name) didn’t show them: \(error.localizedDescription)")
+                fleet.alert("Added to Family Memories", "They’re in Memories, but \(tv.name) didn’t show them: \(error.localizedDescription)")
             }
         }
     }

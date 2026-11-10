@@ -484,9 +484,23 @@ struct MacTilePopover<PopoverContent: View>: ViewModifier {
                 shown = false
                 closedAt = Date()
                 close()
-            }), arrowEdge: arrowEdge, content: popoverContent)
+            }), arrowEdge: arrowEdge) {
+                // Esc closes it whatever in it has the focus, or nothing (a sheet's close button took Esc).
+                popoverContent().background { MacPopoverEsc() }
+            }
             // The view going (scrolled out of a long page) takes its popover with it: not open again when it's back.
             .onDisappear { if isOpen { close() } }
+    }
+}
+
+/// Esc closes the popover this is in, wherever the focus is. (What closes a popover by itself isn't promised: a click
+/// elsewhere does, a key may not.)
+private struct MacPopoverEsc: View {
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        Button("Close") { dismiss() }
+            .keyboardShortcut(.cancelAction).opacity(0).frame(width: 0, height: 0).accessibilityHidden(true)
     }
 }
 

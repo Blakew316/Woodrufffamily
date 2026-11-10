@@ -497,8 +497,20 @@ struct DeviceGlyph: View {
     var tint: Color
     /// How much larger than the standard size the picture is drawn (All Devices fills its tiles with it).
     var scale: CGFloat = 1
-    /// What keeps moving while it's on (a speaker's sound, a bulb breathing, a fan turning) rests with the window.
+    #if os(macOS)
+    /// The Mac: what keeps moving while it's on (a speaker's sound, a bulb breathing, a fan turning) rests while its
+    /// window isn't the one in use.
     @AmbientResting private var resting: Bool
+    #endif
+
+    /// Whether those may move now: always, except on a Mac whose window isn't the one in use.
+    private var moves: Bool {
+        #if os(macOS)
+        return !resting
+        #else
+        return true
+        #endif
+    }
 
     /// Drawn as the product itself (no circle behind it).
     private var drawn: Bool {
@@ -535,7 +547,7 @@ struct DeviceGlyph: View {
                 Image(systemName: on ? "hifispeaker.fill" : "hifispeaker")
                     .font(.system(size: 20 * scale, weight: .semibold))
                     .foregroundStyle(on ? tint : .secondary)
-                    .symbolEffect(.variableColor.iterative, options: .repeating, isActive: on && !resting)
+                    .symbolEffect(.variableColor.iterative, options: .repeating, isActive: on && moves)
                     .symbolEffect(.bounce, value: on)
             }
         case .thermostat(let d):
@@ -565,7 +577,7 @@ struct DeviceGlyph: View {
                 .font(.system(size: 21 * scale, weight: .semibold))
                 .foregroundStyle(on ? tint : .secondary)
                 .shadow(color: on ? tint.opacity(0.9) : .clear, radius: 8)
-                .symbolEffect(.breathe, options: .repeating, isActive: on && !resting)
+                .symbolEffect(.breathe, options: .repeating, isActive: on && moves)
                 .symbolEffect(.bounce, value: on)
         case .device(let kind, let running, let symbol):
             if running && ApplianceArt.animates(kind) && kind != .fridge && kind != .fan {
@@ -576,7 +588,7 @@ struct DeviceGlyph: View {
                 Image(systemName: "fan.fill")
                     .font(.system(size: 20 * scale, weight: .semibold))
                     .foregroundStyle(on ? tint : .secondary)
-                    .symbolEffect(.rotate, options: .repeating, isActive: on && !resting)
+                    .symbolEffect(.rotate, options: .repeating, isActive: on && moves)
             } else {
                 Image(systemName: symbolFor(kind, on: on) ?? symbol)
                     .font(.system(size: 20 * scale, weight: .semibold))
@@ -1133,8 +1145,10 @@ struct MiniRemote: View {
         // The sheet is the glass (iOS 26 gives a sheet this short its own): nothing drawn behind the keys here.
         .frame(maxHeight: .infinity)
         #else
-        // The Mac's popover: as large as the remote itself, with Done in its corner (Esc, or a click elsewhere, too).
-        // The popover is the surface: glass under the glass keys was glass on glass.
+        // The Mac's popover: as large as the remote itself, with Done in its corner, on a row of its own above the TV's
+        // name so a long one can't run under it (Esc, or a click elsewhere, closes it too). The popover is the surface:
+        // glass under the glass keys was glass on glass.
+        .padding(.top, 26)
         .overlay(alignment: .topTrailing) {
             Button("Done") { dismiss() }.keyboardShortcut(.cancelAction).buttonStyle(.glass).padding(12)
         }

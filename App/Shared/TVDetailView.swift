@@ -910,6 +910,11 @@ struct SheetBanner: ViewModifier {
                         }
                 }
             }
+            // A sheet that said "Sent" and closed itself at once took its line with it, unread: handed back, the window
+            // shows it.
+            .onDisappear {
+                if !window, let s = status, Date().timeIntervalSince(s.at) < 1.5 { fleet.banner = s }
+            }
             #endif
     }
 
