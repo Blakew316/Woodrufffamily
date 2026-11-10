@@ -53,26 +53,57 @@ public enum Keychain {
         #endif
     }
 
+    /// The Keychain's writes: one at a time, in the order asked, on a queue of their own.
+    private static let writer = DispatchQueue(label: "com.woodruff.family.keychain.writes", qos: .userInitiated)
+
     /// Writes [value] (nil or empty: removes it). True once it's done.
+    ///
+    /// Asked on the main thread, the new value is what `get` answers from that moment, and the Keychain itself is
+    /// written right behind it on a queue of its own (each write is a round trip to the system's keychain, and a
+    /// token renewal is several of them: they were all made on the main thread). True then means it's on its way; a
+    /// write that doesn't go through is forgotten here, so it's read afresh next time.
+    ///
+    /// [now]: written before this returns, wherever it's asked from, for the few callers that act on the answer.
     @discardableResult
-    public static func set(_ value: String?, for account: String) -> Bool {
-        // Already what's there (as last read or written here): nothing to write. A renewed sign-in writes the same
-        // scopes and the same renewal key every time, and each write is a round trip to the system's keychain on
-        // whichever thread asked, usually the main one.
+    public static func set(_ value: String?, for account: String, now: Bool = false) -> Bool {
         let wanted = (value?.isEmpty == false) ? value : nil
+        let main = Thread.isMainThread
+        // The answer is wanted: whatever is still on its way goes through first, so what's kept here is what's there.
+        if now && main { writer.sync {} }
+        // Already what's there (as last read or written here): nothing to write. A renewed sign-in writes the same
+        // scopes and the same renewal key every time.
         let kept = cache.value(account)
         if kept.hit && kept.value == wanted { return true }
-        // Nothing kept for it is handed out while it's written; what's there afterwards is kept only once the
-        // write has gone through (one that didn't is read afresh next time).
-        cache.writeStarted(account)
-        defer { bumpGeneration() }
+        if main && !now {
+            cache.writePending(account, wanted)
+            bumpGeneration()
+            writer.async {
+                if !store(wanted, for: account) {
+                    cache.writeFailed(account, wanted)
+                    bumpGeneration()
+                }
+            }
+            return true
+        }
+        // Off the main thread, or asked to wait: written before returning, after anything already on its way.
+        return writer.sync {
+            // Nothing kept for it is handed out while it's written; what's there afterwards is kept only once the
+            // write has gone through (one that didn't is read afresh next time).
+            cache.writeStarted(account)
+            let ok = store(wanted, for: account)
+            cache.writeFinished(account, wanted, ok: ok)
+            bumpGeneration()
+            return ok
+        }
+    }
+
+    /// The Keychain itself: [value] written for [account] (nil: removed). True when it went through.
+    private static func store(_ value: String?, for account: String) -> Bool {
         #if canImport(Security)
         let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: account]
-        guard let value = wanted else {
+        guard let value else {
             let deleted = SecItemDelete(q as CFDictionary)
-            let gone = deleted == errSecSuccess || deleted == errSecItemNotFound
-            cache.writeFinished(account, nil, ok: gone)
-            return gone
+            return deleted == errSecSuccess || deleted == errSecItemNotFound
         }
         // Changed in place when it's there (one round trip, and never a moment with nothing there for another
         // thread to read); added when it isn't. (It was deleted and added again every time: two round trips.)
@@ -84,11 +115,9 @@ public enum Keychain {
             add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
             status = SecItemAdd(add as CFDictionary, nil)
         }
-        cache.writeFinished(account, value, ok: status == errSecSuccess)
         return status == errSecSuccess
         #else
         UserDefaults.standard.set(value, forKey: "kc." + account)
-        cache.writeFinished(account, value, ok: true)
         return true
         #endif
     }
@@ -160,6 +189,24 @@ final class KeychainCache: @unchecked Sendable {
         defer { lock.unlock() }
         writes &+= 1
         entries[account] = ok ? Entry(value: value, at: now) : nil
+    }
+
+    /// A write to [account] is on its way (it's made off the main thread, right behind this): [value] is what's
+    /// handed out from now on, as it's what will be there ([value] nil: removed).
+    func writePending(_ account: String, _ value: String?, now: Date = Date()) {
+        lock.lock()
+        defer { lock.unlock() }
+        writes &+= 1
+        entries[account] = Entry(value: value, at: now)
+    }
+
+    /// A write that was on its way didn't go through: [value] is forgotten, unless a later write has replaced it
+    /// meanwhile, so the item is read afresh next time.
+    func writeFailed(_ account: String, _ value: String?) {
+        lock.lock()
+        defer { lock.unlock() }
+        writes &+= 1
+        if let e = entries[account], e.value == value { entries[account] = nil }
     }
 }
 
@@ -244,9 +291,10 @@ public enum FamilyCode {
     /// Keeps [record] here (nil: forgets the code). True once it's saved.
     @discardableResult
     public static func save(_ record: Record?) -> Bool {
-        guard let record else { return Keychain.set(nil, for: account) }
+        // (Written before answering: what's done next depends on whether it was kept.)
+        guard let record else { return Keychain.set(nil, for: account, now: true) }
         guard let d = try? JSONEncoder().encode(record) else { return false }
-        return Keychain.set(String(decoding: d, as: UTF8.self), for: account)
+        return Keychain.set(String(decoding: d, as: UTF8.self), for: account, now: true)
     }
 }
 

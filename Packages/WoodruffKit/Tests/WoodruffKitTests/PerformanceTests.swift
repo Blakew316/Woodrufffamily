@@ -170,6 +170,39 @@ final class PerformanceTests: XCTestCase {
         XCTAssertFalse(c.value("a").hit)
     }
 
+    func testAWriteOnItsWayIsHandedOutAtOnce() {
+        let c = KeychainCache()
+        c.readFinished("a", "one", since: c.readStarted())
+        // Asked on the main thread: the new value is what's read from that moment, before the Keychain has it.
+        c.writePending("a", "two")
+        XCTAssertEqual(c.value("a").hit, true)
+        XCTAssertEqual(c.value("a").value, "two")
+        // Removed the same way: known not to be there.
+        c.writePending("a", nil)
+        XCTAssertEqual(c.value("a").hit, true)
+        XCTAssertNil(c.value("a").value)
+    }
+
+    func testAWriteOnItsWayThatFailedIsReadAfresh() {
+        let c = KeychainCache()
+        c.writePending("a", "two")
+        c.writeFailed("a", "two")
+        XCTAssertFalse(c.value("a").hit, "forgotten, so the Keychain is asked next time")
+        // A later write has replaced it meanwhile: that one stays.
+        c.writePending("a", "two")
+        c.writePending("a", "three")
+        c.writeFailed("a", "two")
+        XCTAssertEqual(c.value("a").value, "three")
+    }
+
+    func testAReadOverlappingAWriteOnItsWayIsntKept() {
+        let c = KeychainCache()
+        let stamp = c.readStarted()
+        c.writePending("a", "new")
+        c.readFinished("a", "old", since: stamp)
+        XCTAssertEqual(c.value("a").value, "new")
+    }
+
     func testAReadOverlappingAWriteIsntKept() {
         let c = KeychainCache()
         let stamp = c.readStarted()

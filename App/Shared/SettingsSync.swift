@@ -507,9 +507,10 @@ final class SettingsSync {
             let account = Self.familyKeyAccount(id)
             let kept: Bool
             if f.key.isEmpty {
-                kept = Keychain.get(account) == nil || Keychain.set(nil, for: account)
+                kept = Keychain.get(account) == nil || Keychain.set(nil, for: account, now: true)
             } else {
-                kept = Keychain.get(account) == f.key || Keychain.set(f.key, for: account)
+                // (Written before answering: a key the Keychain wouldn't take has to stay in the settings.)
+                kept = Keychain.get(account) == f.key || Keychain.set(f.key, for: account, now: true)
             }
             // Only a key the Keychain wouldn't take stays in the settings (so it's never lost).
             saved[id] = FamilyHubSaved(base: f.base, name: f.name, key: kept || f.key.isEmpty ? nil : f.key)
