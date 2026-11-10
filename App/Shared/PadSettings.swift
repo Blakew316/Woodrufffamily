@@ -143,7 +143,7 @@ private struct PadSettingsList: View {
         List(selection: $picked) {
             PadAttentionRow(showing: picked == .attention)
             Section {
-                TVsSummaryRow().tag(PadSettingsPage.tvs)
+                TVsSummaryRow(compact: true).tag(PadSettingsPage.tvs)
                 SmartHomeSummaryRow().tag(PadSettingsPage.smartHome)
                 IconRow(symbol: "", color: .clear, title: "Watch", value: watchSource == "drive" && WatchSources.usesDrive ? "Google Drive" : "TV")
                     .tag(PadSettingsPage.watch)
@@ -190,11 +190,22 @@ private struct PadAttentionRow: View {
         let count = NeedsAttentionSection.issues(fleet).count
         if count > 0 || showing {
             Section {
-                Text("Needs Attention").foregroundStyle(Palette.attention)
+                PadAttentionLabel()
                     .badge(count)
                     .tag(PadSettingsPage.attention)
             }
         }
+    }
+}
+
+/// The row's name, in the warning colour; on the row the list has lit as the one picked, in the system's colour for
+/// that row (the warning colour was orange on the highlight).
+private struct PadAttentionLabel: View {
+    @Environment(\.backgroundProminence) private var prominence
+
+    var body: some View {
+        Text("Needs Attention")
+            .foregroundStyle(prominence == .increased ? AnyShapeStyle(.primary) : AnyShapeStyle(Palette.attention))
     }
 }
 

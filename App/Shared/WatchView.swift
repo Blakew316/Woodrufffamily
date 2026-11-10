@@ -1183,17 +1183,17 @@ struct ContinueTile: View {
             VStack(alignment: .leading, spacing: 6) {
                 Color.clear.frame(width: width, height: width * 1.5)
                     .overlay { Artwork(url: poster, maxPixel: 512) }
+                    // How far it got, across the poster's foot on a soft shade (as the TV app's Up Next). No play disc:
+                    // it sat on the poster's own title, and a tap already goes on playing.
                     .overlay(alignment: .bottom) {
-                        VStack(spacing: 8) {
-                            Image(systemName: "play.fill").font(.system(size: 13, weight: .bold)).foregroundStyle(.white)
-                                .frame(width: 32, height: 32).glass(Circle(), interactive: false).environment(\.colorScheme, .dark)
-                            if item.progress > 0 {
-                                Capsule().fill(.white.opacity(0.3)).frame(height: 4)
-                                    .overlay(alignment: .leading) { Capsule().fill(.white).frame(width: (width - 16) * item.progress) }
-                                    .frame(width: width - 16)
-                            }
+                        if item.progress > 0 {
+                            Capsule().fill(.white.opacity(0.3)).frame(height: 4)
+                                .overlay(alignment: .leading) { Capsule().fill(.white).frame(width: (width - 16) * item.progress) }
+                                .frame(width: width - 16)
+                                .padding(.bottom, 9).padding(.top, 26)
+                                .frame(maxWidth: .infinity)
+                                .background { LinearGradient(colors: [.clear, .black.opacity(0.6)], startPoint: .top, endPoint: .bottom) }
                         }
-                        .padding(.bottom, 10)
                     }
                     .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                     .shadow(color: .black.opacity(0.25), radius: 8, y: 4)
@@ -2401,11 +2401,17 @@ struct LibraryGrid: View {
 }
 
 /// Search Movies and TV Shows: the Search tab's page on iPhone and iPad. Its field is iOS's own for a Search tab (where
-/// the tab bar is on iPhone, at the top of the page on iPad); what's typed shows its results as shelves.
+/// the tab bar is on iPhone, at the top of the page on iPad), put on the tab view itself (`RootView`); what's typed
+/// there shows its results here as shelves.
 struct SearchPage: View {
     @Environment(Fleet.self) private var fleet
     @Environment(\.watchChanged) private var watchChanged
+    #if os(iOS)
+    /// What's typed in the tab view's search field (`PhoneSearch`: the field is the tab view's, not this page's).
+    private let search = PhoneSearch.shared
+    #else
     @State private var query = ""
+    #endif
     @State private var openTitle: String?
     /// Asked again (a result was marked watched).
     @State private var again = 0
@@ -2417,13 +2423,14 @@ struct SearchPage: View {
     #endif
 
     var body: some View {
+        #if os(iOS)
+        let query = search.query
+        #endif
         ScrollView {
             WatchSearchResults(query: query, again: again).padding(.vertical)
         }
         .navigationTitle("Search")
         #if os(iOS)
-        .searchable(text: $query, prompt: "Movies and TV Shows")
-        .autocorrectionDisabled()
         // Scrolling the results puts the keyboard away.
         .scrollDismissesKeyboard(.immediately)
         .onGeometryChange(for: CGFloat.self, of: { $0.size.width }) { w in fitPosters(w) }

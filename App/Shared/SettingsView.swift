@@ -231,16 +231,23 @@ struct SettingsView: View {
 /// an update waiting. A view of its own: the TVs report every couple of seconds, and only this row redraws then.
 struct TVsSummaryRow: View {
     @Environment(Fleet.self) private var fleet
+    /// In a narrow list (iPad Settings' left column): the short form of what it says.
+    var compact = false
+    /// On the row a list has lit as the one picked (iPad's two columns), the words are the system's for that row: the
+    /// warning colour was orange on the highlight.
+    @Environment(\.backgroundProminence) private var prominence
 
     var body: some View {
+        let warns = fleet.tvs.contains(where: \.needsAttention) && prominence != .increased
         HStack {
-            IconRow(symbol: "", color: .clear, title: "TVs", value: tvsSummary, valueColor: fleet.tvs.contains(where: \.needsAttention) ? Palette.attention : .secondary)
+            IconRow(symbol: "", color: .clear, title: "TVs", value: tvsSummary, valueColor: warns ? Palette.attention : .secondary)
             if fleet.updatesWaiting > 0 { UpdateCountBadge(count: fleet.updatesWaiting) }
         }
     }
 
     private var tvsSummary: String {
         let needing = fleet.tvs.filter(\.needsAttention)
+        if compact && !needing.isEmpty { return needing.count == 1 ? "1 Needs Attention" : "\(needing.count) Need Attention" }
         if needing.count == 1 { return "\(needing[0].name) needs attention" }
         if needing.count > 1 { return "\(needing.count) TVs need attention" }
         // Only what's really playing now (not a TV that's off, paused, or left paused).

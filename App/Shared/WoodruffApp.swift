@@ -452,6 +452,16 @@ struct PadCommands: Commands {
 }
 #endif
 
+#if os(iOS)
+/// What's typed in the Search tab's field on iPhone and iPad. Kept outside the views: the field is the tab view's own
+/// (iOS puts it where the tab bar is once the Search tab is picked), and the Search tab's page reads what's typed.
+@Observable @MainActor
+final class PhoneSearch {
+    static let shared = PhoneSearch()
+    var query = ""
+}
+#endif
+
 /// The phone page's five sections.
 enum AppSection: String, CaseIterable, Identifiable, Hashable {
     case home, remote, watch, send, memories, settings
@@ -620,6 +630,9 @@ struct RootView: View {
         // On iPad the tabs float at the top and turn into a sidebar, like the Mac's; on iPhone, the usual tab bar.
         .tabViewStyle(.sidebarAdaptable)
         #if os(iOS)
+        // The Search tab's field is the tab view's own (`searchable` on the tab view: the tab with the search role
+        // gets it). Picking the tab starts a search; closing the search goes back to the tab before.
+        .modifier(TabViewSearch(onSearch: selection.wrappedValue == .search))
         // iPhone: the tab bar tucks away while a page scrolls down, and comes back on the way up.
         .modifier(TabBarTucksAway())
         // What's playing, as the tab bar's own accessory: above it, and in line with it once it has tucked away.
@@ -628,6 +641,23 @@ struct RootView: View {
     }
 
     #if os(iOS)
+    /// The tab view's search field, for its Search tab. A modifier of its own, so typing redraws this and the Search
+    /// page, not the window's root.
+    private struct TabViewSearch: ViewModifier {
+        /// The Search tab is the one showing.
+        var onSearch: Bool
+        @Bindable private var search = PhoneSearch.shared
+
+        func body(content: Content) -> some View {
+            content
+                .searchable(text: $search.query, prompt: "Movies and TV Shows")
+                // Names of films and shows: no corrections while the Search tab is the one typed in. (Only then: this
+                // reaches every field in the tabs.)
+                .autocorrectionDisabled(onSearch)
+                .tabViewSearchActivation(.searchTabSelection)
+        }
+    }
+
     /// iPhone: the tab bar tucks away while a page scrolls down, and comes back on the way up
     /// (`tabBarMinimizeBehavior(.onScrollDown)`). Not from the app's very first moment: told so then, iOS 26 and 27
     /// show the first tab picked as the app opens and slide to the one it really opened on. So it's told a second later.
