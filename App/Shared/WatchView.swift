@@ -598,8 +598,8 @@ extension EnvironmentValues {
 /// and never larger than Apple TV's own. They are worked out from the page's size, so they follow a window as it's
 /// resized and a phone as it turns.
 struct WatchMetrics: Equatable, Sendable {
-    /// The page's width; its height down to whatever covers its foot (a tab bar, what's playing); and how much the
-    /// bars at its top and its foot cover.
+    /// The page's width; its height, from its very top (under the bars there) down to whatever covers its foot (a tab
+    /// bar, what's playing); and how much the bars at its top and its foot cover.
     var width: CGFloat = 0
     var height: CGFloat = 0
     var top: CGFloat = 0
@@ -655,14 +655,28 @@ extension EnvironmentValues {
 /// blues, whatever the device's own appearance: the banner's shade and the rows over its foot are drawn for that.
 private struct WatchPageShape: ViewModifier {
     @Binding var metrics: WatchMetrics
+    /// The page's height without the bars at its top (what's left under them).
+    @State private var under: CGFloat = 0
 
     func body(content: Content) -> some View {
         content
-            .ignoresSafeArea(.container, edges: .top)
+            // The page itself, measured where it runs under the bars at its top: its whole height. (Measured outside
+            // that, it came without them: the banner stopped short of the page's foot, and everything on it sat that
+            // much too high.)
             .onGeometryChange(for: WatchMetrics.self, of: { g in
                 WatchMetrics(width: g.size.width.rounded(), height: g.size.height.rounded(),
-                             top: g.safeAreaInsets.top.rounded(), bottom: g.safeAreaInsets.bottom.rounded())
-            }) { metrics = $0 }
+                             top: 0, bottom: g.safeAreaInsets.bottom.rounded())
+            }) { whole in
+                var m = whole
+                m.top = under > 0 ? max(0, whole.height - under) : 0
+                metrics = m
+            }
+            .ignoresSafeArea(.container, edges: .top)
+            // What the bars at its top cover: the difference from its height under them.
+            .onGeometryChange(for: CGFloat.self, of: { $0.size.height.rounded() }) { h in
+                under = h
+                if metrics.height > 0 { metrics.top = max(0, metrics.height - h) }
+            }
             #if os(iOS)
             .background { IconBackdrop() }
             .environment(\.colorScheme, .dark)
@@ -848,7 +862,7 @@ struct Billboard: View {
                     .onTapGesture { open(t) }
                     .contextMenu { TitleMenu(title: t) }
                     .zIndex(2)
-                VStack(alignment: .leading, spacing: max(12, (m.name * 0.3).rounded())) {
+                VStack(alignment: .leading, spacing: max(14, (m.name * 0.38).rounded())) {
                     cinemaWords(t).id(t.id).transition(.opacity)
                     // Play and Details: one pair that stays while the picture and the words over them change.
                     cinemaButtons(t)
@@ -1009,20 +1023,25 @@ struct Billboard: View {
     /// The words over the picture's lower left, as the Apple TV's: the name large, what it is, what it's about.
     private func cinemaWords(_ t: Title) -> some View {
         let m = metrics
-        return VStack(alignment: .leading, spacing: max(6, (m.name * 0.18).rounded())) {
+        return VStack(alignment: .leading, spacing: 0) {
             Text(t.title)
                 .font(.system(size: m.name, weight: .heavy))
                 .foregroundStyle(.white)
                 .lineLimit(2)
                 .minimumScaleFactor(0.6)
                 .shadow(color: .black.opacity(0.5), radius: 12)
+            // What it is, close under its name (type that large has room of its own under it); then its story, which
+            // looks as far under that as that does under the name, with a little more room between its two lines.
             Text(meta(t)).font(.system(size: m.line, weight: .semibold)).foregroundStyle(.white.opacity(0.9)).lineLimit(1)
+                .padding(.top, max(3, (m.name * 0.1).rounded()))
             if let o = overviews[t.id], !o.isEmpty {
                 Text(o)
                     .font(.system(size: m.story, weight: .medium))
                     .foregroundStyle(.white.opacity(0.9))
+                    .lineSpacing((m.story * 0.18).rounded())
                     .lineLimit(2)
                     .frame(maxWidth: max(280, m.width * 0.43), alignment: .leading)
+                    .padding(.top, max(8, (m.name * 0.26).rounded()))
                     .transition(.opacity)
             }
         }
@@ -1031,16 +1050,47 @@ struct Billboard: View {
         .allowsHitTesting(false)
     }
 
+    /// The size of the type on the banner's buttons before the page's share of it: the app's capsule buttons' own
+    /// (on iPhone and iPad it follows the text size the device is set to, as theirs does).
+    #if os(iOS)
+    @ScaledMetric(relativeTo: .subheadline) private var buttonType: CGFloat = 15
+    #else
+    private var buttonType: CGFloat { 11 }
+    #endif
+
     /// Play and Details, under the words: larger on a larger page.
     private func cinemaButtons(_ t: Title) -> some View {
         let grow = min(1.7, max(1, metrics.line / 13))
-        return HStack(spacing: 10) {
+        return HStack(spacing: (10 * grow).rounded()) {
             if let p = t.play {
-                CapsuleButton(title: p.label ?? "Play", symbol: "play.fill") { PlayRouter.start(p, fleet: fleet) }
+                cinemaButton(p.label ?? "Play", symbol: "play.fill", prominent: true, grow: grow) { PlayRouter.start(p, fleet: fleet) }
             }
-            CapsuleButton(title: "Details", symbol: nil, prominent: false) { open(t) }
+            cinemaButton("Details", symbol: nil, prominent: false, grow: grow) { open(t) }
         }
-        .scaleEffect(grow, anchor: .bottomLeading)
+    }
+
+    /// One of the banner's buttons: the app's capsule button (`CapsuleButton`), drawn at the page's size. (It was the
+    /// small one scaled up afterwards, which took no more room for that: it grew upwards, into the story above it.)
+    private func cinemaButton(_ title: String, symbol: String?, prominent: Bool, grow: CGFloat,
+                              action: @escaping () -> Void) -> some View {
+        let size = (buttonType * grow).rounded()
+        return Button(action: action) {
+            HStack(spacing: (6 * grow).rounded()) {
+                if let symbol { Image(systemName: symbol).font(.system(size: size, weight: .bold)) }
+                Text(title).font(.system(size: size, weight: .semibold)).lineLimit(1)
+            }
+            .fixedSize()
+            .padding(.horizontal, (18 * grow).rounded()).padding(.vertical, (10 * grow).rounded())
+            .foregroundStyle(prominent ? Color.black : .white)
+            .background { if prominent { Capsule().fill(.white) } }
+            .modifier(SecondaryGlass(on: !prominent))
+            #if os(iOS)
+            // The whole capsule takes the touch, and iPad's pointer lights up the capsule itself.
+            .contentShape(Capsule())
+            .contentShape(.hoverEffect, Capsule())
+            #endif
+        }
+        .buttonStyle(PressScale(scale: 0.95))
     }
     #endif
 
