@@ -109,19 +109,8 @@ struct WatchView: View {
         // Apple TV: the page's scrolling, in the banner's hands (back on its Play, the page goes back to its top).
         .modifier(WatchScrollReader())
         #else
-        // The banner runs up under the bars at the page's top (the Mac window's toolbar, the phone's title bar).
-        .ignoresSafeArea(.container, edges: .top)
-        // The page's size, for everything on it: it follows a window as it's resized and a phone as it turns.
-        .onGeometryChange(for: WatchMetrics.self, of: { g in
-            WatchMetrics(width: g.size.width.rounded(), height: g.size.height.rounded(),
-                         top: g.safeAreaInsets.top.rounded(), bottom: g.safeAreaInsets.bottom.rounded())
-        }) { metrics = $0 }
-        #endif
-        #if os(iOS)
-        // iPhone and iPad: the page is the dark room the Apple TV's is, over the app's blues, whatever the device's
-        // own appearance: its banner's shade and the rows over its foot are drawn for that.
-        .background { IconBackdrop() }
-        .environment(\.colorScheme, .dark)
+        // The Apple TV's shape: under the bars at the page's top, its size known to everything on it (`WatchPageShape`).
+        .modifier(WatchPageShape(metrics: $metrics))
         #endif
         .scrollIndicators(.hidden)
         #if os(macOS)
@@ -602,32 +591,6 @@ extension EnvironmentValues {
     }
 }
 
-#if os(tvOS)
-/// Apple TV's sizes for Watch, in points on its 1920 by 1080 screen (read from across the room), as the TV app's own.
-enum TVWatch {
-    /// A poster: 250 by 375. Six across, the seventh showing at the edge.
-    static let poster: CGFloat = 250
-    /// A wide picture (Continue Watching, an episode, a collection's film): 400 by 225. Four across, the fifth showing.
-    static let still: CGFloat = 400
-    /// Between the tiles of a row.
-    static let gap: CGFloat = 40
-    /// A row's heading.
-    static let heading = Font.system(size: 38, weight: .bold)
-    /// Where the first row under the banner starts (its heading's top, from the top of the screen), so the whole of
-    /// it shows with its names, clear of the bottom edge (and the page needn't move when the remote comes down onto
-    /// it): a row of stills, or the taller row of posters.
-    static let stillsTop: CGFloat = 568
-    static let postersTop: CGFloat = 456
-    /// How tall the words under a Continue Watching still are: a name on up to two lines, and the line under it.
-    static let continueWords: CGFloat = 106
-    /// On a title's page: how tall the words under a still are (an episode's number, name and story; a film's name),
-    /// the room over the stills for the one under the remote to lift into, and how tall the shelf is with both.
-    static let episodeWords: CGFloat = 136
-    static let filmWords: CGFloat = 70
-    static let shelfLift: CGFloat = 20
-    static func shelfHeight(words: CGFloat) -> CGFloat { shelfLift + still * 9 / 16 + 16 + words }
-}
-
 #if !os(tvOS)
 /// Watch's sizes on iPhone, iPad and the Mac, where the page is laid out as the Apple TV's: the banner the whole page,
 /// its name, Play and Details at its lower left, and the first row over its foot. Apple TV's own sizes are for a
@@ -684,6 +647,55 @@ extension EnvironmentValues {
     }
 }
 #endif
+
+#if !os(tvOS)
+/// iPhone, iPad and the Mac: what gives Watch's page the Apple TV's shape. It runs up under the bars at its top (the
+/// Mac window's toolbar, the phone's title bar), and says its size, for everything on it: the sizes follow a window
+/// as it's resized and a phone as it turns. On iPhone and iPad it's the dark room the Apple TV's is, over the app's
+/// blues, whatever the device's own appearance: the banner's shade and the rows over its foot are drawn for that.
+private struct WatchPageShape: ViewModifier {
+    @Binding var metrics: WatchMetrics
+
+    func body(content: Content) -> some View {
+        content
+            .ignoresSafeArea(.container, edges: .top)
+            .onGeometryChange(for: WatchMetrics.self, of: { g in
+                WatchMetrics(width: g.size.width.rounded(), height: g.size.height.rounded(),
+                             top: g.safeAreaInsets.top.rounded(), bottom: g.safeAreaInsets.bottom.rounded())
+            }) { metrics = $0 }
+            #if os(iOS)
+            .background { IconBackdrop() }
+            .environment(\.colorScheme, .dark)
+            #endif
+    }
+}
+#endif
+
+#if os(tvOS)
+/// Apple TV's sizes for Watch, in points on its 1920 by 1080 screen (read from across the room), as the TV app's own.
+enum TVWatch {
+    /// A poster: 250 by 375. Six across, the seventh showing at the edge.
+    static let poster: CGFloat = 250
+    /// A wide picture (Continue Watching, an episode, a collection's film): 400 by 225. Four across, the fifth showing.
+    static let still: CGFloat = 400
+    /// Between the tiles of a row.
+    static let gap: CGFloat = 40
+    /// A row's heading.
+    static let heading = Font.system(size: 38, weight: .bold)
+    /// Where the first row under the banner starts (its heading's top, from the top of the screen), so the whole of
+    /// it shows with its names, clear of the bottom edge (and the page needn't move when the remote comes down onto
+    /// it): a row of stills, or the taller row of posters.
+    static let stillsTop: CGFloat = 568
+    static let postersTop: CGFloat = 456
+    /// How tall the words under a Continue Watching still are: a name on up to two lines, and the line under it.
+    static let continueWords: CGFloat = 106
+    /// On a title's page: how tall the words under a still are (an episode's number, name and story; a film's name),
+    /// the room over the stills for the one under the remote to lift into, and how tall the shelf is with both.
+    static let episodeWords: CGFloat = 136
+    static let filmWords: CGFloat = 70
+    static let shelfLift: CGFloat = 20
+    static func shelfHeight(words: CGFloat) -> CGFloat { shelfLift + still * 9 / 16 + 16 + words }
+}
 
 /// Apple TV draws posters and stills two or three times the size a phone does, on a screen up to 4K: TMDB's larger
 /// copy of each (a poster 500 across in place of 342, a still 780 in place of 300). Any other picture is left as it is.
