@@ -85,10 +85,7 @@ struct WoodruffCommands: Commands {
         CommandGroup(after: .appInfo) {
             Button("Check for Updates…") { UpdaterStatus.shared.checkNow(reportTo: fleet) }
         }
-        // Settings is a page of Woodruff's own window (there's no Settings window): ⌘, opens it there.
-        CommandGroup(replacing: .appSettings) {
-            Button("Settings…") { MacActions.openSettings() }.keyboardShortcut(",", modifiers: .command)
-        }
+        // Settings… (⌘,) is the system's own item here: it opens this Mac's Settings window (`MacSettingsWindow`).
         // One window: ⌘N brings it back or forward (New Window opened another beside it, sharing its pages).
         CommandGroup(replacing: .newItem) {
             Button("Open Woodruff") { MainWindowOpener.show() }.keyboardShortcut("n", modifiers: .command)
@@ -178,8 +175,8 @@ enum MacActions {
         }
     }
 
-    /// ⌘,: Settings, in Woodruff's own window (opened again if it was closed), with a camera filling it put away as a
-    /// click on Settings in the bar puts it away.
+    /// The family's Settings, in Woodruff's own window (opened again if it was closed), with a camera filling it put
+    /// away as a click on Settings in the bar puts it away. (⌘, opens this Mac's own Settings window instead.)
     static func openSettings() {
         if CameraStreams.shared.full != nil { CameraStreams.shared.full = nil }
         UserDefaults.standard.set(AppSection.settings.rawValue, forKey: "section")

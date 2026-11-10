@@ -382,6 +382,12 @@ struct WoodruffApp: App {
             MenuBarIcon(fleet: fleet)
         }
         .menuBarExtraStyle(.window)
+
+        // Settings… (⌘,): this Mac's own settings, in the Mac's standard Settings window. (The family's are the
+        // Settings page of Woodruff's window.)
+        Settings {
+            MacSettingsWindow().environment(fleet)
+        }
         #endif
     }
 }
@@ -1212,11 +1218,12 @@ struct MacSectionBar: View {
 #endif
 
 
-#if os(macOS) || os(tvOS)
-/// Mac Settings like System Settings: a short list down the left in a glass panel, the page highlighted open on
-/// the right to change. A link inside a page to one in the list highlights it there; any other shows its page on
-/// the right, over the one it was opened from: Back above its name (⌘[) goes back a page, and the row it belongs to
-/// stays lit in the list (a click there goes back to that page too).
+#if os(macOS)
+/// Mac Settings like System Settings: its pages in a sidebar down the left (the Mac's own list: the arrow keys move
+/// through it, typing a name jumps to it, and the system lights the one picked), the page picked open on the right
+/// to change. A link inside a page to one in the list picks it there; any other shows its page on the right, over
+/// the one it was opened from: Back above its name (⌘[) goes back a page, and the row it belongs to stays lit in the
+/// list (a click there goes back to that page too).
 struct MacSettingsView: View {
     @Environment(Fleet.self) private var fleet
     @AppStorage("mac.settingsPage") private var picked = "TVs"
@@ -1230,6 +1237,14 @@ struct MacSettingsView: View {
         /// message being written, and who it goes to once To has been to and back).
         var keep = false
         let view: () -> AnyView
+    }
+
+    /// A group of the list, known by its first row, not by its place: Needs Attention coming or going above the rest
+    /// doesn't make every row below it new. (An id of its own kind, which the list can't take for a row's.)
+    private struct RowGroup: Identifiable {
+        struct ID: Hashable { let first: String? }
+        let items: [Item]
+        var id: ID { ID(first: items.first?.id) }
     }
 
     /// A page a link inside the right side showed.
@@ -1255,13 +1270,36 @@ struct MacSettingsView: View {
         if let i = opened.firstIndex(where: { $0.id == id }) { opened.removeSubrange(i...) }
     }
 
-    /// Back shows above the page's name (the Mac).
-    private var hasBack: Bool {
-        #if os(macOS)
-        return !opened.isEmpty
-        #else
-        return false
-        #endif
+    /// Back shows above the page's name.
+    private var hasBack: Bool { !opened.isEmpty }
+
+    /// A row of the list picked: by a click, the arrow keys, or its name typed. Its page shows, and any page opened
+    /// over the last one closes (the row already lit, clicked again, goes back to its own page this way).
+    private func pick(_ id: String) {
+        if !opened.isEmpty { opened = [] }
+        if picked != id { picked = id }
+        keepKeysInList()
+    }
+
+    /// The keyboard stays with the list while the arrow keys (or a typed name) move through it. A page that takes
+    /// the keyboard as it opens (Send, for its message) would end them at its row: for a moment after a key picked a
+    /// row, the list takes the keyboard back from a text field. (A click on the row leaves it with the page, and Tab
+    /// still moves on into it.)
+    private func keepKeysInList() {
+        guard let event = NSApp.currentEvent, event.type == .keyDown, let window = NSApp.keyWindow,
+              let list = window.firstResponder as? NSView, !(list is NSText) else { return }
+        let clicks: [NSEvent.EventType] = [.leftMouseDown, .leftMouseDragged, .leftMouseUp, .rightMouseDown, .rightMouseUp]
+        Task {
+            for _ in 0..<20 {
+                try? await Task.sleep(nanoseconds: 20_000_000)
+                if let now = NSApp.currentEvent {
+                    // A click or Tab meanwhile: the keyboard was sent somewhere on purpose.
+                    if clicks.contains(now.type) { return }
+                    if now.type == .keyDown, now.keyCode == 48 { return }
+                }
+                if window.firstResponder is NSText, list.window === window { _ = window.makeFirstResponder(list) }
+            }
+        }
     }
 
     /// The list, in groups with a little space between them.
@@ -1307,44 +1345,62 @@ struct MacSettingsView: View {
         // A link inside a page: to a page in the list, that one is picked there; any other opens over the page it's on.
         let push: (String, AnyView) -> Void = { title, view in
             if all.contains(where: { $0.id == title }) { opened = []; picked = title } else {
-                #if os(macOS)
                 // A page that stays under it (Send) lets go of a field being typed in: nothing typed goes on into a
                 // field that's out of sight. (Only a text field: the remote's panel keeps the keyboard.)
                 if let w = MainWindow.current, w.firstResponder is NSText { _ = w.makeFirstResponder(nil) }
-                #endif
                 opened.append(Opened(title: title, view: view))
             }
         }
         HStack(alignment: .top, spacing: 18) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    ForEach(Array(groups.enumerated()), id: \.offset) { _, items in
-                        VStack(spacing: 2) {
-                            // Still lit under a page opened from it: that's where you are, and the way back.
-                            ForEach(items) { it in row(it, on: it.id == current?.id) }
+            // The list, as the Mac's own sidebar: one row is always picked (a click on the empty space under the
+            // rows can't leave it without one), and it stays lit under a page opened from it: that's where you
+            // are, and the way back.
+            List(selection: Binding<String>(get: { current?.id ?? "TVs" }, set: { id in
+                // Only another row counts as picked here (against the row lit now, not as it was when this was
+                // drawn): the list may name the same one again as its rows change (Needs Attention coming or
+                // going), which mustn't close a page opened from it.
+                let lit = all.contains(where: { $0.id == picked }) ? picked : "TVs"
+                if id != lit { pick(id) }
+            })) {
+                ForEach(groups.map(RowGroup.init)) { group in
+                    Section {
+                        ForEach(group.items) { it in
+                            Text(it.id)
+                                // (Its own colour only while it isn't the one picked: the system colours that one.)
+                                .foregroundStyle(it.id == "Needs Attention" && it.id != current?.id ? AnyShapeStyle(Palette.attention) : AnyShapeStyle(.foreground))
+                                .lineLimit(1)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .contentShape(Rectangle())
+                                .tag(it.id)
+                                // How many TVs have an update waiting, as the sidebar's own count (none: no count).
+                                .badge(it.id == "TV Updates" ? fleet.updatesWaiting : 0)
+                                // The list says nothing when the row already picked is clicked again: this does, so
+                                // that click still goes back to its page from one opened over it.
+                                .simultaneousGesture(TapGesture().onEnded { pick(it.id) })
                         }
                     }
                 }
-                .padding(10)
             }
-            .scrollIndicators(.never)
-            .frame(width: 230 * macScale)
-            .glass(RoundedRectangle(cornerRadius: 22, style: .continuous), tint: IconPalette.cyan.opacity(0.06), interactive: false)
-            .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).strokeBorder(IconPalette.cyan.opacity(0.25), lineWidth: 0.75))
+            .listStyle(.sidebar)
+            // On the panel behind it, not the list's own background.
+            .scrollContentBackground(.hidden)
+            // As wide as System Settings' own list.
+            .frame(width: 220)
+            // Its rows stop at the panel's rounded corners as they scroll.
+            .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+            .modifier(SettingsPanel())
             .padding(.leading, 18).padding(.vertical, 6)
 
-            // The page: its name large at the top, then its settings, all in one glass panel matching the list.
+            // The page: its name large at the top, then its settings, all on one plain panel matching the list's.
             VStack(alignment: .leading, spacing: 0) {
-                #if os(macOS)
                 // A page opened from the one picked, or from one opened from it: Back to where it was opened from
                 // (⌘[ too), in line with the page's name under it.
                 if hasBack {
                     MacBackRow(title: opened.last?.title ?? "", backTo: opened.dropLast().last?.title ?? current?.id ?? "Settings") { back() }
                         .padding(.horizontal, 10).padding(.top, 14)
                 }
-                #endif
                 Text(opened.last?.title ?? current?.id ?? "Settings")
-                    .font(.system(size: 26 * macScale, weight: .bold, design: .rounded))
+                    .font(.system(size: 26, weight: .bold, design: .rounded))
                     .padding(.horizontal, 28).padding(.top, hasBack ? 0 : 22).padding(.bottom, 4)
                 ZStack {
                     // The page picked in the list. Under a page opened from it, it's put away (and made afresh on
@@ -1359,56 +1415,39 @@ struct MacSettingsView: View {
                             .modifier(PaneLayer(onTop: page.id == opened.last?.id))
                     }
                 }
-                // One look for every page here: on the glass panel itself, roomier rows, slightly larger type, and
-                // the family's light blue for switches, buttons and links.
-                #if !os(tvOS)
+                // One look for every page here: on the panel itself, roomier rows, slightly larger type, and the
+                // family's light blue for switches, buttons and links.
                 .scrollContentBackground(.hidden)
-                #endif
                 .environment(\.defaultMinListRowHeight, 40)
-                #if !os(tvOS)
                 .font(.system(size: 14))
-                #endif
                 .tint(IconPalette.cyan)
                 .contentMargins(.horizontal, 12, for: .scrollContent)
                 .transition(.opacity)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .glass(RoundedRectangle(cornerRadius: 22, style: .continuous), tint: IconPalette.cyan.opacity(0.06), interactive: false)
-            .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).strokeBorder(IconPalette.cyan.opacity(0.25), lineWidth: 0.75))
+            .modifier(SettingsPanel())
             .padding(.trailing, 18).padding(.vertical, 6)
             // (The page picked in the list has no page under it to go back to.)
             .environment(\.macPanePush, MacPanePush(push: push, pop: {}))
             .environment(\.macPageTitle, current?.id ?? "Settings")
+            // The page picked fades in over the last one (the list lights its own row).
+            .animation(.smooth(duration: 0.2), value: picked)
         }
-        .animation(.smooth(duration: 0.2), value: picked)
-        .task { await HubSettings.shared.loadIfNeeded(fleet) }
+        .task {
+            // What the family's updater last said, read once for Needs Attention (an update that failed shows
+            // there). Its own rows are in this Mac's Settings window, which keeps reading it while they show.
+            UpdaterStatus.shared.reload()
+            await HubSettings.shared.loadIfNeeded(fleet)
+        }
     }
+}
 
-    private func row(_ it: Item, on: Bool) -> some View {
-        Button {
-            opened = []
-            picked = it.id
-        } label: {
-            Text(it.id)
-                .font(.system(size: 13.5 * macScale, weight: on ? .semibold : .regular))
-                .foregroundStyle(it.id == "Needs Attention" ? Palette.attention : (on ? IconPalette.white : IconPalette.ice))
-                .lineLimit(1)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 12 * macScale)
-                .frame(height: 32 * macScale)
-                .background {
-                    if on {
-                        RoundedRectangle(cornerRadius: 9, style: .continuous).fill(IconPalette.cyan.opacity(0.22))
-                            .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(IconPalette.cyan.opacity(0.6), lineWidth: 0.75))
-                    }
-                }
-                .contentShape(Rectangle())
-        }
-        #if os(tvOS)
-        .buttonStyle(TVBarButtonStyle())
-        #else
-        .buttonStyle(.plain)
-        #endif
+/// The panel behind Settings' list, and the one behind its page: a plain material in the panel's shape, not glass.
+/// What's on them has glass of its own (Back, Update, Send's card), and glass laid over glass has only that glass to
+/// sample, not what's behind it. Glass is for the controls; what holds them is plain.
+private struct SettingsPanel: ViewModifier {
+    func body(content: Content) -> some View {
+        content.background { RoundedRectangle(cornerRadius: 22, style: .continuous).fill(.regularMaterial) }
     }
 }
 

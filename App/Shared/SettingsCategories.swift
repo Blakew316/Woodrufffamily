@@ -137,16 +137,15 @@ struct SmartHomeSettingsView: View {
     }
 }
 
-/// Settings → General: Shortcuts, the Mac's click sound, keeping every device in step, the TV's last
-/// crash when there is one, and which build of Woodruff Family this is (on a Mac, with how its updates are going).
-/// On the Mac, Shortcuts and Sync Across Devices aren't repeated here: they're in Settings' list, beside this page.
+/// Settings → General: Shortcuts, keeping every device in step, the TV's last crash when there is one, and which
+/// build of Woodruff Family this is. (On a Mac the rest of General is about that Mac alone, so it's in the Mac's own
+/// Settings window, ⌘,: its click sound, how quick it has been and how its updates are going. See
+/// `MacSettingsWindow`. Shortcuts and Sync Across Devices aren't repeated here on the Mac either: they're in
+/// Settings' list, beside this page.)
 struct GeneralSettingsView: View {
     @Environment(Fleet.self) private var fleet
     var hub: HubSettings
-    #if os(macOS)
-    // Read and written through UserDefaults, so a change synced from another Mac shows here at once.
-    @AppStorage("remoteClick") private var remoteClick = true
-    #else
+    #if !os(macOS)
     /// Home's "Away from home" line (on unless turned off here).
     @AppStorage("home.awayNote") private var awayNote = true
     #endif
@@ -161,11 +160,7 @@ struct GeneralSettingsView: View {
                 }
             }
             #endif
-            #if os(macOS)
-            Section {
-                Toggle("Click Sound on Remote Keys", isOn: $remoteClick)
-            }
-            #elseif os(iOS)
+            #if os(iOS)
             Section {
                 Toggle("Away From Home Note", isOn: $awayNote)
             } footer: {
@@ -182,7 +177,17 @@ struct GeneralSettingsView: View {
                     }
                 }
             }
+            #if os(macOS)
+            // Which build, and the way to the rest (this Mac's own Settings window, on its General tab).
+            Section {
+                LabeledContent("Version", value: AppBuild.label)
+                MacSettingsWindowButton("This Mac’s Settings…", tab: .general)
+            } header: {
+                Text("Woodruff Family")
+            }
+            #else
             WoodruffFamilySection()
+            #endif
         }
         .familyFormStyle()
         .navigationTitle("General")
@@ -191,11 +196,6 @@ struct GeneralSettingsView: View {
         // Opened before Settings had read them (or they couldn't be read then): read them now, and keep them current.
         .task { await hub.loadIfNeeded(fleet) }
         .task { await hub.follow(fleet) }
-        #if os(macOS)
-        // The family's updater: what it says is read as the page opens, every 5 seconds while it shows, and every 2
-        // seconds for a minute after Check Now.
-        .task { await UpdaterStatus.shared.follow() }
-        #endif
     }
 }
 

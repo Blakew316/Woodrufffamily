@@ -269,6 +269,13 @@ struct PhoneSettingsView: View {
 
     var body: some View {
         Form {
+            #if os(macOS)
+            // The alerts this Mac shows (TV alerts, the cameras', the vehicles it watches for) are in the Mac's own
+            // Settings window, on its Notifications tab: this opens it there.
+            Section {
+                MacSettingsWindowButton("This Mac’s Alerts…", tab: .notifications)
+            }
+            #else
             Section {
                 #if os(iOS) || os(tvOS)
                 Toggle("Now Playing on Lock Screen", isOn: $liveActivity)
@@ -278,6 +285,7 @@ struct PhoneSettingsView: View {
             } footer: {
                 Text("TV alerts tell you when a TV goes off or needs attention.")
             }
+            #endif
             #if !os(macOS)
             // The cameras' alerts in one page: this device's and what pops up on every TV. (On the Mac that page is
             // in Settings' list, beside this one.)
@@ -328,11 +336,14 @@ struct PhoneSettingsView: View {
         .task { await hub.loadIfNeeded(fleet) }
     }
 
-    /// The camera alerts that are on: this device's when its cameras are connected, else the TVs'.
+    /// The camera alerts that are on: this device's when its cameras are connected, else the TVs'. (On a Mac always
+    /// the TVs': the page it opens has only theirs, the Mac's own being in its Settings window.)
     private var cameraAlertsSummary: String {
+        #if !os(macOS)
         if NestCameras.shared.connected {
             return Self.summary([("Doorbell", doorbellAlerts), ("Person", personAlerts), ("Motion", motionAlerts)])
         }
+        #endif
         return Self.summary([("Person", hub.s?.nest?.person ?? true), ("Motion", hub.s?.nest?.motion ?? false)])
     }
 
@@ -1066,9 +1077,14 @@ struct CameraAlertsView: View {
 
     var body: some View {
         Form {
-            if NestCameras.shared.connected { AlertsSection(title: "On This Device", showsReconnect: false) }
             #if os(macOS)
-            if NestCameras.shared.connected { VehicleAlertsSection() }
+            // This Mac's own camera alerts, and the vehicles it watches for, are in the Mac's Settings window (its
+            // Notifications tab): this opens it there. Here, what pops up on the TVs.
+            Section {
+                MacSettingsWindowButton("This Mac’s Alerts…", tab: .notifications)
+            }
+            #else
+            if NestCameras.shared.connected { AlertsSection(title: "On This Device", showsReconnect: false) }
             #endif
             if hub.s?.nest?.connected == true { TVCameraAlertsSection(hub: hub, header: "On the TVs") }
         }

@@ -248,7 +248,7 @@ final class VehicleWatch {
     }
 }
 
-/// Settings → Notifications → Camera Alerts (Mac): which cameras the Mac watches for vehicles.
+/// The Mac's own Settings window (⌘,) → Notifications: which cameras the Mac watches for vehicles.
 struct VehicleAlertsSection: View {
     private let watch = VehicleWatch.shared
     private let nest = NestCameras.shared

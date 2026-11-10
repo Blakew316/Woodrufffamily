@@ -93,9 +93,10 @@ battery below 30% puts off building; installing a shared build still goes ahead.
 The Mac Studio keeps trying until both have it, and it doesn't open the app on them. So keep the Mac Studio awake
 with its user logged in (a locked screen is fine).
 
-**Settings → General** shows which build a device has ("Build 412 · e7d8293"). On a Mac it also shows how its
-updates are going (on the Mac Studio, each iPhone's too), with **Check for Updates Now**. **Check for Updates…** in
-the Woodruff Family menu does the same.
+**Settings → General** shows which build a device has ("Build 412 · e7d8293"). On a Mac, the app's own Settings
+window (Woodruff Family > Settings…, ⌘,) has the rest under General: the remote's key click, and how its updates are
+going (on the Mac Studio, each iPhone's too), with **Check for Updates Now** (**Check for Updates…** in the Woodruff
+Family menu does the same). Its Notifications tab has the alerts that Mac shows.
 
 **Setting up a Mac (once).** In Terminal, in the repository folder, run the line for that Mac:
 
