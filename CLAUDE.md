@@ -60,6 +60,7 @@ The user sets it up once per Mac, in Terminal in the repository folder:
 - MacBook Pro: `python3 scripts/updater.py install --role follower --build-fallback`
 - Mac Studio 2 (Apple revoked its certificate, so it can't build): `python3 scripts/updater.py install --role follower`
 
-To see how a Mac is doing: `python3 scripts/updater.py status` (the Mac app's Settings > General shows the same).
+To see how a Mac is doing: `python3 scripts/updater.py status` (the Mac app's Settings window, ⌘, then General, shows
+the same).
 When a device doesn't update, that status says why. The updater's logs are in `~/Library/Logs/Woodruff Family/`
 on each Mac.

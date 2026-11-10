@@ -174,8 +174,8 @@ moment after an alert from a camera they show (the doorbell and the driveway), t
 has iOS reload the camera widgets, even with Woodruff closed. Without it the build leaves push off the widgets alone:
 they then update from the alert itself, which iOS can put off once a widget has used its reloads for the day.
 
-Until the app exists in App Store Connect the upload says "Not Set Up" in the Mac app's Settings > General and is
-tried again every 6 hours (or at Check for Updates Now). To turn uploads off, add `"testflight": false` to the
+Until the app exists in App Store Connect the upload says "Not Set Up" in the Mac app's Settings window (⌘,) under
+General and is tried again every 6 hours (or at Check for Updates Now). To turn uploads off, add `"testflight": false` to the
 updater's `config.json`. TestFlight builds use Apple's production push service, so Instant iPhone Alerts need a push
 key enabled for Sandbox & Production.
 
