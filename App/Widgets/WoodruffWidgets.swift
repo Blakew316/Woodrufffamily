@@ -44,22 +44,17 @@ struct MoreControls: WidgetBundle {
     }
 }
 
-/// Lock Screen and Control Center: opens Woodruff to Home. A house in the app icon's colours: a white roof over cyan
-/// walls and door (its own symbol, `woodruff.house`, in multicolour).
+/// Lock Screen and Control Center: opens Woodruff to Home. A house in the app icon's blue.
+/// iOS draws a control's symbol white, whatever colours the symbol has, and in the control's own colour only while
+/// the control is on. So it's a switch that's always on, which opens Woodruff whichever way it's flipped. (It was a
+/// button with a symbol of its own in two colours, a white roof over cyan walls: it came out all white, and small.)
 struct WoodruffHomeControl: ControlWidget {
     private static let cyan = Color(red: 0.227, green: 0.678, blue: 0.875)
 
     var body: some ControlWidgetConfiguration {
         StaticControlConfiguration(kind: "com.woodruff.family.control.home") {
-            ControlWidgetButton(action: OpenHomeIntent()) {
-                Label {
-                    Text("Woodruff")
-                } icon: {
-                    // Its own colours (the Lock Screen keeps a symbol's multicolour and draws anything else white):
-                    // Apple's cyan walls and door, a white roof.
-                    Image("woodruff.house")
-                        .symbolRenderingMode(.multicolor)
-                }
+            ControlWidgetToggle("Woodruff", isOn: true, action: OpenHomeSwitchIntent()) { _ in
+                Label("Home", systemImage: "house.fill")
             }
             .tint(Self.cyan)
         }
