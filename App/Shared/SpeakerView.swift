@@ -187,7 +187,21 @@ struct SpeakerDetailView: View {
 /// The room's art, large and blurred behind everything.
 struct ArtBackdrop: View {
     var url: URL?
+    #if os(tvOS)
+    /// Apple TV: the page is one of Settings' (`TVSettingsPage`), at the right of the screen over Settings' own
+    /// backdrop. This one would only cover that side, as a dark slab beside the page's name.
+    @Environment(\.tvSettingsPage) private var inSettings
+    #endif
+
     var body: some View {
+        #if os(tvOS)
+        if !inSettings { art }
+        #else
+        art
+        #endif
+    }
+
+    private var art: some View {
         ZStack {
             Color.black
             if let url {

@@ -6,8 +6,8 @@ import ImageIO
 import CoreImage
 import CoreImage.CIFilterBuiltins
 
-/// The Top Shelf slideshow: an iCloud Photos album picked here, its pictures kept ready (1920 × 1080, the Top Shelf's own size) in the folder
-/// the Top Shelf reads, and refreshed when the app opens.
+/// The Top Shelf slideshow: an iCloud Photos album picked here, its pictures kept ready (1920 × 1080, the Top Shelf's own size, and on a 4K
+/// screen 3840 × 2160 beside each, "…@2x.jpg") in the folder the Top Shelf reads, and refreshed when the app opens.
 @Observable @MainActor
 final class TopShelfAlbum {
     static let shared = TopShelfAlbum()
@@ -41,12 +41,20 @@ final class TopShelfAlbum {
         return Date(timeIntervalSince1970: t).formatted(date: .omitted, time: .shortened)
     }
 
-    /// The pictures kept for the Top Shelf.
+    /// The pictures kept for the Top Shelf (each once: not its 4K copy beside it).
     nonisolated static func files() -> [URL] {
         guard let dir = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: group)?
             .appendingPathComponent("Library/Caches/TopShelf", isDirectory: true) else { return [] }
         return ((try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? [])
-            .filter { $0.pathExtension == "jpg" }.sorted { $0.lastPathComponent < $1.lastPathComponent }
+            .filter { $0.pathExtension == "jpg" && !$0.lastPathComponent.hasSuffix("@2x.jpg") }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+    }
+
+    /// The screen draws two pixels to the point (4K): the Top Shelf shows a 3840 × 2160 picture there, and the
+    /// 1920 × 1080 one on an HD screen (or an Apple TV HD), where a 4K copy would only be work and space.
+    private static var screenIs4K: Bool {
+        let scene = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
+        return (scene?.screen.scale ?? 2) > 1
     }
 
     /// The albums on this Apple TV's iCloud Photos (asking once for permission).
@@ -88,21 +96,20 @@ final class TopShelfAlbum {
     }
 
     /// A photo's original, sized down off the main thread without decoding it whole (a 48-megapixel one is hundreds of MB).
-    nonisolated private static func downsample(_ data: Data) -> UIImage? {
+    nonisolated private static func downsample(_ data: Data, maxPixel: Int = 1920) -> UIImage? {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
         let options: [CFString: Any] = [kCGImageSourceCreateThumbnailFromImageAlways: true,
                                         kCGImageSourceCreateThumbnailWithTransform: true,
                                         kCGImageSourceShouldCacheImmediately: true,
-                                        kCGImageSourceThumbnailMaxPixelSize: 1920]
+                                        kCGImageSourceThumbnailMaxPixelSize: maxPixel]
         guard let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
         return UIImage(cgImage: cg)
     }
 
-    /// The whole photo on the Top Shelf's 1920 × 1080, fitted rather than cropped (filled to the Top Shelf, a portrait
-    /// photo showed less than half of itself and a landscape one lost a quarter), over a soft, darkened copy of itself
-    /// filling the rest of the screen.
-    nonisolated private static func shelfPicture(_ photo: UIImage) -> UIImage? {
-        let screen = CGSize(width: 1920, height: 1080)
+    /// The whole photo on the Top Shelf's 1920 × 1080 (or, for a 4K screen, 3840 × 2160), fitted rather than cropped
+    /// (filled to the Top Shelf, a portrait photo showed less than half of itself and a landscape one lost a quarter),
+    /// over a soft, darkened copy of itself filling the rest of the screen.
+    nonisolated private static func shelfPicture(_ photo: UIImage, screen: CGSize = CGSize(width: 1920, height: 1080)) -> UIImage? {
         let w = photo.size.width, h = photo.size.height
         guard w > 0, h > 0 else { return nil }
         let format = UIGraphicsImageRendererFormat()
@@ -161,6 +168,10 @@ final class TopShelfAlbum {
         req.resizeMode = .fast
         req.isNetworkAccessAllowed = true
         req.isSynchronous = false
+        // A 4K screen: each photo is asked for at 3840 × 2160 and kept at both sizes. The Top Shelf was given the
+        // 1920 × 1080 picture for 4K too, where it was drawn at half the screen's sharpness.
+        let big = Self.screenIs4K
+        let asked = big ? CGSize(width: 3840, height: 2160) : CGSize(width: 1920, height: 1080)
         var saved = 0
         var lastError: String?
         for (i, a) in chosen.enumerated() {
@@ -172,7 +183,7 @@ final class TopShelfAlbum {
                 var rough: UIImage?
                 // Fitted whole, so asked for at the size it's drawn (asked to fill 1920 × 1080, a portrait photo came
                 // back with more than twice the pixels it's shown with, all of it downloaded and decoded).
-                PHImageManager.default().requestImage(for: a, targetSize: CGSize(width: 1920, height: 1080), contentMode: .aspectFit, options: req) { im, info in
+                PHImageManager.default().requestImage(for: a, targetSize: asked, contentMode: .aspectFit, options: req) { im, info in
                     if done { return }
                     // The quick, smaller copy first: kept in case nothing better comes.
                     if (info?[PHImageResultIsDegradedKey] as? Bool) == true { rough = im; return }
@@ -190,7 +201,7 @@ final class TopShelfAlbum {
                     o.deliveryMode = .highQualityFormat
                     PHImageManager.default().requestImageDataAndOrientation(for: a, options: o) { d, _, _, _ in c.resume(returning: d) }
                 }
-                if let data { picture = await Task.detached(priority: .utility) { Self.downsample(data) }.value }
+                if let data { picture = await Task.detached(priority: .utility) { Self.downsample(data, maxPixel: big ? 3840 : 1920) }.value }
             }
             // Only when neither came: the quick copy (a few hundred pixels across, soft on the TV, but better than a
             // gap). It used to be taken before the original was tried.
@@ -200,10 +211,17 @@ final class TopShelfAlbum {
             // the old photo). Fitted to the Top Shelf and made into a JPEG off the main thread, so the remote stays
             // smooth meanwhile.
             let file = dir.appendingPathComponent(String(format: "%@-%02d.jpg", stamp, i))
+            // Its 3840 × 2160 copy for a 4K screen: the same name with "@2x", which is how the Top Shelf pairs them.
+            let large = dir.appendingPathComponent(String(format: "%@-%02d@2x.jpg", stamp, i))
             var written: Result<Void, Error>?
             if let image = picture {
                 written = await Task.detached(priority: .utility) { () -> Result<Void, Error>? in
                     guard let data = (Self.shelfPicture(image) ?? image).jpegData(compressionQuality: 0.8) else { return nil }
+                    // The 4K copy first, so it's there whenever the photo is (the Top Shelf can ask at any moment). If
+                    // it can't be made or kept, the Top Shelf shows the photo itself on a 4K screen, as it did.
+                    if big, let sharp = Self.shelfPicture(image, screen: CGSize(width: 3840, height: 2160))?.jpegData(compressionQuality: 0.8) {
+                        try? sharp.write(to: large, options: .atomic)
+                    }
                     do { try data.write(to: file, options: .atomic); return .success(()) } catch { return .failure(error) }
                 }.value
             }

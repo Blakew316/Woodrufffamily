@@ -67,7 +67,8 @@ extension EnvironmentValues {
 }
 
 /// A row that opens a page. On iPhone it's an ordinary navigation link. On the Mac the page goes on the window's own
-/// stack, so Woodruff's Back button (under the search field) returns from it.
+/// stack, so Woodruff's Back button (under the search field) returns from it. On Apple TV a page opened from one of
+/// Settings' pages is laid out as they are (`TVSettingsPage`).
 struct PageLink<Label: View, Destination: View>: View {
     var title: String
     var destination: () -> Destination
@@ -76,6 +77,10 @@ struct PageLink<Label: View, Destination: View>: View {
     @Environment(\.macPageTitle) private var here
     #if os(macOS) || os(tvOS)
     @Environment(\.macPanePush) private var panePush
+    #endif
+    #if os(tvOS)
+    /// Apple TV: this row is on one of Settings' pages.
+    @Environment(\.tvSettingsPage) private var inSettings
     #endif
 
     init(_ title: String, @ViewBuilder destination: @escaping () -> Destination, @ViewBuilder label: @escaping () -> Label) {
@@ -112,6 +117,10 @@ struct PageLink<Label: View, Destination: View>: View {
                     Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary)
                 }
             }
+        } else if inSettings {
+            // Opened from one of Settings' pages: laid out as that page is (its name on the left, its settings on the
+            // right), as Apple TV's own Settings keeps every level. It used to fill the screen by itself.
+            NavigationLink { TVSettingsPage(title: title) { destination() } } label: { label() }
         } else {
             NavigationLink { destination() } label: { label() }
         }

@@ -55,6 +55,11 @@ struct TVMacRoot: View {
         }
         .tabViewStyle(.sidebarAdaptable)
         .onChange(of: tab) { _, now in if now != "settings" { settingsPath = NavigationPath() } }
+        // A photo chosen on the Top Shelf (woodruff://home): the app opens on Home, whichever page it was left on.
+        // (Nothing took the link, so it opened wherever that was.)
+        .onOpenURL { url in
+            if url.scheme == "woodruff" && url.host == "home" { tab = "home" }
+        }
         .onAppear {
             // The screenshot run (-tvTab watch) opens a given page.
             if let t = UserDefaults.standard.string(forKey: "tvTab") { tab = t == "tvs" ? "home" : t }

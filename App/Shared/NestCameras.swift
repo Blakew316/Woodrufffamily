@@ -1030,7 +1030,12 @@ struct LiveCameraTile: View, Equatable {
 
     /// What the tile says over its picture when it isn't simply live.
     private func caption(_ status: String) -> String {
+        #if os(tvOS)
+        // Apple TV: the remote selects, it doesn't tap.
+        if !camera.online { return checking ? "Checking…" : "Offline · Select to Check Again" }
+        #else
         if !camera.online { return checking ? "Checking…" : "Offline · Tap to Check Again" }
+        #endif
         if !camera.webRTC { return "Live view not supported" }
         if streams.expanded == camera.id { return "Open in the big view" }
         return status
@@ -1204,6 +1209,14 @@ struct CameraLiveView: View {
                 .opacity(appeared ? 1 : 0)
                 .onTapGesture { close() }
             card(player)
+                #if os(tvOS)
+                // Apple TV: a camera not opened from an alert has no button on it (see `card`), so the picture itself is
+                // what the remote is on: nothing shows for it, and a click does nothing. Menu closes the camera from
+                // it as it does from a button. (With nothing at all here for the remote to be on, Menu may never be
+                // heard here.) Opened from an alert, its Live and Replay button is.
+                .focusable(replay == nil)
+                .focusEffectDisabled(replay == nil)
+                #endif
                 .padding(.horizontal, 14)
                 .offset(y: max(0, drag))
                 .scaleEffect(appeared ? 1 : 0.92)
@@ -1252,8 +1265,12 @@ struct CameraLiveView: View {
                     .foregroundStyle(.white.opacity(0.85))
                 }
                 Spacer(minLength: 0)
+                // Not on Apple TV: Menu on the remote closes the camera, and this was one more place for the remote
+                // to stop.
+                #if !os(tvOS)
                 GlassCircle(symbol: "xmark", size: 30) { close() }
                     .accessibilityLabel("Close")
+                #endif
             }
             .foregroundStyle(.white)
             .padding(.horizontal, 14).padding(.top, 12).padding(.bottom, 22)
@@ -1269,17 +1286,18 @@ struct CameraLiveView: View {
                     }
                     .accessibilityLabel(showLive ? "Replay" : "Live")
                 }
-                // Apple TV's cameras are pictures without sound: no sound button there (it did nothing).
+                // Apple TV's cameras are pictures without sound: no sound button there (it did nothing). And no Full
+                // Screen: the picture takes most of the screen there already, so it was only a stop for the remote.
                 #if !os(tvOS)
                 GlassCircle(symbol: muted ? "speaker.slash.fill" : "speaker.wave.2.fill", size: 30) {
                     muted.toggle(); player.setMuted(muted)
                 }
                 .accessibilityLabel(muted ? "Turn Sound On" : "Turn Sound Off")
-                #endif
                 if showLive || replay == nil {
                     GlassCircle(symbol: "arrow.up.left.and.arrow.down.right", size: 30) { fullScreen = true }
                         .accessibilityLabel("Full Screen")
                 }
+                #endif
             }
             .padding(10)
         }
@@ -1911,7 +1929,14 @@ struct CamerasPhoneView: View {
                         .buttonStyle(.plain)
                         .disabled(!cam.webRTC || !cam.online)
                     }
-                } footer: { Text("Tap a camera to watch it live. Their alerts are in Notifications → Camera Alerts.") }
+                } footer: {
+                    #if os(tvOS)
+                    // Apple TV: the remote selects, and its Settings have no Notifications page to point at.
+                    Text("Select a camera to watch it live.")
+                    #else
+                    Text("Tap a camera to watch it live. Their alerts are in Notifications → Camera Alerts.")
+                    #endif
+                }
                 if !NestCameras.shared.canAlert {
                     Section { Button("Connect Again to Turn On Alerts") { NestCameras.shared.signOut() } }
                 }

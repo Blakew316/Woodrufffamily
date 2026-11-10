@@ -414,8 +414,12 @@ struct LightSheet: View {
                             .font(.subheadline).foregroundStyle(.secondary).monospacedDigit()
                     }
                     Spacer()
+                    // Not on Apple TV: Menu on the remote closes the sheet, and the X was one more place for the remote
+                    // to stop. (The name field below is always there for the remote to be on.)
+                    #if !os(tvOS)
                     GlassCircle(symbol: "xmark", size: 34) { dismiss() }
                         .accessibilityLabel("Close")
+                    #endif
                 }
                 if light.isOffline {
                     Label(Self.offlineHint(light), systemImage: "wifi.slash")
@@ -558,7 +562,12 @@ struct SpeakersListView: View {
                     }
                 }
             } footer: {
+                #if os(tvOS)
+                // Apple TV: the remote selects, it doesn't tap.
+                Text("Sonos speakers are found on your Wi‑Fi by themselves, no account needed. Select one to rename it or choose its room.")
+                #else
                 Text("Sonos speakers are found on your Wi‑Fi by themselves, no account needed. Tap one to rename it or choose its room.")
+                #endif
             }
         }
         .familyFormStyle()
@@ -603,7 +612,12 @@ struct LightsListView: View {
                     }
                 }
             } footer: {
+                #if os(tvOS)
+                // Apple TV: the remote selects, it doesn't tap.
+                Text("Govee lights answer on your Wi‑Fi once LAN Control is on for each one in the Govee app (the light’s settings). Select a light to rename it or choose its room.")
+                #else
                 Text("Govee lights answer on your Wi‑Fi once LAN Control is on for each one in the Govee app (the light’s settings). Tap a light to rename it or choose its room.")
+                #endif
             }
             if !home.answers.isEmpty {
                 Section {

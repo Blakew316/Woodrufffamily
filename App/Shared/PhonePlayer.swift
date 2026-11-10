@@ -212,7 +212,12 @@ final class PhonePlayback {
         // A Drive request that failed this way reaches here as an OSStatus of the same number (the player keeps only
         // the number): "OSStatus -1001" is a request that timed out.
         if let ns = e as NSError?, ns.domain == NSURLErrorDomain || ns.domain == NSOSStatusErrorDomain, offline.contains(ns.code) {
+            #if os(tvOS)
+            // Apple TV keeps no downloads (Settings → Watch has no Downloads there), and may be on a cable.
+            return "No connection. Check the network."
+            #else
             return "No connection. Check the Wi‑Fi, or download it in Settings → Watch → Downloads to watch offline."
+            #endif
         }
         switch play.source {
         case .drive:

@@ -471,8 +471,18 @@ struct DiagnosticsView: View {
                 .frame(maxWidth: .infinity, alignment: .leading).padding()
         }
         .navigationTitle("Smoothness Report").inlineTitle()
-        #if os(iOS) || os(tvOS)
+        #if os(iOS)
         .toolbar { ToolbarItemGroup(placement: .primaryAction) { reportButtons } }
+        #elseif os(tvOS)
+        // Apple TV: over the report itself. Opened from Settings the page is laid out as Settings' pages are
+        // (`TVSettingsPage`), which have no bar across the top to hold them.
+        .safeAreaInset(edge: .top, spacing: 0) {
+            HStack(spacing: 20) {
+                reportButtons
+                Spacer(minLength: 0)
+            }
+            .padding(.bottom, 12)
+        }
         #else
         .macPageBar { reportButtons.buttonStyle(.glass) }
         #endif

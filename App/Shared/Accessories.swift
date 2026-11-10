@@ -366,7 +366,10 @@ struct DevicesListView: View {
                     }
                 }
             } footer: {
-                #if os(iOS) || os(tvOS)
+                #if os(tvOS)
+                // Apple TV: the remote selects, it doesn't tap.
+                Text("Everything in Apple Home (plugs, locks, thermostats, sensors, blinds, HomePod temperature) shows here, plus Samsung appliances once SmartThings is connected. Select one to rename it or choose its room.")
+                #elseif os(iOS)
                 Text("Everything in Apple Home (plugs, locks, thermostats, sensors, blinds, HomePod temperature) shows here, plus Samsung appliances once SmartThings is connected. Tap one to rename it or choose its room.")
                 #else
                 VStack(alignment: .leading, spacing: 6) {
@@ -819,6 +822,16 @@ struct ThermostatChip: View {
 struct ThermostatPanel: View {
     private let store = AccessoryStore.shared
 
+    #if os(tvOS)
+    /// Apple TV: whether Done shows. Menu on the remote closes the panel, so Done was only one more place for the
+    /// remote to stop. It stays when nothing else in the panel can take the remote (a thermostat that isn't answering,
+    /// or one with nothing to set, has no controls to be on): the remote is on it then, and Menu closes the panel.
+    private var needsDone: Bool {
+        guard let t = store.thermostat else { return false }
+        return !t.reachable || (t.thermostatMode == nil && t.modes.isEmpty && t.heatTo == nil && t.coolTo == nil)
+    }
+    #endif
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
@@ -832,9 +845,16 @@ struct ThermostatPanel: View {
                         Text("Thermostat").font(.title3.bold())
                     }
                     Spacer()
+                    #if os(tvOS)
+                    if needsDone {
+                        Button("Done") { ThermostatUI.shared.open = false }
+                            .buttonStyle(.glass)
+                    }
+                    #else
                     Button("Done") { ThermostatUI.shared.open = false }
                         .keyboardShortcut(.cancelAction)
                         .buttonStyle(.glass)
+                    #endif
                 }
                 if let t = store.thermostat {
                     EcobeePicture(device: t).frame(width: 180, height: 180).frame(maxWidth: .infinity)

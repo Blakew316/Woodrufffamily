@@ -30,6 +30,10 @@ struct WatchSettingsView: View {
 
     var body: some View {
         Form {
+            // None of these three on Apple TV. Library did nothing there (it reads Drive whenever it's signed in), yet
+            // the choice travelled to the family's phones; it plays right here; and it can keep no downloads (an
+            // Apple TV app may only write in Caches, not where they're kept).
+            #if !os(tvOS)
             Section {
                 Picker("Library", selection: $source) {
                     Text("TV").tag("tv")
@@ -41,7 +45,6 @@ struct WatchSettingsView: View {
                               : "Sign in to Google Drive below to choose Google Drive, which works at home or away.")
             }
 
-            #if !os(tvOS)
             Section {
                 Picker("Play Button Plays On", selection: $playOn) {
                     Text("TV").tag("tv")
@@ -51,7 +54,6 @@ struct WatchSettingsView: View {
                 Text(playOn == "here" ? "Play opens the film or episode here, from where it was left off. Play On… still sends it to a TV."
                                       : "Play sends the film or episode to the TV the remote is on.")
             }
-            #endif
 
             Section {
                 // The app's own link: on the Mac the page opens beside Settings' list like the others (a plain
@@ -60,6 +62,7 @@ struct WatchSettingsView: View {
             } footer: {
                 Text("Films and episodes kept on this device, to watch with no connection.")
             }
+            #endif
 
             Section {
                 if signedIn {
@@ -87,12 +90,31 @@ struct WatchSettingsView: View {
                         source = "tv"
                     }
                 } else {
+                    #if os(tvOS)
+                    // Apple TV has no Sign In: Google's page needs a browser, so the button was refused every time. It
+                    // gets the family's sign-in instead (the words under this say so), which Check Again fetches now
+                    // rather than at the settings' next round. (It's also a row the remote can be on: with the keys
+                    // already here, nothing else on this page would be.)
+                    LabeledContent("Status", value: "Not signed in")
+                    Button {
+                        guard !busy else { return }
+                        busy = true
+                        Task {
+                            await SettingsSync.shared.syncNow()
+                            refreshState()
+                            busy = false
+                        }
+                    } label: {
+                        HStack { Text("Check Again"); if busy { Spacer(); ProgressView() } }
+                    }
+                    #else
                     Button {
                         Task { await signIn() }
                     } label: {
                         HStack { Text("Sign In to Google Drive"); if busy { Spacer(); ProgressView() } }
                     }
                     .disabled(busy || !hasKeys)
+                    #endif
                     if !hasKeys {
                         Button("Copy Sign-In Keys from the TV") { Task { await copyKeys() } }
                             .disabled(busy || fleet.hubClient() == nil)
@@ -101,12 +123,19 @@ struct WatchSettingsView: View {
                 if let e = library.error, signedIn { Text(e).foregroundStyle(Palette.attention) }
                 if let m = message { Text(m).foregroundStyle(Palette.attention) }
             } header: { Text("Google Drive") } footer: {
+                #if os(tvOS)
+                Text(signedIn ? "Read-only: the app can’t change anything in your Drive. It reads the “Movies” and “TV Shows” folders, as the TVs do, and shares where you are in each title with the TVs."
+                              : "Sign in on your iPhone or Mac. This Apple TV gets the sign-in from the family.")
+                #else
                 Text("Read-only: the app can’t change anything in your Drive. It reads the “Movies” and “TV Shows” folders, as the TVs do, and shares where you are in each title with the TVs. Google shows a warning once because this app isn’t published: choose Advanced, then Continue.")
+                #endif
             }
 
             Section {
                 LabeledContent("TMDB", value: hasTMDB ? "On" : "Off")
                 LabeledContent("Google sign-in keys", value: hasKeys ? "Added" : "Not added")
+                // Not on Apple TV: long keys typed a letter at a time with the remote. They come from the family.
+                #if !os(tvOS)
                 Button(showKeys ? "Hide" : "Enter Keys by Hand") { showKeys.toggle() }
                 if showKeys {
                     TextField("Google Client ID", text: $clientID).autocorrectionDisabled()
@@ -116,8 +145,13 @@ struct WatchSettingsView: View {
                         .disabled(!canSaveGoogle && blank(tmdbKey))
                     if let saved { Text(saved).font(.footnote).foregroundStyle(.secondary) }
                 }
+                #endif
             } header: { Text("Keys") } footer: {
+                #if os(tvOS)
+                Text("The same keys the TVs use. This Apple TV gets them from the family. TMDB gives the posters, stories and episode names.")
+                #else
                 Text("The same keys the TVs use: copied from the TV on the home Wi‑Fi, or typed in. TMDB gives the posters, stories and episode names.")
+                #endif
             }
         }
         .familyFormStyle()
@@ -171,9 +205,18 @@ struct WatchSettingsView: View {
             }
             if let t = (try? await c.sharedKey("tmdb"))?.trimmingCharacters(in: .whitespacesAndNewlines), !t.isEmpty { Keychain.set(t, for: "tmdb.key") }
             refreshState()
+            #if os(tvOS)
+            // Apple TV has nowhere to type them: entered on an iPhone or Mac, they come with the family's settings.
+            if !hasKeys { message = "The TV didn’t share its Google keys. Enter them on your iPhone or Mac." }
+            #else
             if !hasKeys { message = "The TV didn’t share its Google keys. Enter them by hand below." }
+            #endif
         } catch {
+            #if os(tvOS)
+            message = "The TV didn’t share its keys (\(error.localizedDescription)). Enter them on your iPhone or Mac."
+            #else
             message = "The TV didn’t share its keys (\(error.localizedDescription)). Enter them by hand below."
+            #endif
         }
     }
 

@@ -78,7 +78,8 @@ struct TVSettingsView: View {
 }
 
 /// A page inside Settings, laid out as the first one (Apple TV's own Settings keeps it the same throughout): the
-/// page's name large on the left over the backdrop, its settings on the right.
+/// page's name large on the left over the backdrop, its settings on the right. Every page opened from one of these
+/// is laid out the same way, however deep (`PageLink` sees to it).
 struct TVSettingsPage<Content: View>: View {
     let title: String
     @ViewBuilder var content: Content
@@ -101,9 +102,20 @@ struct TVSettingsPage<Content: View>: View {
             content
                 .listStyle(.plain)
                 .frame(maxWidth: .infinity)
+                .environment(\.tvSettingsPage, true)
         }
         .background { IconBackdrop().ignoresSafeArea() }
         .toolbar(.hidden, for: .navigationBar)
+    }
+}
+
+private struct TVSettingsPageKey: EnvironmentKey { static let defaultValue = false }
+extension EnvironmentValues {
+    /// On one of Settings' pages (`TVSettingsPage`): a page opened from here is laid out as this one is, and a page
+    /// that fills the screen with a backdrop of its own elsewhere (a speaker, a device) sits on Settings' instead.
+    var tvSettingsPage: Bool {
+        get { self[TVSettingsPageKey.self] }
+        set { self[TVSettingsPageKey.self] = newValue }
     }
 }
 
@@ -112,13 +124,13 @@ private struct TVSmartDevices: View {
     var body: some View {
         List {
             Section {
-                PageLink("Lights") { TVSettingsPage(title: "Lights") { LightsListView() } } label: { Text("Lights") }
-                PageLink("Cameras") { TVSettingsPage(title: "Cameras") { CamerasPhoneView(hub: HubSettings.shared) } } label: { Text("Cameras") }
-                PageLink("Devices") { TVSettingsPage(title: "Devices") { DevicesListView() } } label: { Text("Devices") }
-                PageLink("Scenes") { TVSettingsPage(title: "Scenes") { ScenesSettingsView() } } label: { Text("Scenes") }
+                PageLink("Lights") { LightsListView() } label: { Text("Lights") }
+                PageLink("Cameras") { CamerasPhoneView(hub: HubSettings.shared) } label: { Text("Cameras") }
+                PageLink("Devices") { DevicesListView() } label: { Text("Devices") }
+                PageLink("Scenes") { ScenesSettingsView() } label: { Text("Scenes") }
             }
             Section {
-                PageLink("Accounts") { TVSettingsPage(title: "Accounts") { ConnectionsView(hub: HubSettings.shared) } } label: { Text("Accounts") }
+                PageLink("Accounts") { ConnectionsView(hub: HubSettings.shared) } label: { Text("Accounts") }
             }
         }
     }

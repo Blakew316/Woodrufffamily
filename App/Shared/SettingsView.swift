@@ -373,14 +373,19 @@ struct TVsView: View {
                         }
                 }
             } footer: {
+                #if os(tvOS)
+                // Apple TV: the remote selects, and has no swipe (the rows' swipe actions aren't there either).
+                Text("Select a TV for its screen, controls and health.")
+                #else
                 Text("Tap a TV for its screen, controls and health. Swipe left on one to hide alerts you already know about.")
+                #endif
             }
             // The family's Apple TVs running Woodruff, and Connect for one not in the family yet.
             AppleTVsSection()
             #if os(tvOS)
             // Apple TV: the speakers are kept with the TVs (no Notes or Send here).
             Section {
-                PageLink("Speakers") { TVSettingsPage(title: "Speakers") { SpeakersListView() } } label: { Text("Speakers") }
+                PageLink("Speakers") { SpeakersListView() } label: { Text("Speakers") }
             }
             #else
             Section {

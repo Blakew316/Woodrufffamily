@@ -29,8 +29,12 @@ final class ContentProvider: TVTopShelfContentProvider {
             try? "\(Date().timeIntervalSince1970)".write(to: base.appendingPathComponent("topshelf-asked.txt"), atomically: true, encoding: .utf8)
         }
         let kept = dir.flatMap { try? FileManager.default.contentsOfDirectory(at: $0, includingPropertiesForKeys: nil) } ?? []
+        // Beside a photo (1920 × 1080), the app keeps its 3840 × 2160 copy for a 4K screen ("…@2x.jpg"): not a photo
+        // of its own.
+        let large = Set(kept.map(\.lastPathComponent).filter { $0.hasSuffix("@2x.jpg") })
         // The album's photos; the nature photographs that come with it only until there are some.
-        var pictures = kept.filter { $0.pathExtension == "jpg" }.sorted { $0.lastPathComponent < $1.lastPathComponent }
+        var pictures = kept.filter { $0.pathExtension == "jpg" && !large.contains($0.lastPathComponent) }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
         if pictures.isEmpty { pictures = Bundle.main.urls(forResourcesWithExtension: "jpg", subdirectory: nil) ?? [] }
         guard !pictures.isEmpty else { return nil }
         Self.log.notice("Woodruff Top Shelf has \(pictures.count, privacy: .public) photos, shared folder \(dir?.path ?? "none", privacy: .public)")
@@ -38,7 +42,11 @@ final class ContentProvider: TVTopShelfContentProvider {
         let items: [TVTopShelfCarouselItem] = pictures.map { url in
             let item = TVTopShelfCarouselItem(identifier: url.lastPathComponent)
             item.setImageURL(url, for: .screenScale1x)
-            item.setImageURL(url, for: .screenScale2x)
+            // On a 4K screen: its 3840 × 2160 copy, when the app has made one (else the same picture, as before).
+            let name = url.deletingPathExtension().lastPathComponent + "@2x.jpg"
+            let sharp = large.contains(name) ? url.deletingLastPathComponent().appendingPathComponent(name) : url
+            item.setImageURL(sharp, for: .screenScale2x)
+            // Choosing a photo opens Woodruff on Home (`TVMacRoot` takes the link).
             if let open = URL(string: "woodruff://home") { item.displayAction = TVTopShelfAction(url: open) }
             return item
         }

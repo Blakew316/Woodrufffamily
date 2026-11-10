@@ -335,12 +335,13 @@ struct TVAlertLayer: View {
     }
 }
 
-/// The pill: the round picture, the title, and the camera with how long ago.
+/// The pill: the round picture, the title, and the camera with how long ago. Its words are read from across the
+/// room: 29 and 23 points (nothing on Apple TV is smaller than 23), in the same shape as before, half as large again.
 struct TVAlertPill: View {
     let alert: TVAlerts.Item
 
     var body: some View {
-        HStack(spacing: 11) {
+        HStack(spacing: 16) {
             Group {
                 if let t = alert.thumb {
                     Image(uiImage: t).resizable().scaledToFill()
@@ -348,24 +349,24 @@ struct TVAlertPill: View {
                     Color.white.opacity(0.15)
                 }
             }
-            .frame(width: 48, height: 48)
+            .frame(width: 72, height: 72)
             .clipShape(Circle())
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 3) {
                 Text(alert.title)
-                    .font(.system(size: 19, weight: .bold))
+                    .font(.system(size: 29, weight: .bold))
                     .foregroundStyle(.white)
                 TimelineView(.periodic(from: .now, by: 15)) { ctx in
                     Text("\(alert.name) · \(Self.ago(alert.at, now: ctx.date))")
-                        .font(.system(size: 15, weight: .medium))
+                        .font(.system(size: 23, weight: .medium))
                         .foregroundStyle(.white.opacity(0.8))
                 }
             }
             .lineLimit(1)
             Spacer(minLength: 0)
         }
-        .padding(.leading, 8)
-        .padding(.trailing, 18)
-        .frame(width: 320, height: 64)
+        .padding(.leading, 12)
+        .padding(.trailing, 27)
+        .frame(width: 480, height: 96)
         .glassEffect(.regular, in: Capsule())
         .accessibilityElement(children: .combine)
     }
