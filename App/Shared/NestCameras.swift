@@ -1147,7 +1147,9 @@ struct CameraLiveView: View {
             if let onClose { onClose() } else { dismiss() }
         }
         #else
-        if streams.full == camera.id { withAnimation(.smooth(duration: 0.25)) { streams.full = nil } } else { dismiss() }
+        // The Mac shows it over the window's own page, never in a sheet: closing it is putting that away. Nothing
+        // else: while it fades out a second Esc or click landed here again, and `dismiss` closed the whole window.
+        if streams.full == camera.id { withAnimation(.smooth(duration: 0.25)) { streams.full = nil } }
         #endif
     }
 

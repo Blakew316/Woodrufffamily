@@ -943,6 +943,9 @@ final class MacPlayer: NSObject, NSWindowDelegate {
     private var current: PhonePlay?
     private var watch: Task<Void, Never>?
 
+    /// A film is open in its window (Space is its own there, not the TV's: see `SpaceKey`).
+    var isOpen: Bool { player != nil }
+
     func present(_ play: PhonePlay) {
         window?.close()
         current = play
@@ -973,6 +976,8 @@ final class MacPlayer: NSObject, NSWindowDelegate {
         w.backgroundColor = .black
         w.isReleasedWhenClosed = false
         w.contentView = view
+        // The player has the keyboard from the start (Space pauses, the arrows step), without a click on it first.
+        w.initialFirstResponder = view
         w.contentAspectRatio = NSSize(width: 16, height: 9)
         w.delegate = self
         w.center()

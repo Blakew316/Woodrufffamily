@@ -54,7 +54,9 @@ struct WatchSettingsView: View {
             #endif
 
             Section {
-                NavigationLink("Downloads") { DownloadsView() }
+                // The app's own link: on the Mac the page opens beside Settings' list like the others (a plain
+                // navigation link put it over the whole window, with no bar and no way back).
+                PageLink("Downloads") { DownloadsView() }
             } footer: {
                 Text("Films and episodes kept on this device, to watch with no connection.")
             }

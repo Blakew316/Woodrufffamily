@@ -131,8 +131,18 @@ struct AllDevicesView: View {
                 TVDetailView(tvID: t.id)
                     #if os(iOS)
                     .toolbar { ToolbarItem(placement: .cancellationAction) { Button(role: .close) { openTV = nil } } }
+                    #elseif os(macOS)
+                    // The Mac's sheet had no way out.
+                    .toolbar { ToolbarItem(placement: .cancellationAction) { Button(role: .close) { openTV = nil }.keyboardShortcut(.cancelAction) } }
                     #endif
-            }.macResizable()
+            }
+                #if os(macOS)
+                // A stack of its own: a page opened in it (Smoothness Report) goes on it, with Back to this TV, not
+                // on the window's stack behind the sheet (its link did nothing).
+                .environment(\.macPageStack, false)
+                .environment(\.macPageTitle, fleet.tv(t.id)?.name ?? "TV")
+                #endif
+                .macResizable()
                 #if os(iOS)
                 // iPhone and iPad: what it says back shows over it too (the screen's own alert can't while it's open).
                 // A sheet of its own that's open (Now Playing) shows it instead.
@@ -150,6 +160,10 @@ struct AllDevicesView: View {
                 .presentationDragIndicator(.visible)
                 #else
                 .frame(width: 360, height: 300)
+                // The Mac's sheet had no way out: Done (Esc too), in the corner above the keys.
+                .overlay(alignment: .topTrailing) {
+                    Button("Done") { miniTV = nil }.keyboardShortcut(.cancelAction).buttonStyle(.glass).padding(12)
+                }
                 #endif
                 #if os(iOS) || os(tvOS)
                 // A key that can't reach the TV says so over the remote (the screen's own alert can't show while it's

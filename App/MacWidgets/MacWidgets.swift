@@ -708,13 +708,24 @@ struct MacTVsCamerasView: View {
                         .font(.caption).foregroundStyle(WidgetPalette.sky)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
-                    ForEach(tvs) { tv in row(tv) }
+                    // A click on a TV opens the remote on it, and one on a camera opens it live, as on the iPhone's
+                    // widget (the app has taken both links all along; the Mac's widget never sent them).
+                    ForEach(tvs) { tv in
+                        Link(destination: URL(string: "woodruff://remote?tv=\(tv.id.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? "")")!) {
+                            row(tv)
+                        }
+                    }
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             VStack(spacing: 6) {
                 ForEach(0..<2, id: \.self) { i in
-                    if i < cams.count { camera(cams[i]) } else {
+                    if i < cams.count {
+                        let c = cams[i]
+                        Link(destination: URL(string: "woodruff://camera?id=\(c.id.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? "")")!) {
+                            camera(c)
+                        }
+                    } else {
                         RoundedRectangle(cornerRadius: 11, style: .continuous).fill(WidgetPalette.cyan.opacity(0.1))
                             .overlay(Text("Camera").font(.caption2).foregroundStyle(WidgetPalette.sky.opacity(0.6)))
                     }

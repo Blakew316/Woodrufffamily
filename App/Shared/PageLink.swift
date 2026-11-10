@@ -40,6 +40,9 @@ private struct MacPageStackKey: EnvironmentKey { static let defaultValue = false
 /// Mac Settings' right-hand side: a page opened from it opens right there (not over the whole window).
 struct MacPanePush {
     let push: (String, AnyView) -> Void
+    /// Closes the page that calls it, back to the one it was opened from. A page there is the window's own root (not
+    /// on a stack, not in a sheet), where `dismiss` closes the whole window: it leaves with this instead.
+    let pop: () -> Void
 }
 private struct MacPanePushKey: EnvironmentKey { static let defaultValue: MacPanePush? = nil }
 extension EnvironmentValues {

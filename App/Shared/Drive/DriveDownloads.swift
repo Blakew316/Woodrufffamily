@@ -265,7 +265,7 @@ struct DownloadsView: View {
     var body: some View {
         Form {
             Section {
-                NavigationLink("Add Downloads") { DownloadPicker() }
+                PageLink("Add Downloads") { DownloadPicker() }
                     .disabled(!GoogleDrive.signedIn)
                 Toggle("Use Cellular Data", isOn: $cellular)
                     .onChange(of: cellular) { _, v in DriveDownloads.cellular = v }
@@ -336,7 +336,7 @@ private struct DownloadPicker: View {
             if !shows.isEmpty {
                 Section("TV Shows") {
                     ForEach(shows) { t in
-                        NavigationLink(t.title) { ShowDownloads(show: t) }
+                        PageLink(t.title) { ShowDownloads(show: t) }
                     }
                 }
             }

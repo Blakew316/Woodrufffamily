@@ -841,6 +841,9 @@ struct GoogleGrantView: View {
 /// The sign-in for [grant] on the TV that holds the settings (or why there's none).
 private struct HubSignIn: View {
     @Environment(Fleet.self) private var fleet
+    #if os(macOS)
+    @Environment(\.dismiss) private var dismiss
+    #endif
     var grant: String
 
     var body: some View {
@@ -849,6 +852,12 @@ private struct HubSignIn: View {
         } else {
             EmptyState(symbol: "tv.slash", title: "No TV to Sign In", message: "Pair with a TV first, then sign it in from here.")
                 .padding(30)
+                #if os(macOS)
+                // The Mac's sheet had no way out: Done (Esc too).
+                .safeAreaInset(edge: .bottom) {
+                    Button("Done") { dismiss() }.keyboardShortcut(.cancelAction).buttonStyle(.glass).padding(.bottom, 16)
+                }
+                #endif
         }
     }
 }
@@ -1077,6 +1086,9 @@ struct ShortcutsView: View {
 struct CrashView: View {
     @Environment(Fleet.self) private var fleet
     @Environment(\.dismiss) private var dismiss
+    #if os(macOS)
+    @Environment(\.macPanePush) private var panePush
+    #endif
     var hub: HubSettings
     var body: some View {
         Form {
@@ -1087,8 +1099,13 @@ struct CrashView: View {
                 Button("Copy Report") { copyToClipboard(hub.s?.crash ?? "") }
                 ActionButton(role: .destructive, action: {
                     try await hub.save({ try await $0.clearCrash() }, on: fleet.hubClient())
-                    // Cleared: back to General, where its row has gone.
+                    // Cleared: back to General, where its row has gone. (In Mac Settings' right-hand side this page
+                    // is the window's own root: `dismiss` there closed the whole window.)
+                    #if os(macOS)
+                    if let panePush { panePush.pop() } else { dismiss() }
+                    #else
                     dismiss()
+                    #endif
                 }) { Text("Clear") }
             }
         }

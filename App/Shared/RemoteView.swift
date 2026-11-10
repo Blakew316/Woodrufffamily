@@ -48,13 +48,27 @@ struct RemoteView: View {
             // On the Mac, a small remote in the middle of the window (the keyboard drives it too).
             VStack(spacing: 18) {
                 if embedded {
-                    HStack {
-                        TVPicker(allowAll: true)
-                        Spacer()
-                        Button { send("home") } label: { Image(systemName: "house") }
-                            .buttonStyle(.glass).help("Home").accessibilityLabel("Home")
-                        Button { typing = true } label: { Image(systemName: "keyboard") }
-                            .buttonStyle(.glass).help("Keyboard").accessibilityLabel("Keyboard").disabled(all)
+                    VStack(spacing: 10) {
+                        // Close, at the panel's own corner: the remote's button in Woodruff's bar is on Home only,
+                        // and away from Home nothing on screen closed it. Beside it an LG's own menu (apps, inputs,
+                        // channels, power), which the iPhone has in its toolbar and the Mac had nowhere. (A row of
+                        // their own: the one below is already as wide as the panel.)
+                        HStack {
+                            if let tv, !all, fleet.lg(for: tv) != nil {
+                                LGMenu(tv: tv).menuStyle(.button).buttonStyle(.glass).menuIndicator(.hidden).fixedSize()
+                            }
+                            Spacer()
+                            Button { withAnimation(.smooth) { fleet.remotePanel = false } } label: { Image(systemName: "xmark") }
+                                .buttonStyle(.glass).help("Close").accessibilityLabel("Close")
+                        }
+                        HStack {
+                            TVPicker(allowAll: true)
+                            Spacer()
+                            Button { send("home") } label: { Image(systemName: "house") }
+                                .buttonStyle(.glass).help("Home").accessibilityLabel("Home")
+                            Button { typing = true } label: { Image(systemName: "keyboard") }
+                                .buttonStyle(.glass).help("Keyboard").accessibilityLabel("Keyboard").disabled(all)
+                        }
                     }
                 }
                 if hasTop { status.frame(height: topH, alignment: .top) }
@@ -717,7 +731,8 @@ enum LGKeyMap {
     }
 }
 
-/// LG TVs connected directly: apps, inputs, channels and power, in the remote's toolbar.
+/// LG TVs connected directly: apps, inputs, channels and power, in the remote's toolbar (on the Mac, at the top of
+/// the remote's panel).
 struct LGMenu: View {
     @Environment(Fleet.self) private var fleet
     var tv: FleetTV

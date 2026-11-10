@@ -106,6 +106,8 @@ struct WoodruffApp: App {
         #if os(macOS)
         // An update replacing the app asks it to quit first (a notification from deploy.sh): it quits itself.
         UpdaterStatus.listenForQuit()
+        // Woodruff has one window: no window tabs (each tab was another copy of it, sharing the first one's pages).
+        NSWindow.allowsAutomaticWindowTabbing = false
         #else
         // Control Center's Movie Night and Bedtime run here, in the app (their intents land in this process).
         SceneHook.run = { id in _ = await SceneRunner.run(id: id) }
@@ -126,6 +128,9 @@ struct WoodruffApp: App {
                 .background(WindowMemory())
                 // How often the TVs are asked follows whether this window can be seen.
                 .background(WindowActivityWatcher())
+                // One window: a link from a widget or Handoff comes to this one when it's open (each opened another
+                // window beside it, sharing its pages, its remote and its sheets). Closed, a new one still opens.
+                .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
                 #endif
                 .task {
                     // Launch in steps, so the TVs come first and nothing else holds up the first screen. (Every start
@@ -217,6 +222,10 @@ struct WoodruffApp: App {
                     Task.detached(priority: .background) { await ImageStore.shared.trim() }
                 }
                 .onOpenURL { url in
+                    #if os(macOS)
+                    // The link came to this window (not to a new one): out of the Dock, or back from ⌘H, if it's there.
+                    MainWindowOpener.front()
+                    #endif
                     // woodruff://remote (widgets, Control Center): open the remote; anything else is a pairing link.
                     if url.scheme == "woodruff" && url.host == "signed-in" { return }  // the end of a camera/Samsung sign-in
                     if url.scheme == "woodruff" && url.host == "join" {   // an Apple TV's QR code: give it the family's code
@@ -255,6 +264,7 @@ struct WoodruffApp: App {
                 .onContinueUserActivity("com.woodruff.family.remote") { a in
                     if let id = a.userInfo?["tv"] as? String, fleet.tv(id) != nil { fleet.remoteAll = false; fleet.selectedID = id }
                     #if os(macOS)
+                    MainWindowOpener.front()
                     fleet.remotePanel = true
                     #else
                     UserDefaults.standard.set("remote", forKey: "section")
@@ -891,11 +901,15 @@ struct MacRoot: View {
 }
 
 /// Space plays or pauses the remote's TV from anywhere in the app (every TV that's on when the remote is set to
-/// All TVs), except while typing, in a sheet or alert, or in the menu bar's panel. One monitor for the whole app
-/// (a window each would press it twice).
+/// All TVs), except while typing, in a sheet or alert, in the menu bar's panel, or while a film plays on this Mac in
+/// a window of its own (there Space is the film's). One monitor for the whole app (a window each would press it
+/// twice).
 @MainActor
 enum SpaceKey {
     private static var monitor: Any?
+    /// A page's own use for Space, tried before the TV's play and pause (this monitor has every Space before any
+    /// page does): Files' Quick Look for the file under the pointer. True when it took the press.
+    static var page: (() -> Bool)?
 
     static func install() {
         guard monitor == nil else { return }
@@ -903,8 +917,12 @@ enum SpaceKey {
             guard e.keyCode == 49, e.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty,
                   let window = NSApp.keyWindow, window.sheetParent == nil, !(window is NSPanel),
                   !(window.firstResponder is NSText) else { return e }
+            // A film playing here, and its window (or Apple's full screen for it) has the keyboard, not Woodruff's
+            // own: Space goes on to the player, which pauses the film. (It paused the TV instead.)
+            if MacPlayer.shared.isOpen, window !== MainWindow.current { return e }
             // Held down: one press, not play-pause-play.
             if !e.isARepeat {
+                if let take = page, take() { return nil }
                 MacFeedback.key()
                 MacActions.send("playpause", fleet: Fleet.shared)
             }
@@ -1027,7 +1045,8 @@ struct MenuBarIcon: View {
             .onAppear { MainWindowOpener.openWindow = openWindow }
             .onChange(of: CameraStreams.shared.requested) { _, id in
                 guard id != nil else { return }
-                if let w = MainWindow.current, w.isVisible || w.isMiniaturized { return }
+                // Still open (in the Dock, behind, or hidden with the app): the alert or link brings it forward itself.
+                if MainWindow.current != nil { return }
                 NSApp.activate()
                 openWindow(id: "main")
             }
@@ -1127,22 +1146,54 @@ struct MacSectionBar: View {
 
 #if os(macOS) || os(tvOS)
 /// Mac Settings like System Settings: a short list down the left in a glass panel, the page highlighted open on
-/// the right to change. Clicking another one in the list is the only way around (no Back). A link inside a page to
-/// one in the list highlights it there; any other shows its page on the right, and the list item brings you back.
+/// the right to change. A link inside a page to one in the list highlights it there; any other shows its page on
+/// the right, over the one it was opened from: Back above its name (⌘[) goes back a page, and the row it belongs to
+/// stays lit in the list (a click there goes back to that page too).
 struct MacSettingsView: View {
     @Environment(Fleet.self) private var fleet
     @AppStorage("mac.settingsPage") private var picked = "TVs"
-    /// A page a link inside the right side showed (not one in the list): until something in the list is clicked.
-    @State private var shown: AnyView?
-    @State private var shownTitle: String?
+    /// The pages links inside the right side showed (not ones in the list), each over the one it was opened from:
+    /// until Back, or something in the list, is clicked.
+    @State private var opened: [Opened] = []
 
     struct Item: Identifiable {
         let id: String
+        /// Stays as it is under a page opened from it, instead of being made afresh on the way back (Send: the
+        /// message being written, and who it goes to once To has been to and back).
+        var keep = false
         let view: () -> AnyView
     }
 
-    private static func item<V: View>(_ title: String, @ViewBuilder _ v: @escaping () -> V) -> Item {
-        Item(id: title) { AnyView(v()) }
+    /// A page a link inside the right side showed.
+    struct Opened: Identifiable {
+        let id = UUID()
+        let title: String
+        let view: AnyView
+    }
+
+    private static func item<V: View>(_ title: String, keep: Bool = false, @ViewBuilder _ v: @escaping () -> V) -> Item {
+        Item(id: title, keep: keep) { AnyView(v()) }
+    }
+
+    /// Back a page: the one on top closes, and the one it was opened from shows again.
+    private func back() {
+        if !opened.isEmpty { opened.removeLast() }
+    }
+
+    /// A page closing itself (Delete Scene, Clear, a link opened): it goes, with any opened from it, and the one it
+    /// was opened from shows again. Nothing when it's gone already (it asked a TV first, and Back was clicked
+    /// meanwhile).
+    private func close(_ id: UUID) {
+        if let i = opened.firstIndex(where: { $0.id == id }) { opened.removeSubrange(i...) }
+    }
+
+    /// Back shows above the page's name (the Mac).
+    private var hasBack: Bool {
+        #if os(macOS)
+        return !opened.isEmpty
+        #else
+        return false
+        #endif
     }
 
     /// The list, in groups with a little space between them.
@@ -1155,7 +1206,7 @@ struct MacSettingsView: View {
             Self.item("TVs") { TVsView() },
             Self.item("Notes") { NotesView() },
             Self.item("Software Update") { SoftwareUpdateView() },
-            Self.item("Send") { SendView() },
+            Self.item("Send", keep: true) { SendView() },
         ])
         g.append([
             Self.item("Speakers") { SpeakersListView() },
@@ -1183,12 +1234,24 @@ struct MacSettingsView: View {
         let groups = self.groups
         let all = groups.flatMap { $0 }
         let current = all.first { $0.id == picked } ?? all.first { $0.id == "TVs" }
+        // A link inside a page: to a page in the list, that one is picked there; any other opens over the page it's on.
+        let push: (String, AnyView) -> Void = { title, view in
+            if all.contains(where: { $0.id == title }) { opened = []; picked = title } else {
+                #if os(macOS)
+                // A page that stays under it (Send) lets go of a field being typed in: nothing typed goes on into a
+                // field that's out of sight. (Only a text field: the remote's panel keeps the keyboard.)
+                if let w = MainWindow.current, w.firstResponder is NSText { _ = w.makeFirstResponder(nil) }
+                #endif
+                opened.append(Opened(title: title, view: view))
+            }
+        }
         HStack(alignment: .top, spacing: 18) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     ForEach(Array(groups.enumerated()), id: \.offset) { _, items in
                         VStack(spacing: 2) {
-                            ForEach(items) { it in row(it, on: it.id == current?.id && shown == nil) }
+                            // Still lit under a page opened from it: that's where you are, and the way back.
+                            ForEach(items) { it in row(it, on: it.id == current?.id) }
                         }
                     }
                 }
@@ -1202,11 +1265,29 @@ struct MacSettingsView: View {
 
             // The page: its name large at the top, then its settings, all in one glass panel matching the list.
             VStack(alignment: .leading, spacing: 0) {
-                Text(shownTitle ?? current?.id ?? "Settings")
+                #if os(macOS)
+                // A page opened from the one picked, or from one opened from it: Back to where it was opened from
+                // (⌘[ too), in line with the page's name under it.
+                if hasBack {
+                    MacBackRow(title: opened.last?.title ?? "", backTo: opened.dropLast().last?.title ?? current?.id ?? "Settings") { back() }
+                        .padding(.horizontal, 10).padding(.top, 14)
+                }
+                #endif
+                Text(opened.last?.title ?? current?.id ?? "Settings")
                     .font(.system(size: 26 * macScale, weight: .bold, design: .rounded))
-                    .padding(.horizontal, 28).padding(.top, 22).padding(.bottom, 4)
-                Group {
-                    if let shown { shown } else if let current { current.view().id(current.id) }
+                    .padding(.horizontal, 28).padding(.top, hasBack ? 0 : 22).padding(.bottom, 4)
+                ZStack {
+                    // The page picked in the list. Under a page opened from it, it's put away (and made afresh on
+                    // the way back) unless it's one that's kept: that one stays as it was, out of sight.
+                    if let current, opened.isEmpty || current.keep {
+                        current.view().id(current.id).modifier(PaneLayer(onTop: opened.isEmpty))
+                    }
+                    // The pages opened from it, each over the one before: the one on top shows. Each can close itself.
+                    ForEach(opened) { page in
+                        page.view
+                            .environment(\.macPanePush, MacPanePush(push: push, pop: { close(page.id) }))
+                            .modifier(PaneLayer(onTop: page.id == opened.last?.id))
+                    }
                 }
                 // One look for every page here: on the glass panel itself, roomier rows, slightly larger type, and
                 // the family's light blue for switches, buttons and links.
@@ -1225,9 +1306,8 @@ struct MacSettingsView: View {
             .glass(RoundedRectangle(cornerRadius: 22, style: .continuous), tint: IconPalette.cyan.opacity(0.06), interactive: false)
             .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).strokeBorder(IconPalette.cyan.opacity(0.25), lineWidth: 0.75))
             .padding(.trailing, 18).padding(.vertical, 6)
-            .environment(\.macPanePush, MacPanePush { title, view in
-                if all.contains(where: { $0.id == title }) { shown = nil; shownTitle = nil; picked = title } else { shown = view; shownTitle = title }
-            })
+            // (The page picked in the list has no page under it to go back to.)
+            .environment(\.macPanePush, MacPanePush(push: push, pop: {}))
             .environment(\.macPageTitle, current?.id ?? "Settings")
         }
         .animation(.smooth(duration: 0.2), value: picked)
@@ -1236,8 +1316,7 @@ struct MacSettingsView: View {
 
     private func row(_ it: Item, on: Bool) -> some View {
         Button {
-            shown = nil
-            shownTitle = nil
+            opened = []
             picked = it.id
         } label: {
             Text(it.id)
@@ -1260,6 +1339,20 @@ struct MacSettingsView: View {
         #else
         .buttonStyle(.plain)
         #endif
+    }
+}
+
+/// One page of Settings' right-hand side. The one on top shows; one under it stays as it was (what was being
+/// written, where it was scrolled to), out of sight and out of reach: its buttons and their keys do nothing.
+private struct PaneLayer: ViewModifier {
+    var onTop: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .opacity(onTop ? 1 : 0)
+            .disabled(!onTop)
+            .allowsHitTesting(onTop)
+            .accessibilityHidden(!onTop)
     }
 }
 #endif

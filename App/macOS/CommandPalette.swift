@@ -149,13 +149,28 @@ struct CommandPalette: View {
 }
 
 /// Woodruff's own window (the one with Home, not the mini player or the menu bar's panel), for the menu bar's
-/// Open Woodruff. Held weakly: once it's closed and gone, a new one is opened instead.
+/// Open Woodruff. Nil from the moment it closes: once it's closed, a new one is opened instead. Hidden with the app
+/// (⌘H) or in the Dock it's still this one, and is brought back (whether it's on screen doesn't tell: a hidden app's
+/// window isn't, and was taken for closed).
 @MainActor
 enum MainWindow {
     private static let box = WeakWindow()
+    /// Hears that window close.
+    private static var closing: NSObjectProtocol?
+
     static var current: NSWindow? {
         get { box.window }
-        set { box.window = newValue }
+        set {
+            box.window = newValue
+            if let closing { NotificationCenter.default.removeObserver(closing) }
+            closing = newValue.map { window in
+                NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: window, queue: .main) { note in
+                    // Only while it's still the one kept (a new window may have taken its place meanwhile).
+                    let closed = note.object as? NSWindow
+                    MainActor.assumeIsolated { if closed === MainWindow.current { MainWindow.current = nil } }
+                }
+            }
+        }
     }
 }
 

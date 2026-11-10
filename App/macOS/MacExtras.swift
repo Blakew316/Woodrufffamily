@@ -62,15 +62,10 @@ struct MenuBarFleetView: View {
             Divider()
             HStack {
                 Button("Mini Player") { openWindow(id: "mini") }
+                // Woodruff's own window (not the mini player); after it's been closed, a new one.
                 Button("Open Woodruff") {
-                    NSApp.activate()
-                    // Woodruff's own window (not the mini player); after it's been closed, a new one.
-                    if let w = MainWindow.current, w.isVisible || w.isMiniaturized {
-                        if w.isMiniaturized { w.deminiaturize(nil) }
-                        w.makeKeyAndOrderFront(nil)
-                    } else {
-                        openWindow(id: "main")
-                    }
+                    MainWindowOpener.openWindow = openWindow
+                    MainWindowOpener.show()
                 }
                 Spacer()
                 Button("Quit") { NSApp.terminate(nil) }
@@ -88,7 +83,8 @@ struct MenuBarFleetView: View {
     }
 }
 
-/// Menu commands: Check for Updates, refresh, the remote's keys, and ⌘1–⌘4 to pick a TV.
+/// Menu commands: Check for Updates, Settings (⌘,), Open Woodruff (⌘N), refresh, the remote's keys, and ⌘1–⌘4 to
+/// pick a TV.
 struct WoodruffCommands: Commands {
     var fleet: Fleet
     @Environment(\.openWindow) private var openWindow
@@ -97,6 +93,14 @@ struct WoodruffCommands: Commands {
         // it found.
         CommandGroup(after: .appInfo) {
             Button("Check for Updates…") { UpdaterStatus.shared.checkNow(reportTo: fleet) }
+        }
+        // Settings is a page of Woodruff's own window (there's no Settings window): ⌘, opens it there.
+        CommandGroup(replacing: .appSettings) {
+            Button("Settings…") { MacActions.openSettings() }.keyboardShortcut(",", modifiers: .command)
+        }
+        // One window: ⌘N brings it back or forward (New Window opened another beside it, sharing its pages).
+        CommandGroup(replacing: .newItem) {
+            Button("Open Woodruff") { MainWindowOpener.show() }.keyboardShortcut("n", modifiers: .command)
         }
         CommandGroup(after: .windowArrangement) {
             Button("Mini Player") { openWindow(id: "mini") }.keyboardShortcut("m", modifiers: [.command, .shift])
@@ -186,6 +190,14 @@ enum MacActions {
         }
     }
 
+    /// ⌘,: Settings, in Woodruff's own window (opened again if it was closed), with a camera filling it put away as a
+    /// click on Settings in the bar puts it away.
+    static func openSettings() {
+        if CameraStreams.shared.full != nil { CameraStreams.shared.full = nil }
+        UserDefaults.standard.set(AppSection.settings.rawValue, forKey: "section")
+        MainWindowOpener.show()
+    }
+
     /// Asks every Android TV that's on to update, and says how that went.
     static func updateAll(_ fleet: Fleet) {
         Task {
@@ -211,21 +223,38 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-/// Opens Woodruff's own window from outside SwiftUI (the Dock). The menu bar icon hands over SwiftUI's openWindow
-/// at launch; it's always there, even with every window closed.
+/// Opens Woodruff's own window from outside SwiftUI (the Dock, the menus, a notification). The menu bar icon hands
+/// over SwiftUI's openWindow at launch; it's always there, even with every window closed.
 @MainActor
 enum MainWindowOpener {
     static var openWindow: OpenWindowAction?
 
-    /// Whether the window is showing now (or on its way).
+    /// Brings the window forward when it's open: out of the Dock, from behind, and back from ⌘H (a hidden app's
+    /// window isn't on screen, but it isn't closed: it's the one to show, not a reason for a second). False when
+    /// it's closed (`MainWindow.current` is nil from then).
+    @discardableResult static func front() -> Bool {
+        guard let w = MainWindow.current else { return false }
+        if NSApp.isHidden { NSApp.unhide(nil) }
+        if w.isMiniaturized { w.deminiaturize(nil) }
+        w.makeKeyAndOrderFront(nil)
+        return true
+    }
+
+    /// When a new window was last asked for here.
+    private static var asked = Date.distantPast
+
+    /// Whether the window is showing now (or on its way): the open one brought forward, else a new one.
     @discardableResult static func show() -> Bool {
         NSApp.activate()
-        if let w = MainWindow.current, w.isVisible || w.isMiniaturized {
-            if w.isMiniaturized { w.deminiaturize(nil) }
-            w.makeKeyAndOrderFront(nil)
-            return true
-        }
+        if front() { return true }
+        // One is on its way already: asked for a moment ago and not up yet (⌘N held down), or the app has only just
+        // started and its first window comes by itself (a clicked alert that started the app asks as well). Not a
+        // second one beside it.
+        let justAsked = Date().timeIntervalSince(asked) < 1
+        let justStarted = AppWake.started.map { Date().timeIntervalSince($0) < 3 } ?? false
+        if justAsked || justStarted { return true }
         guard let openWindow else { return false }
+        asked = Date()
         openWindow(id: "main")
         return true
     }

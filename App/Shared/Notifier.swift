@@ -145,11 +145,9 @@ final class NotificationHandler: NSObject, UNUserNotificationCenterDelegate, @un
                 // the app is starting.
                 CameraStreams.shared.openFromAlert(cameraID)
                 #if os(macOS)
-                // The camera opens in Woodruff's window: bring it forward if it's tucked away in the Dock.
-                if let w = MainWindow.current {
-                    if w.isMiniaturized { w.deminiaturize(nil) }
-                    w.makeKeyAndOrderFront(nil)
-                }
+                // The camera opens in Woodruff's window: bring it forward if it's tucked away in the Dock or hidden
+                // with the app. (Closed, the menu bar's icon opens a new one for it: `MenuBarIcon`.)
+                MainWindowOpener.front()
                 #endif
                 return
             }
@@ -160,8 +158,10 @@ final class NotificationHandler: NSObject, UNUserNotificationCenterDelegate, @un
                 // Only a TV that's still here (the alert may be old, or pushed from another Mac).
                 if let tvID, fleet.tv(tvID) != nil { fleet.remoteAll = false; fleet.selectedID = tvID }
                 #if os(macOS)
-                // The Mac has no Remote page: its remote slides out beside the window.
+                // The Mac has no Remote page: its remote slides out beside the window (opened again if it was
+                // closed, or brought out of the Dock: the remote showed nowhere otherwise).
                 fleet.remotePanel = true
+                MainWindowOpener.show()
                 #else
                 UserDefaults.standard.set("remote", forKey: "section")
                 #endif
@@ -173,6 +173,11 @@ final class NotificationHandler: NSObject, UNUserNotificationCenterDelegate, @un
                     #endif
                     UserDefaults.standard.set("settings", forKey: "section")
                 }
+                #if os(macOS)
+                // View TV, Open, or a click on the alert itself: Woodruff's window shows it, opened again if it was
+                // closed (nothing showed otherwise).
+                MainWindowOpener.show()
+                #endif
             }
         }
     }

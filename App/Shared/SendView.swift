@@ -300,6 +300,9 @@ struct SendToView: View {
 struct OpenLinkView: View {
     @Environment(Fleet.self) private var fleet
     @Environment(\.dismiss) private var dismiss
+    #if os(macOS)
+    @Environment(\.macPanePush) private var panePush
+    #endif
     @State private var link = ""
     @State private var opening = false
     @FocusState private var focused: Bool
@@ -367,7 +370,13 @@ struct OpenLinkView: View {
             do {
                 try await c.open(url)
                 fleet.say("Opening", "It’s opening on \(c.hub.name).")
+                #if os(macOS)
+                // In Mac Settings' right-hand side this page is the window's own root: `dismiss` there closed the
+                // whole window. It goes back to Send instead.
+                if let panePush { panePush.pop() } else { dismiss() }
+                #else
                 dismiss()
+                #endif
             } catch { fleet.show(error) }
             opening = false
         }
@@ -547,7 +556,10 @@ struct FilesView: View {
         #if os(macOS)
         .focusable()
         .focusEffectDisabled()
-        .onKeyPress(.space) { if let f = hover.file, !f.dir { quickLook(f); return .handled }; return .ignored }
+        // Space over a file is Quick Look. Asked for through the app's own Space handler, which has every Space
+        // before any page does (for the TV's play and pause): a key press here never arrived.
+        .onAppear { SpaceKey.page = { if let f = hover.file, !f.dir { quickLook(f); return true }; return false } }
+        .onDisappear { SpaceKey.page = nil }
         #endif
         .onChange(of: filter) { _, _ in refreshShown() }
         .onChange(of: show) { _, _ in refreshShown() }

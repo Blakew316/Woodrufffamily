@@ -264,6 +264,9 @@ struct ScenesStrip: View {
                     SceneEditor(scene: s, isNew: false)
                         #if os(iOS)
                         .toolbar { ToolbarItem(placement: .cancellationAction) { Button(role: .close) { editing = nil } } }
+                        #elseif os(macOS)
+                        // The Mac's sheet had no way out. (Changes keep as they're made.)
+                        .toolbar { ToolbarItem(placement: .cancellationAction) { Button(role: .close) { editing = nil }.keyboardShortcut(.cancelAction) } }
                         #endif
                 }
                     #if os(macOS)
@@ -349,6 +352,9 @@ struct SceneEditor: View {
     @State var scene: HomeScene
     var isNew: Bool
     @Environment(\.dismiss) private var dismiss
+    #if os(macOS)
+    @Environment(\.macPanePush) private var panePush
+    #endif
     @Environment(Fleet.self) private var fleet
     private let store = SceneStore.shared
     private let home = SmartHome.shared
@@ -398,7 +404,13 @@ struct SceneEditor: View {
                 Section {
                     Button("Delete Scene", role: .destructive) {
                         store.delete(scene.id)
+                        #if os(macOS)
+                        // In Mac Settings' right-hand side this page is the window's own root: `dismiss` there
+                        // closed the whole window. It goes back to Scenes instead.
+                        if let panePush { panePush.pop() } else { dismiss() }
+                        #else
                         dismiss()
+                        #endif
                     }
                 }
             }
