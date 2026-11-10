@@ -772,6 +772,8 @@ struct MacGreetingPill: View {
 struct MacToolbarGreeting: View {
     /// Room for the weather beside the greeting.
     var weather = true
+    /// Room for the words at their full size (a middling window has them a size down).
+    var large = true
     private let sky = HomeWeather.shared
     private let greeting = HomeGreeting.shared
     @AppStorage("weatherPlace") private var place = ""
@@ -780,15 +782,15 @@ struct MacToolbarGreeting: View {
         // Home scrolled down: its tiles pass under the toolbar, and the words go (back at the top), as they did in
         // their row.
         let away = MacHomeScroll.shared.scrolledDown
-        HStack(spacing: 12) {
+        HStack(spacing: 14) {
             if weather, let now = sky.now {
                 VStack(spacing: 0) {
-                    HStack(spacing: 6) {
+                    HStack(spacing: 7) {
                         Image(systemName: now.sky.symbol)
                             .symbolRenderingMode(.multicolor)
-                            .font(.system(size: 17, weight: .semibold))
+                            .font(.system(size: large ? 23 : 17, weight: .semibold))
                         Text(now.tempText)
-                            .font(.system(size: 18, weight: .semibold, design: .rounded))
+                            .font(.system(size: large ? 25 : 18, weight: .semibold, design: .rounded))
                             .monospacedDigit()
                             .foregroundStyle(IconPalette.white)
                             .contentTransition(.numericText())
@@ -796,25 +798,25 @@ struct MacToolbarGreeting: View {
                     // "Austin, TX" under the sky and the temperature.
                     if !place.isEmpty {
                         Text(WeatherPlace.short(place))
-                            .font(.system(size: 10, weight: .semibold))
+                            .font(.system(size: large ? 12 : 10, weight: .semibold))
                             .foregroundStyle(IconPalette.ice)
                             .lineLimit(1)
                     }
                 }
                 .fixedSize()
                 .help([now.sky.words, now.range].compactMap { $0 }.joined(separator: " · "))
-                Rectangle().fill(IconPalette.cyan).frame(width: 1.5, height: 26)
+                Rectangle().fill(IconPalette.cyan).frame(width: 1.5, height: large ? 36 : 26)
             }
             // A real button: a tap gesture inside a Mac toolbar is taken by the window (dragging it).
             Button { greeting.refresh(force: true) } label: {
                 VStack(alignment: .leading, spacing: 1) {
                     Text(greeting.greeting)
-                        .font(.system(size: 17, weight: .bold, design: .rounded))
+                        .font(.system(size: large ? 23 : 17, weight: .bold, design: .rounded))
                         .foregroundStyle(IconPalette.white)
                         .lineLimit(1)
                     if !greeting.line.isEmpty {
                         Text(greeting.line)
-                            .font(.system(size: 11.5, weight: .medium))
+                            .font(.system(size: large ? 14 : 11.5, weight: .medium))
                             .foregroundStyle(IconPalette.ice)
                             .lineLimit(1)
                             .contentTransition(.opacity)
@@ -822,7 +824,7 @@ struct MacToolbarGreeting: View {
                             .transition(.opacity)
                     }
                 }
-                .frame(maxWidth: weather ? 340 : 280, alignment: .leading)
+                .frame(maxWidth: large ? 430 : 280, alignment: .leading)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)

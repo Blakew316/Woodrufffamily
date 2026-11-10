@@ -1010,10 +1010,10 @@ struct MacRoot: View {
         // Home's first page: the weather and the greeting at the window's top left, in the toolbar itself. (They had
         // a row of their own under the toolbar, in its middle, with the thermostat at its far right: a strip of
         // mostly empty space above Home.)
-        // (Only where there's room beside Home | Watch | Settings: the greeting from a middling window up, the weather
-        // with it in a wide one.)
+        // (Only where there's room beside Home | Watch | Settings: the greeting from a middling window up, at its full
+        // size from a fairly wide one, and the weather with it in a wide one.)
         if onHome && width >= 1040 {
-            ToolbarItem(placement: .navigation) { MacToolbarGreeting(weather: width >= 1300) }
+            ToolbarItem(placement: .navigation) { MacToolbarGreeting(weather: width >= 1400, large: width >= 1160) }
                 .sharedBackgroundVisibility(.hidden)
         }
         ToolbarItem(placement: .principal) {

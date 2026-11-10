@@ -481,6 +481,11 @@ struct HomeView: View {
         #if os(tvOS)
         .scrollClipDisabled()
         #endif
+        #if os(macOS)
+        // The Mac: in the middle of the page while they all fit (they sat at its left edge); when there are more than
+        // fit, they start at the left and scroll, as before.
+        .defaultScrollAnchor(.center, for: .alignment)
+        #endif
     }
 
     private func chip(_ title: String, selected: Bool) -> some View {
