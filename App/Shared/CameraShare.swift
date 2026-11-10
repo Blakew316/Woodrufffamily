@@ -309,7 +309,7 @@ extension CameraShare {
     private func letGo(_ id: String) {
         guard keptForTV.remove(id) != nil else { return }
         // Kept live for something else too (Vehicle Alerts, or every camera kept ready on this Mac).
-        if VehicleWatch.shared.watched.contains(id) || CameraStreams.shared.warmed.contains(id) { return }
+        if VehicleWatch.shared.keeps.contains(id) || CameraStreams.shared.warmed.contains(id) { return }
         CameraStreams.shared.stopKeeping(id)
     }
 

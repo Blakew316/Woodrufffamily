@@ -2,21 +2,27 @@
 import SwiftUI
 import AppKit
 import Vision
+import CoreML
 import ImageIO
 import os
 import WoodruffKit
 
-/// Vehicle Alerts (Mac): Google's camera API sends no vehicle detections, so the Mac watches a camera's live stream
-/// itself. About once a second it compares a small grey copy of the picture with what the scene usually looks like
-/// (so a parked car soon counts as scenery), and when a solid patch of it changes, asks Vision what's in that patch.
-/// A vehicle on two frames in a row is an alert, at most one every three minutes per camera unless the drive went
-/// quiet in between. In Test Mode (the default) it only notes what it saw, with the frame, under the switch.
+/// Vehicle Alerts (Mac): Google's camera API sends no vehicle detections, so the Mac that sends the family's alerts
+/// (the Mac Studio) watches a camera's live stream itself. About once a second Apple's object detector
+/// (`VehicleDetector`) finds the vehicles in the picture, and `VehicleTracker` says when one has arrived: a vehicle
+/// that wasn't there, on the camera's zone (its driveway) at two looks, where the picture changed as it turned up.
+/// Cars parked in view, cars driving past and changes of light are not news. An arrival is an alert, at most one
+/// every three minutes per camera unless the drive went quiet in between. In Test Mode (the default) it only notes
+/// what it saw, with the frame, under the switch and in a log of its own beside the frames.
+/// (It used to look for a change in the picture's brightness and ask Vision what the changed patch showed. In its
+/// first days every vehicle that named was a neighbour's parked car as the light changed, and it missed the ones
+/// that came.)
 @Observable @MainActor
 final class VehicleWatch {
     static let shared = VehicleWatch()
     nonisolated static let log = Logger(subsystem: "com.woodruff.family", category: "vehicles")
 
-    /// The cameras watched (this Mac's own choice; not synced).
+    /// The cameras watched.
     var watched: Set<String> {
         get { Set(UserDefaults.standard.stringArray(forKey: "vehicle.cameras") ?? []) }
         set { UserDefaults.standard.set(Array(newValue).sorted(), forKey: "vehicle.cameras"); sync() }
@@ -29,35 +35,34 @@ final class VehicleWatch {
     private(set) var last: (at: Date, camera: String, file: URL)?
     private(set) var framesPerMinute = 0
 
-    // Tuning (each can be changed with `defaults write com.woodruff.family.mac <key> <value>` while testing).
-    private var minConfidence: Float { UserDefaults.standard.object(forKey: "vehicle.minConfidence") as? Float ?? 0.3 }
-    /// Of the small picture's cells: at least this share changed for a patch worth asking Vision about...
-    private var minChanged: Double { UserDefaults.standard.object(forKey: "vehicle.minChanged") as? Double ?? 0.012 }
-    /// ...and at most this share: more is the whole picture changing at once (night vision, headlights, the sun).
-    private var maxChanged: Double { UserDefaults.standard.object(forKey: "vehicle.maxChanged") as? Double ?? 0.45 }
+    /// The Mac that sends the family's alerts does the watching (the Mac Studio, the updater's hub); the other Macs
+    /// only show its switches. (A Mac with no updater watches for itself.)
+    static var watchesHere: Bool { PushRelay.updaterRole() != "follower" }
+    /// The cameras whose pictures it keeps playing on this Mac (none on a Mac that doesn't do the watching).
+    var keeps: Set<String> { Self.watchesHere ? watched : [] }
+
+    /// How sure the detector has to be (`defaults write com.woodruff.family.mac vehicle.minConfidence 0.5`).
+    private var minConfidence: Double { UserDefaults.standard.object(forKey: "vehicle.minConfidence") as? Double ?? 0.5 }
 
     private static let gw = 64, gh = 36
     private struct Scene {
-        var background: [Float] = []
-        var hits = 0
-        var lastAlert: Date = .distantPast
+        var motion = VehicleMotion()
+        var tracker = VehicleTracker()
         var lastMotion: Date = .distantPast
-        var quietSinceAlert = true
     }
     @ObservationIgnored private var scenes: [String: Scene] = [:]
     @ObservationIgnored private var loop: Task<Void, Never>?
     @ObservationIgnored private var activity: NSObjectProtocol?
+    // For the heartbeat: looks, the most vehicles followed at once, arrivals, vehicles passed over, how much of the
+    // picture changes from one look to the next.
     @ObservationIgnored private var frames = 0
-    @ObservationIgnored private var candidates = 0
-    @ObservationIgnored private var vehicleFrames = 0
+    @ObservationIgnored private var inView = 0
     @ObservationIgnored private var detections = 0
+    @ObservationIgnored private var passed = 0
+    @ObservationIgnored private var changeSum: Double = 0
     @ObservationIgnored private var beatAt = Date()
-    /// For the heartbeat: how much the picture moves from one frame to the next, and the biggest change seen.
-    @ObservationIgnored private var diffSum: Double = 0
-    @ObservationIgnored private var maxShare: Double = 0
-    @ObservationIgnored private var previous: [String: [Float]] = [:]
     @ObservationIgnored private var lastFrame: (jpeg: Data, camera: String)?
-    @ObservationIgnored private var lastCandidateSaved = Date.distantPast
+    @ObservationIgnored private var lastPassedSaved = Date.distantPast
 
     static var folder: URL? {
         guard let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return nil }
@@ -70,23 +75,24 @@ final class VehicleWatch {
 
     /// Starts or stops watching to match the switches.
     private func sync() {
-        let on = watched
+        let on = keeps
         for id in CameraStreams.shared.pinned where !on.contains(id) && !CameraStreams.shared.warmed.contains(id) { CameraStreams.shared.stopKeeping(id) }
         if on.isEmpty || Demo.isOn {
             loop?.cancel(); loop = nil
             if let a = activity { ProcessInfo.processInfo.endActivity(a); activity = nil }
             return
         }
+        VehicleDetector.shared.prepare()
         guard loop == nil else { return }
         // Not slowed down while the app is in the background (App Nap would sample a frame now and then at best).
         activity = ProcessInfo.processInfo.beginActivity(options: [.userInitiatedAllowingIdleSystemSleep],
                                                          reason: "Watching the driveway for vehicles")
-        Self.log.notice("vehicle watch: on for \(on.count) camera(s), test mode \(self.testMode ? "on" : "off", privacy: .public)")
+        note("vehicle watch: on for \(on.count) camera(s), test mode \(testMode ? "on" : "off")")
         loop = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.tick()
                 // Every second while anything has moved in the last half minute; every two while the drive is still
-                // (the first change seen brings it back to every second, well before two frames confirm a vehicle).
+                // (the first change seen brings it back to every second, before a vehicle's second look).
                 let busy = self?.scenes.values.contains { Date().timeIntervalSince($0.lastMotion) < 30 } ?? true
                 try? await Task.sleep(nanoseconds: busy ? 1_000_000_000 : 2_000_000_000)
             }
@@ -94,94 +100,96 @@ final class VehicleWatch {
     }
 
     private func tick() async {
-        for id in watched {
+        for id in keeps {
             guard let cam = NestCameras.shared.cameras.first(where: { $0.id == id }), cam.webRTC else { continue }
             let p = CameraStreams.shared.keepPlaying(cam)
-            guard p.isLive, let jpeg = await p.frameJPEG(), let image = Self.cgImage(jpeg) else { continue }
+            // 960 pixels across: a car at the street is a few dozen of them (at 480 the detector loses it at night).
+            guard p.isLive, let jpeg = await p.frameJPEG(maxSide: 960), let image = Self.cgImage(jpeg) else { continue }
             frames += 1
             await look(at: image, jpeg: jpeg, camera: cam)
         }
+        // (Asked for again, now and then, when the detector couldn't be had.)
+        VehicleDetector.shared.prepare()
         beat()
     }
 
     private func look(at image: CGImage, jpeg: Data, camera cam: NestCameras.Camera) async {
         guard let grey = Self.grey(image) else { return }
-        if let prev = previous[cam.id], prev.count == grey.count {
-            diffSum += Double(zip(grey, prev).reduce(Float(0)) { $0 + abs($1.0 - $1.1) }) / Double(grey.count)
-        }
-        previous[cam.id] = grey
         lastFrame = (jpeg, cam.name)
+        let now = Date()
         var scene = scenes[cam.id] ?? Scene()
-        defer { scenes[cam.id] = scene }
-        if scene.background.count != grey.count { scene.background = grey; return }
-        // Cells clearly different from the scenery, keeping only those with a changed neighbour (not specks of noise).
-        var changed = [Bool](repeating: false, count: grey.count)
-        for i in grey.indices where abs(grey[i] - scene.background[i]) > 28 { changed[i] = true }
-        var kept: [Int] = []
-        for y in 0..<Self.gh { for x in 0..<Self.gw where changed[y * Self.gw + x] {
-            var n = 0
-            for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
-                let nx = x + dx, ny = y + dy
-                if nx >= 0, ny >= 0, nx < Self.gw, ny < Self.gh, changed[ny * Self.gw + nx] { n += 1 }
+        scene.motion.look(at: grey, width: Self.gw, height: Self.gh, now: now)
+        changeSum += scene.motion.share
+        if scene.motion.share > 0.004 { scene.lastMotion = now }
+        scenes[cam.id] = scene
+        // (Nothing else touches this camera's scene while the detector works: one look follows another.)
+        guard let found = await VehicleDetector.shared.vehicles(in: image) else { return }
+        scene.tracker.rules.minConfidence = minConfidence
+        let outcomes = scene.tracker.look(at: found, motion: scene.motion, zone: zone(for: cam), now: now)
+        scenes[cam.id] = scene
+        inView = max(inView, scene.tracker.following)
+        for outcome in outcomes {
+            switch outcome {
+            case .arrived(let s):
+                detections += 1
+                let sure = Int((s.confidence * 100).rounded())
+                // The frame kept has a box drawn where the vehicle is; the alert's picture is the frame as it is.
+                let file = Self.keep(Self.marked(image, s.box) ?? jpeg, note: "\(cam.name)-\(s.label)-\(sure)")
+                if let file { last = (now, cam.name, file) }
+                note("vehicle seen on \(cam.name): \(s.label) \(sure)% at \(Self.place(s.box)) (test mode \(testMode ? "on: no alert" : "off: alert sent"))")
+                if !testMode { NestAlerts.shared.postVehicle(camera: cam, jpeg: jpeg) }
+            case .passedOver(let s, let why):
+                passed += 1
+                let sure = Int((s.confidence * 100).rounded())
+                note("vehicle passed over on \(cam.name): \(s.label) \(sure)% at \(Self.place(s.box)), \(why)")
+                // Test Mode: its frame too, to see whether passing it over was right (one every 15 s at most).
+                if testMode, now.timeIntervalSince(lastPassedSaved) > 15, let frame = Self.marked(image, s.box) {
+                    lastPassedSaved = now
+                    _ = Self.keep(frame, note: "\(cam.name)-\(s.label)-\(sure)-\(why)", in: "Passed over")
+                }
             }
-            if n >= 2 { kept.append(y * Self.gw + x) }
-        } }
-        let share = Double(kept.count) / Double(grey.count)
-        maxShare = max(maxShare, share)
-        // The scenery slowly takes in what stays (a car that parks); the whole picture changing resets it at once.
-        if share > maxChanged {
-            scene.background = grey
-            scene.hits = 0
-            return
         }
-        for i in grey.indices { scene.background[i] += (grey[i] - scene.background[i]) * 0.04 }
-        guard share >= minChanged else {
-            scene.hits = 0
-            if Date().timeIntervalSince(scene.lastMotion) > 45 { scene.quietSinceAlert = true }
-            return
-        }
-        scene.lastMotion = Date()
-        candidates += 1
-        // The changed patch, with a margin, in the full picture.
-        let xs = kept.map { $0 % Self.gw }, ys = kept.map { $0 / Self.gw }
-        let sx = CGFloat(image.width) / CGFloat(Self.gw), sy = CGFloat(image.height) / CGFloat(Self.gh)
-        var box = CGRect(x: CGFloat(xs.min()!) * sx, y: CGFloat(ys.min()!) * sy,
-                         width: CGFloat(xs.max()! - xs.min()! + 1) * sx, height: CGFloat(ys.max()! - ys.min()! + 1) * sy)
-        box = box.insetBy(dx: -max(24, box.width * 0.3), dy: -max(24, box.height * 0.3))
-            .intersection(CGRect(x: 0, y: 0, width: image.width, height: image.height))
-        guard let crop = image.cropping(to: box.integral) else { return }
-        let (label, confidence, top) = await Self.vehicle(in: crop)
-        // Test Mode: what changed and what Vision made of it, to count right and wrong calls (one every 15 s at most).
-        if testMode, Date().timeIntervalSince(lastCandidateSaved) > 15, let jpegCrop = Self.jpeg(crop) {
-            lastCandidateSaved = Date()
-            _ = Self.keep(jpegCrop, note: "\(cam.name)-\(top)", in: "Candidates")
-        }
-        guard let label, confidence >= minConfidence else { scene.hits = 0; return }
-        vehicleFrames += 1
-        scene.hits += 1
-        guard scene.hits >= 2 else { return }
-        scene.hits = 0
-        // One alert per camera every three minutes, unless the drive went quiet in between (another car).
-        guard Date().timeIntervalSince(scene.lastAlert) > 180 || scene.quietSinceAlert else { return }
-        scene.lastAlert = Date()
-        scene.quietSinceAlert = false
-        detections += 1
-        let file = Self.keep(jpeg, note: "\(cam.name)-\(label)-\(Int(confidence * 100))")
-        if let file { last = (Date(), cam.name, file) }
-        Self.log.notice("vehicle seen on \(cam.name, privacy: .public): \(label, privacy: .public) \(Int(confidence * 100))% (test mode \(self.testMode ? "on: no alert" : "off: alert sent", privacy: .public))")
-        if !testMode { NestAlerts.shared.postVehicle(camera: cam, jpeg: jpeg) }
     }
 
-    /// Every ten minutes in the log: frames looked at, patches that changed, frames with a vehicle, alerts.
+    /// Where a vehicle counts on a camera's picture (its driveway), by the camera's id or name: this Mac's own
+    /// (`defaults write com.woodruff.family.mac vehicle.zones -dict-add "<camera's name>" "<x,y x,y …>"`, in shares
+    /// of the picture from its top left), else the one built in for it. None: anywhere in the picture.
+    private func zone(for cam: NestCameras.Camera) -> VehicleZone? {
+        let own = UserDefaults.standard.dictionary(forKey: "vehicle.zones") as? [String: String] ?? [:]
+        let text = own[cam.id] ?? own[cam.name] ?? Self.zones[cam.name.lowercased()]
+        return text.flatMap { VehicleZone($0) }
+    }
+
+    /// The family's Front Driveway camera: the driveway, its apron and the near lane right in front of it (not the
+    /// street beyond, the kerb either side, or the neighbours' drives, where cars are always parked).
+    private static let zones = [
+        "front driveway camera": "0.28,0.20 0.80,0.22 0.86,0.34 0.72,0.41 0.71,1.00 0.08,1.00 0.02,0.62 0.10,0.60 0.32,0.30",
+    ]
+
+    private static func place(_ box: CGRect) -> String {
+        String(format: "%.2f %.2f %.2f×%.2f", Double(box.minX), Double(box.minY), Double(box.width), Double(box.height))
+    }
+
+    /// What it saw: in the system's log, and in a file of its own beside the frames (`log.txt`, its newest lines).
+    private func note(_ line: String) {
+        Self.log.notice("\(line, privacy: .public)")
+        guard let file = Self.folder?.appendingPathComponent("log.txt") else { return }
+        var text = (try? Data(contentsOf: file)) ?? Data()
+        if text.count > 400_000 { text = Data(text.suffix(200_000)) }
+        text.append(Data("\(ISO8601DateFormatter().string(from: Date())) \(line)\n".utf8))
+        try? text.write(to: file, options: .atomic)
+    }
+
+    /// Every ten minutes in the log: looks, the most vehicles followed at once, arrivals, vehicles passed over.
     private func beat() {
         let mins = Date().timeIntervalSince(beatAt) / 60
         guard mins >= 10 else { return }
         framesPerMinute = Int(Double(frames) / mins)
-        let moved = frames > 1 ? diffSum / Double(frames - 1) : 0
-        Self.log.notice("vehicle watch: \(self.frames) frames, \(self.candidates) changes, \(self.vehicleFrames) with a vehicle, \(self.detections) seen in the last \(Int(mins)) minutes; frame to frame \(String(format: "%.2f", moved), privacy: .public) of 255, biggest change \(String(format: "%.1f", self.maxShare * 100), privacy: .public)% of the picture")
+        let changing = frames > 0 ? changeSum / Double(frames) * 100 : 0
+        note("vehicle watch: \(frames) looks, \(inView) vehicle(s) followed at most, \(detections) seen, \(passed) passed over in the last \(Int(mins)) minutes; \(String(format: "%.1f", changing))% of the picture changing; detector \(VehicleDetector.shared.state.words)")
         // Test Mode: one frame each time, to see what the camera sees (light, night vision).
-        if testMode, let f = lastFrame { _ = Self.keep(f.jpeg, note: "\(f.camera)-sample") }
-        frames = 0; candidates = 0; vehicleFrames = 0; detections = 0; beatAt = Date(); diffSum = 0; maxShare = 0
+        if testMode, let f = lastFrame { _ = Self.keep(f.jpeg, note: "\(f.camera)-sample", in: "Samples") }
+        frames = 0; inView = 0; detections = 0; passed = 0; changeSum = 0; beatAt = Date()
     }
 
     // MARK: Pictures
@@ -204,22 +212,20 @@ final class VehicleWatch {
         return out
     }
 
-    /// Vision's own names for vehicles (exactly these: "car_seat" and "vehicle_toy" are not).
-    private static let vehicleLabels: Set<String> = ["automobile", "bus", "car", "engine_vehicle", "jeep", "motorcycle",
-                                                     "police_car", "semi_truck", "suv", "truck", "van", "vehicle"]
-
-    /// Vision's best vehicle label for the patch, and how sure it is.
-    /// Vision's best vehicle label for the patch and how sure it is, and its top three labels of any kind.
-    private nonisolated static func vehicle(in crop: CGImage) async -> (String?, Float, String) {
-        await Task.detached(priority: .utility) {
-            let request = VNClassifyImageRequest()
-            try? VNImageRequestHandler(cgImage: crop).perform([request])
-            let results = (request.results ?? []).sorted { $0.confidence > $1.confidence }
-            var best: (String?, Float) = (nil, 0)
-            for o in results where o.confidence > best.1 && vehicleLabels.contains(o.identifier) { best = (o.identifier, o.confidence) }
-            let top = results.prefix(3).map { "\($0.identifier)\(Int($0.confidence * 100))" }.joined(separator: "-")
-            return (best.0, best.1, top)
-        }.value
+    /// The picture with a box drawn where a vehicle was found (for the frames kept to look at later).
+    private nonisolated static func marked(_ image: CGImage, _ box: CGRect) -> Data? {
+        let w = image.width, h = image.height
+        guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
+                                  space: CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+        // Core Graphics measures up from the bottom; the box is measured down from the top.
+        let rect = CGRect(x: box.minX * CGFloat(w), y: (1 - box.maxY) * CGFloat(h), width: box.width * CGFloat(w), height: box.height * CGFloat(h))
+        ctx.setStrokeColor(CGColor(red: 1, green: 0.2, blue: 0.2, alpha: 1))
+        ctx.setLineWidth(max(2, CGFloat(w) / 320))
+        ctx.stroke(rect)
+        guard let drawn = ctx.makeImage() else { return nil }
+        return jpeg(drawn)
     }
 
     private nonisolated static func jpeg(_ image: CGImage) -> Data? {
@@ -248,9 +254,125 @@ final class VehicleWatch {
     }
 }
 
+
+/// Apple's object detector for Vehicle Alerts: YOLOv3, from Apple's own Core ML models, which finds the cars, trucks,
+/// buses and motorbikes in a picture and where they are. It isn't part of the app: the Mac that watches gets it from
+/// Apple once (62 MB), keeps it beside its frames, and uses it from there after that.
+@Observable @MainActor
+final class VehicleDetector {
+    static let shared = VehicleDetector()
+
+    enum State: Equatable {
+        case none, getting, ready, failed(String)
+        var words: String {
+            switch self {
+            case .none: return "not asked for"
+            case .getting: return "being got"
+            case .ready: return "ready"
+            case .failed(let why): return "not had (\(why))"
+            }
+        }
+    }
+    private(set) var state: State = .none
+
+    /// The model, usable from any thread (Vision's own object; one look at a time uses it).
+    private final class Model: @unchecked Sendable {
+        let vision: VNCoreMLModel
+        init(_ vision: VNCoreMLModel) { self.vision = vision }
+    }
+    @ObservationIgnored private var model: Model?
+    @ObservationIgnored private var lastTry = Date.distantPast
+
+    private nonisolated static let address = URL(string: "https://ml-assets.apple.com/coreml/models/Image/ObjectDetection/YOLOv3/YOLOv3Int8LUT.mlmodel")!
+    private nonisolated static let name = "YOLOv3Int8LUT"
+    /// What it calls the vehicles it finds.
+    private nonisolated static let vehicles: Set<String> = ["car", "truck", "bus", "motorbike", "motorcycle"]
+
+    /// Gets it ready: from where it's kept, or from Apple the first time. Again ten minutes after it couldn't be had.
+    func prepare() {
+        guard model == nil, state != .getting, Date().timeIntervalSince(lastTry) > 600,
+              let folder = VehicleWatch.folder?.deletingLastPathComponent().appendingPathComponent("Models", isDirectory: true) else { return }
+        lastTry = Date()
+        state = .getting
+        Task { [weak self] in
+            let result = await VehicleDetector.load(in: folder)
+            guard let self else { return }
+            switch result {
+            case .success(let m):
+                self.model = m
+                self.state = .ready
+                VehicleWatch.log.notice("vehicle detector: ready")
+            case .failure(let error):
+                self.state = .failed(error.localizedDescription)
+                VehicleWatch.log.notice("vehicle detector: not had: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+    }
+
+    private nonisolated static func load(in folder: URL) async -> Result<Model, Error> {
+        let fm = FileManager.default
+        let compiled = folder.appendingPathComponent("\(name).mlmodelc", isDirectory: true)
+        do {
+            try fm.createDirectory(at: folder, withIntermediateDirectories: true)
+            if !fm.fileExists(atPath: compiled.path) {
+                let (downloaded, response) = try await URLSession.shared.download(from: address)
+                guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
+                // Core ML makes its own copy to use, from the file as Apple gives it (which has to have its name).
+                let source = folder.appendingPathComponent("\(name).mlmodel")
+                try? fm.removeItem(at: source)
+                try fm.moveItem(at: downloaded, to: source)
+                let made = try await MLModel.compileModel(at: source)
+                try? fm.removeItem(at: compiled)
+                try fm.moveItem(at: made, to: compiled)
+                try? fm.removeItem(at: source)
+            }
+            let ml = try MLModel(contentsOf: compiled)
+            let vision = try VNCoreMLModel(for: ml)
+            return .success(Model(vision))
+        } catch {
+            // A copy that can't be used (cut short, or from another version of the system) isn't kept: it's got again.
+            try? fm.removeItem(at: compiled)
+            return .failure(error)
+        }
+    }
+
+    /// The vehicles in [image], or nil while the detector isn't ready. Looked for in the whole picture and again in
+    /// four overlapping parts of it (which finds the small ones at the street, and more at night).
+    func vehicles(in image: CGImage) async -> [VehicleSighting]? {
+        guard let model else { return nil }
+        return await Task.detached(priority: .utility) { VehicleDetector.find(in: image, with: model) }.value
+    }
+
+    private nonisolated static func find(in image: CGImage, with model: Model) -> [VehicleSighting] {
+        let w = CGFloat(image.width), h = CGFloat(image.height)
+        var parts = [CGRect(x: 0, y: 0, width: 1, height: 1)]
+        for (x, y) in [(0.0, 0.0), (0.4, 0.0), (0.0, 0.4), (0.4, 0.4)] { parts.append(CGRect(x: x, y: y, width: 0.6, height: 0.6)) }
+        var found: [VehicleSighting] = []
+        for part in parts {
+            let whole = part.width >= 1
+            let pixels = CGRect(x: part.minX * w, y: part.minY * h, width: part.width * w, height: part.height * h).integral
+            guard let piece = whole ? image : image.cropping(to: pixels) else { continue }
+            let request = VNCoreMLRequest(model: model.vision)
+            request.imageCropAndScaleOption = .scaleFill
+            try? VNImageRequestHandler(cgImage: piece, options: [:]).perform([request])
+            for o in (request.results as? [VNRecognizedObjectObservation]) ?? [] {
+                guard let best = o.labels.first, vehicles.contains(best.identifier) else { continue }
+                // Vision measures a box up from the bottom of what it was shown: here it's down from the top of the
+                // whole picture.
+                let b = o.boundingBox
+                let box = CGRect(x: part.minX + b.minX * part.width, y: part.minY + (1 - b.maxY) * part.height,
+                                 width: b.width * part.width, height: b.height * part.height)
+                found.append(VehicleSighting(label: best.identifier, confidence: Double(best.confidence), box: box))
+            }
+        }
+        return found
+    }
+}
+
 /// The Mac's own Settings window (⌘,) → Notifications: which cameras the Mac watches for vehicles.
 struct VehicleAlertsSection: View {
     private let watch = VehicleWatch.shared
+    private let detector = VehicleDetector.shared
     private let nest = NestCameras.shared
     @State private var watched = VehicleWatch.shared.watched
     @State private var testMode = VehicleWatch.shared.testMode
@@ -266,6 +388,13 @@ struct VehicleAlertsSection: View {
                     }))
             }
             Toggle("Test Mode", isOn: $testMode).onChange(of: testMode) { _, v in watch.testMode = v }
+            if VehicleWatch.watchesHere, !watched.isEmpty {
+                switch detector.state {
+                case .getting: Text("Getting Apple's vehicle detector (62 MB, once).").foregroundStyle(.secondary)
+                case .failed(let why): Text("Couldn't get Apple's vehicle detector: \(why)").foregroundStyle(.secondary)
+                default: EmptyView()
+                }
+            }
             if let last = watch.last {
                 HStack(spacing: 12) {
                     if let image = NSImage(contentsOf: last.file) {
@@ -276,7 +405,9 @@ struct VehicleAlertsSection: View {
                 }
             }
         } header: { Text("Vehicle Alerts") } footer: {
-            Text("Google doesn't pass on vehicles, so this Mac watches each camera chosen here itself and keeps its picture playing all the time. In Test Mode it only notes what it saw, here; turn Test Mode off to alert the iPhones.")
+            Text(VehicleWatch.watchesHere
+                 ? "Google doesn't pass on vehicles, so this Mac watches each camera chosen here itself and keeps its picture playing all the time. A vehicle that comes onto the driveway is one; cars parked in view or driving past aren't. In Test Mode it only notes what it saw, here; turn Test Mode off to alert the iPhones."
+                 : "Google doesn't pass on vehicles, so the Mac Studio watches each camera chosen here itself. In Test Mode it only notes what it saw; turn Test Mode off to alert the iPhones.")
         }
     }
 }

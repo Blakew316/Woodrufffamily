@@ -613,7 +613,7 @@ final class CameraStreams {
             }
         } else {
             warming?.cancel(); warming = nil
-            for id in warmed where !VehicleWatch.shared.watched.contains(id) { stopKeeping(id) }
+            for id in warmed where !VehicleWatch.shared.keeps.contains(id) { stopKeeping(id) }
             warmed = []
         }
     }
