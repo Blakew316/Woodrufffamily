@@ -567,7 +567,12 @@ struct WifiView: View {
                     .disabled(deco.busy || password.isEmpty)
                     if let e = deco.error { Text(e).foregroundStyle(Palette.attention) }
                 } header: { Text("TP-Link Deco") } footer: {
+                    // iPhone and iPad: one plain sentence (the rest was what could go wrong, which the app says if it does).
+                    #if os(iOS)
+                    Text("Use the owner password from the Deco app, on your home Wi‑Fi.")
+                    #else
                     Text("Use the Deco’s own password (the one set when the Deco was first set up, or the owner password in the Deco app). On your home Wi‑Fi. TP-Link has no official way in for other apps, so this signs in the way the Deco app does; a Deco update may stop it until Woodruff is updated. If the Deco app is signed in as the owner on a computer at the same time, the Deco may refuse for a minute.")
+                    #endif
                 }
             }
         }

@@ -126,6 +126,10 @@ struct WatchSettingsView: View {
                 #if os(tvOS)
                 Text(signedIn ? "Read-only: the app can’t change anything in your Drive. It reads the “Movies” and “TV Shows” folders, as the TVs do, and shares where you are in each title with the TVs."
                               : "Sign in on your iPhone or Mac. This Apple TV gets the sign-in from the family.")
+                // iPhone and iPad: one plain sentence, the one that matters before signing in or after.
+                #elseif os(iOS)
+                Text(signedIn ? "Read-only: the app can’t change anything in your Drive."
+                              : "The app only reads your Drive; if Google warns that it isn’t published, choose Advanced, then Continue.")
                 #else
                 Text("Read-only: the app can’t change anything in your Drive. It reads the “Movies” and “TV Shows” folders, as the TVs do, and shares where you are in each title with the TVs. Google shows a warning once because this app isn’t published: choose Advanced, then Continue.")
                 #endif

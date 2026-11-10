@@ -234,11 +234,32 @@ struct Transport: View {
                 .font(.system(size: size, weight: .semibold))
                 .contentTransition(.symbolEffect(.replace))
                 .frame(width: compact ? 34 : size * 1.5, height: compact ? 34 : size * 1.5)
+                #if os(iOS)
+                // The small ones (over the tabs, on a TV's tile) take a touch 44 points across; they look and sit as
+                // they did.
+                .contentShape(Rectangle().inset(by: compact ? -5 : 0))
+                #else
                 .contentShape(Rectangle())
+                #endif
         }
         .buttonStyle(PressScale(scale: 0.85))
+        #if os(iOS)
+        .accessibilityLabel(spoken(action, symbol))
+        #else
         .accessibilityLabel(action)
+        #endif
     }
+
+    #if os(iOS)
+    /// What VoiceOver calls each button (it read out "playpause", "back10" and "fwd30").
+    private func spoken(_ action: String, _ symbol: String) -> String {
+        switch action {
+        case "back10": return "Back 10 Seconds"
+        case "fwd30": return "Ahead 30 Seconds"
+        default: return symbol == "pause.fill" ? "Pause" : "Play"
+        }
+    }
+    #endif
 }
 
 /// Inside the remote: a slim bar with just the title that drops down into the full card (artwork, progress,
@@ -309,6 +330,9 @@ struct NowPlayingSheet: View {
     @State private var screenNote: String?
     /// The TV [screen] is of.
     @State private var screenOf: String?
+    #if os(iOS)
+    @Environment(\.verticalSizeClass) private var heightClass
+    #endif
 
     var body: some View {
         let tv = tvID.flatMap { fleet.tv($0) } ?? fleet.selected
@@ -318,41 +342,59 @@ struct NowPlayingSheet: View {
         let art = tv?.nowPlaying
         NavigationStack {
             GeometryReader { geo in
-                let w = min(geo.size.width, 560) - 48
-                VStack(spacing: 0) {
-                    Spacer(minLength: 12)
-                    picture(art)
-                        .frame(width: w, height: w * 9 / 16)
-                        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                        .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).strokeBorder(.white.opacity(0.08)))
-                        .shadow(color: .black.opacity(0.5), radius: 30, y: 16)
-                        .scaleEffect(p?.isPlaying == false ? 0.92 : 1)
-                        .animation(.spring(response: 0.5, dampingFraction: 0.8), value: p?.isPlaying)
-                    Spacer(minLength: 28)
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(p?.title ?? "Nothing Playing")
-                            .font(.title3.weight(.bold))
-                            .lineLimit(2)
-                        Text(subtitle(p))
-                            .font(.callout)
-                            .foregroundStyle(.white.opacity(0.6))
-                            .lineLimit(1)
+                #if os(iOS)
+                // iPhone on its side, or a sheet too short for it all one above another: the picture beside the controls.
+                let low = heightClass == .compact || (geo.size.height < 560 && geo.size.width > geo.size.height)
+                #else
+                let low = false
+                #endif
+                if low {
+                    let half: CGFloat = geo.size.width / 2
+                    let w: CGFloat = max(120, min(half - 48, (geo.size.height - 32) * 16 / 9))
+                    let side: CGFloat = min(half - 48, 420)
+                    HStack(spacing: 0) {
+                        framed(art, playing: p?.isPlaying, width: w)
+                            .frame(width: half, height: geo.size.height)
+                        VStack(spacing: 0) {
+                            Spacer(minLength: 8)
+                            words(p).frame(width: side, alignment: .leading)
+                            if let p {
+                                LiveProgress(playing: p, tint: .white)
+                                    .frame(width: side)
+                                    .padding(.top, 14)
+                            }
+                            Spacer(minLength: 14)
+                            if let tv, let p {
+                                Transport(tv: tv, playing: p)
+                            }
+                            Spacer(minLength: 16)
+                            if let tv { volume(tv) }
+                            Spacer(minLength: 8)
+                        }
+                        .frame(width: half, height: geo.size.height)
                     }
-                    .frame(width: w, alignment: .leading)
-                    if let p {
-                        LiveProgress(playing: p, tint: .white)
-                            .frame(width: w)
-                            .padding(.top, 20)
+                } else {
+                    let w = min(geo.size.width, 560) - 48
+                    VStack(spacing: 0) {
+                        Spacer(minLength: 12)
+                        framed(art, playing: p?.isPlaying, width: w)
+                        Spacer(minLength: 28)
+                        words(p).frame(width: w, alignment: .leading)
+                        if let p {
+                            LiveProgress(playing: p, tint: .white)
+                                .frame(width: w)
+                                .padding(.top, 20)
+                        }
+                        Spacer(minLength: 18)
+                        if let tv, let p {
+                            Transport(tv: tv, playing: p)
+                        }
+                        Spacer(minLength: 22)
+                        if let tv { volume(tv) }
+                        Spacer(minLength: 16)
                     }
-                    Spacer(minLength: 18)
-                    if let tv, let p {
-                        Transport(tv: tv, playing: p)
-                    }
-                    Spacer(minLength: 22)
-                    if let tv { volume(tv) }
-                    Spacer(minLength: 16)
+                    .frame(width: geo.size.width, height: geo.size.height)
                 }
-                .frame(width: geo.size.width, height: geo.size.height)
             }
             .foregroundStyle(.white)
             .background { backdrop(art) }
@@ -415,6 +457,30 @@ struct NowPlayingSheet: View {
         if now.isPlaying, let c = fleet.client(for: tv) { Task { try? await c.key("playpause") } }
         // The sheet (when it follows the remote's TV) and the remote move with it.
         if tvID == nil { fleet.selectedID = other.id } else { dismiss() }
+    }
+
+    /// The picture in its frame, [w] wide (16:9), a little smaller while paused.
+    private func framed(_ art: NowPlaying?, playing: Bool?, width w: CGFloat) -> some View {
+        picture(art)
+            .frame(width: w, height: w * 9 / 16)
+            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).strokeBorder(.white.opacity(0.08)))
+            .shadow(color: .black.opacity(0.5), radius: 30, y: 16)
+            .scaleEffect(playing == false ? 0.92 : 1)
+            .animation(.spring(response: 0.5, dampingFraction: 0.8), value: playing)
+    }
+
+    /// The title over what it's from.
+    private func words(_ p: NowPlaying?) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(p?.title ?? "Nothing Playing")
+                .font(.title3.weight(.bold))
+                .lineLimit(2)
+            Text(subtitle(p))
+                .font(.callout)
+                .foregroundStyle(.white.opacity(0.6))
+                .lineLimit(1)
+        }
     }
 
     /// The picture: the video's thumbnail, the title's backdrop, or the TV's screen (Woodruff's own menus). Plain black

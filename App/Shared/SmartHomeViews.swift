@@ -469,7 +469,10 @@ struct LightSheet: View {
             .onAppear { level = Double(light.brightness); name = light.name }
             .onChange(of: light.brightness) { _, v in if !dragging { level = Double(v) } }
             .presentationDetents([.large])
+            // iPhone and iPad: the sheet's own background (not a material of the app's choosing over it).
+            #if !os(iOS)
             .presentationBackground(.ultraThinMaterial)
+            #endif
         }
     }
 
@@ -517,6 +520,17 @@ struct LightSheet: View {
         }
         .frame(width: 110, height: 250)
         .animation(.smooth(duration: 0.15), value: level)
+        #if os(iOS)
+        // VoiceOver: the bar is a slider (a tenth at a time), and each step it takes goes to the light.
+        .accessibilityRepresentation {
+            Slider(value: Binding(get: { level }, set: { v in
+                level = max(1, v.rounded())
+                home.setBrightness(light, Int(level))
+            }), in: 0...100, step: 10)
+            .accessibilityLabel("Brightness")
+            .accessibilityValue("\(Int(level))%")
+        }
+        #endif
     }
 
     private func swatches(_ items: [(Color, Bool, String, () -> Void)]) -> some View {
@@ -661,7 +675,10 @@ struct LightsListView: View {
                     .font(.footnote).foregroundStyle(.secondary)
             }
             Section("Cync and Apple Home") {
-                #if os(iOS) || os(tvOS)
+                #if os(iOS)
+                Text("Cync lights show up here once they’re added to Apple Home with their Matter code.")
+                    .font(.footnote).foregroundStyle(.secondary)
+                #elseif os(tvOS)
                 Text("Cync lights with the Matter logo show up here once they’re in Apple Home. In the Cync app, open the light’s settings and choose to connect it to Apple Home (Matter) to get its setup code; then in the Home app tap +, Add Accessory, and scan or enter that code. Any light in Apple Home appears here.")
                     .font(.footnote).foregroundStyle(.secondary)
                 #else

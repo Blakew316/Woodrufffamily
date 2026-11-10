@@ -170,9 +170,16 @@ struct SettingsView: View {
             }
 
             Section {
+                // iPhone and iPad: this app's own build (as General shows it), not the version of the TV's app.
+                #if os(iOS)
+                Text("Woodruff Family · \(AppBuild.label)")
+                    .frame(maxWidth: .infinity).font(.footnote).foregroundStyle(.secondary)
+                    .listRowBackground(Color.clear)
+                #else
                 Text("Woodruff Family \(hub.s?.version ?? "")")
                     .frame(maxWidth: .infinity).font(.footnote).foregroundStyle(.secondary)
                     .listRowBackground(Color.clear)
+                #endif
             }
         }
         .familyFormStyle()
@@ -697,7 +704,9 @@ private struct GitHubTokenField: View {
 
 /// Settings → Accounts: every sign-in in one list. Google (Drive, Photos, Calendar, the Nest cameras) and movie posters
 /// and mail, kept on the TVs and copied to every TV linked to them; and what this device signs in to (Govee,
-/// SmartThings, Dreo, the Deco, Google Drive for Watch), each opening the page where it's set up.
+/// SmartThings, Dreo, the Deco, Google Drive for Watch), each opening the page where it's set up. On iPhone and iPad
+/// SmartThings and Dreo are one row (Devices, the page both are on), and Google Drive for Watch is left to Settings →
+/// Watch.
 struct ConnectionsView: View {
     @Environment(Fleet.self) private var fleet
     var hub: HubSettings
@@ -736,18 +745,28 @@ struct ConnectionsView: View {
                 PageLink("Govee") { LightsListView() } label: {
                     IconRow(symbol: "", color: .clear, title: "Govee", value: device.govee ? "Signed In" : "Not Set Up")
                 }
+                #if os(iOS)
+                // SmartThings and Dreo are both signed in on Devices: one row for that page, saying which are.
+                PageLink("Devices") { DevicesListView() } label: {
+                    IconRow(symbol: "", color: .clear, title: "Devices", value: devicesSummary)
+                }
+                #else
                 PageLink("Samsung SmartThings") { DevicesListView() } label: {
                     IconRow(symbol: "", color: .clear, title: "Samsung SmartThings", value: device.smartThings ? "Signed In" : "Not Set Up")
                 }
                 PageLink("Dreo") { DevicesListView() } label: {
                     IconRow(symbol: "", color: .clear, title: "Dreo", value: device.dreo ? "Signed In" : "Not Set Up")
                 }
+                #endif
                 PageLink("TP-Link Deco") { WifiView() } label: {
                     IconRow(symbol: "", color: .clear, title: "TP-Link Deco", value: device.deco ? "Signed In" : "Not Set Up")
                 }
+                // (Not on iPhone and iPad: Google Drive for Watch is Settings → Watch, one level up.)
+                #if !os(iOS)
                 PageLink("Watch") { WatchSettingsView() } label: {
                     IconRow(symbol: "", color: .clear, title: "Google Drive for Watch", value: device.drive ? "Signed In" : "Not Set Up")
                 }
+                #endif
             } header: { Text("This Device") }
         }
         .familyFormStyle()
@@ -766,6 +785,16 @@ struct ConnectionsView: View {
         let n = s.mail?.count ?? 0
         return n == 0 ? "Off" : "\(n)"
     }
+
+    #if os(iOS)
+    /// Which of the two accounts set up on Devices are signed in.
+    private var devicesSummary: String {
+        var on: [String] = []
+        if device.smartThings { on.append("SmartThings") }
+        if device.dreo { on.append("Dreo") }
+        return on.isEmpty ? "Not Set Up" : on.joined(separator: " and ")
+    }
+    #endif
 }
 
 /// Which of this device's own accounts are signed in.

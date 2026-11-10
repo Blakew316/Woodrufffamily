@@ -400,7 +400,20 @@ struct WeatherPill: View {
             .accessibilityLabel("\(now.sky.words) \(now.tempText)")
             .accessibilityHint("Shows the forecast")
             .animation(.smooth, value: now)
-            #if os(iOS) || os(tvOS)
+            #if os(iOS)
+            // iPhone: a sheet. iPad: out of the pill as a popover, as on the Mac (a sheet again in a narrow window).
+            .sheet(isPresented: Binding(get: { showing && !PillPanels.popOver }, set: { showing = $0 })) {
+                WeatherSheet()
+                    .presentationDetents([.medium, .large])
+                    .presentationDragIndicator(.visible)
+            }
+            .popover(isPresented: Binding(get: { showing && PillPanels.popOver }, set: { showing = $0 }), arrowEdge: .bottom) {
+                WeatherSheet()
+                    .frame(idealWidth: 380, idealHeight: 560)
+                    .presentationDetents([.medium, .large])
+                    .presentationDragIndicator(.visible)
+            }
+            #elseif os(tvOS)
             .sheet(isPresented: $showing) {
                 WeatherSheet()
                     .presentationDetents([.medium, .large])

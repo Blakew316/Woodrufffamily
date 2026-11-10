@@ -154,7 +154,11 @@ struct AllDevicesView: View {
         }
         .sheet(item: $miniTV) { t in
             MiniRemote(tvID: t.id)
-                #if os(iOS) || os(tvOS)
+                #if os(iOS)
+                // On iOS 26's own glass sheet: no background of the app's making over it.
+                .presentationDetents([.height(300)])
+                .presentationDragIndicator(.visible)
+                #elseif os(tvOS)
                 .presentationDetents([.height(300)])
                 .presentationBackground(.clear)
                 .presentationDragIndicator(.visible)
@@ -1037,8 +1041,8 @@ struct SoundbarPicture: View {
     }
 }
 
-/// A small remote for one TV, from All Devices: what it's playing, play or pause, back and ahead, mute and volume, on
-/// clear Liquid Glass.
+/// A small remote for one TV, from All Devices: what it's playing, play or pause, back and ahead, mute and volume. On
+/// iPhone and iPad it sits on the sheet's own Liquid Glass; elsewhere on a glass card of its own.
 struct MiniRemote: View {
     var tvID: String
     @Environment(Fleet.self) private var fleet
@@ -1066,10 +1070,15 @@ struct MiniRemote: View {
         }
         .padding(22)
         .frame(maxWidth: .infinity)
+        #if os(iOS)
+        // The sheet is the glass (iOS 26 gives a sheet this short its own): nothing drawn behind the keys here.
+        .frame(maxHeight: .infinity)
+        #else
         .glass(RoundedRectangle(cornerRadius: 34, style: .continuous))
         .padding(.horizontal, 12)
         .padding(.bottom, 8)
         .frame(maxHeight: .infinity, alignment: .bottom)
+        #endif
     }
 
     private func key(_ symbol: String, _ label: String, big: Bool = false, _ action: @escaping () async -> Void) -> some View {

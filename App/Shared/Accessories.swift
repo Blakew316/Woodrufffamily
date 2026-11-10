@@ -641,6 +641,10 @@ struct ThermostatChip: View {
     var body: some View {
         let t = store.thermostat
         let n = nudgeable(t)
+        #if os(iOS)
+        // Read here, so the pill notices the moment its controls open or close (iPad shows them from the pill).
+        let open = ui.open
+        #endif
         HStack(spacing: 0) {
             // The pill is a real button: a tap gesture inside a Mac toolbar is taken by the window (dragging it),
             // so a click on it never arrived before.
@@ -691,6 +695,19 @@ struct ThermostatChip: View {
         .animation(.spring(response: 0.3, dampingFraction: 0.8), value: hovering)
         .onHover { hovering = $0 }
         .help(t.map { "\($0.name): \($0.status)" } ?? "Thermostat: not connected yet. Click for how to add it.")
+        #if os(iOS)
+        // iPad: the controls come out of the pill as a popover, as the weather does (a sheet again in a narrow window).
+        // Whether they show is still kept in `ThermostatUI`, not in the pill, so Home redrawing can't close them.
+        .popover(isPresented: Binding(get: { open && PillPanels.popOver }, set: { ui.open = $0 }), arrowEdge: .bottom) {
+            ThermostatPanel()
+                .frame(idealWidth: 440, idealHeight: 520)
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+        }
+        // The pill going (Home being arranged, another tab) takes its popover with it: forgotten too, or the controls
+        // would open by themselves when the pill came back.
+        .onDisappear { if PillPanels.popOver { ui.open = false } }
+        #endif
     }
 
     /// The set temperature − and + work on: the Mac's full pill, a thermostat that's responding, in Heat or Cool.
@@ -736,7 +753,12 @@ struct ThermostatChip: View {
                 .foregroundStyle(.primary)
                 .frame(width: 22, height: 22)
                 .background(Circle().fill(Color.primary.opacity(0.1)))
+                #if os(iOS)
+                // A touch 44 points across, inside the pill (the − and + look and sit as they did).
+                .contentShape(Circle().inset(by: -11))
+                #else
                 .contentShape(Circle())
+                #endif
         }
         #if os(tvOS)
         .buttonStyle(TVBarButtonStyle())

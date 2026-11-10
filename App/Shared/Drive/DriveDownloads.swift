@@ -315,8 +315,17 @@ private struct DownloadPicker: View {
     @State private var movies: [Title] = []
     @State private var shows: [Title] = []
     @State private var loaded = false
+    /// What's typed in the search field (iPhone and iPad): only the films and shows with it in their names are listed.
+    @State private var query = ""
+
+    private func matching(_ list: [Title]) -> [Title] {
+        let q = query.trimmingCharacters(in: .whitespaces)
+        return q.isEmpty ? list : list.filter { $0.title.localizedCaseInsensitiveContains(q) }
+    }
 
     var body: some View {
+        let foundMovies = matching(movies)
+        let foundShows = matching(shows)
         Form {
             if movies.isEmpty && shows.isEmpty && !loaded {
                 HStack { Spacer(); ProgressView(); Spacer() }
@@ -324,18 +333,18 @@ private struct DownloadPicker: View {
                 Text(library.error ?? "Nothing in the Drive library yet. Open Watch once to read Google Drive.")
                     .foregroundStyle(.secondary)
             }
-            if !movies.isEmpty {
+            if !foundMovies.isEmpty {
                 Section("Movies") {
-                    ForEach(movies) { t in
+                    ForEach(foundMovies) { t in
                         if let p = t.play {
                             DownloadRow(file: String(p.key.dropFirst(6)), title: p.title, name: t.title, detail: nil, poster: t.poster)
                         }
                     }
                 }
             }
-            if !shows.isEmpty {
+            if !foundShows.isEmpty {
                 Section("TV Shows") {
-                    ForEach(shows) { t in
+                    ForEach(foundShows) { t in
                         PageLink(t.title) { ShowDownloads(show: t) }
                     }
                 }
@@ -344,6 +353,15 @@ private struct DownloadPicker: View {
         .familyFormStyle()
         .navigationTitle("Add Downloads")
         .inlineTitle()
+        #if os(iOS)
+        // Find a film or show by name, instead of scrolling the whole library.
+        .pageSearch(text: $query, prompt: "Movies and TV Shows")
+        .overlay {
+            if !(movies.isEmpty && shows.isEmpty) && foundMovies.isEmpty && foundShows.isEmpty {
+                EmptyState(symbol: "magnifyingglass", title: "No Results", message: "Nothing in Movies or TV Shows matches “\(query)”.")
+            }
+        }
+        #endif
         .task {
             movies = (try? await library.library(place: "movies", sort: "title", unwatched: false, genre: nil, q: nil, offset: 0, limit: 120).items) ?? []
             var all: [Title] = []
@@ -443,6 +461,36 @@ private struct ShowDownloads: View {
                       detail: [e.code, e.name].compactMap { $0 }.joined(separator: " · "), poster: show.poster)
     }
 }
+
+#if os(iOS)
+/// "Download" in a film's or an episode's own menu (iPhone and iPad): keeps the one file [play] plays on this device, to
+/// watch with no connection, or removes the copy that's here (Settings → Watch → Downloads lists them). Nothing when
+/// it isn't one file in Google Drive, or Google Drive isn't signed in here.
+struct DownloadMenuItem: View {
+    var play: PlayAction
+    /// The film or show, for the list of downloads; and for an episode, which one ("S2 E4 · Name").
+    var name: String
+    var detail: String? = nil
+    var poster: String? = nil
+    private let downloads = DriveDownloads.shared
+
+    /// Whether what [play] plays can be kept here at all.
+    @MainActor static func offered(_ play: PlayAction) -> Bool {
+        play.isDrive && play.latest != true && GoogleDrive.signedIn
+    }
+
+    var body: some View {
+        if Self.offered(play) {
+            let file = String(play.key.dropFirst(6))
+            if downloads.item(file) == nil {
+                Button("Download") { downloads.add(file: file, title: play.title, name: name, detail: detail, poster: poster) }
+            } else {
+                Button("Remove Download", role: .destructive) { downloads.remove(file) }
+            }
+        }
+    }
+}
+#endif
 
 private struct DownloadRow: View {
     let file: String

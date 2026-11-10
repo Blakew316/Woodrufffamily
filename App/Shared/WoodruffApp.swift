@@ -351,6 +351,9 @@ struct WoodruffApp: App {
             SidebarCommands()
             WoodruffCommands(fleet: fleet)
         }
+        #elseif os(iOS)
+        // iPad's menu bar, and the same shortcuts on a keyboard.
+        .commands { PadCommands(fleet: fleet) }
         #endif
 
         #if os(macOS)
@@ -376,6 +379,60 @@ struct WoodruffApp: App {
     }
 }
 
+#endif
+
+#if os(iOS)
+/// iPad's menu bar (and a keyboard's shortcuts): the Mac's TVs menu, without what only a Mac has (its updater, the
+/// Mini Player, updating every Android TV). The shortcuts are the Mac's.
+struct PadCommands: Commands {
+    var fleet: Fleet
+
+    var body: some Commands {
+        CommandMenu("TVs") {
+            Button("Refresh All") { Task { await fleet.refresh(); await fleet.loadAllHealth() } }
+                .keyboardShortcut("r", modifiers: [.command, .shift])
+            // The remote is a tab of its own here.
+            Button("Remote") { UserDefaults.standard.set("remote", forKey: "section") }
+                .keyboardShortcut("r", modifiers: [.command, .option])
+            Divider()
+            // Each TV, to point the remote at (⌘1 to ⌘9).
+            ForEach(Array(tvNames().enumerated()), id: \.offset) { i, name in
+                Button(name) { pick(i) }.keyboardShortcut(KeyEquivalent(Character("\(i + 1)")), modifiers: .command)
+            }
+            Divider()
+            Button("Play / Pause") { send("playpause") }.keyboardShortcut("p", modifiers: [.command, .option])
+            Button("Home") { send("home") }.keyboardShortcut("h", modifiers: [.command, .shift])
+            Button("Mute") { send("mute") }.keyboardShortcut("m", modifiers: [.command, .option])
+            Button("Volume Up") { send("volup") }.keyboardShortcut(.upArrow, modifiers: [.command, .option])
+            Button("Volume Down") { send("voldown") }.keyboardShortcut(.downArrow, modifiers: [.command, .option])
+        }
+    }
+
+    /// The first nine paired TVs' names. From `pairedNames` (the same TVs in the same order), not the TVs themselves:
+    /// the menu is rebuilt whenever what it reads changes, and the TVs change every second or two while their names
+    /// hardly ever do.
+    @MainActor private func tvNames() -> [String] { Array(fleet.pairedNames.prefix(9)) }
+
+    /// The remote, pointed at the paired TV [i] places down the list (the order the menu shows them in).
+    @MainActor private func pick(_ i: Int) {
+        let list = fleet.tvs.filter { !$0.isUnpaired }
+        guard i < list.count else { return }
+        fleet.remoteAll = false
+        fleet.selectedID = list[i].id
+    }
+
+    /// The remote's keys, sent as the remote sends them: to its TV, or to every TV that's on when it's set to All TVs
+    /// (where one TV not answering isn't worth a message, as on the remote itself).
+    @MainActor private func send(_ key: String) {
+        let all = fleet.remoteAll
+        let targets = all ? fleet.tvs.filter { $0.online && !$0.isUnpaired } : (fleet.selected.map { [$0] } ?? [])
+        for tv in targets {
+            Task {
+                do { try await RemoteKeys.press(key, on: tv, fleet: fleet) } catch { if !all { fleet.show(error) } }
+            }
+        }
+    }
+}
 #endif
 
 /// The phone page's five sections.
@@ -471,7 +528,8 @@ struct RootView: View {
         }
         // The thermostat controls, from the pill in Home's header (iPhone) or the toolbar (Mac). Shown from here, the
         // window's root, so the screen redrawing (it does every second or two while the TVs report) can't close it.
-        .sheet(isPresented: Binding(get: { thermostatOpen }, set: { ThermostatUI.shared.open = $0 })) {
+        // (Not on iPad, where they come out of the pill itself as a popover: `ThermostatChip`.)
+        .sheet(isPresented: Binding(get: { thermostatOpen && !PillPanels.popOver }, set: { ThermostatUI.shared.open = $0 })) {
             ThermostatPanel()
                 #if os(iOS) || os(tvOS)
                 .presentationDetents([.medium, .large])

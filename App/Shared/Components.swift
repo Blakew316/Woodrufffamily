@@ -91,12 +91,18 @@ struct GlassCircle: View {
                 .frame(width: size, height: size)
                 .contentShape(Circle())
                 .glass(Circle(), tint: tint)
+                #if os(iOS)
+                // One smaller than a fingertip still takes a touch 44 points across (it looks and sits as it did).
+                .contentShape(Circle().inset(by: min(0, (size - 44) / 2)))
+                // iPad's pointer lights up the circle, not the square around it.
+                .contentShape(.hoverEffect, Circle())
+                #endif
         }
         .buttonStyle(PressScale())
     }
 }
 
-/// Shrinks a little under the finger, springs back.
+/// Shrinks a little under the finger, springs back. On iPad it also lights up under the pointer.
 struct PressScale: ButtonStyle {
     var scale: CGFloat = 0.92
     func makeBody(configuration: Configuration) -> some View {
@@ -107,8 +113,22 @@ struct PressScale: ButtonStyle {
             .scaleEffect(configuration.isPressed ? scale : 1)
             .brightness(configuration.isPressed ? -0.04 : 0)
             .animation(.spring(response: 0.25, dampingFraction: 0.6), value: configuration.isPressed)
+            #if os(iOS)
+            .hoverEffect(.highlight)
+            #endif
         #endif
     }
+}
+
+/// iPad: what a small pill on Home opens (the weather, the thermostat's controls) comes out of the pill as a popover,
+/// as on the Mac, and as a sheet again when the window is narrow. iPhone keeps its sheets.
+@MainActor
+enum PillPanels {
+    #if os(iOS)
+    static let popOver = UIDevice.current.userInterfaceIdiom == .pad
+    #else
+    static let popOver = false
+    #endif
 }
 
 #if os(tvOS)
@@ -135,6 +155,8 @@ struct CapsuleButton: View {
     var title: String
     var symbol: String?
     var prominent = true
+    /// iPhone and iPad: how far past its edge a touch still counts, for one drawn smaller than a fingertip.
+    var reach: CGFloat = 0
     var action: () -> Void
     var body: some View {
         #if os(tvOS)
@@ -159,6 +181,12 @@ struct CapsuleButton: View {
             .foregroundStyle(prominent ? Color.black : .white)
             .background { if prominent { Capsule().fill(.white) } }
             .modifier(SecondaryGlass(on: !prominent))
+            #if os(iOS)
+            // The whole capsule takes the touch, and a little past it when asked (nothing moves or changes size).
+            .contentShape(Capsule().inset(by: -reach))
+            // iPad's pointer lights up the capsule itself.
+            .contentShape(.hoverEffect, Capsule())
+            #endif
         }
         .buttonStyle(PressScale(scale: 0.95))
         #endif
@@ -242,8 +270,41 @@ struct TVPicker: View {
     @Environment(Fleet.self) private var fleet
     var allowAll = false
 
+    #if os(iOS)
+    /// The menu's choice for every TV at once (no TV has this id).
+    private static let everyTV = "*"
+
+    /// What the menu has picked: All TVs, or the TV the remote is on.
+    private var picked: Binding<String> {
+        Binding(get: { allowAll && fleet.remoteAll ? Self.everyTV : (fleet.selected?.id ?? "") },
+                set: { id in
+                    if id == Self.everyTV { fleet.remoteAll = true } else { fleet.remoteAll = false; fleet.selectedID = id }
+                })
+    }
+    #endif
+
     var body: some View {
         Menu {
+            #if os(iOS)
+            // A picker, so the system draws the checkmark (and VoiceOver says which is picked). All TVs is a plain row
+            // like the rest: no icon of its own.
+            Picker("TV", selection: picked) {
+                if allowAll {
+                    Text("All TVs").tag(Self.everyTV)
+                    Divider()
+                }
+                ForEach(fleet.tvs.filter { !$0.isUnpaired }) { t in
+                    // Its name over what it's doing.
+                    VStack(alignment: .leading) {
+                        Text(t.name)
+                        Text(statusWord(t))
+                    }
+                    .tag(t.id)
+                }
+            }
+            .pickerStyle(.inline)
+            .labelsHidden()
+            #else
             if allowAll {
                 Button { fleet.remoteAll = true } label: {
                     Label("All TVs", systemImage: fleet.remoteAll ? "checkmark" : "tv.and.mediabox")
@@ -257,6 +318,7 @@ struct TVPicker: View {
                     Text(statusWord(t))
                 }
             }
+            #endif
         } label: {
             HStack(spacing: 6) {
                 Circle().fill(dotColor).frame(width: 7, height: 7)

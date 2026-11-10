@@ -548,6 +548,11 @@ struct Billboard: View {
     @Environment(\.horizontalSizeClass) private var sizeClass
     @State private var width: CGFloat = 0
     #endif
+    #if os(iOS)
+    /// VoiceOver or Reduce Motion on: the banner doesn't turn by itself (a swipe still turns it).
+    @Environment(\.accessibilityVoiceOverEnabled) private var voiceOver
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    #endif
     #if os(tvOS)
     /// Play or Details picked with the remote: the banner stays on this title (moving on would take the focus away).
     @FocusState private var focusedButton: String?
@@ -577,8 +582,10 @@ struct Billboard: View {
         .aspectRatio(wide ? (width > 1000 ? 2.7 : 2.1) : 16.0 / 9.0, contentMode: .fit)
         .padding(.horizontal, wide ? 24 : 16)
         .onGeometryChange(for: CGFloat.self, of: { $0.size.width }) { width = $0 }
-        // On to the next after 12 seconds, as on the TV (a swipe starts the 12 seconds again).
-        .task(id: page) {
+        // On to the next after 12 seconds, as on the TV (a swipe starts the 12 seconds again). Not with VoiceOver on (it
+        // would change under the finger reading it) or Reduce Motion: then only a swipe turns it.
+        .task(id: "\(page)|\(voiceOver || reduceMotion)") {
+            guard !voiceOver, !reduceMotion else { return }
             try? await Task.sleep(nanoseconds: 12_000_000_000)
             guard !Task.isCancelled, titles.count > 1 else { return }
             withAnimation(.easeInOut(duration: 0.7)) { page = (page + 1) % titles.count }
@@ -807,11 +814,12 @@ struct Billboard: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(t.title).font(.title3.bold()).foregroundStyle(.white).lineLimit(1).shadow(color: .black.opacity(0.4), radius: 6)
                 Text(meta(t)).font(.caption.weight(.medium)).foregroundStyle(.white.opacity(0.8)).lineLimit(1)
+                // Drawn at 85%, they'd be 34 points tall under a finger: each takes a touch a little past its edge (44).
                 HStack(spacing: 8) {
                     if let p = t.play {
-                        CapsuleButton(title: p.label ?? "Play", symbol: "play.fill") { PlayRouter.start(p, fleet: fleet) }
+                        CapsuleButton(title: p.label ?? "Play", symbol: "play.fill", reach: 6) { PlayRouter.start(p, fleet: fleet) }
                     }
-                    CapsuleButton(title: "Details", symbol: nil, prominent: false) { open(t) }
+                    CapsuleButton(title: "Details", symbol: nil, prominent: false, reach: 6) { open(t) }
                 }
                 .controlSize(.small)
                 .scaleEffect(0.85, anchor: .leading)
@@ -1377,7 +1385,8 @@ struct TitleSheet: View {
                                             .buttonStyle(.glass)
                                     }
                                     ForEach(episodes) { e in
-                                        EpisodeRow(episode: e, still: c?.artURL(e.still, small: true), changed: { watchChanged(); Task { await loadEpisodes() } }, played: { dismiss() })
+                                        EpisodeRow(episode: e, still: c?.artURL(e.still, small: true), show: d.title, poster: d.poster,
+                                                   changed: { watchChanged(); Task { await loadEpisodes() } }, played: { dismiss() })
                                     }
                                 }
                                 if let films = d.films, !films.isEmpty {
@@ -1459,12 +1468,14 @@ struct TitleSheet: View {
     #endif
 
     private func top(_ d: TitleDetails, _ c: (any WatchSource)?) -> SheetTop {
-        SheetTop(title: d.title, art: c?.artURL(d.backdrop ?? d.poster), facts: facts(d), play: d.play, restart: d.restart)
+        SheetTop(title: d.title, art: c?.artURL(d.backdrop ?? d.poster), facts: facts(d), play: d.play, restart: d.restart,
+                 isFilm: d.kind == "movie", poster: d.poster)
     }
 
     /// The top as the tile it was opened from knew it (its year: the rest of the line comes with the details).
     private func top(_ t: Title, _ c: (any WatchSource)?) -> SheetTop {
-        SheetTop(title: t.title, art: c?.artURL(t.backdrop ?? t.poster), facts: "", play: t.play, restart: nil)
+        SheetTop(title: t.title, art: c?.artURL(t.backdrop ?? t.poster), facts: "", play: t.play, restart: nil,
+                 isFilm: t.kind == "movie", poster: t.poster)
     }
 
     @ViewBuilder private func header(_ top: SheetTop) -> some View {
@@ -1525,7 +1536,7 @@ struct TitleSheet: View {
                 .help(r.label ?? "Start Over")
                 #endif
             }
-            if let p = top.play { PlayOnButton(action: p, then: { dismiss() }) }
+            if let p = top.play { PlayOnButton(action: p, film: top.isFilm ? top.title : nil, poster: top.poster, then: { dismiss() }) }
         }
     }
 
@@ -1601,23 +1612,48 @@ private struct SheetTop {
     var facts: String
     var play: PlayAction?
     var restart: PlayAction?
+    /// A film (not a show or a collection), and its poster: for Download in its menu on iPhone and iPad.
+    var isFilm = false
+    var poster: String? = nil
 }
 
-/// "…" beside Play, with Play On, when there's more than one TV. A view of its own: it follows the TVs (they report
-/// every couple of seconds) without the whole sheet redrawing with them.
+/// "…" beside Play, with Play On, when there's more than one TV; on iPhone and iPad also with Download, for a film that
+/// can be kept on the device. A view of its own: it follows the TVs (they report every couple of seconds) without the
+/// whole sheet redrawing with them.
 private struct PlayOnButton: View {
     @Environment(Fleet.self) private var fleet
     var action: PlayAction
+    /// The film's name (nil for a show: its episodes each have Download in their own menus) and its poster.
+    var film: String? = nil
+    var poster: String? = nil
     var then: () -> Void
 
     var body: some View {
-        if fleet.tvs.filter({ !$0.isUnpaired }).count > 1 {
-            Menu { PlayOnMenu(action: action, then: then) } label: {
+        if fleet.tvs.filter({ !$0.isUnpaired }).count > 1 || downloadable {
+            Menu {
+                PlayOnMenu(action: action, then: then)
+                #if os(iOS)
+                if let film { DownloadMenuItem(play: action, name: film, poster: poster) }
+                #endif
+            } label: {
                 Image(systemName: "ellipsis").font(.headline).foregroundStyle(.white).frame(width: 40, height: 40).glass(Circle()).environment(\.colorScheme, .dark)
             }
             .menuStyle(.button).buttonStyle(.plain)
+            #if os(iOS)
+            .accessibilityLabel("More")
+            #else
             .accessibilityLabel("Play On…")
+            #endif
         }
+    }
+
+    /// A film that can be kept on this device (iPhone and iPad): the menu is there for its Download even with one TV.
+    private var downloadable: Bool {
+        #if os(iOS)
+        return film != nil && DownloadMenuItem.offered(action)
+        #else
+        return false
+        #endif
     }
 }
 
@@ -1663,6 +1699,10 @@ struct EpisodeRow: View {
     var episode: Episode
     /// Its picture's address, as the sheet worked it out.
     var still: URL? = nil
+    /// The show it's an episode of and that show's poster, for Download in its menu (iPhone and iPad). Without them
+    /// (a film in a collection) there's no Download.
+    var show: String? = nil
+    var poster: String? = nil
     var changed: () -> Void
     /// A play went out (the title's sheet closes, so what's playing shows).
     var played: () -> Void = {}
@@ -1713,6 +1753,11 @@ struct EpisodeRow: View {
         .contextMenu {
             Button("Play from the Start") { if PlayRouter.start(action, fleet: fleet, fromStart: true) { played() } }
             PlayOnMenu(action: action, then: played)
+            #if os(iOS)
+            if let show {
+                DownloadMenuItem(play: action, name: show, detail: [episode.code, episode.name].compactMap { $0 }.joined(separator: " · "), poster: poster)
+            }
+            #endif
         }
     }
 

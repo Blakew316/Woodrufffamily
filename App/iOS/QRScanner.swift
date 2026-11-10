@@ -19,6 +19,10 @@ struct QRScannerView: UIViewControllerRepresentable {
         /// camera running).
         private let sessionQueue = DispatchQueue(label: "com.woodruff.family.qrscanner")
         private var preview: AVCaptureVideoPreviewLayer?
+        /// Says which way up the picture goes as the iPhone or iPad is turned (left alone it stayed as for a phone held
+        /// upright: sideways in landscape, as an iPad mostly is).
+        private var rotation: AVCaptureDevice.RotationCoordinator?
+        private var rotationWatch: NSKeyValueObservation?
         private var done = false
 
         override func viewDidLoad() {
@@ -44,12 +48,28 @@ struct QRScannerView: UIViewControllerRepresentable {
             p.videoGravity = .resizeAspectFill
             view.layer.addSublayer(p)
             preview = p
+            // The picture turns with the device: now, and each time it's turned.
+            let r = AVCaptureDevice.RotationCoordinator(device: device, previewLayer: p)
+            rotation = r
+            turnPreview(to: r.videoRotationAngleForHorizonLevelPreview)
+            rotationWatch = r.observe(\.videoRotationAngleForHorizonLevelPreview, options: .new) { [weak self] _, change in
+                guard let angle = change.newValue else { return }
+                Task { @MainActor in self?.turnPreview(to: angle) }
+            }
             sessionQueue.async { [session] in session.startRunning() }
         }
 
         override func viewDidLayoutSubviews() {
             super.viewDidLayoutSubviews()
             preview?.frame = view.bounds
+            // Again here: the preview's connection may not have been there yet when the scanner was made.
+            if let r = rotation { turnPreview(to: r.videoRotationAngleForHorizonLevelPreview) }
+        }
+
+        /// Turns the preview to [angle] (degrees), when the camera can show it that way up.
+        private func turnPreview(to angle: CGFloat) {
+            guard let c = preview?.connection, c.isVideoRotationAngleSupported(angle), c.videoRotationAngle != angle else { return }
+            c.videoRotationAngle = angle
         }
 
         override func viewWillDisappear(_ animated: Bool) {

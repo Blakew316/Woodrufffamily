@@ -25,9 +25,21 @@ struct RemoteView: View {
     #else
     private let padLayout = false
     #endif
-    /// What's playing is shown in the top bar (iPad) instead of over the clickpad.
+    #if os(iOS)
+    @Environment(\.verticalSizeClass) private var heightClass
+    /// iPhone on its side: the clickpad and the keys sit side by side, and what's playing is named in the top bar.
+    private var lowLayout: Bool { heightClass == .compact }
+    #else
+    private let lowLayout = false
+    #endif
+    #if os(iOS)
+    /// iPad: a keyboard's arrows, Return, Esc and Space are the remote's while it's on screen.
+    private static let takesKeys = UIDevice.current.userInterfaceIdiom == .pad
+    @FocusState private var keysFocused: Bool
+    #endif
+    /// What's playing is shown in the top bar (iPad, and iPhone on its side) instead of over the clickpad.
     private var titleInBar: Bool {
-        guard padLayout, !all, let tv, tv.online, tv.link != "refused" else { return false }
+        guard padLayout || lowLayout, !all, let tv, tv.online, tv.link != "refused" else { return false }
         return tv.playing != nil
     }
 
@@ -100,17 +112,7 @@ struct RemoteView: View {
             let remote = VStack(spacing: 0) {
                 if showTop { status.frame(height: topH, alignment: .top) }
                 Spacer(minLength: 16)
-                Clickpad(size: padW) { send($0) } onRepeat: { send($0, repeat: $1) }
-                    .opacity(isOff ? 0.35 : 1)
-                    .allowsHitTesting(!isOff)
-                    .overlay(alignment: .topLeading) {
-                        CornerKey(symbol: "house.fill", label: "Home", size: k * 0.8) { send("home") }
-                            .offset(x: -corner, y: -6)
-                    }
-                    .overlay(alignment: .topTrailing) {
-                        CornerKey(symbol: "power", label: "Power", size: k * 0.8) { send("power") }
-                            .offset(x: corner, y: -6)
-                    }
+                clickpad(padW, key: k, corner: corner)
                 Spacer(minLength: 16)
                 keys(k, g2)
                 Spacer(minLength: 16).frame(maxHeight: 22)
@@ -120,7 +122,10 @@ struct RemoteView: View {
             .padding(.top, 8)
             .padding(.bottom, 10)
             .frame(width: colW, height: h)
-            if wide {
+            // iPhone on its side, or a window too short for the keys under the clickpad: the two side by side.
+            if lowLayout || (h < 480 && geo.size.width >= 560) {
+                sideBySide(geo.size, showTop: showTop, topH: topH)
+            } else if wide {
                 HStack(spacing: 0) {
                     RemotePlayingPanel().frame(maxWidth: .infinity, maxHeight: .infinity)
                     remote
@@ -196,6 +201,15 @@ struct RemoteView: View {
         .focusable()
         .focusEffectDisabled()
         .onKeyPress { press in handleKey(press) }
+        #elseif os(iOS)
+        // iPad with a keyboard: the arrows, Return, Esc and Space drive the remote, as the Mac's keyboard does.
+        .focusable(Self.takesKeys)
+        .focusEffectDisabled(Self.takesKeys)
+        .focused($keysFocused)
+        .onAppear { keysFocused = true }
+        // Back from the keyboard sheet or Now Playing, the keys are the remote's again.
+        .onChange(of: typing || nowPlaying) { _, covered in if !covered { keysFocused = true } }
+        .onKeyPress { press in handleKey(press) }
         #endif
     }
 
@@ -245,6 +259,52 @@ struct RemoteView: View {
             .transition(.scale.combined(with: .opacity))
         }
     }
+
+    #if !os(macOS)
+    /// The clickpad, with Home and Power in its top corners ([corner] points out from them).
+    private func clickpad(_ size: CGFloat, key: CGFloat, corner: CGFloat) -> some View {
+        Clickpad(size: size) { send($0) } onRepeat: { send($0, repeat: $1) }
+            .opacity(isOff ? 0.35 : 1)
+            .allowsHitTesting(!isOff)
+            .overlay(alignment: .topLeading) {
+                CornerKey(symbol: "house.fill", label: "Home", size: key * 0.8) { send("home") }
+                    .offset(x: -corner, y: -6)
+            }
+            .overlay(alignment: .topTrailing) {
+                CornerKey(symbol: "power", label: "Power", size: key * 0.8) { send("power") }
+                    .offset(x: corner, y: -6)
+            }
+    }
+
+    /// iPhone on its side (or a window too short for one thing above another): the clickpad on the left and the keys
+    /// beside it, each as large as the height allows, so nothing runs off the bottom.
+    private func sideBySide(_ size: CGSize, showTop: Bool, topH: CGFloat) -> some View {
+        let h = size.height
+        let top: CGFloat = showTop ? topH + 12 : 0
+        // The two rows of keys, the gap between them and the apps under them share the height: 3.04 keys' worth.
+        let k: CGFloat = min(62, max(44, (h - 30 - top) / 3.04))
+        let side: CGFloat = min(380, size.width * 0.46)
+        let pad: CGFloat = max(150, min(size.width - side - 56, 360, h - 32))
+        let room: CGFloat = (size.width - side - 40 - pad) / 2 - 2
+        let corner: CGFloat = max(8, min(24, room))
+        return HStack(spacing: 0) {
+            clickpad(pad, key: k, corner: corner)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            VStack(spacing: 0) {
+                if showTop { status.frame(height: topH, alignment: .top).padding(.bottom, 12) }
+                keys(k, k * 0.26)
+                Spacer(minLength: 12).frame(maxHeight: 22)
+                apps(k * 0.78)
+            }
+            .padding(.horizontal, 20)
+            .frame(width: side)
+            .frame(maxHeight: .infinity)
+        }
+        .padding(.top, 8)
+        .padding(.bottom, 10)
+        .frame(width: size.width, height: h)
+    }
+    #endif
 
     /// Back and Mute, the keyboard in the middle, the volume rocker. OK on the clickpad plays and pauses.
     private func keys(_ key: CGFloat, _ gap: CGFloat) -> some View {
@@ -338,8 +398,9 @@ struct RemoteView: View {
         }
     }
 
-    #if os(macOS)
-    /// The Mac's keyboard is the remote: arrows, Return = OK, Esc/Delete = Back, Space = Play/Pause, H, M, + and −.
+    #if os(macOS) || os(iOS)
+    /// The Mac's keyboard (and an iPad's) is the remote: arrows, Return = OK, Esc/Delete = Back, Space = Play/Pause,
+    /// H, M, + and −.
     private func handleKey(_ press: KeyPress) -> KeyPress.Result {
         switch press.key {
         case .upArrow: send("up")
@@ -526,6 +587,10 @@ struct CornerKey: View {
                 .frame(width: size, height: size)
                 .contentShape(Circle())
                 .glass(Circle(), tint: tint)
+                #if os(iOS)
+                // iPad's pointer lights up the circle, not the square around it.
+                .contentShape(.hoverEffect, Circle())
+                #endif
         }
         .buttonStyle(PressScale())
         .accessibilityLabel(label)
@@ -547,6 +612,9 @@ struct RoundKey: View {
                 .frame(width: size, height: size)
                 .contentShape(Circle())
                 .glass(Circle(), tint: tint)
+                #if os(iOS)
+                .contentShape(.hoverEffect, Circle())
+                #endif
         }
         .buttonStyle(PressScale())
         .accessibilityLabel(label)
@@ -647,6 +715,9 @@ struct AppKey: View {
             .contentShape(Capsule())
             // Glass behind, not around, so the brand colours stay true (glass tints what it contains).
             .background { Color.clear.glass(Capsule()) }
+            #if os(iOS)
+            .contentShape(.hoverEffect, Capsule())
+            #endif
         }
         .buttonStyle(PressScale(scale: 0.96))
     }
