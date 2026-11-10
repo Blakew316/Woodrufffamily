@@ -220,9 +220,12 @@ final class VehicleWatch {
                                   bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
         ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
         // Core Graphics measures up from the bottom; the box is measured down from the top.
-        let rect = CGRect(x: box.minX * CGFloat(w), y: (1 - box.maxY) * CGFloat(h), width: box.width * CGFloat(w), height: box.height * CGFloat(h))
+        let across = CGFloat(w), down = CGFloat(h)
+        let top: CGFloat = (1 - box.maxY) * down
+        let rect = CGRect(x: box.minX * across, y: top, width: box.width * across, height: box.height * down)
         ctx.setStrokeColor(CGColor(red: 1, green: 0.2, blue: 0.2, alpha: 1))
-        ctx.setLineWidth(max(2, CGFloat(w) / 320))
+        let line: CGFloat = max(2, across / 320)
+        ctx.setLineWidth(line)
         ctx.stroke(rect)
         guard let drawn = ctx.makeImage() else { return nil }
         return jpeg(drawn)
@@ -286,7 +289,7 @@ final class VehicleDetector {
     private nonisolated static let address = URL(string: "https://ml-assets.apple.com/coreml/models/Image/ObjectDetection/YOLOv3/YOLOv3Int8LUT.mlmodel")!
     private nonisolated static let name = "YOLOv3Int8LUT"
     /// What it calls the vehicles it finds.
-    private nonisolated static let vehicles: Set<String> = ["car", "truck", "bus", "motorbike", "motorcycle"]
+    private nonisolated static let kinds: Set<String> = ["car", "truck", "bus", "motorbike", "motorcycle"]
 
     /// Gets it ready: from where it's kept, or from Apple the first time. Again ten minutes after it couldn't be had.
     func prepare() {
@@ -350,18 +353,19 @@ final class VehicleDetector {
         var found: [VehicleSighting] = []
         for part in parts {
             let whole = part.width >= 1
-            let pixels = CGRect(x: part.minX * w, y: part.minY * h, width: part.width * w, height: part.height * h).integral
-            guard let piece = whole ? image : image.cropping(to: pixels) else { continue }
+            let pixels = CGRect(x: part.minX * w, y: part.minY * h, width: part.width * w, height: part.height * h)
+            guard let piece = whole ? image : image.cropping(to: pixels.integral) else { continue }
             let request = VNCoreMLRequest(model: model.vision)
             request.imageCropAndScaleOption = .scaleFill
             try? VNImageRequestHandler(cgImage: piece, options: [:]).perform([request])
             for o in (request.results as? [VNRecognizedObjectObservation]) ?? [] {
-                guard let best = o.labels.first, vehicles.contains(best.identifier) else { continue }
+                guard let best = o.labels.first, kinds.contains(best.identifier) else { continue }
                 // Vision measures a box up from the bottom of what it was shown: here it's down from the top of the
                 // whole picture.
                 let b = o.boundingBox
-                let box = CGRect(x: part.minX + b.minX * part.width, y: part.minY + (1 - b.maxY) * part.height,
-                                 width: b.width * part.width, height: b.height * part.height)
+                let x: CGFloat = part.minX + b.minX * part.width
+                let y: CGFloat = part.minY + (1 - b.maxY) * part.height
+                let box = CGRect(x: x, y: y, width: b.width * part.width, height: b.height * part.height)
                 found.append(VehicleSighting(label: best.identifier, confidence: Double(best.confidence), box: box))
             }
         }

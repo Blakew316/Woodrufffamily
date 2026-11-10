@@ -1,4 +1,8 @@
 import Foundation
+// (On a Mac, Foundation alone has the box and point types without their arithmetic.)
+#if canImport(CoreGraphics)
+import CoreGraphics
+#endif
 
 // Vehicle Alerts: what counts as a vehicle arriving. The Mac that watches a camera finds the vehicles in each picture
 // (Apple's object detector) and hands them here with how the picture changed; this says which of them is news. It is
@@ -21,7 +25,8 @@ public struct VehicleSighting: Sendable, Equatable {
     public static func overlap(_ a: CGRect, _ b: CGRect) -> (shared: Double, ofSmaller: Double) {
         let both = a.intersection(b)
         guard !both.isNull, both.width > 0, both.height > 0 else { return (0, 0) }
-        let i = Double(both.width * both.height), aa = Double(a.width * a.height), ab = Double(b.width * b.height)
+        let i = Double(both.width) * Double(both.height)
+        let aa = Double(a.width) * Double(a.height), ab = Double(b.width) * Double(b.height)
         guard aa > 0, ab > 0 else { return (0, 0) }
         return (i / (aa + ab - i), i / min(aa, ab))
     }
@@ -39,7 +44,8 @@ public struct VehicleSighting: Sendable, Equatable {
         var kept: [VehicleSighting] = []
         for s in found.sorted(by: { $0.confidence > $1.confidence }) {
             if let i = kept.firstIndex(where: { same($0.box, s.box) }) {
-                let area = s.box.width * s.box.height, had = kept[i].box.width * kept[i].box.height
+                let area: CGFloat = s.box.width * s.box.height
+                let had: CGFloat = kept[i].box.width * kept[i].box.height
                 if area > had, s.confidence >= kept[i].confidence * 0.8 { kept[i].box = s.box }
             } else {
                 kept.append(s)
@@ -73,7 +79,10 @@ public struct VehicleZone: Sendable, Equatable {
         var j = points.count - 1
         for i in points.indices {
             let a = points[i], b = points[j]
-            if (a.y > p.y) != (b.y > p.y), p.x < (b.x - a.x) * (p.y - a.y) / (b.y - a.y) + a.x { inside.toggle() }
+            if (a.y > p.y) != (b.y > p.y) {
+                let crossing: CGFloat = (b.x - a.x) * (p.y - a.y) / (b.y - a.y) + a.x
+                if p.x < crossing { inside.toggle() }
+            }
             j = i
         }
         return inside
@@ -85,9 +94,11 @@ public struct VehicleZone: Sendable, Equatable {
         var hits = 0
         for iy in 0..<n {
             for ix in 0..<n {
-                let p = CGPoint(x: box.minX + box.width * (CGFloat(ix) + 0.5) / CGFloat(n),
-                                y: box.minY + box.height * (CGFloat(iy) + 0.5) / CGFloat(n))
-                if contains(p) { hits += 1 }
+                let across: CGFloat = (CGFloat(ix) + 0.5) / CGFloat(n)
+                let down: CGFloat = (CGFloat(iy) + 0.5) / CGFloat(n)
+                let x: CGFloat = box.minX + box.width * across
+                let y: CGFloat = box.minY + box.height * down
+                if contains(CGPoint(x: x, y: y)) { hits += 1 }
             }
         }
         return Double(hits) / Double(n * n)
@@ -96,7 +107,8 @@ public struct VehicleZone: Sendable, Equatable {
     /// A vehicle in [box] is on it: where its wheels are (the foot of its box) is inside the outline, or a good part
     /// of the whole box is.
     public func holds(_ box: CGRect) -> Bool {
-        contains(CGPoint(x: box.midX, y: box.maxY - box.height * 0.1)) || share(of: box) >= 0.35
+        let foot: CGFloat = box.maxY - box.height * 0.1
+        return contains(CGPoint(x: box.midX, y: foot)) || share(of: box) >= 0.35
     }
 }
 

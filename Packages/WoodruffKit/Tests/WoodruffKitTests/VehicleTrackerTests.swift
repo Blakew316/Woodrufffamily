@@ -1,4 +1,7 @@
 import XCTest
+#if canImport(CoreGraphics)
+import CoreGraphics
+#endif
 @testable import WoodruffKit
 
 /// Vehicle Alerts' rules for what's news, on boxes as the family's Front Driveway camera gave them: a wide view down
