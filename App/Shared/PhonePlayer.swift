@@ -935,16 +935,23 @@ final class PlayerController: AVPlayerViewController {
 #if os(macOS)
 
 /// Apple's Mac player (AVPlayerView, as in the TV app and QuickTime) in a window of its own: floating controls, full
-/// screen, picture in picture. Where it's got to is saved every 10 seconds and when the window closes, for Continue
-/// Watching.
+/// screen, picture in picture. The window is dark whatever the Mac's appearance, opens where it was last left, and
+/// its title bar goes while the film plays with the pointer at rest. Where the film's got to is saved every 10
+/// seconds and when the window closes, for Continue Watching.
 @MainActor
 final class MacPlayer: NSObject, NSWindowDelegate {
     static let shared = MacPlayer()
+    /// The name the window's place and size are kept under, from one film to the next.
+    private static let frameName = "WoodruffFilmWindow"
     private var window: NSWindow?
     private var player: AVPlayer?
     /// Kept while a Drive video plays (it fetches the parts the player asks for).
     private var stream: DriveStream?
     private var ticker: Any?
+    /// Asks, each second the film plays, whether the title bar can go (`rest`).
+    private var resting: Any?
+    /// When the pointer last moved over the film's window (or the film opened).
+    private var pointerAt = Date()
     private var current: PhonePlay?
     private var watch: Task<Void, Never>?
 
@@ -973,25 +980,42 @@ final class MacPlayer: NSObject, NSWindowDelegate {
         view.controlsStyle = .floating
         view.showsFullScreenToggleButton = true
         view.allowsPictureInPicturePlayback = true
+        // The player fills a view of the window's own, which hears the pointer move over the window (also while
+        // another app is in front): the title bar comes back with it (`rest`).
+        let film = FilmView(frame: NSRect(x: 0, y: 0, width: 1120, height: 630))
+        view.frame = film.bounds
+        view.autoresizingMask = [.width, .height]
+        film.addSubview(view)
+        film.onPointer = { [weak self] in self?.pointerMoved() }
         let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1120, height: 630),
                          styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
                          backing: .buffered, defer: false)
         w.title = play.title
         w.titlebarAppearsTransparent = true
+        // Dark whatever the Mac's appearance: the title and the buttons sit over the film (in Light Mode the title
+        // was dark on it).
+        w.appearance = NSAppearance(named: .darkAqua)
         w.backgroundColor = .black
         w.isReleasedWhenClosed = false
-        w.contentView = view
+        w.contentView = film
         // The player has the keyboard from the start (Space pauses, the arrows step), without a click on it first.
         w.initialFirstResponder = view
         w.contentAspectRatio = NSSize(width: 16, height: 9)
         w.delegate = self
         w.center()
+        // Where it was last left, and as big (the middle of the screen the first time). The name is one window's at
+        // a time: if the last film's window still has it, its place is read without it.
+        if !w.setFrameAutosaveName(Self.frameName) { _ = w.setFrameUsingName(Self.frameName) }
         w.makeKeyAndOrderFront(nil)
         NSApp.activate()
         window = w
 
         ticker = p.addPeriodicTimeObserver(forInterval: CMTime(seconds: 10, preferredTimescale: 1), queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.report() }
+        }
+        pointerAt = Date()
+        resting = p.addPeriodicTimeObserver(forInterval: CMTime(seconds: 1, preferredTimescale: 1), queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.rest() }
         }
         watch = Task { [weak self] in
             // Playing as soon as the file is open; a file Apple's player can't open, the source out of reach, or no
@@ -1072,6 +1096,41 @@ final class MacPlayer: NSObject, NSWindowDelegate {
         DriveLibrary.shared.played(play.key, title: play.title, pos: pos * 1000, dur: dur.isFinite ? dur * 1000 : 0)
     }
 
+    // MARK: The title bar
+
+    /// The pointer moved over the film's window: its title bar is back.
+    private func pointerMoved() {
+        pointerAt = Date()
+        titleBar(shown: true)
+    }
+
+    /// Each second the film plays: once the pointer has rested three seconds, the title bar (the window's buttons and
+    /// the film's name) fades away and the film has the whole window, as in QuickTime. Not while the pointer rests on
+    /// the title bar itself, and not in full screen, where the Mac shows and hides the title bar by itself.
+    private func rest() {
+        guard let w = window, let p = player, p.timeControlStatus == .playing,
+              Date().timeIntervalSince(pointerAt) >= 3, !w.styleMask.contains(.fullScreen) else { return }
+        let at = w.mouseLocationOutsideOfEventStream
+        if at.x >= 0, at.x <= w.frame.width, at.y >= w.contentLayoutRect.maxY, at.y <= w.frame.height { return }
+        titleBar(shown: false)
+    }
+
+    /// Fades the title bar in or out: the view that holds the window's three buttons and its title. (Out of sight,
+    /// it's still there: the window is moved by it, and the pointer brings it back before anything is clicked.)
+    private func titleBar(shown: Bool) {
+        guard let bar = window?.standardWindowButton(.closeButton)?.superview, (bar.alphaValue > 0.5) != shown else { return }
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.25
+            bar.animator().alphaValue = shown ? 1 : 0
+        }
+    }
+
+    /// Going full screen: the title bar is the Mac's to show there (at the top of the screen), never left faded.
+    func windowWillEnterFullScreen(_ notification: Notification) {
+        guard (notification.object as? NSWindow) === window else { return }
+        pointerMoved()
+    }
+
     func windowWillClose(_ notification: Notification) {
         guard (notification.object as? NSWindow) === window else { return }
         report()
@@ -1087,13 +1146,32 @@ final class MacPlayer: NSObject, NSWindowDelegate {
         watch?.cancel(); watch = nil
         if let t = ticker { player?.removeTimeObserver(t) }
         ticker = nil
+        if let t = resting { player?.removeTimeObserver(t) }
+        resting = nil
         player?.pause()
         player?.replaceCurrentItem(with: nil)
         player = nil
         stream = nil
         current = nil
+        // Its place is kept already (written each time the window moved): the name is free for the next film's window.
+        _ = window?.setFrameAutosaveName("")
         window?.delegate = nil
         window = nil
     }
+}
+
+/// What fills the film's window: Apple's player, in a view that says when the pointer moves over it. Its tracking
+/// area covers the whole view whatever is on top of it (the player), in front or not, and is made again whenever the
+/// view changes size.
+private final class FilmView: NSView {
+    var onPointer: (() -> Void)?
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        for area in trackingAreas { removeTrackingArea(area) }
+        addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseMoved, .activeAlways], owner: self, userInfo: nil))
+    }
+
+    override func mouseMoved(with event: NSEvent) { onPointer?() }
 }
 #endif

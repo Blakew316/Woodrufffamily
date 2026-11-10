@@ -62,7 +62,12 @@ final class AppleTVFinder {
     /// Gives [atv] the family's code; it waits there for Allow (a minute at most). Nil when it's connected, else why not.
     static func connect(_ atv: FoundAppleTV) async -> String? {
         guard let code = FamilyCode.load().record?.code else {
+            #if os(macOS)
+            // (On the Mac the page is in Settings' own list, not inside General.)
+            return "This device doesn’t have the family code yet. Enter it under Settings → Sync Across Devices first."
+            #else
             return "This device doesn’t have the family code yet. Enter it under Settings → General → Sync Across Devices first."
+            #endif
         }
         guard let base = URL(string: atv.base) else { return "\(atv.name) didn’t give an address." }
         var r = URLRequest(url: base.appendingPathComponent("join"))

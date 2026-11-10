@@ -139,6 +139,7 @@ struct SmartHomeSettingsView: View {
 
 /// Settings → General: Shortcuts, the Mac's click sound, keeping every device in step, the TV's last
 /// crash when there is one, and which build of Woodruff Family this is (on a Mac, with how its updates are going).
+/// On the Mac, Shortcuts and Sync Across Devices aren't repeated here: they're in Settings' list, beside this page.
 struct GeneralSettingsView: View {
     @Environment(Fleet.self) private var fleet
     var hub: HubSettings
@@ -152,7 +153,8 @@ struct GeneralSettingsView: View {
 
     var body: some View {
         Form {
-            #if !os(tvOS)
+            // (Not on Apple TV. On the Mac, Shortcuts and Sync Across Devices are in Settings' list, beside this page.)
+            #if os(iOS)
             Section {
                 PageLink("Shortcuts") { ShortcutsView(hub: hub) } label: {
                     IconRow(symbol: "", color: .clear, title: "Shortcuts")
@@ -170,7 +172,9 @@ struct GeneralSettingsView: View {
                 Text("The line on Home that says you’re away from home.")
             }
             #endif
+            #if !os(macOS)
             SyncSection()
+            #endif
             if let crash = hub.s?.crash, !crash.isEmpty {
                 Section {
                     PageLink("Last Crash") { CrashView(hub: hub) } label: {

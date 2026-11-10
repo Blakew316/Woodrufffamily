@@ -72,9 +72,13 @@ extension View {
 
 // MARK: - Mini player
 
-/// A small always-on-top player (⌘⇧M), like Music's mini player.
+/// A small always-on-top player (⌘⇧M), like Music's mini player. Its window is plain (no title bar, no background of
+/// its own), so the player draws its own panel, is moved by dragging it anywhere, and has a close button of its own
+/// where a window's is. (The button is always there, not only under the pointer, and it's the way to close it: a
+/// plain window never has the keyboard, so ⌘W isn't its to take, and hover can't be counted on in it.)
 struct MiniPlayerView: View {
     @Environment(Fleet.self) private var fleet
+    @Environment(\.dismissWindow) private var dismissWindow
 
     var body: some View {
         let tv = fleet.selected
@@ -108,8 +112,29 @@ struct MiniPlayerView: View {
             }
         }
         .padding(14)
-        .frame(minWidth: 320, idealWidth: 380, maxWidth: .infinity, maxHeight: .infinity)
-        .background(.regularMaterial)
+        // The window takes its size from this: as tall as what it shows, and no wider than a long title needs.
+        .frame(minWidth: 320, idealWidth: 380, maxWidth: 560)
+        .fixedSize(horizontal: false, vertical: true)
+        .background(Color(nsColor: .windowBackgroundColor), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).strokeBorder(.separator))
+        // Close, where a window's close button is: in the corner, clear of the picture.
+        .overlay(alignment: .topLeading) {
+            Button { dismissWindow(id: "mini") } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+                    .padding(4)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Close")
+            .accessibilityLabel("Close")
+        }
+        // Moved by dragging anything that isn't a button. (The scene asks for a window dragged by its background;
+        // the panel covers that background, so the panel takes the drag itself.) Also from behind another app's
+        // windows, without a click to bring Woodruff forward first.
+        .gesture(WindowDragGesture())
+        .allowsWindowActivationEvents(true)
     }
 }
 
@@ -356,7 +381,8 @@ struct MacWelcome: View {
     private let pages: [(String, String, String)] = [
         ("tv.and.mediabox", "Every TV, at Home", "Home shows each TV with what it’s playing. Click one for its screen, health and updates."),
         ("appletvremote.gen4", "The Remote, When You Want It", "Click the remote in the toolbar, or press ⌥⌘R. The keyboard drives it too: arrows, Return, Esc, Space."),
-        ("rectangle.on.rectangle", "Always Within Reach", "The menu bar and the mini player (⌘⇧M) keep what’s playing in view. Add Woodruff widgets to your desktop, and the media keys play and pause the TV."),
+        // (Nothing about the media keys: play and pause from macOS don't reach the TV, see `NowPlayingBridge.wire`.)
+        ("rectangle.on.rectangle", "Always Within Reach", "The menu bar and the mini player (⌘⇧M) keep what’s playing in view. Add Woodruff widgets to your desktop."),
     ]
 
     var body: some View {

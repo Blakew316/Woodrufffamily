@@ -15,14 +15,13 @@ struct CommandPalette: View {
         var id: String
         var title: String
         var detail: String
-        var symbol: String
         var run: @MainActor () -> Void
     }
 
     private var items: [Item] {
         var all: [Item] = []
         for tv in fleet.tvs where !tv.isUnpaired {
-            all.append(Item(id: "tv-\(tv.id)", title: tv.name, detail: statusWord(tv), symbol: "tv") {
+            all.append(Item(id: "tv-\(tv.id)", title: tv.name, detail: statusWord(tv)) {
                 fleet.remoteAll = false; fleet.selectedID = tv.id; fleet.remotePanel = true
             })
         }
@@ -30,38 +29,38 @@ struct CommandPalette: View {
         let on = fleet.tvs.filter { $0.online && !$0.isUnpaired }
         let playing = on.filter { $0.playing?.isPlaying == true }
         if !playing.isEmpty {
-            all.append(Item(id: "a-pause", title: "Pause All", detail: "Every TV that’s playing", symbol: "pause.fill") {
+            all.append(Item(id: "a-pause", title: "Pause All", detail: "Every TV that’s playing") {
                 MacActions.send("playpause", to: playing, fleet: fleet)
             })
         }
         if !on.isEmpty {
-            all.append(Item(id: "a-mute", title: "Mute All", detail: "Every TV that’s on", symbol: "speaker.slash.fill") {
+            all.append(Item(id: "a-mute", title: "Mute All", detail: "Every TV that’s on") {
                 MacActions.send("mute", to: on, fleet: fleet)
             })
-            all.append(Item(id: "a-home", title: "Woodruff Home on All", detail: "Every TV that’s on", symbol: "house.fill") {
+            all.append(Item(id: "a-home", title: "Woodruff Home on All", detail: "Every TV that’s on") {
                 MacActions.send("home", to: on, fleet: fleet, woodruffHome: true)
             })
-            all.append(Item(id: "a-update", title: "Update All", detail: "Ask every Android TV to update", symbol: "arrow.down.circle") {
+            all.append(Item(id: "a-update", title: "Update All", detail: "Ask every Android TV to update") {
                 MacActions.updateAll(fleet)
             })
         }
-        all.append(Item(id: "a-remote", title: "Remote", detail: "Open the remote", symbol: "appletvremote.gen4") { fleet.remotePanel = true })
-        all.append(Item(id: "a-mini", title: "Mini Player", detail: "The floating player", symbol: "rectangle.on.rectangle") { openWindow(id: "mini") })
+        all.append(Item(id: "a-remote", title: "Remote", detail: "Open the remote") { fleet.remotePanel = true })
+        all.append(Item(id: "a-mini", title: "Mini Player", detail: "The floating player") { openWindow(id: "mini") })
         let home = SmartHome.shared
         // A light that's unplugged or off at the wall can't take a change, so it isn't offered one.
         let reachable = home.lights.filter { !$0.isOffline }
         if reachable.contains(where: { $0.on }) {
-            all.append(Item(id: "lights-off", title: "Turn Off All Lights", detail: "Every light that’s on", symbol: "lightbulb.slash") { home.allLights(false) })
+            all.append(Item(id: "lights-off", title: "Turn Off All Lights", detail: "Every light that’s on") { home.allLights(false) })
         }
         if reachable.contains(where: { !$0.on }) {
-            all.append(Item(id: "lights-on", title: "Turn On All Lights", detail: "Every light that’s off", symbol: "lightbulb.fill") { home.allLights(true) })
+            all.append(Item(id: "lights-on", title: "Turn On All Lights", detail: "Every light that’s off") { home.allLights(true) })
         }
         for l in reachable {
-            all.append(Item(id: "light-\(l.id)", title: l.name, detail: l.on ? "Light · On — turn off" : "Light · Off — turn on", symbol: "lightbulb") { home.setOn(l, !l.on) })
+            all.append(Item(id: "light-\(l.id)", title: l.name, detail: l.on ? "Light · On — turn off" : "Light · Off — turn on") { home.setOn(l, !l.on) })
         }
         // Speakers that can play or pause now (not offline, not an empty queue).
         for r in home.speakers where r.canPlay {
-            all.append(Item(id: "spk-\(r.id)", title: r.name, detail: r.isPlaying ? "Sonos · \(r.title ?? "Playing") — pause" : "Sonos — play", symbol: "hifispeaker") {
+            all.append(Item(id: "spk-\(r.id)", title: r.name, detail: r.isPlaying ? "Sonos · \(r.title ?? "Playing") — pause" : "Sonos — play") {
                 Task { await home.playPause(r) }
             })
         }
@@ -69,7 +68,7 @@ struct CommandPalette: View {
             var seen = Set<String>()
             for t in (lib.featured ?? []) + (lib.recent ?? []) + (lib.movies?.items ?? []) + (lib.shows?.items ?? []) where seen.insert(t.id).inserted {
                 guard let p = t.play else { continue }
-                all.append(Item(id: "t-\(t.id)", title: t.title, detail: "Play on \(fleet.selected?.name ?? "the TV")", symbol: "play.rectangle") {
+                all.append(Item(id: "t-\(t.id)", title: t.title, detail: "Play on \(fleet.selected?.name ?? "the TV")") {
                     PlayRouter.start(p, fleet: fleet)
                 })
             }
@@ -101,8 +100,8 @@ struct CommandPalette: View {
                 ScrollView {
                     VStack(spacing: 2) {
                         ForEach(Array(list.enumerated()), id: \.element.id) { i, item in
+                            // Words only, as in the app's menus and rows (no picture beside each one).
                             HStack(spacing: 12) {
-                                Image(systemName: item.symbol).frame(width: 22).foregroundStyle(i == index ? .white : .secondary)
                                 VStack(alignment: .leading, spacing: 1) {
                                     Text(item.title).lineLimit(1)
                                     Text(item.detail).font(.caption).foregroundStyle(i == index ? .white.opacity(0.8) : .secondary).lineLimit(1)

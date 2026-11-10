@@ -82,8 +82,14 @@ public struct ReleaseFeed: Sendable {
         let (d, resp) = try await URLSession.shared.data(for: request(url))
         let status = (resp as? HTTPURLResponse)?.statusCode ?? 0
         if status == 404 || status == 401 {
+            // Where the token goes, as this device's Settings names the page: the Mac lists it by itself, as TV Updates.
+            #if os(macOS)
+            let page = "Settings → TV Updates"
+            #else
+            let page = "Settings → TVs → Software Update"
+            #endif
             throw TVError.http(status: status, message: platform == .webOS
-                ? "The webOS releases are in a private repository. Add a GitHub token in Settings → TVs → Software Update."
+                ? "The webOS releases are in a private repository. Add a GitHub token in \(page)."
                 : "GitHub refused (\(status)).")
         }
         guard status == 200 else { throw TVError.http(status: status, message: "GitHub answered \(status)") }

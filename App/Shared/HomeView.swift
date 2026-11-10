@@ -322,6 +322,13 @@ struct HomeView: View {
         }
     }
 
+    // How something gets into Favorites, in this device's words (a Mac is right-clicked, not touched and held).
+    #if os(macOS)
+    private static let howToFavorite: LocalizedStringKey = "Right-click anything on Home (a camera, TV, speaker, light or device) and choose Add to Favorites. It shows up here."
+    #else
+    private static let howToFavorite: LocalizedStringKey = "Touch and hold anything on Home (a camera, TV, speaker, light or device) and choose Add to Favorites. It shows up here."
+    #endif
+
     /// Favorites: everything starred, whatever room it's in.
     private func favoritesGroup(_ c: Contents) -> some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -329,7 +336,7 @@ struct HomeView: View {
             Text("Favorites").font(.system(size: 34, weight: .bold)).foregroundStyle(IconPalette.white)
             #endif
             if layout.favorites.isEmpty {
-                Text("Touch and hold anything on Home (a camera, TV, speaker, light or device) and choose Add to Favorites. It shows up here.")
+                Text(Self.howToFavorite)
                     .font(.subheadline).foregroundStyle(.secondary)
                     .padding(16).frame(maxWidth: .infinity, alignment: .leading)
                     .glass(RoundedRectangle(cornerRadius: 20, style: .continuous), interactive: false)
@@ -557,9 +564,10 @@ struct HomeTVTile: View, Equatable {
             }
             // Nothing went in: each failure has already said why (no "Added" that isn't true).
             guard let last else { return }
-            // Shown straight away on a TV that holds Memories itself; a linked TV gets them from Memories.
+            // Shown straight away on a TV that holds Memories itself; a linked TV gets them from Memories. (The app
+            // has no Memories page to send anyone to any more: the TVs' slideshow shows them.)
             guard fleet.hub(tv.id) != nil else {
-                fleet.say("Added to Family Memories", "Open Memories to show them on \(tv.name).")
+                fleet.say("Added to Family Memories", "The slideshow on \(tv.name) can show them.")
                 return
             }
             do {

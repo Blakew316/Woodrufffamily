@@ -182,7 +182,8 @@ final class HomeBridgeClient {
         Task {
             let ok = await post("/device", HomeBridge.DeviceRequest(id: id, command: command))
             if !ok {
-                Fleet.shared.say("Apple Home Didn’t Answer", "Woodruff Home Helper isn’t responding on this Mac. Settings → Smart Home → Devices can open it.")
+                // (The Mac's Settings lists Devices itself: there's no Smart Home page to go through, as on iPhone.)
+                Fleet.shared.say("Apple Home Didn’t Answer", "Woodruff Home Helper isn’t responding on this Mac. Settings → Devices can open it.")
             }
             await quickLook()
         }
@@ -228,8 +229,8 @@ final class HomeBridgeClient {
     }
 }
 
-/// How Apple Home reaches Woodruff on this Mac, and the button to fix it (Settings → Smart Home → Devices, the
-/// thermostat panel).
+/// How Apple Home reaches Woodruff on this Mac, and the button to fix it (Settings → Devices, the thermostat
+/// panel).
 struct HomeBridgeStatusView: View {
     private let bridge = HomeBridgeClient.shared
 

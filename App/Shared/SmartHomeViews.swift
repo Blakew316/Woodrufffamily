@@ -397,7 +397,10 @@ struct LightSheet: View {
             #if os(iOS) || os(tvOS)
             return "Not responding in Apple Home. Check it’s switched on at the wall."
             #else
-            return "An Apple Home light: change it from Woodruff on iPhone."
+            // The Mac reaches Apple Home through Woodruff Home Helper. When that's what isn't answering, every Apple
+            // Home light is out of reach, and Settings → Devices says why (and opens the helper when it can).
+            if SmartHome.shared.homeControl == nil { return "\(HomeBridge.helperName) isn’t answering on this Mac. Settings → Devices says why." }
+            return "Not responding in Apple Home. Check it’s switched on at the wall."
             #endif
         }
         return "Not answering. Check it’s plugged in and on the Wi‑Fi; it comes back here by itself."
@@ -576,12 +579,7 @@ struct SpeakersListView: View {
                     }
                 }
             } footer: {
-                #if os(tvOS)
-                // Apple TV: the remote selects, it doesn't tap.
-                Text("Sonos speakers are found on your Wi‑Fi by themselves, no account needed. Select one to rename it or choose its room.")
-                #else
-                Text("Sonos speakers are found on your Wi‑Fi by themselves, no account needed. Tap one to rename it or choose its room.")
-                #endif
+                Text("Sonos speakers are found on your Wi‑Fi by themselves, no account needed. \(tapWord) one to rename it or choose its room.")
             }
         }
         .familyFormStyle()
@@ -626,12 +624,7 @@ struct LightsListView: View {
                     }
                 }
             } footer: {
-                #if os(tvOS)
-                // Apple TV: the remote selects, it doesn't tap.
-                Text("Govee lights answer on your Wi‑Fi once LAN Control is on for each one in the Govee app (the light’s settings). Select a light to rename it or choose its room.")
-                #else
-                Text("Govee lights answer on your Wi‑Fi once LAN Control is on for each one in the Govee app (the light’s settings). Tap a light to rename it or choose its room.")
-                #endif
+                Text("Govee lights answer on your Wi‑Fi once LAN Control is on for each one in the Govee app (the light’s settings). \(tapWord) a light to rename it or choose its room.")
             }
             if !home.answers.isEmpty {
                 Section {
@@ -682,7 +675,8 @@ struct LightsListView: View {
                 Text("Cync lights with the Matter logo show up here once they’re in Apple Home. In the Cync app, open the light’s settings and choose to connect it to Apple Home (Matter) to get its setup code; then in the Home app tap +, Add Accessory, and scan or enter that code. Any light in Apple Home appears here.")
                     .font(.footnote).foregroundStyle(.secondary)
                 #else
-                Text("Cync and other Apple Home lights appear in Woodruff on iPhone. Apple only lets iPhone apps like this one reach Apple Home.")
+                // The Mac has them too, through Woodruff Home Helper (it used to send you to the iPhone).
+                Text("Any light in Apple Home appears here, through \(HomeBridge.helperName) on this Mac. Settings → Devices shows whether it’s connected.")
                     .font(.footnote).foregroundStyle(.secondary)
                 #endif
             }

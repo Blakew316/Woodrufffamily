@@ -1030,12 +1030,7 @@ struct LiveCameraTile: View, Equatable {
 
     /// What the tile says over its picture when it isn't simply live.
     private func caption(_ status: String) -> String {
-        #if os(tvOS)
-        // Apple TV: the remote selects, it doesn't tap.
-        if !camera.online { return checking ? "Checking…" : "Offline · Select to Check Again" }
-        #else
-        if !camera.online { return checking ? "Checking…" : "Offline · Tap to Check Again" }
-        #endif
+        if !camera.online { return checking ? "Checking…" : "Offline · \(tapWord) to Check Again" }
         if !camera.webRTC { return "Live view not supported" }
         if streams.expanded == camera.id { return "Open in the big view" }
         return status
@@ -1933,6 +1928,9 @@ struct CamerasPhoneView: View {
                     #if os(tvOS)
                     // Apple TV: the remote selects, and its Settings have no Notifications page to point at.
                     Text("Select a camera to watch it live.")
+                    #elseif os(macOS)
+                    // (On the Mac, Camera Alerts is in Settings' own list, not inside Notifications.)
+                    Text("Click a camera to watch it live. Their alerts are in Camera Alerts.")
                     #else
                     Text("Tap a camera to watch it live. Their alerts are in Notifications → Camera Alerts.")
                     #endif

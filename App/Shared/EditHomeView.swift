@@ -301,6 +301,12 @@ struct EditHomeView: View {
     private let layout = HomeLayout.shared
     private let home = SmartHome.shared
     @State private var confirmReset = false
+    // How something gets into Favorites, in this device's words (a Mac is right-clicked, not touched and held).
+    #if os(macOS)
+    private static let howToFavorite: LocalizedStringKey = "Right-click anything on Home and choose Add to Favorites."
+    #else
+    private static let howToFavorite: LocalizedStringKey = "Touch and hold anything on Home and choose Add to Favorites."
+    #endif
 
     var body: some View {
         @Bindable var layout = layout
@@ -319,7 +325,7 @@ struct EditHomeView: View {
 
                 Section {
                     if layout.favorites.isEmpty {
-                        Text("Touch and hold anything on Home and choose Add to Favorites.").foregroundStyle(.secondary)
+                        Text(Self.howToFavorite).foregroundStyle(.secondary)
                     }
                     ForEach(layout.favorites, id: \.self) { id in Text(favoriteName(id)) }
                         .onMove {

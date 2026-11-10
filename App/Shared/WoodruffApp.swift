@@ -347,8 +347,8 @@ struct WoodruffApp: App {
         #if os(macOS)
         .defaultSize(width: 1180, height: 800)
         .windowToolbarStyle(.unified)
+        // (No sidebar commands: the window has no sidebar, and View › Show Sidebar did nothing.)
         .commands {
-            SidebarCommands()
             WoodruffCommands(fleet: fleet)
         }
         #elseif os(iOS)
@@ -362,10 +362,17 @@ struct WoodruffApp: App {
                 // Floating over other apps it's still Woodruff in use: the TVs are asked at full speed while it shows.
                 .background(WindowActivityWatcher())
         }
-        .windowResizability(.contentMinSize)
-        .windowStyle(.hiddenTitleBar)
+        // A small panel, not a window with a title bar: the player draws it (and its close button), it's as big as
+        // what it shows, it's moved by dragging it anywhere, and it isn't put back by itself when Woodruff next opens.
+        .windowStyle(.plain)
+        .windowResizability(.contentSize)
+        .windowBackgroundDragBehavior(.enabled)
+        .restorationBehavior(.disabled)
         .windowLevel(.floating)
         .defaultPosition(.topTrailing)
+        // The Window menu lists it by itself (a second Mini Player item of Woodruff's own sat beside it): ⇧⌘M is
+        // that item's key.
+        .keyboardShortcut("m", modifiers: [.command, .shift])
 
         MenuBarExtra {
             MenuBarFleetView().environment(fleet)
@@ -904,8 +911,9 @@ struct MacRoot: View {
                     remoteButton
                     editHomeButton
                 }
-                // Search only on Watch, where it finds movies and shows.
-                if section == .watch {
+                // Search only on Watch, where it finds movies and shows, and not on a page opened from it: a list
+                // (Movies, TV Shows) has a search field of its own, and this one sat above it as a second.
+                if section == .watch && nav.path.isEmpty {
                     MacSearchField(text: $query, prompt: narrow || greeting ? "Search" : "Search Movies and TV Shows")
                         .frame(minWidth: 120, idealWidth: greeting ? 240 : 300, maxWidth: 320)
                 }
@@ -1265,7 +1273,9 @@ struct MacSettingsView: View {
         g.append([
             Self.item("TVs") { TVsView() },
             Self.item("Notes") { NotesView() },
-            Self.item("Software Update") { SoftwareUpdateView() },
+            // The TVs' updates, by that name: "Software Update" read as this Mac's own, which is Check for Updates…
+            // in the Woodruff Family menu (and under General here).
+            Self.item("TV Updates") { SoftwareUpdateView() },
             Self.item("Send", keep: true) { SendView() },
         ])
         g.append([

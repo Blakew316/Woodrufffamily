@@ -480,6 +480,16 @@ func currentSettingsPaths(_ text: String) -> String {
         .replacingOccurrences(of: "Settings → Last Crash on This TV", with: "Settings → General → Last Crash on This TV")
 }
 
+/// The word for opening something, for a line that says how: "Click" on a Mac, "Select" on Apple TV (the remote
+/// selects), "Tap" on iPhone and iPad.
+#if os(macOS)
+let tapWord = "Click"
+#elseif os(tvOS)
+let tapWord = "Select"
+#else
+let tapWord = "Tap"
+#endif
+
 struct EmptyState: View {
     var symbol: String
     var title: String
@@ -584,15 +594,27 @@ extension View {
 }
 
 extension View {
-    /// Mac: a sheet opens at a comfortable fixed size. Nothing on iPhone.
+    /// Mac: a sheet opens at a comfortable fixed size, no taller than the screen has room for (`macSheetHeight`).
+    /// Nothing on iPhone.
     @ViewBuilder func macResizable(width: CGFloat = 680, height: CGFloat = 760, minWidth: CGFloat = 360, minHeight: CGFloat = 320, aspect: CGFloat? = nil) -> some View {
         #if os(macOS)
-        self.frame(width: width, height: aspect.map { width / $0 } ?? height)
+        self.frame(width: width, height: macSheetHeight(aspect.map { width / $0 } ?? height, atLeast: minHeight))
         #else
         self
         #endif
     }
 }
+
+#if os(macOS)
+/// How tall a sheet can be on this Mac: as tall as [wanted], or as tall as the screen has room for when that's less
+/// (the sheets were made on a big screen; a 13-inch MacBook's is shorter than some of them, and their last rows and
+/// buttons were off the bottom of it). The room is the screen the window is on, without the menu bar and the Dock,
+/// less a little air above and below; never under [atLeast].
+func macSheetHeight(_ wanted: CGFloat, atLeast: CGFloat = 320) -> CGFloat {
+    guard let room = NSScreen.main?.visibleFrame.height else { return wanted }
+    return min(wanted, max(atLeast, room - 60))
+}
+#endif
 
 /// An iPad-style corner grip: a soft curved stroke in a tile's corner, bright white under the pointer or finger.
 struct ResizeGrip: View {

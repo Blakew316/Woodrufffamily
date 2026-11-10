@@ -437,7 +437,9 @@ struct NowPlayingSheet: View {
         }
         .presentationDragIndicator(.visible)
         #if os(macOS)
-        .frame(minWidth: 480, idealWidth: 480, maxWidth: .infinity, minHeight: 720, idealHeight: 720, maxHeight: .infinity)
+        // No taller than the screen has room for, as the sheet around it is (`macResizable`): a floor above the
+        // sheet's own height would cut it off top and bottom.
+        .frame(minWidth: 480, idealWidth: 480, maxWidth: .infinity, minHeight: macSheetHeight(720), idealHeight: macSheetHeight(720), maxHeight: .infinity)
         #endif
     }
 

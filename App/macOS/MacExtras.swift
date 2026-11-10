@@ -1,8 +1,9 @@
 import SwiftUI
 import WoodruffKit
 
-/// The menu bar's mini-player, like the Music app's: what the remote's TV is playing with its artwork, progress
-/// and transport, a TV switcher, and every TV's state underneath.
+/// The menu bar's mini-player, like the Music app's: the remote's TV by name, what it's playing with its artwork,
+/// progress and transport, and every TV's state underneath (a click on one there makes it the remote's TV: the one
+/// way to switch here).
 struct MenuBarFleetView: View {
     @Environment(Fleet.self) private var fleet
     @Environment(\.openWindow) private var openWindow
@@ -12,19 +13,9 @@ struct MenuBarFleetView: View {
         // What's on now only (no picture of the last thing it played once it's stopped, off or left paused).
         let p = tv?.nowPlaying
         VStack(alignment: .leading, spacing: 14) {
-            Menu {
-                ForEach(fleet.tvs.filter { !$0.isUnpaired }) { t in
-                    Button { fleet.remoteAll = false; fleet.selectedID = t.id } label: {
-                        Text(t.name); Text(statusWord(t))
-                    }
-                }
-            } label: {
-                HStack(spacing: 4) {
-                    Text(tv?.name ?? "No TV").font(.headline)
-                    Image(systemName: "chevron.down").font(.caption.weight(.bold)).foregroundStyle(.secondary)
-                }
-            }
-            .menuStyle(.button).buttonStyle(.plain).fixedSize()
+            // Whose picture and buttons these are. (It was a menu of the TVs as well: the list below already
+            // switches, with a click on a TV.)
+            Text(tv?.name ?? "No TV").font(.headline)
 
             ZStack(alignment: .bottomLeading) {
                 Color.clear.overlay { NowPlayingArt(playing: p, backdrop: true) }.clipped()
@@ -84,10 +75,10 @@ struct MenuBarFleetView: View {
 }
 
 /// Menu commands: Check for Updates, Settings (⌘,), Open Woodruff (⌘N), refresh, the remote's keys, and ⌘1–⌘4 to
-/// pick a TV.
+/// pick a TV. (The Mini Player is in the Window menu by itself, as a window of its own: its key, ⇧⌘M, is on its
+/// scene.)
 struct WoodruffCommands: Commands {
     var fleet: Fleet
-    @Environment(\.openWindow) private var openWindow
     var body: some Commands {
         // Under About, where Mac apps keep it: the family's updater looks for a new version now, and Woodruff says what
         // it found.
@@ -101,9 +92,6 @@ struct WoodruffCommands: Commands {
         // One window: ⌘N brings it back or forward (New Window opened another beside it, sharing its pages).
         CommandGroup(replacing: .newItem) {
             Button("Open Woodruff") { MainWindowOpener.show() }.keyboardShortcut("n", modifiers: .command)
-        }
-        CommandGroup(after: .windowArrangement) {
-            Button("Mini Player") { openWindow(id: "mini") }.keyboardShortcut("m", modifiers: [.command, .shift])
         }
         CommandMenu("TVs") {
             Button("Refresh All") { Task { await fleet.refresh(); await fleet.loadAllHealth() } }

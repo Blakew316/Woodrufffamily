@@ -731,7 +731,7 @@ struct SSHSection: View {
                     Button("Save") {
                         let h = host.trimmingCharacters(in: .whitespacesAndNewlines)
                         fleet.extras[tv.id, default: TVExtras()].ssh = WebOSSSH(host: h, mode: mode, keyPath: keyPath.trimmingCharacters(in: .whitespacesAndNewlines))
-                        result = "Saved. Software Update can install on \(tv.name) from this Mac now."
+                        result = "Saved. TV Updates can install on \(tv.name) from this Mac now."
                     }
                     .disabled(host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     Button("Test") {

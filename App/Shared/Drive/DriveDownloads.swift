@@ -267,8 +267,11 @@ struct DownloadsView: View {
             Section {
                 PageLink("Add Downloads") { DownloadPicker() }
                     .disabled(!GoogleDrive.signedIn)
+                // (Not on a Mac: it has no cellular data to use.)
+                #if !os(macOS)
                 Toggle("Use Cellular Data", isOn: $cellular)
                     .onChange(of: cellular) { _, v in DriveDownloads.cellular = v }
+                #endif
                 LabeledContent("Space Used", value: ByteCountFormatter.string(fromByteCount: downloads.usedBytes, countStyle: .file))
             } footer: {
                 Text(GoogleDrive.signedIn ? "Downloads play with no connection when Play is set to play on this device. They carry on with the app closed."

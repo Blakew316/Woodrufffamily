@@ -278,7 +278,9 @@ struct PhoneSettingsView: View {
             } footer: {
                 Text("TV alerts tell you when a TV goes off or needs attention.")
             }
-            // The cameras' alerts in one page: this device's and what pops up on every TV.
+            #if !os(macOS)
+            // The cameras' alerts in one page: this device's and what pops up on every TV. (On the Mac that page is
+            // in Settings' list, beside this one.)
             if hub.s?.nest?.connected == true || NestCameras.shared.connected {
                 Section {
                     PageLink("Camera Alerts") { CameraAlertsView(hub: hub) } label: {
@@ -286,6 +288,7 @@ struct PhoneSettingsView: View {
                     }
                 }
             }
+            #endif
             #if os(macOS)
             // The push key the Macs send the iPhones' alerts with: set up once, so it has a page of its own.
             Section {
@@ -383,6 +386,9 @@ struct TVsView: View {
                 #if os(tvOS)
                 // Apple TV: the remote selects, and has no swipe (the rows' swipe actions aren't there either).
                 Text("Select a TV for its screen, controls and health.")
+                #elseif os(macOS)
+                // The Mac's rows open nothing and aren't swiped: a right-click hides a TV's alerts.
+                Text("Right-click a TV to hide alerts you already know about.")
                 #else
                 Text("Tap a TV for its screen, controls and health. Swipe left on one to hide alerts you already know about.")
                 #endif
@@ -394,16 +400,15 @@ struct TVsView: View {
             Section {
                 PageLink("Speakers") { SpeakersListView() } label: { Text("Speakers") }
             }
-            #else
+            #elseif os(iOS)
+            // (Not on the Mac: Notes and Send are in Settings' list there, beside this page.)
             Section {
                 // The notes kept on the TVs (Command Center → Notes there).
                 PageLink("Notes") { NotesView() } label: { IconRow(symbol: "", color: .clear, title: "Notes") }
-                #if os(iOS) || os(tvOS)
-                // Messages, links and files to the TVs and phones (the Mac has Send in its sidebar).
+                // Messages, links and files to the TVs and phones.
                 PageLink("Send") { SendView() } label: {
                     IconRow(symbol: "", color: .clear, title: "Send", subtitle: "A message, photos, files or a link")
                 }
-                #endif
             }
             #endif
             if fleet.attentionCount > 0 {
@@ -413,9 +418,12 @@ struct TVsView: View {
                     Text("They come back if something new goes wrong.")
                 }
             }
+            #if !os(macOS)
+            // (On the Mac it's in Settings' list, beside this page.)
             Section {
                 PageLink("Software Update") { SoftwareUpdateView() } label: { SoftwareUpdateRow() }
             }
+            #endif
             EveryTVSection()
             Section {
                 Button("Pair Another TV") { pairing = true }
@@ -575,7 +583,12 @@ struct SoftwareUpdateView: View {
             }
         }
         .familyFormStyle()
+        #if os(macOS)
+        // The Mac calls the page TV Updates (Settings' list): Software Update there would be the Mac's own.
+        .navigationTitle("TV Updates")
+        #else
         .navigationTitle("Software Update")
+        #endif
         .inlineTitle()
         .task { if fleet.latest.isEmpty { await fleet.checkReleases() }; await fleet.loadAllHealth() }
     }
