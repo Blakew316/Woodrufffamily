@@ -393,11 +393,13 @@ struct MacKeyTile: ViewModifier {
     var press: () -> Void
     @FocusState private var focused: Bool
     @State private var id = UUID()
+    /// On a page kept behind the one showing: Tab passes it by.
+    @Environment(\.pageHidden) private var pageHidden
 
     func body(content: Content) -> some View {
         content
             .contentShape(.focusEffect, RoundedRectangle(cornerRadius: radius, style: .continuous))
-            .focusable(true, interactions: .activate)
+            .focusable(!pageHidden, interactions: .activate)
             .focused($focused)
             .onKeyPress(.space) { press(); return .handled }
             .onKeyPress(.return) { press(); return .handled }

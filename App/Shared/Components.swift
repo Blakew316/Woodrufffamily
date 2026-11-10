@@ -45,6 +45,19 @@ extension Color {
     }
 }
 
+// MARK: - A page kept behind another
+
+private struct PageHiddenKey: EnvironmentKey { static let defaultValue = false }
+extension EnvironmentValues {
+    /// The Mac keeps Home and Settings as they were left while another page of the window shows: this page is one of
+    /// them, hidden just now. What it does to the window (its title, the toolbar) and what it keeps going (its
+    /// cameras, anything that moves by itself) rests until it shows again.
+    var pageHidden: Bool {
+        get { self[PageHiddenKey.self] }
+        set { self[PageHiddenKey.self] = newValue }
+    }
+}
+
 // MARK: - Liquid Glass
 
 extension View {
@@ -426,11 +439,13 @@ struct Placeholder: View {
 struct AmbientResting: DynamicProperty {
     #if os(macOS)
     @Environment(\.appearsActive) private var appearsActive
+    /// On a page the Mac keeps behind the one showing: it rests there too.
+    @Environment(\.pageHidden) private var pageHidden
     #endif
 
     @MainActor var wrappedValue: Bool {
         #if os(macOS)
-        return !Fleet.shared.isActive || !appearsActive
+        return !Fleet.shared.isActive || !appearsActive || pageHidden
         #else
         return !Fleet.shared.isActive
         #endif

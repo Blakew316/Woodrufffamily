@@ -928,6 +928,8 @@ struct LiveCameraTile: View, Equatable {
     private let streams = CameraStreams.shared
     /// On one of Home's tabs: every tile there is laid out at once, on screen or not.
     @Environment(\.inHomeBoard) private var inBoard
+    /// The Mac keeps Home behind the page showing: the tile lets its stream go then, as it did when Home was left.
+    @Environment(\.pageHidden) private var pageHidden
     /// An offline camera was tapped: Google is being asked about it again.
     @State private var checking = false
     /// The tile has been drawn once: its live picture's web view is made only now (making one held up the frame).
@@ -1027,13 +1029,14 @@ struct LiveCameraTile: View, Equatable {
             appeared = false
             follow()
         }
+        .onChange(of: pageHidden) { _, _ in follow() }
     }
 
     /// Asks for the stream while the tile shows (on Home's tabs: while it's on screen), and lets it go after.
     private func follow() {
         // The doorbell and the driveway start as soon as Home lays them out (not only once on screen), so they're live
         // by the time you look.
-        let wanted = appeared && ready && camera.webRTC && (!inBoard || visible || CameraStreams.isImportant(camera))
+        let wanted = !pageHidden && appeared && ready && camera.webRTC && (!inBoard || visible || CameraStreams.isImportant(camera))
         guard wanted != watching else { return }
         watching = wanted
         if wanted { streams.show(camera) } else { streams.hide(camera.id) }

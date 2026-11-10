@@ -809,6 +809,10 @@ struct MacRoot: View {
     private var narrow: Bool { width < 760 }
     /// Bumped by every pick in the toolbar, so the page it opens starts fresh (Home's open TV closes, and so on).
     @State private var visit = 0
+    /// The sections whose pages have been shown, and so are kept (`keptPage`), and how often each has been started
+    /// over.
+    @State private var kept: Set<AppSection> = []
+    @State private var fresh: [AppSection: Int] = [:]
     /// Where the toolbar last went, and when: the same place again straight away is the same click.
     @State private var lastGo = SidebarGo()
     /// The remote's sidebar has the keyboard (arrows, Return, Esc, H, M, + and − go to the TV).
@@ -866,25 +870,26 @@ struct MacRoot: View {
         // No sidebar: Home, Watch and Settings are in the middle of the window's toolbar.
         Group {
             NavigationStack(path: $nav.path) {
-                root
-                    .id(visit)
-                    .environment(\.macPageTitle, query.isEmpty ? rootTitle : "Search")
-                    // The window's title is the page's name; under it on Watch, the library showing.
-                    .navigationTitle(query.isEmpty ? rootTitle : "Search")
-                    .navigationSubtitle(rootSubtitle)
-                    .modifier(rootChrome)
-                    // Watch's search is the toolbar's own field, there on Watch's first page and over its results.
-                    // The page has it itself, so it's in the toolbar whenever that page is the one showing and on no
-                    // other page. (One field for the window: a second one crashes AppKit. And it isn't taken out of
-                    // the toolbar on the other pages by `toolbar(removing:)`: taken out that way, it never came back.)
-                    .modifier(MacWatchSearch(shown: inWatch, text: $bar.query, searching: $searching, focused: $searchFocused))
-                    .navigationDestination(for: PageRoute.self) { page in
-                        page.view
-                            // Back is the toolbar's own button (below), on every page alike.
-                            .navigationBarBackButtonHidden(true)
-                            .navigationTitle(page.title)
-                            .modifier(openedChrome)
+                ZStack {
+                    // Home and Settings, kept as they were left while another page shows: hidden then, not gone
+                    // (`keptPage`). Each was built again at every visit: Home's tiles and cameras, Settings' lists.
+                    ForEach(Self.keptSections, id: \.self) { s in
+                        if kept.contains(s) || showing(s) { keptPage(s) }
                     }
+                    watchAndOthers
+                }
+                .environment(\.macPageTitle, query.isEmpty ? rootTitle : "Search")
+                // The window's title is the page's name; under it on Watch, the library showing.
+                .navigationTitle(query.isEmpty ? rootTitle : "Search")
+                .navigationSubtitle(rootSubtitle)
+                .modifier(rootChrome)
+                .navigationDestination(for: PageRoute.self) { page in
+                    page.view
+                        // Back is the toolbar's own button (below), on every page alike.
+                        .navigationBarBackButtonHidden(true)
+                        .navigationTitle(page.title)
+                        .modifier(openedChrome)
+                }
             }
             .environment(\.macPageStack, true)
             // Not under Home's own first page: its backdrop covers the whole page (and draws what's playing itself).
@@ -924,6 +929,8 @@ struct MacRoot: View {
         }
         // Leaving Watch leaves its search behind (the field is only there): no other page opens on old results.
         .onChange(of: selection) { _, new in nav.reset(); if new != .watch && !query.isEmpty { bar.query = "" } }
+        // A section shown once is kept from then on.
+        .onChange(of: section, initial: true) { _, s in if Self.keptSections.contains(s) { kept.insert(s) } }
         // The menu bar follows the window: View ticks the section showing, and Edit > Find is there to choose while
         // the search field is. Find (⌘F) puts the cursor in it.
         .onChange(of: shownSection, initial: true) { _, now in bar.section = now }
@@ -963,11 +970,61 @@ struct MacRoot: View {
             p.view.id(d).task { await HubSettings.shared.loadIfNeeded(fleet) }
         }
         else if let id = tvSelection { TVDetailView(tvID: id).id(id) }
-        else {
+        else if !Self.keptSections.contains(section) {
+            // Watch. (Home and Settings are the pages kept behind this: `keptPage`.)
             section.view.id(section)
                 // A new page fades and rises into place.
                 .transition(.asymmetric(insertion: .opacity.combined(with: .offset(y: 10)), removal: .opacity))
         }
+    }
+
+    /// Watch, its search results and the pages that take the window's first page over (a TV's, a speaker's, a
+    /// light's, one of Settings' own): built afresh at each pick, as ever. Watch's search is the toolbar's own field,
+    /// there on Watch's first page and over its results. That page has it itself, so it's in the toolbar whenever it
+    /// is the one showing and on no other page. (One field for the window: a second one crashes AppKit. And it isn't
+    /// taken out of the toolbar on the other pages by `toolbar(removing:)`: taken out that way, it never came back.)
+    /// It's round these pages only, not round Home and Settings kept behind them: the field is there or not by this
+    /// being a different view, and they'd be built again every time Watch was picked or left.
+    private var watchAndOthers: some View {
+        root
+            .id(visit)
+            .modifier(MacWatchSearch(shown: inWatch, text: Bindable(bar).query, searching: $searching, focused: $searchFocused))
+    }
+
+    // MARK: Pages kept
+
+    /// The sections kept as they were left while another page shows.
+    private static let keptSections: [AppSection] = [.home, .settings]
+
+    /// The window's first page is a section's own, not a search, a TV's, a speaker's or a light's page, or one of
+    /// Settings' pages opened by itself (the same tests, in the same order, as `root`).
+    private var sectionIsRoot: Bool {
+        guard query.isEmpty else { return false }
+        if let d = deviceSelection {
+            if d.hasPrefix("spk:") || d.hasPrefix("light:") { return false }
+            if d.hasPrefix("set:"), MacSettingsPage(rawValue: String(d.dropFirst(4))) != nil { return false }
+        }
+        return tvSelection == nil
+    }
+
+    /// [s]'s own first page is the one showing.
+    private func showing(_ s: AppSection) -> Bool { section == s && sectionIsRoot }
+
+    /// Home's or Settings' page. While another page shows it stays where it is, hidden: it can't be seen, clicked,
+    /// reached by the keyboard or read out, and it's told so (`pageHidden`), so its cameras let go of their streams,
+    /// what moves by itself rests, and it leaves the window's title and toolbar to the page showing. Picked again
+    /// while it's already the page showing, it starts over (`fresh`).
+    private func keptPage(_ s: AppSection) -> some View {
+        let shown = showing(s)
+        return s.view
+            .id(fresh[s] ?? 0)
+            .environment(\.pageHidden, !shown)
+            .disabled(!shown)
+            .opacity(shown ? 1 : 0)
+            // It fades and rises into place, as a new page does.
+            .offset(y: shown ? 0 : 10)
+            .allowsHitTesting(shown)
+            .accessibilityHidden(!shown)
     }
 
     /// Where the toolbar takes you, always: that section's (or TV's, speaker's, light's) first page, with the search
@@ -979,6 +1036,12 @@ struct MacRoot: View {
         lastGo.target = v
         lastGo.at = now
         if CameraStreams.shared.full != nil { withAnimation(.smooth(duration: 0.25)) { CameraStreams.shared.full = nil } }
+        // A kept section picked again while its own first page is already the one showing: it starts over (Home's
+        // open TV closes, Settings goes back to its first page), as every pick used to. Picked from anywhere else,
+        // it's as it was left.
+        if let s = AppSection(rawValue: v), Self.keptSections.contains(s), showing(s), nav.path.isEmpty {
+            fresh[s, default: 0] += 1
+        }
         nav.reset()
         if !query.isEmpty { bar.query = "" }
         layout.stopArranging()

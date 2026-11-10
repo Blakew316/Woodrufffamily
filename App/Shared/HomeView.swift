@@ -82,6 +82,12 @@ struct HomeView: View {
     /// iPhone: the height of the weather, Edit and thermostat pills under the greeting.
     static let pillHeight: CGFloat = 52
 
+    #if os(macOS)
+    /// The Mac keeps Home behind the page showing (`pageHidden`); the name of that page.
+    @Environment(\.pageHidden) private var pageHidden
+    @Environment(\.macPageTitle) private var shownPageTitle
+    #endif
+
     var body: some View {
         // Read here, so Home redraws the moment any of these changes (Rooms & Sections, a tapped TV, Edit).
         let editing = layout.editing
@@ -259,14 +265,26 @@ struct HomeView: View {
         #endif
         // Home is always the dark, cinematic room: its glass and text read over the backdrop.
         .environment(\.colorScheme, .dark)
+        #if os(macOS)
+        // (Kept behind another page, it gives the window that page's name, not its own.)
+        .navigationTitle(pageHidden ? shownPageTitle : (openTV.flatMap { fleet.tv($0)?.name } ?? "Home"))
+        #else
         .navigationTitle(openTV.flatMap { fleet.tv($0)?.name } ?? "Home")
+        #endif
         #if os(iOS) || os(tvOS)
         // The title sits in the page itself, right under the status bar.
         .toolbar(.hidden, for: .navigationBar)
         #else
-        // No title strip: the room bar and tiles run right up under Woodruff's own bar, over the backdrop.
-        .toolbar(removing: .title)
-        .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
+        // No title strip: the room bar and tiles run right up under Woodruff's own bar, over the backdrop. Only while
+        // Home is the page showing: the Mac keeps it behind Watch and Settings, which have their titles. (Said by a
+        // view that's there only then. Changing what one view removes doesn't put the title back.)
+        .background {
+            if !pageHidden {
+                Color.clear
+                    .toolbar(removing: .title)
+                    .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
+            }
+        }
         // Everything a size up on the Mac's big screens.
         .dynamicTypeSize(.xxLarge)
         #endif
