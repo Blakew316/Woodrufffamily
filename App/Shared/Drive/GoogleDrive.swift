@@ -377,6 +377,16 @@ enum GoogleDrive {
         return reason(body) == "downloadQuotaExceeded" ? false : nil
     }
 
+    /// Whose file [id] is: whether it's the signed-in account's own, and its owner's address when Google gives one (a
+    /// file in a shared drive has none). Nil when that couldn't be found out.
+    static func ownership(of id: String) async -> (mine: Bool, owner: String?)? {
+        var c = URLComponents(string: "\(filesBase)/\(id)")!
+        c.queryItems = [.init(name: "fields", value: "ownedByMe,owners(emailAddress)"), .init(name: "supportsAllDrives", value: "true")]
+        guard let j = try? await get(c.url!) else { return nil }
+        let owner = ((j["owners"] as? [[String: Any]])?.first)?["emailAddress"] as? String
+        return (j["ownedByMe"] as? Bool ?? false, owner)
+    }
+
     /// The name of the copy of [id] the app keeps in its own folder in Drive.
     private static func copyName(_ id: String) -> String { "film-copy-\(id)" }
 

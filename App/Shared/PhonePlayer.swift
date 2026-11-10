@@ -142,10 +142,27 @@ final class PhonePlayback {
     static let makingCopy = "Making a copy in Google Drive…"
 
     /// What can be done about a film Google refused with its daily limit: nothing when it refuses the others too (the
-    /// app's whole allowance for the day), else the copy made earlier, else a copy can be offered.
-    enum LimitAnswer { case allowanceSpent, copy(String), offerCopy }
+    /// app's whole allowance for the day), else the copy made earlier, else a copy can be offered. [words] is what to
+    /// say with the offer when the film isn't the signed-in account's own.
+    enum LimitAnswer { case allowanceSpent, copy(String), offerCopy(words: String?) }
 
     static func limitAnswer(for id: String) async -> LimitAnswer {
+        // Whose file it is. Google sends an account only so much of another account's file in a day, and the account
+        // that owns it meets no such limit: the Android TVs, signed in as the films' owner, play what an app signed in
+        // as someone else in the family is refused.
+        if GoogleDrive.email == nil { await GoogleDrive.loadEmail() }
+        let me = GoogleDrive.email
+        if let whose = await GoogleDrive.ownership(of: id) {
+            if whose.mine {
+                Diagnostics.shared.notePlayback("The refused file is \(me ?? "the signed-in account")’s own")
+            } else {
+                let theirs = whose.owner.map { "\($0)’s Google Drive" } ?? "another account’s Google Drive"
+                Diagnostics.shared.notePlayback("The refused file is in \(theirs); the app is signed in as \(me ?? "another account")")
+                if let copy = try? await GoogleDrive.copy(of: id) { return .copy(copy) }
+                let signIn = whose.owner.map { "Sign in with \($0) in Settings → Watch" } ?? "Sign in with the account the TVs use in Settings → Watch"
+                return .offerCopy(words: "This film is in \(theirs), and the app is signed in as \(me ?? "another account"). Google only sends an account so much of someone else’s file in a day. \(signIn), or play a copy.")
+            }
+        }
         // A few other films (one of them may be refused for itself): any that Google still sends means it's this file.
         var sent: String?, refused: [String] = []
         for other in DriveLibrary.shared.otherFiles(than: id) {
@@ -161,7 +178,7 @@ final class PhonePlayback {
         Diagnostics.shared.notePlayback(sent.map { "Google still sends \($0): only this file is refused" }
                                         ?? "Whether Google refuses other films too couldn’t be found out")
         if let copy = try? await GoogleDrive.copy(of: id) { return .copy(copy) }
-        return .offerCopy
+        return .offerCopy(words: nil)
     }
 
     /// Everything the player said about a failure, for the diagnostics: each error and the one under it, and its error
@@ -282,7 +299,7 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
     /// Why it can't play, found before the player was on screen (said once it is).
     private var pendingFailure: String?
     /// A copy to offer (Google's daily limit for the file), found before the player was on screen.
-    private var pendingOffer: (play: PhonePlay, id: String)?
+    private var pendingOffer: (play: PhonePlay, id: String, words: String?)?
     /// Says so when it hasn't started in time.
     private var watchdog: Task<Void, Never>?
     /// Playing Drive's address directly: its file, when the sign-in it was given runs out (seconds since 1970), and
@@ -688,7 +705,7 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
                 if self.fileReady, let p = self.player, let play = self.current { self.ready(p, play) }
                 if let offer = self.pendingOffer {
                     self.pendingOffer = nil
-                    self.offerCopy(offer.play, id: offer.id)
+                    self.offerCopy(offer.play, id: offer.id, words: offer.words)
                 }
                 guard let words = self.pendingFailure else { return }
                 self.pendingFailure = nil
@@ -750,18 +767,18 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
             switch answer {
             case .allowanceSpent: self.failed(GoogleDrive.allowanceSpent)
             case .copy(let copy): self.present(play.playing(copy: copy, of: id))
-            case .offerCopy: self.offerCopy(play, id: id)
+            case .offerCopy(let words): self.offerCopy(play, id: id, words: words)
             }
         }
     }
 
     /// Offers to make a copy of the film in Google Drive and play that.
-    private func offerCopy(_ play: PhonePlay, id: String) {
+    private func offerCopy(_ play: PhonePlay, id: String, words: String?) {
         guard let c = controller, current?.id == play.id else { return }
         // Not on screen yet: offered as soon as it is.
-        guard c.presentingViewController != nil else { pendingOffer = (play, id); return }
+        guard c.presentingViewController != nil else { pendingOffer = (play, id, words); return }
         guard c.presentedViewController == nil else { return }
-        let alert = UIAlertController(title: PhonePlayback.limitTitle, message: PhonePlayback.copyOffer, preferredStyle: .alert)
+        let alert = UIAlertController(title: PhonePlayback.limitTitle, message: words ?? PhonePlayback.copyOffer, preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "Play a Copy", style: .default) { [weak self] _ in self?.makeCopy(play, id: id) })
         alert.addAction(UIAlertAction(title: "Not Now", style: .cancel) { [weak c] _ in c?.dismiss(animated: true) })
         c.present(alert, animated: true)
@@ -1006,10 +1023,10 @@ final class MacPlayer: NSObject, NSWindowDelegate {
             failed(GoogleDrive.allowanceSpent)
         case .copy(let copy):
             present(play.playing(copy: copy, of: id))
-        case .offerCopy:
+        case .offerCopy(let words):
             let offer = NSAlert()
             offer.messageText = PhonePlayback.limitTitle
-            offer.informativeText = PhonePlayback.copyOffer
+            offer.informativeText = words ?? PhonePlayback.copyOffer
             offer.addButton(withTitle: "Play a Copy")
             offer.addButton(withTitle: "Not Now")
             guard await offer.beginSheetModal(for: w) == .alertFirstButtonReturn else { w.close(); return }

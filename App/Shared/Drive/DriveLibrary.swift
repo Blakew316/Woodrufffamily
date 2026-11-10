@@ -805,6 +805,18 @@ final class DriveLibrary: WatchSource {
     /// The app's own copies of films are looked through once each launch (`GoogleDrive.removeOldCopies`).
     @ObservationIgnored private var copiesLookedAt = false
 
+    /// Once each launch, for the Macs' log: which Google account this app reads Drive as, and whether the films are
+    /// that account's own. Google only sends an account so much of someone else's file in a day; the account that
+    /// owns it meets no such limit.
+    private func noteAccount() async {
+        if GoogleDrive.email == nil { await GoogleDrive.loadEmail() }
+        guard let file = saved.movies.first(where: { $0.file != nil })?.file,
+              let whose = await GoogleDrive.ownership(of: file) else { return }
+        let me = GoogleDrive.email ?? "an account Google didn’t name"
+        let films = whose.mine ? "the films are its own" : "the films are in \(whose.owner.map { "\($0)’s" } ?? "another account’s") Drive"
+        Diagnostics.shared.notePlayback("Google Drive is read as \(me); \(films)")
+    }
+
     nonisolated func artURL(_ s: String?, small: Bool) -> URL? {
         guard var s, s.hasPrefix("http") else { return nil }
         if small { s = s.replacingOccurrences(of: "/t/p/w1280/", with: "/t/p/w300/") }
@@ -842,7 +854,10 @@ final class DriveLibrary: WatchSource {
             saved.synced = nowMS
             if !copiesLookedAt {
                 copiesLookedAt = true
-                Task { await GoogleDrive.removeOldCopies() }
+                Task {
+                    await GoogleDrive.removeOldCopies()
+                    await self.noteAccount()
+                }
             }
             store()
             await resolveContexts()
