@@ -1056,6 +1056,7 @@ struct MacRoot: View {
         return s.view
             .id(fresh[s] ?? 0)
             .environment(\.pageHidden, !shown)
+            .environment(\.homeRoomsInBar, s == .home && homeRoomsInBar)
             .disabled(!shown)
             .opacity(shown ? 1 : 0)
             // It fades and rises into place, as a new page does.
@@ -1134,6 +1135,14 @@ struct MacRoot: View {
             MacPillBar(items: AppSection.mac.map { (value: $0, title: $0.title) }, shown: shownSection) { go(to: $0.rawValue) }
         }
         .sharedBackgroundVisibility(.hidden)
+        // Home's first page: its rooms, as one pill with a menu, between Home | Watch | Settings and the thermostat. (They
+        // were a row of tabs across the top of Home; its tiles start that much higher.) In a window too narrow for the
+        // pill, Home keeps its row of tabs.
+        if onHome && homeRoomsInBar {
+            ToolbarItem(placement: .primaryAction) { MacHomeRoomMenu() }
+                .sharedBackgroundVisibility(.hidden)
+            ToolbarSpacer(.fixed, placement: .primaryAction)
+        }
         // The thermostat, level with Edit Home and the remote, as tall as they are: on the pages that had it in the
         // row under the toolbar (Home's and Watch's first pages). It draws its own glass.
         if thermostatInToolbar {
@@ -1156,6 +1165,10 @@ struct MacRoot: View {
     /// Watch's first page, in a window wide enough: Movies | TV Shows and the TV it plays on are in the toolbar (in a
     /// narrower one they keep their row under it).
     private var watchPillsInToolbar: Bool { watchRow && nav.path.isEmpty && width >= 1340 }
+
+    /// The window is wide enough for Home's rooms to be a pill in the toolbar (and the rooms haven't been hidden in
+    /// Rooms & Sections): Home leaves out its own row of tabs.
+    private var homeRoomsInBar: Bool { width >= 1300 && !layout.hiddenSections.contains("rooms") }
 
     /// Home's or Watch's first page, with nothing opened on top: the toolbar has the thermostat.
     private var thermostatInToolbar: Bool { (homeRow || watchRow) && nav.path.isEmpty }

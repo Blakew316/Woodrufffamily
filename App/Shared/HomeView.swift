@@ -87,6 +87,8 @@ struct HomeView: View {
     @Environment(\.pageHidden) private var pageHidden
     @Environment(\.macPageTitle) private var shownPageTitle
     #endif
+    /// The Mac's toolbar has the rooms (`MacHomeRoomMenu`): Home's own row of room tabs is left out.
+    @Environment(\.homeRoomsInBar) private var roomsInBar
 
     var body: some View {
         // Read here, so Home redraws the moment any of these changes (Rooms & Sections, a tapped TV, Edit).
@@ -306,7 +308,8 @@ struct HomeView: View {
     @ViewBuilder private func section(_ key: String, _ c: Contents) -> some View {
         let room = c.room
         switch key {
-        case "rooms": roomBar(c)
+        // (On the Mac the rooms are a pill in the window's toolbar when there's room for it there: no row of tabs.)
+        case "rooms": if !roomsInBar { roomBar(c) }
         case "tvs":
             let tvs = shownTVs(room)
             if !tvs.isEmpty {
@@ -908,3 +911,61 @@ enum HomeRefresh {
         }
     }
 }
+
+#if os(macOS)
+/// Home's rooms as one pill in the Mac window's toolbar: the room showing, and under it a menu of them all (Favorites,
+/// All Devices, the rooms chosen for the bar, All Rooms and every other room). The size of the toolbar's other pills.
+/// (They were a row of tabs across the top of Home, above its tiles, which now start that much higher.)
+struct MacHomeRoomMenu: View {
+    @Environment(Fleet.self) private var fleet
+    /// Home's own choice of room (`HomeView.picked`).
+    @AppStorage("home.room2") private var picked = favoritesKey
+    private let layout = HomeLayout.shared
+
+    var body: some View {
+        let rooms = homeRooms(fleet)
+        let pinned = layout.pinned(in: rooms)
+        let others = rooms.filter { !pinned.contains($0) }
+        // What Home shows for the choice: a room with nothing in it just now shows All Rooms (`HomeView.shownRoom`).
+        let room = picked == favoritesKey || picked == allDevicesKey || picked.isEmpty || rooms.contains(picked) ? picked : ""
+        Menu {
+            choice("Favorites", favoritesKey, room)
+            choice("All Devices", allDevicesKey, room)
+            if !pinned.isEmpty {
+                Divider()
+                ForEach(pinned, id: \.self) { r in choice(r, r, room) }
+            }
+            Divider()
+            choice("All Rooms", "", room)
+            ForEach(others, id: \.self) { r in choice(r, r, room) }
+            Divider()
+            Button("Rooms & Sections…") { layout.editing = true }
+        } label: {
+            HStack(spacing: 8) {
+                Text(room == favoritesKey ? "Favorites" : room == allDevicesKey ? "All Devices" : room.isEmpty ? "All Rooms" : room)
+                    .font(.title3.weight(.semibold))
+                    .lineLimit(1)
+                Image(systemName: "chevron.down").font(.caption.weight(.bold)).foregroundStyle(.secondary)
+            }
+            .foregroundStyle(.primary)
+            // The same type and the same room round its name as the toolbar's other pills.
+            .padding(.horizontal, 18).padding(.vertical, 10)
+            .dynamicTypeSize(.xxLarge)
+            .contentShape(Capsule())
+            .glass(Capsule())
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Rooms")
+    }
+
+    /// One of the menu's rooms, ticked when it's the one showing.
+    @ViewBuilder private func choice(_ title: String, _ value: String, _ room: String) -> some View {
+        Button { withAnimation(.smooth) { picked = value } } label: {
+            if room == value { Label(title, systemImage: "checkmark") } else { Text(title) }
+        }
+    }
+}
+#endif

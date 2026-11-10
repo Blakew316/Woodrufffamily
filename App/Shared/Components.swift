@@ -58,6 +58,16 @@ extension EnvironmentValues {
     }
 }
 
+private struct HomeRoomsInBarKey: EnvironmentKey { static let defaultValue = false }
+extension EnvironmentValues {
+    /// The Mac window's toolbar has Home's rooms (one pill with a menu: `MacHomeRoomMenu`), so Home leaves out its
+    /// own row of room tabs.
+    var homeRoomsInBar: Bool {
+        get { self[HomeRoomsInBarKey.self] }
+        set { self[HomeRoomsInBarKey.self] = newValue }
+    }
+}
+
 // MARK: - Liquid Glass
 
 extension View {
