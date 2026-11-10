@@ -78,6 +78,11 @@ struct DeviceTile: View, Equatable {
         }
     }
 
+    /// A click on the tile (on the Mac, Space or Return too, with the keyboard on it): what a tap does to it.
+    private func tapped() {
+        if HomeLayout.shared.tapsAllowed { tappedAt = Date(); tap() }
+    }
+
     var body: some View {
         // Compact, like the Home app: icon on the left, name and state beside it.
         HStack(spacing: 10) {
@@ -138,7 +143,11 @@ struct DeviceTile: View, Equatable {
         #if os(tvOS)
         .modifier(TVFocusTile())
         #endif
-        .onTapGesture { if HomeLayout.shared.tapsAllowed { tappedAt = Date(); tap() } }
+        .onTapGesture { tapped() }
+        #if os(macOS)
+        // The keyboard reaches it too: Tab (with the Mac's Keyboard Navigation on), then Space or Return.
+        .modifier(MacKeyTile(radius: 20) { tapped() })
+        #endif
         // Press and hold arranges Home's tiles (on the Mac too); the controls are in the menu.
         .contextMenu {
             ArrangeHomeButton()

@@ -1213,6 +1213,8 @@ enum SpaceKey {
             // The keyboard is on a button, a switch or a menu (Tab put it there): Space presses that, as it does in
             // every Mac app. (It went to the TV instead, so nothing could be pressed from the keyboard.)
             if let control = window.firstResponder as? NSControl, !(control is NSTableView) { return e }
+            // The keyboard is on one of Home's tiles: Space presses the tile (`MacKeyTile`).
+            if MacTileFocus.holder != nil { return e }
             // Held down: one press, not play-pause-play.
             if !e.isARepeat {
                 if let take = page, take() { return nil }

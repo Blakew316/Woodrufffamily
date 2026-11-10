@@ -282,6 +282,10 @@ struct AllDevicesView: View {
         .modifier(TVFocusTile())
         #endif
         .onTapGesture { tap(item) }
+        #if os(macOS)
+        // The keyboard reaches it too: Tab (with the Mac's Keyboard Navigation on), then Space or Return.
+        .modifier(MacKeyTile(radius: 20) { tap(item) })
+        #endif
         .onLongPressGesture(minimumDuration: 0.4) { open(item) }
         #if os(macOS)
         .contextMenu { Button("Controls…") { open(item) } }

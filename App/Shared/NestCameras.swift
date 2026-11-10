@@ -944,6 +944,13 @@ struct LiveCameraTile: View, Equatable {
         a.camera == b.camera && a.compact == b.compact && a.fill == b.fill
     }
 
+    /// A click on the tile (on the Mac, Space or Return too, with the keyboard on it): the camera, live and large.
+    private func tapped() {
+        guard HomeLayout.shared.tapsAllowed else { return }
+        if camera.webRTC && camera.online { streams.expanded = camera.id; open() }
+        else if !camera.online { checkAgain() }
+    }
+
     var body: some View {
         let status = camera.online ? (streams.status[camera.id] ?? "Starting…") : (checking ? "Checking…" : "Offline")
         ZStack(alignment: .bottomLeading) {
@@ -991,11 +998,11 @@ struct LiveCameraTile: View, Equatable {
         #if os(tvOS)
         .modifier(TVFocusTile())
         #endif
-        .onTapGesture {
-            guard HomeLayout.shared.tapsAllowed else { return }
-            if camera.webRTC && camera.online { streams.expanded = camera.id; open() }
-            else if !camera.online { checkAgain() }
-        }
+        .onTapGesture { tapped() }
+        #if os(macOS)
+        // The keyboard reaches it too: Tab (with the Mac's Keyboard Navigation on), then Space or Return.
+        .modifier(MacKeyTile(radius: 20) { tapped() })
+        #endif
         .contextMenu {
             ArrangeHomeButton()
             if camera.webRTC && camera.online { Button("Open") { streams.expanded = camera.id; open() } }

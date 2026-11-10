@@ -598,6 +598,16 @@ struct HomeTVTile: View, Equatable {
         #endif
     }
 
+    /// A click on the tile (on the Mac, Space or Return too, with the keyboard on it): opens its TV.
+    private func tapped() {
+        guard HomeLayout.shared.tapsAllowed else { return }
+        #if os(tvOS)
+        // Apple TV: the tile is the button. A click turns on a TV that's off, as its tile under its room does.
+        if !tv.online, fleet.extras[tv.id]?.mac != nil { fleet.wake(tv) }
+        #endif
+        open()
+    }
+
     var body: some View {
         // Only what's on the TV right now (`nowPlaying`): a TV that's off, has stopped, or was left paused shows no
         // picture and reads as nothing playing (never the last thing it played).
@@ -693,14 +703,11 @@ struct HomeTVTile: View, Equatable {
         #if os(tvOS)
         .modifier(TVFocusTile())
         #endif
-        .onTapGesture {
-            guard HomeLayout.shared.tapsAllowed else { return }
-            #if os(tvOS)
-            // Apple TV: the tile is the button. A click turns on a TV that's off, as its tile under its room does.
-            if !tv.online, fleet.extras[tv.id]?.mac != nil { fleet.wake(tv) }
-            #endif
-            open()
-        }
+        .onTapGesture { tapped() }
+        #if os(macOS)
+        // The keyboard reaches it too: Tab (with the Mac's Keyboard Navigation on), then Space or Return.
+        .modifier(MacKeyTile(radius: 24) { tapped() })
+        #endif
         .onHover { hovering = $0 }
         .alert("Rename TV", isPresented: $renaming) {
             TextField("Name", text: $newName)

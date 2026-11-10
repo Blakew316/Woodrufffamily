@@ -55,6 +55,11 @@ struct SpeakerTile: View, Equatable {
     /// is the same each time.
     nonisolated static func == (a: SpeakerTile, b: SpeakerTile) -> Bool { a.room == b.room }
 
+    /// A click on the tile (on the Mac, Space or Return too, with the keyboard on it): its controls.
+    private func tapped() {
+        if HomeLayout.shared.tapsAllowed { openControls() }
+    }
+
     var body: some View {
         HStack(spacing: 10) {
             Group {
@@ -102,7 +107,11 @@ struct SpeakerTile: View, Equatable {
         #if os(tvOS)
         .modifier(TVFocusTile())
         #endif
-        .onTapGesture { if HomeLayout.shared.tapsAllowed { openControls() } }
+        .onTapGesture { tapped() }
+        #if os(macOS)
+        // The keyboard reaches it too: Tab (with the Mac's Keyboard Navigation on), then Space or Return.
+        .modifier(MacKeyTile(radius: 20) { tapped() })
+        #endif
         .contextMenu {
             ArrangeHomeButton()
             if !room.isOffline {
@@ -281,6 +290,16 @@ struct LightTile: View, Equatable {
     /// Drawn again only when its light has changed; the action is the same each time.
     nonisolated static func == (a: LightTile, b: LightTile) -> Bool { a.light == b.light }
 
+    /// A click on the tile (on the Mac, Space or Return too, with the keyboard on it): on or off.
+    private func tapped() {
+        guard HomeLayout.shared.tapsAllowed else { return }
+        guard !light.isOffline else { openControls(); return }
+        #if os(iOS) || os(tvOS)
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        #endif
+        SmartHome.shared.setOn(light, !light.on)
+    }
+
     var body: some View {
         // Unreachable (unplugged, off at the wall): never shown lit, and tapping opens its page rather than
         // sending a change that can't arrive.
@@ -341,14 +360,11 @@ struct LightTile: View, Equatable {
         #if os(tvOS)
         .modifier(TVFocusTile())
         #endif
-        .onTapGesture {
-            guard HomeLayout.shared.tapsAllowed else { return }
-            guard !light.isOffline else { openControls(); return }
-            #if os(iOS) || os(tvOS)
-            UIImpactFeedbackGenerator(style: .light).impactOccurred()
-            #endif
-            SmartHome.shared.setOn(light, !light.on)
-        }
+        .onTapGesture { tapped() }
+        #if os(macOS)
+        // The keyboard reaches it too: Tab (with the Mac's Keyboard Navigation on), then Space or Return.
+        .modifier(MacKeyTile(radius: 20) { tapped() })
+        #endif
         // Press and hold arranges Home's tiles (on the Mac too); the controls are in the menu (touch and hold on
         // iPhone, right-click on the Mac).
         .contextMenu {

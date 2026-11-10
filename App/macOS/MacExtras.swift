@@ -376,3 +376,35 @@ enum MainWindowOpener {
         return true
     }
 }
+
+/// Which of Home's tiles the keyboard is on, if any (see `MacKeyTile`): Space is that tile's then, not the TV's.
+enum MacTileFocus {
+    /// (Only ever touched on the main thread: by the tiles, and by the app's key monitor.)
+    nonisolated(unsafe) static var holder: UUID?
+}
+
+/// Mac: a Home tile the keyboard can reach and press, as it can a button. With the Mac's Keyboard Navigation on, Tab
+/// moves to it (the system's ring shows round it), and Space or Return does what a click does. A click doesn't put
+/// the keyboard on it, so the mouse never draws a ring. (The tiles only took clicks: nothing on Home could be
+/// reached from the keyboard.)
+struct MacKeyTile: ViewModifier {
+    /// The tile's corner, for the ring round it.
+    var radius: CGFloat = 20
+    var press: () -> Void
+    @FocusState private var focused: Bool
+    @State private var id = UUID()
+
+    func body(content: Content) -> some View {
+        content
+            .contentShape(.focusEffect, RoundedRectangle(cornerRadius: radius, style: .continuous))
+            .focusable(true, interactions: .activate)
+            .focused($focused)
+            .onKeyPress(.space) { press(); return .handled }
+            .onKeyPress(.return) { press(); return .handled }
+            .onChange(of: focused) { _, now in
+                if now { MacTileFocus.holder = id } else if MacTileFocus.holder == id { MacTileFocus.holder = nil }
+            }
+            .onDisappear { if MacTileFocus.holder == id { MacTileFocus.holder = nil } }
+            .accessibilityAddTraits(.isButton)
+    }
+}
