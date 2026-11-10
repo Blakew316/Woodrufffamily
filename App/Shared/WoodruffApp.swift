@@ -113,6 +113,10 @@ struct WoodruffApp: App {
         SceneHook.run = { id in _ = await SceneRunner.run(id: id) }
         ControlHook.lights = { on in await ControlActions.lights(on) }
         ControlHook.sonosVolume = { up in await ControlActions.sonosVolume(up: up) }
+        // A fresh start never opens on Search with nothing typed: on Watch, whose library it searches.
+        if UserDefaults.standard.string(forKey: "section") == AppSection.search.rawValue {
+            UserDefaults.standard.set(AppSection.watch.rawValue, forKey: "section")
+        }
         #endif
     }
 
@@ -451,6 +455,8 @@ struct PadCommands: Commands {
 /// The phone page's five sections.
 enum AppSection: String, CaseIterable, Identifiable, Hashable {
     case home, remote, watch, send, memories, settings
+    /// iPhone and iPad: the tab bar's own Search tab (Watch's library). Not one of `phone`'s: it's a tab apart.
+    case search
     var id: String { rawValue }
     /// iPhone tabs (Send is in Settings); the Mac has no Remote tab (the remote slides out on the right).
     // Memories is no longer in the app's navigation (the TVs' slideshow still shows them).
@@ -468,6 +474,7 @@ enum AppSection: String, CaseIterable, Identifiable, Hashable {
         case .send: return "Send"
         case .memories: return "Memories"
         case .settings: return "Settings"
+        case .search: return "Search"
         }
     }
     var symbol: String {
@@ -478,6 +485,7 @@ enum AppSection: String, CaseIterable, Identifiable, Hashable {
         case .send: return "paperplane.fill"
         case .memories: return "photo.stack.fill"
         case .settings: return "gearshape.fill"
+        case .search: return "magnifyingglass"
         }
     }
     @ViewBuilder var view: some View {
@@ -487,6 +495,7 @@ enum AppSection: String, CaseIterable, Identifiable, Hashable {
         case .watch: WatchView()
         case .send: SendView()
         case .memories: MemoriesView()
+        case .search: SearchPage()
         case .settings:
             #if os(macOS)
             MacSettingsView()
@@ -504,7 +513,10 @@ struct RootView: View {
     private var selection: Binding<AppSection> {
         Binding(get: {
             let s = AppSection(rawValue: stored) ?? .home
-            #if os(iOS) || os(tvOS)
+            #if os(iOS)
+            // The four tabs, and the tab bar's own Search beside them.
+            return AppSection.phone.contains(s) || s == .search ? s : .home
+            #elseif os(tvOS)
             return AppSection.phone.contains(s) ? s : .home
             #else
             // The remote (a panel) or a page that's left the bar (Memories) opens Home instead.
@@ -562,7 +574,7 @@ struct RootView: View {
     }
 
     #if os(iOS) || os(tvOS)
-    /// The Liquid Glass tab bar (it tucks away while scrolling), with what's playing riding above it.
+    /// The Liquid Glass tab bar (on iPhone it tucks away while a page scrolls down), with what's playing as its accessory.
     /// (The Lock Screen's Live Activity follows the remote's TV by itself: `LiveActivitySync.watch`.)
     private var tabs: some View {
         tabView
@@ -579,28 +591,54 @@ struct RootView: View {
                 .badge(s == .settings ? fleet.settingsBadge : 0)
                 #endif
             }
+            #if os(iOS)
+            // Search, the tab bar's own: apart from the other tabs, at the bar's end. Picked on iPhone, the tab bar
+            // becomes its search field; on iPad the field is at the top of its page.
+            Tab(value: AppSection.search, role: .search) {
+                PhoneTabPage(section: .search)
+            }
+            #endif
         }
         // On iPad the tabs float at the top and turn into a sidebar, like the Mac's; on iPhone, the usual tab bar.
         .tabViewStyle(.sidebarAdaptable)
+        #if os(iOS)
+        // iPhone: the tab bar tucks away while a page scrolls down, and comes back on the way up.
+        .modifier(TabBarTucksAway())
+        // What's playing, as the tab bar's own accessory: above it, and in line with it once it has tucked away.
+        .modifier(TabViewNowPlaying(onRemote: selection.wrappedValue == .remote))
+        #endif
     }
+
+    #if os(iOS)
+    /// iPhone: the tab bar tucks away while a page scrolls down, and comes back on the way up
+    /// (`tabBarMinimizeBehavior(.onScrollDown)`). Not from the app's very first moment: told so then, iOS 26 and 27
+    /// show the first tab picked as the app opens and slide to the one it really opened on. So it's told a second later.
+    private struct TabBarTucksAway: ViewModifier {
+        @State private var behavior: TabBarMinimizeBehavior = .never
+
+        func body(content: Content) -> some View {
+            content
+                .tabBarMinimizeBehavior(behavior)
+                .task {
+                    guard behavior == .never else { return }
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                    if !Task.isCancelled { behavior = .onScrollDown }
+                }
+        }
+    }
+    #endif
     #endif
 }
 
 #if os(iOS) || os(tvOS)
-/// One tab's page, with what's playing above the tabs. Apart from the window's root, so what's playing redraws only this.
+/// One tab's page: its pages as `PhoneTabStack` lays them out. (What's playing isn't part of the page: on iPhone and
+/// iPad it's the tab bar's accessory, which iOS keeps clear of every page by itself.)
 private struct PhoneTabPage: View {
-    @Environment(Fleet.self) private var fleet
     let section: AppSection
 
     var body: some View {
         let s = section
-        let playing = fleet.selected?.nowPlaying
         PhoneTabStack(section: s)
-            // What's playing floats above the tabs everywhere but Remote, which shows it itself.
-            .safeAreaInset(edge: .bottom, spacing: 0) { if s != .remote { NowPlayingBar() } }
-            // Room under every page's last row for the bar, so nothing ends up stuck behind it.
-            .contentMargins(.bottom, s != .remote && playing != nil ? 96 : 0, for: .scrollContent)
-            .animation(.smooth, value: playing?.title)
     }
 }
 #endif

@@ -148,17 +148,13 @@ struct LiveProgress: View {
     }
 }
 
-/// The floating glass bar above the tabs (not on Remote): what the remote's TV plays now (nothing once it's off or was
-/// left paused). Tap for Now Playing.
+#if os(macOS)
+/// The Mac's floating glass bar at the bottom of a page: what the remote's TV plays now (nothing once it's off or was
+/// left paused). Click for Now Playing. (On iPhone and iPad it's the tab bar's own accessory: `TabViewNowPlaying`.)
 struct NowPlayingBar: View {
     @Environment(Fleet.self) private var fleet
     @State private var open = false
-    #if os(iOS) || os(tvOS)
-    @Environment(\.horizontalSizeClass) private var sizeClass
-    private var widest: CGFloat { sizeClass == .regular ? 620 : .infinity }
-    #else
     private let widest: CGFloat = .infinity
-    #endif
 
     var body: some View {
         if let tv = fleet.selected, let p = tv.nowPlaying {
@@ -192,6 +188,123 @@ struct NowPlayingBar: View {
         }
     }
 }
+#endif
+
+#if os(iOS)
+/// iPhone and iPad: what the remote's TV plays now as the tab bar's own accessory (iOS draws its glass and places it:
+/// above the tab bar, and in line with it once the bar has tucked away on a scroll), and the Now Playing sheet a tap
+/// on it opens. There while something plays, and not on Remote, which shows it itself, as far as this iOS lets an
+/// accessory come and go (see `attach`). A modifier of its own, so the TVs reporting every second or two redraws
+/// this and not the window's root.
+struct TabViewNowPlaying: ViewModifier {
+    @Environment(Fleet.self) private var fleet
+    /// The Remote tab is the one showing.
+    var onRemote: Bool
+    /// Now Playing is open. Kept here and not in the accessory: from iOS 26.1 (until 27) the accessory's own views are
+    /// made again whenever the tab changes, and what they remembered goes with them.
+    @State private var open = false
+
+    func body(content: Content) -> some View {
+        attach(content, playing: fleet.selected?.nowPlaying != nil)
+            .sheet(isPresented: $open) { NowPlayingSheet().sheetBanner() }
+    }
+
+    /// The accessory, there only while it has something to show:
+    /// - iOS 26.2 and later: the switch iOS has for that, `tabViewBottomAccessory(isEnabled:content:)` (26.1 has it
+    ///   too, but slow to follow there). It came with Xcode 26.2 (Swift 6.2.3): built with an earlier Xcode, the app
+    ///   does as the next two lines say on every iOS.
+    /// - iOS 26.0 leaves out an accessory with nothing in it. (Not tied to the tab there: Remote has it too.)
+    /// - From iOS 26.1 an accessory with nothing in it is an empty capsule: it stays, and says nothing is playing.
+    @ViewBuilder private func attach(_ content: Content, playing: Bool) -> some View {
+        #if compiler(>=6.2.3)
+        if #available(iOS 26.2, *) {
+            content.tabViewBottomAccessory(isEnabled: playing && !onRemote) { bar }
+        } else {
+            content.tabViewBottomAccessory { if playing || !Self.emptyIsLeftOut { bar } }
+        }
+        #else
+        content.tabViewBottomAccessory { if playing || !Self.emptyIsLeftOut { bar } }
+        #endif
+    }
+
+    /// The accessory's content. Given the fleet by hand: the accessory is drawn apart from the tab view's pages.
+    private var bar: some View {
+        NowPlayingAccessory { open = true }
+            .environment(fleet)
+    }
+
+    /// Whether this iOS leaves out an accessory with nothing in it (26.0 does; from 26.1 it's drawn, empty).
+    private static let emptyIsLeftOut: Bool = {
+        if #available(iOS 26.1, *) { return false }
+        return true
+    }()
+}
+
+/// What the tab bar's accessory shows: the picture, the title over the TV's name, and the transport. In line with the
+/// tucked-away tab bar there's less room: the picture, the title and Play/Pause. Tap for Now Playing.
+struct NowPlayingAccessory: View {
+    @Environment(Fleet.self) private var fleet
+    /// Where iOS has put the accessory: above the tab bar (expanded), or in line with it once it has tucked away.
+    @Environment(\.tabViewBottomAccessoryPlacement) private var placement
+    /// Opens Now Playing.
+    var open: () -> Void
+
+    var body: some View {
+        let tv = fleet.selected
+        let p = tv?.nowPlaying
+        let inline = placement == .inline
+        let title: String = p?.title ?? "Nothing Playing"
+        let side: CGFloat = inline ? 28 : 32
+        HStack(spacing: 6) {
+            Button(action: open) {
+                HStack(spacing: 10) {
+                    if let p {
+                        NowPlayingArt(playing: p, maxPixel: 256)
+                            .frame(width: side, height: side)
+                            .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    }
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(title).font(.subheadline.weight(.semibold)).lineLimit(1)
+                        if let tv, !inline {
+                            Text(detail(tv, p)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        }
+                    }
+                    // A long title stops here: where iOS makes the accessory as wide as what's in it, it isn't stretched
+                    // across an iPad.
+                    .frame(maxWidth: 420, alignment: .leading)
+                    Spacer(minLength: 0)
+                }
+                // About as tall as the accessory, so a tap just above or below the words opens Now Playing too.
+                .padding(.vertical, 5)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            // Its words are held to a size that fits (below): press and hold shows them large, as a tab's own name is.
+            .accessibilityShowsLargeContentViewer()
+            if let tv, let p {
+                Transport(tv: tv, playing: inline ? playPauseOnly(p) : p, compact: true)
+            }
+        }
+        .padding(.leading, p == nil ? 16 : 10)
+        .padding(.trailing, 8)
+        // The accessory is as tall as iOS makes it: its words stop growing before they'd be cut off.
+        .dynamicTypeSize(...DynamicTypeSize.xLarge)
+    }
+
+    /// Under the title: the TV, and the app that's playing on it.
+    private func detail(_ tv: FleetTV, _ p: NowPlaying?) -> String {
+        guard let app = p?.app else { return tv.name }
+        return tv.name + " · " + app
+    }
+
+    /// [p] with Play/Pause alone to offer: in line with the tab bar there's no room for the skips.
+    private func playPauseOnly(_ p: NowPlaying) -> NowPlaying {
+        var q = p
+        q.can = nil
+        return q
+    }
+}
+#endif
 
 /// ↺10, Play/Pause, 30↻ and Next (whatever the TV allows now).
 struct Transport: View {

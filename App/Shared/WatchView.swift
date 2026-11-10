@@ -37,8 +37,6 @@ struct WatchView: View {
     #if os(iOS) || os(tvOS)
     @Environment(\.horizontalSizeClass) private var sizeClass
     #endif
-    /// iPhone: what's typed in Watch's own search field (its results take the shelves' place while there's any).
-    @State private var query = ""
 
     /// Posters sized so each row fills the page: on the Mac and iPad about 150 points each, as many as fit; 112 on
     /// iPhone.
@@ -49,9 +47,7 @@ struct WatchView: View {
         #else
         let target: CGFloat = 150
         #endif
-        let usable = max(300, w - 40), gap: CGFloat = 10
-        let n = max(4, Int((usable + gap) / (target + gap)))
-        let fit = ((usable - gap * CGFloat(n - 1)) / CGFloat(n)).rounded(.down)
+        let fit = fittedPosterWidth(w, target: target)
         if abs(fit - posterWidth) > 0.5 { posterWidth = fit }
     }
 
@@ -85,8 +81,6 @@ struct WatchView: View {
         .modifier(WatchScrollReader())
         #endif
         .scrollIndicators(.hidden)
-        // Scrolling the page puts the search keyboard away.
-        .scrollDismissesKeyboard(.immediately)
         #if os(macOS)
         // Scrolling down fades the bar's row with Movies | TV Shows away; scrolling up brings it back. (How far down,
         // kept within the page's ends, so the bounce at either end doesn't count.)
@@ -182,23 +176,19 @@ struct WatchView: View {
         .background { TimingProbe(name: "Watch", ready: shown != nil) }
     }
 
-    /// The page under the banner: search and its results on iPhone, the rows, or why there are none.
+    /// The page: Movies | TV Shows on iPhone, then the banner and the rows, or why there are none. (Search is the tab
+    /// bar's own tab on iPhone and iPad: `SearchPage`.)
     @ViewBuilder private func shelfStack(_ shown: WatchHome?, _ client: (any WatchSource)?) -> some View {
         LazyVStack(alignment: .leading, spacing: 28) {
             #if os(iOS)
-            // Movies | TV Shows, then search right under it (on iPad the switch is in the bar at the top).
-            VStack(spacing: 12) {
-                #if !os(tvOS)
-                if sizeClass != .regular { sectionPicker }
-                #endif
-                WatchSearchField(text: $query)
+            // iPhone: Movies | TV Shows at the top of the page (on iPad the switch is in the bar at the top).
+            if sizeClass != .regular {
+                sectionPicker
+                    .padding(.horizontal)
+                    .padding(.top, 8)
             }
-            .padding(.horizontal)
-            .padding(.top, 8)
             #endif
-            if !query.isEmpty {
-                WatchSearchResults(query: query)
-            } else if let h = shown {
+            if let h = shown {
                 content(h, client)
             } else if let error {
                 VStack(spacing: 14) {
@@ -496,6 +486,13 @@ private struct WatchChangedKey: EnvironmentKey { static let defaultValue = Watch
 
 /// How wide Watch's posters are: the Mac fits them to the window; elsewhere the usual 112.
 private struct PosterWidthKey: EnvironmentKey { static let defaultValue: CGFloat = 112 }
+
+/// A poster's width in a page [width] points wide, so each row fills it: about [target] points each, as many as fit.
+func fittedPosterWidth(_ width: CGFloat, target: CGFloat) -> CGFloat {
+    let usable = max(300, width - 40), gap: CGFloat = 10
+    let n = max(4, Int((usable + gap) / (target + gap)))
+    return ((usable - gap * CGFloat(n - 1)) / CGFloat(n)).rounded(.down)
+}
 
 extension EnvironmentValues {
     var openTitle: OpenTitleAction {
@@ -1945,7 +1942,8 @@ struct LibraryGrid: View {
     }
 }
 
-/// Search Movies and TV Shows (the Mac's Search page; the iPhone searches in Watch itself).
+/// Search Movies and TV Shows: the Search tab's page on iPhone and iPad. Its field is iOS's own for a Search tab (where
+/// the tab bar is on iPhone, at the top of the page on iPad); what's typed shows its results as shelves.
 struct SearchPage: View {
     @Environment(Fleet.self) private var fleet
     @Environment(\.watchChanged) private var watchChanged
@@ -1953,64 +1951,55 @@ struct SearchPage: View {
     @State private var openTitle: String?
     /// Asked again (a result was marked watched).
     @State private var again = 0
+    #if os(iOS)
+    @Environment(\.horizontalSizeClass) private var sizeClass
+    @Namespace private var zoom
+    /// The posters' width: as Watch's own (112 on iPhone; fitted to the page on iPad).
+    @State private var posterWidth: CGFloat = 112
+    #endif
 
     var body: some View {
         ScrollView {
             WatchSearchResults(query: query, again: again).padding(.vertical)
         }
         .navigationTitle("Search")
+        #if os(iOS)
+        .searchable(text: $query, prompt: "Movies and TV Shows")
+        .autocorrectionDisabled()
+        // Scrolling the results puts the keyboard away.
+        .scrollDismissesKeyboard(.immediately)
+        .onGeometryChange(for: CGFloat.self, of: { $0.size.width }) { w in fitPosters(w) }
+        .environment(\.posterWidth, posterWidth)
+        #else
         .pageSearch(text: $query, prompt: "Movies and TV Shows")
+        #endif
+        // Before what follows, so a title's sheet has them too (marked watched there, the results are asked again).
+        .titleSheet(Binding(get: { openTitle.map { TitleRef(id: $0) } }, set: { openTitle = $0?.id })) { (ref: TitleRef) in
+            #if os(iOS)
+            TitleSheet(id: ref.id).zoomDestination(ref.id, zoom)
+            #else
+            TitleSheet(id: ref.id)
+            #endif
+        }
         .environment(\.openTitle, OpenTitleAction { openTitle = $0 })
+        #if os(iOS)
+        .environment(\.zoomNamespace, zoom)
+        #endif
         .environment(\.watchChanged, WatchChanged { key in
             watchChanged(removed: key)
             again += 1
         })
-        .titleSheet(Binding(get: { openTitle.map { TitleRef(id: $0) } }, set: { openTitle = $0?.id })) { TitleSheet(id: $0.id) }
     }
+
+    #if os(iOS)
+    /// Posters as wide as Watch's: on iPad about 160 points each, as many as fit the page; 112 on iPhone.
+    private func fitPosters(_ w: CGFloat) {
+        guard sizeClass == .regular else { if posterWidth != 112 { posterWidth = 112 }; return }
+        let fit = fittedPosterWidth(w, target: 160)
+        if abs(fit - posterWidth) > 0.5 { posterWidth = fit }
+    }
+    #endif
 }
-
-#if os(iOS) || os(tvOS)
-/// iPhone Watch's search, under Movies | TV Shows: what's typed shows its results in place of the shelves.
-private struct WatchSearchField: View {
-    @Binding var text: String
-    @FocusState private var focused: Bool
-
-    var body: some View {
-        HStack(spacing: 10) {
-            field
-            // While typing: Done puts the keyboard away (what's typed stays).
-            if focused {
-                Button("Done") { focused = false }
-                    .fontWeight(.semibold)
-                    .transition(.move(edge: .trailing).combined(with: .opacity))
-            }
-        }
-        .animation(.smooth(duration: 0.25), value: focused)
-    }
-
-    private var field: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-            TextField("Movies and TV Shows", text: $text)
-                .focused($focused)
-                .submitLabel(.search)
-                .autocorrectionDisabled()
-                // The keyboard's search key puts it away (the results are already showing).
-                .onSubmit { focused = false }
-            if !text.isEmpty {
-                Button { text = "" } label: {
-                    Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Clear")
-            }
-        }
-        .padding(.horizontal, 14)
-        .frame(height: 44)
-        .glass(Capsule(), interactive: false)
-    }
-}
-#endif
 
 /// What [query] finds in Movies and TV Shows, as shelves (or why nothing came back). Opening a title is the page's
 /// (its `openTitle`). [again]: asked again when it changes.
