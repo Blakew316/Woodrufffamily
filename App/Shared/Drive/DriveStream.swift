@@ -363,10 +363,12 @@ private final class StreamNotes: @unchecked Sendable {
 /// Answers each part of the film the player asks for: from what has already been fetched where it can, else from
 /// Google. Everything here runs on the stream queue.
 ///
-/// Google appears to count the whole of what a request asks for against the file's daily limit, however little of
-/// it is sent (rclone's manual says so of its own piece-by-piece reading), and it refuses the file for the rest of
-/// the day once that runs out. The player drops what it asked for all the time: it looks at many places as it
-/// opens a film, and stops and asks again from nearly the same place every time it has read far enough ahead. So:
+/// Google counts what the family's TVs and apps download together over a day (they share one set of Google keys;
+/// its documentation gives a terabyte a day for a set of keys) and, once that is used up, refuses every film to all
+/// of them until it clears: a real part of any film is refused, though a byte or two is still answered. How it
+/// counts isn't published, so nothing is asked for that isn't used. The player drops what it asked for all the
+/// time: it looks at many places as it opens a film, and stops and asks again from nearly the same place every time
+/// it has read far enough ahead. So:
 ///
 /// - Google is asked for one piece at a time, never for "everything from here to the end".
 /// - A piece asked for is fetched whole and kept for a while, whether or not the player's request it was fetched

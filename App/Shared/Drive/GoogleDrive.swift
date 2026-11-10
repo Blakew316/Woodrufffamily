@@ -277,7 +277,7 @@ enum GoogleDrive {
         case (_, "rateLimitExceeded"), (_, "userRateLimitExceeded"), (429, _):
             return Failure("Google Drive is busy. Try again in a minute.")
         case (_, "downloadQuotaExceeded"):
-            return Failure("Google Drive won’t send this file again today (its daily limit). Try again tomorrow, or make a copy of it in Google Drive and play the copy.")
+            return Failure(thisFilmRefused)
         case (_, "insufficientPermissions"), (_, "insufficientFilePermissions"), (_, "appNotAuthorizedToFile"):
             return Failure("Google Drive didn’t allow this. Sign out in Settings → Watch, sign in again and tick every box on Google’s screen.")
         case (404, _): return Failure("That file isn’t in Google Drive any more.")
@@ -350,17 +350,22 @@ enum GoogleDrive {
 
     // MARK: Google's daily limit
 
-    /// Said when Google refuses every film, not only one (a copy wouldn't play either).
-    static let allowanceSpent = "Google Drive has stopped sending films to the family’s app for today (its daily allowance). It comes back by itself, usually within a day."
+    /// Said when Google refuses every film, not only one. Google counts what the family's TVs and apps download
+    /// together (they share one set of Google keys), over a day: once that's used up it refuses them all, whatever
+    /// the film, until it clears.
+    static let allowanceSpent = "Google Drive has stopped sending films to the family’s apps and TVs for now (its daily limit). It comes back by itself, usually within a day."
+    /// Said when Google refuses one film with its daily limit.
+    nonisolated static let thisFilmRefused = "Google Drive won’t send this film right now (its daily limit). It usually clears within a day."
 
-    /// Whether Google sends [id] right now, asked for its first byte: false when it refuses with its daily limit, true
+    /// Whether Google sends [id] right now, asked for its first 8 MB: false when it refuses with its daily limit, true
     /// when it sends it, nil when that couldn't be found out (no connection, some other answer). Nothing but the
-    /// answer's first lines is read.
+    /// answer's first lines is read. (Asked for a byte or two, Google answers even a file it is refusing: only a
+    /// real part of the film shows whether it sends it.)
     static func sends(_ id: String) async -> Bool? {
         guard let signIn = try? await token() else { return nil }
         var r = URLRequest(url: mediaURL(id))
         r.setValue("Bearer \(signIn)", forHTTPHeaderField: "Authorization")
-        r.setValue("bytes=0-0", forHTTPHeaderField: "Range")
+        r.setValue("bytes=0-8388607", forHTTPHeaderField: "Range")
         r.timeoutInterval = 15
         guard let (bytes, resp) = try? await URLSession.shared.bytes(for: r) else { return nil }
         defer { bytes.task.cancel() }
@@ -426,7 +431,7 @@ enum GoogleDrive {
         if why == "storageQuotaExceeded" {
             throw Failure("There isn’t room in Google Drive for a copy of this film. Free some space there, or try again tomorrow.")
         }
-        throw Failure("Google Drive wouldn’t let the app make a copy (\(why.isEmpty ? String(code) : why)). In Google Drive, choose Make a copy on the film and play that.")
+        throw Failure("Google Drive wouldn’t let the app make a copy (\(why.isEmpty ? String(code) : why)).")
     }
 
     /// The app's copies made more than two days ago are removed: each takes as much of Drive's space as its film, and

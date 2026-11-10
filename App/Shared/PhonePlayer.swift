@@ -156,44 +156,30 @@ final class PhonePlayback {
     static let copyOffer = "Google Drive won’t send this film again today. The app can make a copy of it in your Google Drive and play that. The copy needs as much free space as the film, and is removed after two days."
     static let makingCopy = "Making a copy in Google Drive…"
 
-    /// What can be done about a film Google refused with its daily limit: nothing when it refuses the others too (the
-    /// app's whole allowance for the day), else the copy made earlier, else a copy can be offered. [words] is what to
-    /// say with the offer when the film isn't the signed-in account's own.
-    enum LimitAnswer { case allowanceSpent, copy(String), offerCopy(words: String?) }
+    /// What to say about a film Google refused with its daily limit: that it refuses every film for now (the family's
+    /// apps and TVs share one allowance at Google, and it's used up), or only this one. Nothing is offered: a copy of
+    /// the film is refused like the film when it's the allowance, and that is what it has been each time it was looked
+    /// into. (The copy cases are kept for the players; nothing gives them any more.)
+    enum LimitAnswer { case said(String), copy(String), offerCopy(words: String?) }
 
     static func limitAnswer(for id: String) async -> LimitAnswer {
-        // Whose file it is. Google sends an account only so much of another account's file in a day, and the account
-        // that owns it meets no such limit: the Android TVs, signed in as the films' owner, play what an app signed in
-        // as someone else in the family is refused.
-        if GoogleDrive.email == nil { await GoogleDrive.loadEmail() }
-        let me = GoogleDrive.email
-        if let whose = await GoogleDrive.ownership(of: id) {
-            if whose.mine {
-                Diagnostics.shared.notePlayback("The refused file is \(me ?? "the signed-in account")’s own")
-            } else {
-                let theirs = whose.owner.map { "\($0)’s Google Drive" } ?? "another account’s Google Drive"
-                Diagnostics.shared.notePlayback("The refused file is in \(theirs); the app is signed in as \(me ?? "another account")")
-                if let copy = try? await GoogleDrive.copy(of: id) { return .copy(copy) }
-                let signIn = whose.owner.map { "Sign in with \($0) in Settings → Watch" } ?? "Sign in with the account the TVs use in Settings → Watch"
-                return .offerCopy(words: "This film is in \(theirs), and the app is signed in as \(me ?? "another account"). Google only sends an account so much of someone else’s file in a day. \(signIn), or play a copy.")
-            }
-        }
-        // A few other films (one of them may be refused for itself): any that Google still sends means it's this file.
+        // A few other films, asked for a real part of each: any that Google still sends means it's this film alone.
         var sent: String?, refused: [String] = []
         for other in DriveLibrary.shared.otherFiles(than: id) {
             guard let answer = await GoogleDrive.sends(other.id) else { continue }
             if answer { sent = other.title; break }
             refused.append(other.title)
         }
-        // Two others refused and none sent: it isn't this file (one other alone could be refused for itself).
-        if sent == nil, refused.count >= 2 {
-            Diagnostics.shared.notePlayback("Google refuses \(refused.joined(separator: ", ")) too: the app’s whole allowance for the day is used up, not only this file’s")
-            return .allowanceSpent
+        if let sent {
+            Diagnostics.shared.notePlayback("Google still sends \(sent): only this film is refused")
+            return .said(GoogleDrive.thisFilmRefused)
         }
-        Diagnostics.shared.notePlayback(sent.map { "Google still sends \($0): only this file is refused" }
-                                        ?? "Whether Google refuses other films too couldn’t be found out")
-        if let copy = try? await GoogleDrive.copy(of: id) { return .copy(copy) }
-        return .offerCopy(words: nil)
+        if !refused.isEmpty {
+            Diagnostics.shared.notePlayback("Google refuses \(refused.joined(separator: ", ")) too: it is refusing every film for now, not only this one")
+            return .said(GoogleDrive.allowanceSpent)
+        }
+        Diagnostics.shared.notePlayback("Whether Google refuses other films too couldn’t be found out")
+        return .said(GoogleDrive.thisFilmRefused)
     }
 
     /// Everything the player said about a failure, for the diagnostics: each error and the one under it, and its error
@@ -782,7 +768,7 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
             let answer = await PhonePlayback.limitAnswer(for: id)
             guard let self, self.current?.id == play.id else { return }
             switch answer {
-            case .allowanceSpent: self.failed(GoogleDrive.allowanceSpent)
+            case .said(let said): self.failed(said)
             case .copy(let copy): self.present(play.playing(copy: copy, of: id))
             case .offerCopy(let words): self.offerCopy(play, id: id, words: words)
             }
@@ -1036,8 +1022,8 @@ final class MacPlayer: NSObject, NSWindowDelegate {
         let answer = await PhonePlayback.limitAnswer(for: id)
         guard current?.id == play.id, let w = window else { return }
         switch answer {
-        case .allowanceSpent:
-            failed(GoogleDrive.allowanceSpent)
+        case .said(let said):
+            failed(said)
         case .copy(let copy):
             present(play.playing(copy: copy, of: id))
         case .offerCopy(let words):
