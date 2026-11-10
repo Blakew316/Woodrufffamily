@@ -60,10 +60,13 @@ struct SmartHomeSummaryRow: View {
     private let nest = NestCameras.shared
     private let deco = DecoWifi.shared
     private let devices = AccessoryStore.shared
+    /// The row is the one a list has lit as picked (iPad's two columns): what it says is light there.
+    var picked = false
 
     var body: some View {
         let down = deco.internetUp == false
-        IconRow(symbol: "", color: .clear, title: "Smart Home", value: down ? "Internet Down" : summary, valueColor: down ? Palette.attention : .secondary)
+        IconRow(symbol: "", color: .clear, title: "Smart Home", value: down ? "Internet Down" : summary,
+                valueColor: picked ? Palette.onPicked : down ? Palette.attention : .secondary)
     }
 
     /// The first two kinds of thing the house has, counted (just the Wi‑Fi's Decos when that's all there is).

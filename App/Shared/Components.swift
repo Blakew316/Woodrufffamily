@@ -25,6 +25,9 @@ enum Palette {
     #else
     static let attention = Color(light: Color(red: 0.54, green: 0.31, blue: 0), dark: Color(red: 1, green: 0.71, blue: 0.28))
     #endif
+    /// What a row says beside its name, on the row a list has lit as the one picked (iPad Settings' left column):
+    /// light, to read on the highlight.
+    static let onPicked = Color.white.opacity(0.85)
     static let cardFill = Color(light: .white, dark: Color(red: 0.11, green: 0.11, blue: 0.12))
     static let groupedBackground = Color(light: Color(red: 0.95, green: 0.95, blue: 0.97), dark: .black)
     static let keyFill = Color(light: .white, dark: Color(red: 0.17, green: 0.17, blue: 0.18))

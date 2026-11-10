@@ -233,14 +233,15 @@ struct TVsSummaryRow: View {
     @Environment(Fleet.self) private var fleet
     /// In a narrow list (iPad Settings' left column): the short form of what it says.
     var compact = false
-    /// On the row a list has lit as the one picked (iPad's two columns), the words are the system's for that row: the
-    /// warning colour was orange on the highlight.
-    @Environment(\.backgroundProminence) private var prominence
+    /// The row is the one a list has lit as picked (iPad's two columns): what it says is light there, to read on the
+    /// highlight (the warning colour was orange on blue).
+    var picked = false
 
     var body: some View {
-        let warns = fleet.tvs.contains(where: \.needsAttention) && prominence != .increased
+        let warns = fleet.tvs.contains(where: \.needsAttention)
         HStack {
-            IconRow(symbol: "", color: .clear, title: "TVs", value: tvsSummary, valueColor: warns ? Palette.attention : .secondary)
+            IconRow(symbol: "", color: .clear, title: "TVs", value: tvsSummary,
+                    valueColor: picked ? Palette.onPicked : warns ? Palette.attention : .secondary)
             if fleet.updatesWaiting > 0 { UpdateCountBadge(count: fleet.updatesWaiting) }
         }
     }

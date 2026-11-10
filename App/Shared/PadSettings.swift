@@ -141,21 +141,23 @@ private struct PadSettingsList: View {
 
     var body: some View {
         List(selection: $picked) {
+            // (What a row says beside its name is light on the row that's picked, to read on the highlight.)
             PadAttentionRow(showing: picked == .attention)
             Section {
-                TVsSummaryRow(compact: true).tag(PadSettingsPage.tvs)
-                SmartHomeSummaryRow().tag(PadSettingsPage.smartHome)
-                IconRow(symbol: "", color: .clear, title: "Watch", value: watchSource == "drive" && WatchSources.usesDrive ? "Google Drive" : "TV")
+                TVsSummaryRow(compact: true, picked: picked == .tvs).tag(PadSettingsPage.tvs)
+                SmartHomeSummaryRow(picked: picked == .smartHome).tag(PadSettingsPage.smartHome)
+                IconRow(symbol: "", color: .clear, title: "Watch", value: watchSource == "drive" && WatchSources.usesDrive ? "Google Drive" : "TV",
+                        valueColor: said(.watch))
                     .tag(PadSettingsPage.watch)
             }
             Section {
-                IconRow(symbol: "", color: .clear, title: "Notifications", value: notifyFleet ? "On" : "Off")
+                IconRow(symbol: "", color: .clear, title: "Notifications", value: notifyFleet ? "On" : "Off", valueColor: said(.notifications))
                     .tag(PadSettingsPage.notifications)
-                IconRow(symbol: "", color: .clear, title: "Accounts", value: accounts)
+                IconRow(symbol: "", color: .clear, title: "Accounts", value: accounts, valueColor: said(.accounts))
                     .tag(PadSettingsPage.accounts)
             }
             Section {
-                IconRow(symbol: "", color: .clear, title: "General", value: crashed ? "Crash Report" : nil, valueColor: Palette.attention)
+                IconRow(symbol: "", color: .clear, title: "General", value: crashed ? "Crash Report" : nil, valueColor: said(.general, Palette.attention))
                     .tag(PadSettingsPage.general)
             }
         }
@@ -166,6 +168,11 @@ private struct PadSettingsList: View {
         // Reads the TVs' settings from behind the list, as the iPhone's list does.
         .background { HubSettingsLoader(hub: hub) }
         .refreshable { await hub.load(fleet.hubClient()); await fleet.refresh() }
+    }
+
+    /// The colour of what a row says beside its name: light on the row that's picked, else [other].
+    private func said(_ page: PadSettingsPage, _ other: Color = .secondary) -> Color {
+        picked == page ? Palette.onPicked : other
     }
 
     /// How many of the TVs' accounts are connected, counted as the iPhone's list counts them.
@@ -190,22 +197,12 @@ private struct PadAttentionRow: View {
         let count = NeedsAttentionSection.issues(fleet).count
         if count > 0 || showing {
             Section {
-                PadAttentionLabel()
+                // In the warning colour; on the row that's picked, the row's own colour (it was orange on the highlight).
+                Text("Needs Attention").foregroundStyle(showing ? AnyShapeStyle(.primary) : AnyShapeStyle(Palette.attention))
                     .badge(count)
                     .tag(PadSettingsPage.attention)
             }
         }
-    }
-}
-
-/// The row's name, in the warning colour; on the row the list has lit as the one picked, in the system's colour for
-/// that row (the warning colour was orange on the highlight).
-private struct PadAttentionLabel: View {
-    @Environment(\.backgroundProminence) private var prominence
-
-    var body: some View {
-        Text("Needs Attention")
-            .foregroundStyle(prominence == .increased ? AnyShapeStyle(.primary) : AnyShapeStyle(Palette.attention))
     }
 }
 
