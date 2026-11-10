@@ -1757,11 +1757,26 @@ struct TitleSheet: View {
                 #endif
             }
             #if os(macOS)
-            // The app's blues behind it, as on Home, Watch and Settings.
-            .background { IconBackdrop() }
-            #endif
+            // One deep blue behind it all: the picture's foot fades into it.
+            .background { Self.macSheetColor }
+            // Close is a round button over the picture's corner (Esc closes it too). No toolbar: on the Mac a sheet's
+            // toolbar is a grey strip across its foot, with Close alone in it.
+            .overlay(alignment: .topTrailing) {
+                Button { dismiss() } label: {
+                    Image(systemName: "xmark").font(.system(size: 12, weight: .bold)).foregroundStyle(.white)
+                        .frame(width: 30, height: 30).glass(Circle()).environment(\.colorScheme, .dark)
+                        .contentShape(Circle())
+                }
+                .buttonStyle(PressScale())
+                .keyboardShortcut(.cancelAction)
+                .help("Close (Esc)")
+                .accessibilityLabel("Close")
+                .padding(14)
+            }
+            #else
             .ignoresSafeArea(edges: .top)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button(role: .close) { dismiss() } } }
+            #endif
             .task { await load() }
             // The episodes of the season picked (and of the first one shown, as soon as the title shows).
             .task(id: "\(shown?.id ?? "")|\(season)") { await loadEpisodes() }
@@ -1777,19 +1792,28 @@ struct TitleSheet: View {
         #endif
     }
 
-    /// The sheet's own stack (for its close button).
+    /// The sheet's own stack, for its close button in the bar at its top (iPhone and iPad). The Mac's sheet has its
+    /// close button over the picture and needs none.
     @ViewBuilder private func sheetStack<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        #if os(macOS)
+        content()
+        #else
         NavigationStack { content() }
+        #endif
     }
 
     #if os(macOS)
-    /// The Mac's window: as wide as a 16:9 banner reads well, and as tall as what it shows, between a floor (so a
-    /// title still loading isn't a sliver) and most of the screen.
-    static let macWidth: CGFloat = 700
+    /// The Mac's sheet: as wide as the picture across its top reads well, and exactly as tall as what it shows (the
+    /// picture, the words, a show's episodes), up to most of the screen; then it scrolls. Never shorter than the
+    /// picture and a few lines, so a title still loading opens at about the size it will be.
+    static let macWidth: CGFloat = 820
+    /// The sheet's colour: the app's deep blue.
+    static let macSheetColor = Color(red: 0.055, green: 0.098, blue: 0.165)
     private var macHeight: CGFloat {
+        let least = (Self.macWidth * 9 / 16 + 96).rounded()
         let screen = (NSScreen.main?.visibleFrame.height ?? 900) - 120
-        let tallest = max(480, min(860, screen))
-        return min(tallest, max(480, macContentHeight))
+        let tallest = max(least, min(900, screen))
+        return min(tallest, max(least, macContentHeight))
     }
     #endif
 
@@ -1806,30 +1830,36 @@ struct TitleSheet: View {
 
     @ViewBuilder private func header(_ top: SheetTop) -> some View {
         #if os(macOS)
-        // The Mac: the picture as a 16:9 banner across the top, then the name, the line about it and the buttons
-        // under it, on the same edge as everything below.
-        VStack(alignment: .leading, spacing: 0) {
-            Color.clear.aspectRatio(16.0 / 9.0, contentMode: .fit)
-                .overlay { Artwork(url: top.art, maxPixel: 1800) }
-                .overlay {
-                    LinearGradient(stops: [.init(color: .clear, location: 0.6), .init(color: .black.opacity(0.35), location: 1)], startPoint: .top, endPoint: .bottom)
-                }
-                .clipped()
-            VStack(alignment: .leading, spacing: 8) {
-                Text(top.title)
-                    .font(.largeTitle.bold())
-                    .foregroundStyle(.white)
-                    .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
-                if !top.facts.isEmpty {
-                    Text(top.facts).font(.subheadline.weight(.medium)).foregroundStyle(.white.opacity(0.75))
-                }
-                playButtons(top).padding(.top, 6)
+        // The Mac: the picture across the top of the sheet, edge to edge, its foot fading into the sheet's own colour,
+        // with the name, the line about it and Play over that foot: the picture and what's under it are one piece.
+        // (The name and the buttons were in a block of their own under a hard-edged picture.)
+        Color.clear.aspectRatio(16.0 / 9.0, contentMode: .fit)
+            .overlay { Artwork(url: top.art, maxPixel: 1800) }
+            .overlay {
+                LinearGradient(stops: [.init(color: .clear, location: 0.34),
+                                       .init(color: Self.macSheetColor.opacity(0.62), location: 0.7),
+                                       .init(color: Self.macSheetColor.opacity(0.94), location: 0.9),
+                                       .init(color: Self.macSheetColor, location: 1)],
+                               startPoint: .top, endPoint: .bottom)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 24)
-            .padding(.top, 20)
-        }
+            .clipped()
+            .overlay(alignment: .bottomLeading) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(top.title)
+                        .font(.system(size: 34, weight: .bold))
+                        .foregroundStyle(.white)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .shadow(color: .black.opacity(0.45), radius: 10, y: 2)
+                    if !top.facts.isEmpty {
+                        Text(top.facts).font(.subheadline.weight(.medium)).foregroundStyle(.white.opacity(0.8))
+                    }
+                    playButtons(top).padding(.top, 6)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 24)
+                .padding(.bottom, 2)
+            }
         #else
         ZStack(alignment: .bottomLeading) {
             Color.clear.aspectRatio(0.95, contentMode: .fit)
