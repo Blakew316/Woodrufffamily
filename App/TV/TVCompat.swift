@@ -686,8 +686,9 @@ extension View {
     func listRowSeparator(_ v: Visibility, edges: VerticalEdge.Set = .all) -> some View { self }
 }
 
-/// The Mac's plain buttons (the section bar, Settings' list) on the remote: no white platter, a gentle lift and glow
-/// on the one the remote is on.
+/// The Mac's plain buttons on the remote: no white platter, a gentle lift and glow on the one the remote is on.
+/// Still drawn by hand, on purpose: on Apple TV only Home shows these (the thermostat's pill with its − and +; the
+/// Mac's section bar, its Settings list and the room bar aren't shown there), and Home stays exactly as it is.
 struct TVBarButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View { TVBarButtonBody(configuration: configuration) }
 }

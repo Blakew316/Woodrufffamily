@@ -15,7 +15,16 @@ extension Image { init(platformImage: UIImage) { self.init(uiImage: platformImag
 // MARK: - Palette (the phone page's: iOS system colours, Woodruff's blue tint)
 
 enum Palette {
+    #if os(tvOS)
+    /// Apple TV is always dark, except the row or button the remote is on: tvOS lights that one up and draws what's on
+    /// it for a light background. There a warning takes the system's own text colour, like the words beside it (the
+    /// phone's dark amber for white pages was brown on the lit row, and hard to read).
+    static let attention = Color(uiColor: UIColor { traits in
+        traits.userInterfaceStyle == .dark ? UIColor(red: 1, green: 0.71, blue: 0.28, alpha: 1) : UIColor.label.resolvedColor(with: traits)
+    })
+    #else
     static let attention = Color(light: Color(red: 0.54, green: 0.31, blue: 0), dark: Color(red: 1, green: 0.71, blue: 0.28))
+    #endif
     static let cardFill = Color(light: .white, dark: Color(red: 0.11, green: 0.11, blue: 0.12))
     static let groupedBackground = Color(light: Color(red: 0.95, green: 0.95, blue: 0.97), dark: .black)
     static let keyFill = Color(light: .white, dark: Color(red: 0.17, green: 0.17, blue: 0.18))
@@ -99,6 +108,10 @@ struct GlassCircle: View {
                 #endif
         }
         .buttonStyle(PressScale())
+        #if os(tvOS)
+        // Apple TV: round is the shape tvOS lifts while the remote is on it (PressScale).
+        .buttonBorderShape(.circle)
+        #endif
     }
 }
 
@@ -132,7 +145,8 @@ enum PillPanels {
 }
 
 #if os(tvOS)
-/// Apple TV: the one the remote is on lifts toward you with a soft shadow and a little light, as tvOS does.
+/// Apple TV: the one the remote is on gets tvOS's own lift (it grows toward you over a soft shadow, as the system's
+/// buttons do), not a scale, a light and a shadow drawn by hand. A click still dips it.
 private struct PressScaleFocused: View {
     let configuration: ButtonStyleConfiguration
     let scale: CGFloat
@@ -140,11 +154,10 @@ private struct PressScaleFocused: View {
 
     var body: some View {
         configuration.label
-            .scaleEffect(configuration.isPressed ? scale : (focused ? 1.1 : 1))
-            .brightness(focused ? 0.06 : 0)
-            .shadow(color: .black.opacity(focused ? 0.55 : 0), radius: focused ? 24 : 0, y: focused ? 16 : 0)
+            .hoverEffect(.lift)
+            .scaleEffect(configuration.isPressed ? scale : 1)
+            // Lifted, it stays over its neighbours.
             .zIndex(focused ? 1 : 0)
-            .animation(.spring(response: 0.3, dampingFraction: 0.75), value: focused)
             .animation(.spring(response: 0.25, dampingFraction: 0.6), value: configuration.isPressed)
     }
 }
@@ -160,16 +173,14 @@ struct CapsuleButton: View {
     var action: () -> Void
     var body: some View {
         #if os(tvOS)
-        // Apple TV: its colours come from the focus (CapsuleFocusStyle), so only the one the remote is on is white.
-        Button(action: action) {
-            HStack(spacing: 6) {
-                if let symbol { Image(systemName: symbol).font(.subheadline.weight(.bold)) }
-                Text(title).font(.subheadline.weight(.semibold)).lineLimit(1)
-            }
-            .fixedSize()
-            .padding(.horizontal, 18).padding(.vertical, 10)
+        // Apple TV: tvOS's own glass buttons, in its own shape and size. They light up and lift by themselves while the
+        // remote is on them, and choose words that read on them. Play is the prominent one: it stands out before the
+        // remote reaches it, without looking picked.
+        if prominent {
+            Button(action: action) { tvLabel }.buttonStyle(.glassProminent)
+        } else {
+            Button(action: action) { tvLabel }.buttonStyle(.glass)
         }
-        .buttonStyle(CapsuleFocusStyle())
         #else
         Button(action: action) {
             HStack(spacing: 6) {
@@ -191,40 +202,18 @@ struct CapsuleButton: View {
         .buttonStyle(PressScale(scale: 0.95))
         #endif
     }
-}
 
-#if os(tvOS)
-/// Apple TV: a capsule that is white with black words only while the remote is on it, and dark glass with white words
-/// otherwise. (A Play that was always white looked picked while the remote was somewhere else.)
-struct CapsuleFocusStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        CapsuleFocusBody(configuration: configuration)
+    #if os(tvOS)
+    /// The words (and symbol) alone, on one line: the button's type, spacing and colours are tvOS's.
+    private var tvLabel: some View {
+        Group {
+            if let symbol { Label(title, systemImage: symbol) } else { Text(title) }
+        }
+        .lineLimit(1)
+        .fixedSize()
     }
+    #endif
 }
-
-private struct CapsuleFocusBody: View {
-    let configuration: ButtonStyleConfiguration
-    @Environment(\.isFocused) private var focused
-
-    var body: some View {
-        configuration.label
-            .foregroundStyle(focused ? Color.black : Color.white)
-            .background {
-                if focused {
-                    Capsule().fill(Color.white)
-                } else {
-                    Capsule().fill(.ultraThinMaterial).environment(\.colorScheme, .dark)
-                        .overlay { Capsule().strokeBorder(Color.white.opacity(0.28), lineWidth: 1) }
-                }
-            }
-            .scaleEffect(configuration.isPressed ? 0.95 : (focused ? 1.1 : 1))
-            .shadow(color: .black.opacity(focused ? 0.55 : 0), radius: focused ? 24 : 0, y: focused ? 16 : 0)
-            .zIndex(focused ? 1 : 0)
-            .animation(.spring(response: 0.3, dampingFraction: 0.75), value: focused)
-            .animation(.spring(response: 0.25, dampingFraction: 0.6), value: configuration.isPressed)
-    }
-}
-#endif
 
 struct SecondaryGlass: ViewModifier {
     var on: Bool

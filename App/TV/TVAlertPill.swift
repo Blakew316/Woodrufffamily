@@ -317,8 +317,15 @@ struct TVAlertLayer: View {
                     if windowed {
                         TVAlertPill(alert: a)
                     } else {
-                        Button { alerts.open() } label: { TVAlertPill(alert: a) }
-                            .buttonStyle(TVAlertButtonStyle())
+                        // On the remote the pill gets tvOS's own highlight, in the pill's shape: it lifts and catches
+                        // the light while the remote is on it (nothing drawn by hand, and no white platter).
+                        Button { alerts.open() } label: {
+                            TVAlertPill(alert: a)
+                                .contentShape(.hoverEffect, Capsule())
+                                .hoverEffect(.highlight)
+                        }
+                            .buttonStyle(.borderless)
+                            .buttonBorderShape(.capsule)
                             .focused($focused)
                             .onExitCommand { alerts.dismiss() }
                             .focusSection()
@@ -376,24 +383,6 @@ struct TVAlertPill: View {
         if s < 60 { return "now" }
         if s < 3600 { return "\(s / 60) min ago" }
         return at.formatted(date: .omitted, time: .shortened)
-    }
-}
-
-/// The pill on the remote: it lifts and gets a light edge while the remote is on it (no white platter).
-private struct TVAlertButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View { PillLift(configuration: configuration) }
-
-    private struct PillLift: View {
-        let configuration: ButtonStyleConfiguration
-        @Environment(\.isFocused) private var focused
-
-        var body: some View {
-            configuration.label
-                .overlay(Capsule().strokeBorder(.white.opacity(focused ? 0.9 : 0), lineWidth: 3))
-                .shadow(color: .black.opacity(focused ? 0.45 : 0.25), radius: focused ? 20 : 10, y: focused ? 10 : 4)
-                .scaleEffect(configuration.isPressed ? 0.97 : (focused ? 1.06 : 1))
-                .animation(.spring(response: 0.25, dampingFraction: 0.8), value: focused)
-        }
     }
 }
 
