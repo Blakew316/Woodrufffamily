@@ -236,6 +236,13 @@ final class Cync {
         return any
     }
 
+    /// Back in front: the list read again now, and the connection tried again at once if it's down, not at the end
+    /// of a wait that grew (up to five minutes) while the app was away.
+    func wake() async {
+        reconnectWait = 10
+        await refresh()
+    }
+
     /// The homes, their lights and Cync's rooms; then the connection for their states and commands.
     func refresh() async {
         guard connected, let user = Keychain.get("cync.user") else { return }

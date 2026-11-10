@@ -115,7 +115,7 @@ public struct TVTransport: Sendable {
         let req = request(method, path, query: query, body: body, contentType: contentType, timeout: timeout)
         let data: Data, resp: URLResponse
         do {
-            (data, resp) = try await session.data(for: req)
+            (data, resp) = try await send(req, again: method == "GET")
         } catch let e as URLError {
             switch e.code {
             case .timedOut: throw TVError.offline("The TV didn't answer in time. Is it on?")
@@ -127,6 +127,17 @@ public struct TVTransport: Sendable {
         guard let http = resp as? HTTPURLResponse else { throw TVError.badAnswer("No answer from the TV") }
         guard (200..<300).contains(http.statusCode) || http.statusCode == 304 else { throw TVError.from(status: http.statusCode, data: data) }
         return (data, http)
+    }
+
+    /// Sends [req]. A connection kept open that has since been closed (by the TV, or by the system while the app
+    /// was asleep) fails the first request sent down it, without that ever reaching the TV: a question ([again])
+    /// is then sent once more, on a connection of its own. A command is never repeated.
+    private func send(_ req: URLRequest, again: Bool) async throws -> (Data, URLResponse) {
+        do {
+            return try await session.data(for: req)
+        } catch let e as URLError where again && e.code == .networkConnectionLost && !Task.isCancelled {
+            return try await session.data(for: req)
+        }
     }
 
     public func get<T: Decodable>(_ path: String, _ query: [String: String?] = [:], as: T.Type = T.self, timeout: TimeInterval = 10) async throws -> T {
@@ -170,6 +181,15 @@ public extension URLSession {
         if Demo.isOn { c.protocolClasses = [DemoURLProtocol.self] + (c.protocolClasses ?? []) }
         return URLSession(configuration: c)
     }()
+
+    /// Lets go of the connections this session keeps open, so the next request makes one of its own. After the app
+    /// has been asleep they're dead, and a request sent down one only fails or waits out its time. What's on its way
+    /// carries on.
+    func freshConnections() {
+        #if canImport(Darwin)
+        flush {}
+        #endif
+    }
 }
 
 public extension JSONDecoder {

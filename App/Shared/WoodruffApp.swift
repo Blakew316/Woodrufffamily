@@ -20,7 +20,58 @@ enum AlertsRefresh {
 @MainActor
 enum AppWake {
     static var wentAway = false
+    /// Whether the app has been in front at all since it started (iOS also starts it by itself, in the background).
+    static var beenActive = false
+    /// When the app started running (set as it does).
+    static var started: Date?
 }
+
+#if os(iOS)
+/// Back in front on the iPhone or iPad: the accounts (SmartThings, the cameras, Cync, Dreo, the Wi‑Fi) are asked
+/// again now. Each looks on a clock of its own, from every half minute to every ten, and one whose sign-in ran out
+/// or whose connection died while the app was away kept saying so until that clock came round, or until the app
+/// was closed and opened again.
+@MainActor
+enum AccountsWake {
+    /// Goes up each time the app comes back: an earlier round's later looks are dropped for the newer one's. (Nothing
+    /// is ever called off mid-request: a request cut short would itself read as something being wrong.)
+    private static var round = 0
+
+    static func now() {
+        round += 1
+        let mine = round
+        Task {
+            // The connections kept open to the services died while the app slept: new ones from here on.
+            URLSession.shared.freshConnections()
+            // A moment first for the family's newest sign-ins (another device may have renewed one while this one
+            // was away): the settings sync, woken just before this, is reading them from the TVs. Then every account;
+            // then, twice more, any that still says something is wrong (the Wi‑Fi, or the TVs that hold the
+            // family's sign-ins, may only just be back).
+            for (pass, wait) in ([1.5, 6, 20] as [Double]).enumerated() {
+                try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
+                guard mine == round else { return }
+                await ask(onlyFailing: pass > 0)
+            }
+        }
+    }
+
+    private static func ask(onlyFailing: Bool) async {
+        let st = SmartThings.shared, nest = NestCameras.shared, cync = Cync.shared, dreo = Dreo.shared, deco = DecoWifi.shared
+        let askST = st.connected && (!onlyFailing || st.error != nil)
+        let askNest = nest.connected && (!onlyFailing || nest.error != nil)
+        let askCync = cync.connected && (!onlyFailing || cync.error != nil)
+        let askDreo = dreo.connected && (!onlyFailing || dreo.error != nil)
+        let askDeco = deco.connected && (!onlyFailing || deco.error != nil)
+        await withTaskGroup(of: Void.self) { g in
+            if askST { g.addTask { await st.refresh(full: false) } }
+            if askNest { g.addTask { await nest.load() } }
+            if askCync { g.addTask { await cync.wake() } }
+            if askDreo { g.addTask { await dreo.refresh(full: false) } }
+            if askDeco { g.addTask { await deco.refresh() } }
+        }
+    }
+}
+#endif
 
 #if !os(tvOS)
 @main
@@ -36,6 +87,7 @@ struct WoodruffApp: App {
     #endif
 
     init() {
+        AppWake.started = Date()
         // The saved sign-ins and keys the settings sync reads before the TVs are first asked, read now in the
         // background (each Keychain read is slow), so by then they're at hand instead of holding up the main thread.
         // The cameras' sign-in first: a tapped camera alert that opened the app needs it straight away.
@@ -236,6 +288,13 @@ struct WoodruffApp: App {
                 // Back from the background (on the iPhone, not a glance at Control Center or Notification Center, which
                 // only makes the app inactive for a moment): Home's weather if it's been a while, a new one-liner, and
                 // everything else asked afresh.
+                #if os(iOS)
+                // iOS also starts the app by itself, in the background (to look for camera alerts, to refresh the
+                // widgets). Opened by hand long after that, it has been away just the same, though it was never sent
+                // to the background: what it knows is from then, often asked with the iPhone locked or away from home.
+                if !AppWake.beenActive, let started = AppWake.started, Date().timeIntervalSince(started) > 20 { AppWake.wentAway = true }
+                #endif
+                AppWake.beenActive = true
                 if AppWake.wentAway {
                     AppWake.wentAway = false
                     HomeWeather.shared.refresh()
@@ -243,6 +302,9 @@ struct WoodruffApp: App {
                     SmartHome.shared.wake()
                     SettingsSync.shared.wake()
                     PushRelay.shared.wake()
+                    #if os(iOS)
+                    AccountsWake.now()
+                    #endif
                     #if os(iOS) || os(tvOS)
                     HomeKitLights.shared.refresh()
                     #endif

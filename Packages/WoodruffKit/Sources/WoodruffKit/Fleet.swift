@@ -273,6 +273,11 @@ public final class Fleet {
     @ObservationIgnored private var wokeUntil = Date.distantPast
     /// When the loop last ran (`askDue`): a long gap means the app was suspended, or the Mac asleep or napping.
     @ObservationIgnored private var lastTick = Date()
+    /// When the app last woke (`woke`): a question asked before then that failed was cut off by the system while the
+    /// app slept, and says nothing about its TV.
+    @ObservationIgnored private var wokeAt = Date.distantPast
+    /// Until when a TV that was answering before the app slept isn't called off for not answering (`woke`).
+    @ObservationIgnored private var forgiveUntil = Date.distantPast
     /// Missed answers in a row, per hub (two or more: it's off, or out of reach).
     @ObservationIgnored private var failures: [String: Int] = [:]
     @ObservationIgnored private var askedAt: [String: Date] = [:]
@@ -429,19 +434,43 @@ public final class Fleet {
 
     public func setActive(_ on: Bool) {
         // Observed: set only when it changes (the app tells this on every scene change, often with the same value).
+        let was = active
         if active != on { active = on }
         guard on else { return }
         // Back from the background: what the TVs said before may be long over. Every hub is asked at once, and each
         // answer replaces what that hub said before; one that hasn't answered within `wakeGrace` seconds no longer
         // counts for what's playing (`staleAfter`, `dropStalePlaying`). So a TV that's still playing never blinks off
         // and on, and an old title is gone within a couple of seconds.
-        wokeUntil = max(wokeUntil, Date().addingTimeInterval(Fleet.wakeGrace))
+        if was { wokeUntil = max(wokeUntil, Date().addingTimeInterval(Fleet.wakeGrace)) } else { woke() }
         Task { await refresh() }
     }
 
     /// How long the hubs have to answer after the app wakes before what they said before counts as old: an Android hub
     /// answers in about 0.3 s, a webOS one with a linked TV off in about 1.5.
     static let wakeGrace: TimeInterval = 2
+
+    /// How long after the app wakes a TV that was answering before is given before not answering counts as off: the
+    /// Wi‑Fi may only just be back, and the first questions go nowhere.
+    static let wakeForgive: TimeInterval = 8
+
+    /// The app has just woken (back from the background, the Mac from sleep or a nap). The questions that were out
+    /// when it went to sleep were cut off by the system, and the connections kept open to the TVs may have died: both
+    /// used to count as the TVs not answering, and two misses showed a TV as off, asked again only every twelve
+    /// seconds. Now neither counts: the TVs are asked on connections of their own, every second and a half, and one
+    /// that was answering before stays as it was until `forgiveUntil`.
+    private func woke(_ now: Date = Date()) {
+        wokeUntil = max(wokeUntil, now.addingTimeInterval(Fleet.wakeGrace))
+        forgiveUntil = now.addingTimeInterval(Fleet.wakeForgive)
+        for hub in hubs { boostUntil[hub.id] = max(boostUntil[hub.id] ?? .distantPast, forgiveUntil) }
+        // Told twice as the app comes back (the loop notices the gap, the app says it's in use): once is enough.
+        guard now.timeIntervalSince(wokeAt) > 3 else { return }
+        wokeAt = now
+        URLSession.woodruff.freshConnections()
+        // What was out is no longer waited for (`askDue` asks a hub again only once it has answered).
+        inFlight = [:]
+        // A miss from before doesn't carry over.
+        for hub in hubs where answers[hub.id]?.isAnswered == true { failures[hub.id] = nil }
+    }
 
     /// How old a hub's answer may be before what it says is playing isn't believed any more: a little over the time
     /// a hub that has stopped answering takes to count as off while the app is in use, longer while an iPhone's isn't
@@ -603,9 +632,17 @@ public final class Fleet {
         let now = Date()
         // The loop didn't run for a while (the app was suspended, the Mac asleep or napping): the hubs get a moment to
         // answer before what they said before counts as old (`staleAfter`).
-        if now.timeIntervalSince(lastTick) > 5 { wokeUntil = max(wokeUntil, now.addingTimeInterval(Fleet.wakeGrace)) }
+        if now.timeIntervalSince(lastTick) > 5 { woke(now) }
         lastTick = now
         guard !hubs.isEmpty else { return .distantFuture }
+        // The moment after waking is over: a TV that was answering before and hasn't answered since is off (or out of
+        // reach) after all.
+        if forgiveUntil != .distantPast, now >= forgiveUntil {
+            forgiveUntil = .distantPast
+            let gone = hubs.map(\.id).filter { (failures[$0] ?? 0) >= 2 && answers[$0]?.isAnswered == true }
+            for id in gone { answers[id] = .unreachable }
+            if !gone.isEmpty { rebuild() }
+        }
         dropStalePlaying(now)
         let heard = heardTVs()
         #if os(macOS)
@@ -711,6 +748,12 @@ public final class Fleet {
         inFlight[id] = left > 0 ? left : nil
         // Called off (a newer command started the count again): it says nothing about the TV.
         if Task.isCancelled { return }
+        // Asked before the app went to sleep and cut off while it slept: that says nothing about the TV either. Asked
+        // again at the loop's next turn (unless it has been already).
+        if case .failure = result, started < wokeAt {
+            if askedAt[id] == started { askedAt[id] = nil }
+            return
+        }
         if case .success = result { latency[id] = Date().timeIntervalSince(started) }
         take(result, from: id, seq: seq)
     }
@@ -736,6 +779,9 @@ public final class Fleet {
             failures[id] = missed
             // One missed answer from a TV that was answering isn't "off" yet: it's asked again right away.
             if missed < 2 && answers[id]?.isAnswered == true { return }
+            // Just woken: the Wi‑Fi may only just be back. A TV that was answering before stays as it was and is
+            // asked again (`woke`); `askDue` calls it off once the moment is over and it still hasn't answered.
+            if now < forgiveUntil && answers[id]?.isAnswered == true { return }
             answers[id] = .unreachable
         }
         rebuild()
