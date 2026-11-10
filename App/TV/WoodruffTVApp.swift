@@ -14,8 +14,14 @@ struct WoodruffTVApp: App {
         if let tab = UserDefaults.standard.string(forKey: "tvTab") { UserDefaults.standard.set(tab, forKey: "section") }
         // Watch plays right here on the Apple TV (no TV to pick).
         UserDefaults.standard.set("here", forKey: "watch.playOn")
-        let keys = SettingsSync.keychainKeys + Fleet.shared.tvs.map { "lg.\($0.id)" }
+        // The family's code and each TV's key first: the settings sync reads them before the TVs are first asked.
+        let keys = ["family.code"] + Fleet.shared.hubs.map { "family.hub.\($0.id)" }
+            + SettingsSync.keychainKeys + Fleet.shared.tvs.map { "lg.\($0.id)" }
         Task.detached(priority: .userInitiated) { for k in keys { _ = Keychain.read(k) } }
+        // Watch's saved library and TMDB's answers start being read now, in the background: opened on Watch, the
+        // first frame needs them, and read then they were decoded on the main thread.
+        DriveLibrary.prewarm()
+        TMDB.prewarm()
     }
 
     var body: some Scene {
@@ -82,7 +88,12 @@ struct WoodruffTVApp: App {
             // sending pictures nobody saw (the open one eight a second) for as long as it ran: they stop after half a
             // minute of it, and start again on the way back (`foreground` below). Not on the way back from the
             // background, which passes through inactive too.
-            if phase == .inactive, !AppWake.wentAway { CameraStreams.shared.background(after: 30) }
+            if phase == .inactive, !AppWake.wentAway {
+                CameraStreams.shared.background(after: 30)
+                TVIdle.began(fleet)
+            } else {
+                TVIdle.ended()
+            }
             if phase == .active {
                 CameraStreams.shared.foreground()
                 // Asking the Mac Studio for alerts again (only once the launch has started everything else).
@@ -103,6 +114,25 @@ struct WoodruffTVApp: App {
             }
         }
     }
+}
+
+/// Apple TV under the screen saver (or Control Center), which only make the app inactive: after half a minute of it
+/// the TVs stop being asked, as the cameras stop sending (nobody is looking). `setActive(true)` on the way back asks
+/// them all afresh.
+@MainActor
+enum TVIdle {
+    private static var round = 0
+
+    static func began(_ fleet: Fleet) {
+        round += 1
+        let mine = round
+        Task {
+            try? await Task.sleep(nanoseconds: 30_000_000_000)
+            if mine == round { fleet.setActive(false) }
+        }
+    }
+
+    static func ended() { round += 1 }
 }
 
 /// Apple TV: everything besides the TVs asked again when the app comes to the front: back from the background, and

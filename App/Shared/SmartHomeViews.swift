@@ -41,10 +41,14 @@ struct SpeakersSection: View {
     }
 }
 
-struct SpeakerTile: View {
+struct SpeakerTile: View, Equatable {
     var room: SonosRoom
     var openControls: () -> Void
     var home = SmartHome.shared
+
+    /// Drawn again only when its room has changed (not for every move of a tile being dragged past it); the action
+    /// is the same each time.
+    nonisolated static func == (a: SpeakerTile, b: SpeakerTile) -> Bool { a.room == b.room }
 
     var body: some View {
         HStack(spacing: 10) {
@@ -145,7 +149,8 @@ struct SpeakerArt: View {
             .fill(.white.opacity(0.08))
             .overlay {
                 if let url {
-                    CachedImage(url: url) { Color.clear }
+                    // At the size it's shown (three pixels a point at most), not the 1800 a poster gets.
+                    CachedImage(url: url, maxPixel: max(96, Int(size * 3))) { Color.clear }
                 } else {
                     Image(systemName: "hifispeaker.fill").font(.system(size: size * 0.38)).foregroundStyle(.secondary)
                 }
@@ -258,9 +263,12 @@ struct SceneColorPicker: View {
 
 /// Like a Home app accessory: lit up in the light's own colour when it's on, glass when it's off. Tap turns it
 /// on or off; hold (or right-click) for brightness and colour.
-struct LightTile: View {
+struct LightTile: View, Equatable {
     var light: GoveeLight
     var openControls: () -> Void
+
+    /// Drawn again only when its light has changed; the action is the same each time.
+    nonisolated static func == (a: LightTile, b: LightTile) -> Bool { a.light == b.light }
 
     var body: some View {
         // Unreachable (unplugged, off at the wall): never shown lit, and tapping opens its page rather than

@@ -420,7 +420,14 @@ struct TVScreenSheet: View {
         while !Task.isCancelled {
             var wait: UInt64 = 800_000_000
             if let tv = fleet.tv(tvID), let c = fleet.client(for: tv) {
-                do { image = PlatformImage(data: try await c.screen()); note = nil } catch {
+                do {
+                    let data = try await c.screen()
+                    // Decoded off the main thread (it comes about every second), ready to draw.
+                    let img = await Task.detached(priority: .userInitiated) { NowPlayingSheet.decode(data) }.value
+                    if Task.isCancelled { return }
+                    image = img
+                    note = nil
+                } catch {
                     note = error.localizedDescription
                     wait = (error as? TVError)?.status == 409 ? 3_000_000_000 : 4_000_000_000
                 }

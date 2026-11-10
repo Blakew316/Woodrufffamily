@@ -53,15 +53,18 @@ final class Diagnostics: NSObject {
         var new: [Report] = []
         for p in payloads {
             saveFull(p)
-            for c in p.crashDiagnostics ?? [] { new.append(report(c, "Crash", crashDetail(c))) }
+            // Stamped with the time Apple's report covers up to, the same each time it's handed over: stamped with
+            // now, every launch kept every past report again as a new one (and sent the lot to the family again).
+            let at = p.timeStampEnd.timeIntervalSince1970
+            for c in p.crashDiagnostics ?? [] { new.append(report(c, "Crash", crashDetail(c), at)) }
             for h in p.hangDiagnostics ?? [] {
-                new.append(report(h, "Freeze", "\(seconds(h.hangDuration)) without responding" + frames(h.callStackTree)))
+                new.append(report(h, "Freeze", "\(seconds(h.hangDuration)) without responding" + frames(h.callStackTree), at))
             }
-            for c in p.cpuExceptionDiagnostics ?? [] { new.append(report(c, "CPU", "\(seconds(c.totalCPUTime)) of CPU" + frames(c.callStackTree))) }
-            for d in p.diskWriteExceptionDiagnostics ?? [] { new.append(report(d, "Disk Writes", "\(d.totalWritesCaused)" + frames(d.callStackTree))) }
+            for c in p.cpuExceptionDiagnostics ?? [] { new.append(report(c, "CPU", "\(seconds(c.totalCPUTime)) of CPU" + frames(c.callStackTree), at)) }
+            for d in p.diskWriteExceptionDiagnostics ?? [] { new.append(report(d, "Disk Writes", "\(d.totalWritesCaused)" + frames(d.callStackTree), at)) }
             #if os(iOS) || os(tvOS)
             // Slow launches: reported on the iPhone only (Apple has none for the Mac).
-            for l in p.appLaunchDiagnostics ?? [] { new.append(report(l, "Slow Launch", "\(seconds(l.launchDuration)) to open" + frames(l.callStackTree))) }
+            for l in p.appLaunchDiagnostics ?? [] { new.append(report(l, "Slow Launch", "\(seconds(l.launchDuration)) to open" + frames(l.callStackTree), at)) }
             #endif
         }
         add(new)
@@ -91,9 +94,12 @@ final class Diagnostics: NSObject {
         for r in new { TVDiagnosticsRelay.send(kind: r.kind, detail: r.detail, build: r.build) }
         #endif
         var list = mine()
+        let before = list
         for r in new where !list.contains(r) { list.append(r) }
         list.sort { $0.at > $1.at }
         if list.count > Self.keptPerDevice { list = Array(list.prefix(Self.keptPerDevice)) }
+        // Nothing new (Apple's past reports, kept already): nothing is saved or sent on again.
+        guard list != before else { return }
         var family = Saved.load(Self.key, as: [String: String].self) ?? [:]
         if let data = try? JSONEncoder().encode(list), let text = String(data: data, encoding: .utf8) {
             family[deviceKey] = text
@@ -105,8 +111,8 @@ final class Diagnostics: NSObject {
     }
 
     #if !os(tvOS)
-    private func report(_ d: MXDiagnostic, _ kind: String, _ detail: String) -> Report {
-        Report(at: Date().timeIntervalSince1970, kind: kind, build: d.metaData.applicationBuildVersion, detail: detail)
+    private func report(_ d: MXDiagnostic, _ kind: String, _ detail: String, _ at: Double) -> Report {
+        Report(at: at, kind: kind, build: d.metaData.applicationBuildVersion, detail: detail)
     }
     #endif
 

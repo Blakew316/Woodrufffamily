@@ -91,9 +91,15 @@ struct WoodruffApp: App {
         // The saved sign-ins and keys the settings sync reads before the TVs are first asked, read now in the
         // background (each Keychain read is slow), so by then they're at hand instead of holding up the main thread.
         // The cameras' sign-in first: a tapped camera alert that opened the app needs it straight away.
+        // Then the family's code and each TV's key, which the settings sync reads before the TVs are first asked.
         let keys = ["nest.refresh", "nest.scopes", "nest.access", "nest.expires", "nest.project", "nest.client", "nest.secret"]
+            + ["family.code"] + Fleet.shared.hubs.map { "family.hub.\($0.id)" }
             + SettingsSync.keychainKeys + Fleet.shared.tvs.map { "lg.\($0.id)" }
         Task.detached(priority: .userInitiated) { for k in keys { _ = Keychain.read(k) } }
+        // Watch's saved library and TMDB's answers start being read now, in the background: opened on Watch, the
+        // first frame needs them, and read then they were decoded on the main thread.
+        DriveLibrary.prewarm()
+        TMDB.prewarm()
         // Before launch finishes, as Apple asks: a tapped doorbell or camera alert that opened the app (Woodruff
         // wasn't running) still arrives here and opens that camera live, instead of being dropped.
         UNUserNotificationCenter.current().delegate = Notifier.handler

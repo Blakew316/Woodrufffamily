@@ -1565,10 +1565,12 @@ public final class SmartHome {
     public func setVolume(_ room: SonosRoom, _ v: Int) {
         let v = max(0, min(100, v))
         let id = room.id
-        if let i = speakers.firstIndex(where: { $0.id == id }) { speakers[i].volume = v }
+        // Only a level it doesn't already show (every sample of a drag came through here, each one redrawing the
+        // speaker's page and Home under it).
+        if let i = speakers.firstIndex(where: { $0.id == id }), speakers[i].volume != v { speakers[i].volume = v }
         pendingVolume[id] = Date()
         levelsAt[id] = Date()
-        lastSpeakerID = id
+        if lastSpeakerID != id { lastSpeakerID = id }
         guard volumeSends[id] == nil else { return }   // the one running sends the newest value next
         volumeSends[id] = Task { [weak self] in
             var sent: Int?

@@ -11,7 +11,7 @@ final class EarlyRead<T: Decodable>: @unchecked Sendable {
     private var value: T?
 
     init(_ url: URL) {
-        Task.detached(priority: .utility) { [self] in
+        Task.detached(priority: .userInitiated) { [self] in
             let v = try? JSONDecoder().decode(T.self, from: Data(contentsOf: url, options: .mappedIfSafe))
             lock.lock()
             if !taken { value = v; done = true }
@@ -492,8 +492,11 @@ final class DriveLibrary: WatchSource {
 
     // MARK: Answers in Watch's shapes (the TV's JSON)
 
-    private func decode<T: Decodable>(_ v: Any) throws -> T {
-        try JSONDecoder().decode(T.self, from: JSONSerialization.data(withJSONObject: v))
+    /// Decoded off the main thread: a page of the library is a hundred titles and more, and the Apple TV reads the
+    /// whole library this way as Watch opens and after each film.
+    private func decode<T: Decodable & Sendable>(_ v: Any) async throws -> T {
+        let data = try JSONSerialization.data(withJSONObject: v)
+        return try await Task.detached(priority: .userInitiated) { try JSONDecoder().decode(T.self, from: data) }.value
     }
 
     private func duration(_ ms: Double) -> String {
@@ -576,7 +579,7 @@ final class DriveLibrary: WatchSource {
     // MARK: WatchSource
 
     func watchHome() async throws -> WatchHome {
-        guard GoogleDrive.signedIn else { return try decode(["state": "notSignedIn"]) }
+        guard GoogleDrive.signedIn else { return try await decode(["state": "notSignedIn"]) }
         if saved.movies.isEmpty && saved.shows.isEmpty {
             await refresh(force: true)
         } else {
@@ -586,12 +589,12 @@ final class DriveLibrary: WatchSource {
         if nowMS - (saved.synced ?? 0) > 120_000 { Task { await sync() } }
         if saved.movies.isEmpty && saved.shows.isEmpty {
             if let e = error { throw GoogleDrive.Failure(e) }
-            return try decode(["state": busy ? "loading" : "empty"])
+            return try await decode(["state": busy ? "loading" : "empty"])
         }
         // Only Continue Watching: Watch reads the banner and rows from the library a section at a time.
         let home: [String: Any] = ["state": "ready", "tv": "Google Drive", "updated": max(saved.updated ?? 0, filledAt ?? 0),
                                    "continue": continueItems()]
-        return try decode(home)
+        return try await decode(home)
     }
 
     func library(place: String, sort: String, unwatched: Bool, genre: String?, q: String?, offset: Int, limit: Int) async throws -> LibraryPage {
@@ -618,7 +621,7 @@ final class DriveLibrary: WatchSource {
         for e in (place == "shows" ? saved.shows : saved.movies) { for g in e.genres { counts[g, default: 0] += 1 } }
         let genres = counts.sorted { $0.value != $1.value ? $0.value > $1.value : $0.key < $1.key }.map(\.key)
         let page = list.dropFirst(offset).prefix(max(1, min(120, limit)))
-        return try decode(["state": "ready", "count": list.count, "offset": offset, "items": page.map(titleJSON),
+        return try await decode(["state": "ready", "count": list.count, "offset": offset, "items": page.map(titleJSON),
                            "genres": genres, "rated": saved.movies.contains { $0.rating != nil } || saved.shows.contains { $0.rating != nil }] as [String: Any])
     }
 
@@ -670,7 +673,7 @@ final class DriveLibrary: WatchSource {
         }
         let m = found(saved.movies), s = found(saved.shows)
         let first = (s.first.map(rank) ?? 9) < (m.first.map(rank) ?? 9) ? "shows" : "movies"
-        return try decode(["state": "ready", "q": q, "first": first, "movies": m.map(titleJSON), "shows": s.map(titleJSON)] as [String: Any])
+        return try await decode(["state": "ready", "q": q, "first": first, "movies": m.map(titleJSON), "shows": s.map(titleJSON)] as [String: Any])
     }
 
     func title(_ id: String) async throws -> TitleDetails {
@@ -725,7 +728,7 @@ final class DriveLibrary: WatchSource {
                 }
             }
         }
-        return try decode(t)
+        return try await decode(t)
     }
 
     private struct SeasonFolder { var id: String; var name: String; var number: Int? }
@@ -740,7 +743,7 @@ final class DriveLibrary: WatchSource {
     func episodes(show: String, season: String) async throws -> EpisodeList {
         guard let e = entry(show) else { throw GoogleDrive.Failure("That show isn’t in the Drive library any more.") }
         let s = (await seasons(of: e)).first { $0.id == season } ?? SeasonFolder(id: season, name: "", number: nil)
-        return try decode(["state": "ready", "episodes": try await episodeList(e, season: s)] as [String: Any])
+        return try await decode(["state": "ready", "episodes": try await episodeList(e, season: s)] as [String: Any])
     }
 
     private func episodeList(_ show: Entry, season: SeasonFolder) async throws -> [[String: Any]] {

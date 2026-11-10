@@ -416,7 +416,7 @@ struct Clickpad: View {
                         onKey(dir)
                         // Momentum: a fast flick keeps going a few more steps, slowing down, like the Siri Remote.
                         let fling = abs(dx) > abs(dy) ? abs(v.predictedEndTranslation.width - dx) : abs(v.predictedEndTranslation.height - dy)
-                        let extra = min(5, Int(fling / 90))
+                        let extra = fling.isFinite ? min(5, Int(fling / 90)) : 0
                         if extra > 0 {
                             Task {
                                 for i in 1...extra {

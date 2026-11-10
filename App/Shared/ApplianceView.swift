@@ -262,7 +262,8 @@ struct ApplianceView: View {
                 }
             }
             if let end = device.endsAt, end > .now, device.machineState == "run" {
-                Text(timerInterval: Date.now...end, countsDown: true)
+                // (Never a range that ends before it starts: the clock is read again here, a moment after the check.)
+                Text(timerInterval: min(Date.now, end)...end, countsDown: true)
                     .font(.system(size: 40, weight: .semibold)).monospacedDigit()
             }
             transport

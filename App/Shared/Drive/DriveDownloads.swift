@@ -69,6 +69,8 @@ final class DriveDownloads: NSObject {
 
     /// Picks up downloads that went on while the app was closed (and starts ones still waiting).
     func start() {
+        // Nothing asked for: the session isn't made (it's made when a download is).
+        guard !items.isEmpty else { return }
         session.getAllTasks { [weak self] running in
             Task { @MainActor in
                 guard let self else { return }

@@ -197,7 +197,16 @@ final class SettingsSync {
                 try? await Task.sleep(nanoseconds: 1_500_000_000)
                 guard let self else { return }
                 // Only looks when something was saved (or every 30 s regardless), so it costs nothing at rest.
-                if self.dirty || Keychain.generation != self.seenGeneration || Date().timeIntervalSince(self.lastLook) > 30 { self.check() }
+                if self.dirty || Keychain.generation != self.seenGeneration || Date().timeIntervalSince(self.lastLook) > 30 {
+                    // The ten-minute look at the Keychain: its items are read in the background first. One that isn't
+                    // there is asked of the Keychain afresh each time (a few milliseconds each, dozens of them, on the
+                    // main thread): read here, the look finds them at hand.
+                    if Date().timeIntervalSince(self.lastKeychainLook) > 600 {
+                        let keys = self.allKeys().compactMap { $0.hasPrefix("kc:") ? String($0.dropFirst(3)) : nil }
+                        await Task.detached(priority: .utility) { for k in keys { _ = Keychain.read(k) } }.value
+                    }
+                    self.check()
+                }
                 // Every 12 seconds while the app is in use, every minute while it isn't (the Mac's window hidden), apart,
                 // so a TV taking its time never holds up noticing changes here. (A change made here goes at once.)
                 // A round still running is left to finish: the next starts after it, once the time has passed.

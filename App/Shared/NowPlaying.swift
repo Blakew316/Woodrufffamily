@@ -185,6 +185,9 @@ struct NowPlayingBar: View {
             .padding(.horizontal, 16)
             .padding(.bottom, 6)
             .sheet(isPresented: $open) { NowPlayingSheet().sheetBanner().macResizable(width: 560, height: 780) }
+            // The bar going (the TV stopped) takes its sheet with it: forgotten too, or the sheet opened by itself
+            // the next time something played.
+            .onDisappear { open = false }
             .transition(.move(edge: .bottom).combined(with: .opacity))
         }
     }
@@ -510,7 +513,7 @@ struct NowPlayingSheet: View {
     }
 
     /// A screen grab decoded now (not when it's first drawn, on the main thread).
-    nonisolated private static func decode(_ data: Data) -> PlatformImage? {
+    nonisolated static func decode(_ data: Data) -> PlatformImage? {
         guard let src = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary) else { return nil }
         let options: [CFString: Any] = [kCGImageSourceCreateThumbnailFromImageAlways: true,
                                         kCGImageSourceCreateThumbnailWithTransform: true,

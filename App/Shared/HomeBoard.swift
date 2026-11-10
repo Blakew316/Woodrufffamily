@@ -459,8 +459,10 @@ struct HomeBoard: View, Equatable {
                 .modifier(TVZoom(id: tv.id, zoom: zoom, zoomed: zoomed))
         case .speaker(let r):
             SpeakerTile(room: r) { openSpeaker = r }
+                .equatable()
         case .light(let l):
             LightTile(light: l) { openLight = l }
+                .equatable()
         case .device(let d):
             DeviceTile(device: d) { openDevice = d }
                 .equatable()

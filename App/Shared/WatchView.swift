@@ -1267,6 +1267,17 @@ struct TitleSheet: View {
     }
     #endif
 
+    /// The story and the episodes. On iPhone and iPad each row is built as it scrolls into view (a season is dozens of
+    /// rows, each with a picture and a menu, all built as the page opened); elsewhere all at once: the Mac sizes the
+    /// page from them, and the Apple TV's focus needs them there.
+    @ViewBuilder private func detailStack<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        #if os(iOS)
+        LazyVStack(alignment: .leading, spacing: 14) { content() }
+        #else
+        VStack(alignment: .leading, spacing: 14) { content() }
+        #endif
+    }
+
     @ViewBuilder private var sheetBody: some View {
         // Worked out once for the sheet (the episodes' pictures are handed their addresses).
         let c = client
@@ -1278,7 +1289,7 @@ struct TitleSheet: View {
                     if let d = shown {
                         VStack(alignment: .leading, spacing: 0) {
                             header(top(d, c))
-                            VStack(alignment: .leading, spacing: 14) {
+                            detailStack {
                                 if let o = d.overview { Text(o).font(.body).foregroundStyle(.primary.opacity(0.9)) }
                                 if let cast = d.cast, !cast.isEmpty { Text("Starring " + cast.joined(separator: ", ")).font(.footnote).foregroundStyle(.secondary) }
                                 if let seasons = d.seasons, !seasons.isEmpty {
@@ -1680,6 +1691,8 @@ struct LibraryGrid: View {
     /// Each new sort, filter or search gets a number: an answer for an older one is dropped, never shown.
     @State private var generation = 0
     @State private var loaded = false
+    /// The sorting and filters of what's shown now (the same again when the page comes back: nothing is started over).
+    @State private var shownKey: String?
     @State private var failed: String?
     /// The posters of the page just read, being fetched before they're scrolled to.
     @State private var warming: Task<Void, Never>?
@@ -1729,12 +1742,20 @@ struct LibraryGrid: View {
         .toolbar { filterMenu }
         #endif
         .task(id: "\(sort)|\(unwatched)|\(genre ?? "")|\(query)") {
+            // Back on this page with nothing changed (another tab and back): what's shown stays where it was scrolled
+            // to and is read again in place, instead of starting over from the first page.
+            let key = "\(sort)|\(unwatched)|\(genre ?? "")|\(query)"
+            if loaded, !items.isEmpty, key == shownKey {
+                await reloadShown()
+                return
+            }
             // The first page at once; after that a moment's wait, so typing asks only for the newest choice.
             if loaded || !items.isEmpty || failed != nil {
                 try? await Task.sleep(nanoseconds: 200_000_000)
                 guard !Task.isCancelled else { return }
             }
             await load(more: false)
+            if !Task.isCancelled { shownKey = key }
         }
         .onDisappear { warming?.cancel() }
     }

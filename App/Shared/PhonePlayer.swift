@@ -853,13 +853,9 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
         guard player != nil else { return }
         report()
         if let p = player, let play = current, begun { notePlayback(p, play) }
-        #if os(tvOS)
         // Queued, not waited for: the page the player closes back to froze while the whole library was written (the
         // app leaving still waits for it).
         DriveLibrary.shared.flush(wait: false)
-        #else
-        DriveLibrary.shared.flush()
-        #endif
         // Watch shows where it was left off at once.
         DriveLibrary.shared.playStopped()
         Task { await DriveLibrary.shared.sync() }

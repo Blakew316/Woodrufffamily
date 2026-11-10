@@ -492,9 +492,9 @@ final class CameraStreams {
                 let at = (try? f.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? Date()
                 if !id.isEmpty, let d = try? Data(contentsOf: f) { found[id] = (d, at) }
             }
-            #if os(tvOS)
-            // Apple TV: decoded here as well. Made from their bytes on the main thread, each camera's picture was
-            // decoded there the moment Home first drew its tile.
+            #if os(iOS) || os(tvOS)
+            // Decoded here as well. Made from their bytes on the main thread, each camera's picture was decoded
+            // there the moment Home first drew its tile.
             var decoded: [String: (UIImage, Date)] = [:]
             for (id, d) in found {
                 if let img = UIImage(data: d.0) { decoded[id] = (img.preparingForDisplay() ?? img, d.1) }
@@ -1301,7 +1301,42 @@ typealias StageView = NSView
 /// it's renewed every four minutes (Google ends it after five). If it drops, it reconnects by itself.
 @MainActor
 final class LivePlayer: NSObject, WKNavigationDelegate {
-    let web: WKWebView
+    /// The page's web view, made only when the page is needed. The native player is tried first for every stream (and
+    /// plays nearly all of them), and a web view made for each camera as Home opened held the screen up: several in a
+    /// row on the main thread, a second in all on an iPhone.
+    private var madeWeb: WKWebView?
+    /// The stage shows the native picture (a web view made later starts hidden then).
+    private var showingNative = false
+    private var web: WKWebView {
+        if let w = madeWeb { return w }
+        let config = WKWebViewConfiguration()
+        #if os(iOS) || os(tvOS)
+        config.allowsInlineMediaPlayback = true
+        #endif
+        config.mediaTypesRequiringUserActionForPlayback = []
+        let w = WKWebView(frame: .zero, configuration: config)
+        #if os(iOS) || os(tvOS)
+        w.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        #else
+        w.autoresizingMask = [.width, .height]
+        #endif
+        w.frame = surface.bounds
+        // Over the native picture, as when it was made first.
+        surface.addSubview(w)
+        // A weak go-between, so the page doesn't keep the player alive forever.
+        let proxy = ScriptProxy(self)
+        config.userContentController.add(proxy, name: "offer")
+        config.userContentController.add(proxy, name: "state")
+        w.navigationDelegate = self
+        #if os(iOS) || os(tvOS)
+        w.isOpaque = false
+        w.backgroundColor = .black
+        w.scrollView.isScrollEnabled = false
+        #endif
+        w.isHidden = showingNative
+        madeWeb = w
+        return w
+    }
     /// What's put on screen (a tile, the big view, the Mac's off-screen window): the native picture, or the web page.
     let surface: PictureStage
     /// The native player, tried first for each stream; the web page takes over by itself if it doesn't go live.
@@ -1367,35 +1402,15 @@ final class LivePlayer: NSObject, WKNavigationDelegate {
 
     init(camera: NestCameras.Camera) {
         self.camera = camera
-        let config = WKWebViewConfiguration()
-        #if os(iOS) || os(tvOS)
-        config.allowsInlineMediaPlayback = true
-        #endif
-        config.mediaTypesRequiringUserActionForPlayback = []
-        web = WKWebView(frame: .zero, configuration: config)
         surface = PictureStage(frame: .zero)
         super.init()
         #if os(iOS) || os(tvOS)
         surface.backgroundColor = .black
         surface.clipsToBounds = true
-        web.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         #else
         surface.wantsLayer = true
         surface.layer?.backgroundColor = NSColor.black.cgColor
         surface.layer?.masksToBounds = true
-        web.autoresizingMask = [.width, .height]
-        #endif
-        web.frame = surface.bounds
-        surface.addSubview(web)
-        // A weak go-between, so the page doesn't keep the player alive forever.
-        let proxy = ScriptProxy(self)
-        config.userContentController.add(proxy, name: "offer")
-        config.userContentController.add(proxy, name: "state")
-        web.navigationDelegate = self
-        #if os(iOS) || os(tvOS)
-        web.isOpaque = false
-        web.backgroundColor = .black
-        web.scrollView.isScrollEnabled = false
         #endif
     }
 
@@ -1463,14 +1478,16 @@ final class LivePlayer: NSObject, WKNavigationDelegate {
             v.frame = surface.bounds
             #if os(iOS) || os(tvOS)
             v.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-            surface.insertSubview(v, belowSubview: web)
+            // Under the page's web view when there is one (it's made only when the page is needed).
+            if let w = madeWeb { surface.insertSubview(v, belowSubview: w) } else { surface.addSubview(v) }
             #else
-            surface.addSubview(v, positioned: .below, relativeTo: web)
+            if let w = madeWeb { surface.addSubview(v, positioned: .below, relativeTo: w) } else { surface.addSubview(v) }
             #endif
             surface.picture = v
         }
         v.isHidden = !on
-        web.isHidden = on
+        showingNative = on
+        madeWeb?.isHidden = on
     }
 
     /// Starts over with a fresh stream.
@@ -1485,7 +1502,7 @@ final class LivePlayer: NSObject, WKNavigationDelegate {
         live = false
         work?.cancel(); renew?.cancel(); nativeWatch?.cancel(); stills?.cancel()
         session = nil
-        if usingNative { native.stop() } else { web.evaluateJavaScript("stop()") }
+        if usingNative { native.stop() } else { madeWeb?.evaluateJavaScript("stop()") }
     }
 
     /// For good: no more page or messages.
@@ -1494,15 +1511,15 @@ final class LivePlayer: NSObject, WKNavigationDelegate {
         native.sound = false
         native.stop()
         pageLoaded = false
-        web.configuration.userContentController.removeAllScriptMessageHandlers()
-        web.navigationDelegate = nil
+        madeWeb?.configuration.userContentController.removeAllScriptMessageHandlers()
+        madeWeb?.navigationDelegate = nil
     }
 
     func setMuted(_ m: Bool) {
         soundOn = !m
         // The native player has sound of its own (on the iPhone, speaker only: the microphone is never opened).
         if usingNative { native.sound = !m; return }
-        web.evaluateJavaScript("setMuted(\(m))")
+        madeWeb?.evaluateJavaScript("setMuted(\(m))")
     }
 
     /// Dropped: try again after a wait that grows each time it fails (5 s up to a minute), or a set wait.
@@ -1562,7 +1579,7 @@ final class LivePlayer: NSObject, WKNavigationDelegate {
           c.width = Math.round(v.videoWidth * k); c.height = Math.round(v.videoHeight * k);
           c.getContext('2d').drawImage(v, 0, 0, c.width, c.height); return c.toDataURL('image/jpeg', 0.75); })()
         """
-        guard let url = try? await web.evaluateJavaScript(js) as? String, let comma = url.firstIndex(of: ","),
+        guard let page = madeWeb, let url = try? await page.evaluateJavaScript(js) as? String, let comma = url.firstIndex(of: ","),
               let jpeg = Data(base64Encoded: String(url[url.index(after: comma)...])), jpeg.count > 1000 else { return nil }
         return jpeg
     }
@@ -2179,12 +2196,10 @@ private struct AlertGlow: View {
                     let left = max(0, 60 - Date().timeIntervalSince(since))
                     try? await Task.sleep(nanoseconds: UInt64(left * 1_000_000_000))
                     withAnimation(.easeOut(duration: 0.6)) { over = true }
-                    #if os(tvOS)
-                    // Apple TV: gone once it has faded, rather than breathing unseen (every frame, beside Home's
-                    // scrolling) until something else about the tile changes.
+                    // Gone once it has faded, rather than breathing unseen (every frame, beside Home's scrolling)
+                    // until something else about the tile changes.
                     try? await Task.sleep(nanoseconds: 700_000_000)
                     if !Task.isCancelled { gone = true }
-                    #endif
                 }
         }
     }
