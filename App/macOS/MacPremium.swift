@@ -603,9 +603,10 @@ struct MacAnchor: NSViewRepresentable {
 
     func updateNSView(_ nsView: NSView, context: Context) { found(nsView) }
 
-    /// Measured from its top left, as SwiftUI measures.
+    /// Measured from its top left, as SwiftUI measures, and never in the way of a click.
     private final class Mark: NSView {
         override var isFlipped: Bool { true }
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
     }
 }
 

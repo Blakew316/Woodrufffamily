@@ -141,7 +141,7 @@ struct SendView: View {
     private func sendFiles(_ urls: [URL]) {
         guard !urls.isEmpty else { return }
         guard let c = fleet.hubClient() else { fleet.show(TVError.notPaired); return }
-        guard sendingFiles == nil else { fleet.say("One Moment", "Wait for the file being sent to finish, then try again."); return }
+        guard sendingFiles == nil else { fleet.alert("One Moment", "Wait for the file being sent to finish, then try again."); return }
         sendingFiles = "Sending…"
         Task {
             defer { sendingFiles = nil }
@@ -604,7 +604,7 @@ struct FilesView: View {
                 newFolder = ""
                 guard !name.isEmpty, let dir = listing?.path else { return }
                 guard !name.contains("/"), name != ".", name != ".." else {
-                    fleet.say("Can’t Use That Name", "A folder’s name can’t have “/” in it.")
+                    fleet.alert("Can’t Use That Name", "A folder’s name can’t have “/” in it.")
                     return
                 }
                 act {
@@ -832,7 +832,7 @@ struct FilesView: View {
     private func playOnTV(_ f: FileEntry) {
         withTV { c in
             let r = try await c.play(path: f.path)
-            if r.started?.bool == false { fleet.say("Ready on \(c.hub.name)", r.message ?? "Open Woodruff on \(c.hub.name) to start it.") }
+            if r.started?.bool == false { fleet.alert("Ready on \(c.hub.name)", r.message ?? "Open Woodruff on \(c.hub.name) to start it.") }
             else if let m = r.message { fleet.say("Playing on \(c.hub.name)", m) }
         }
     }
@@ -899,7 +899,7 @@ struct FilesView: View {
 
     private func upload(_ urls: [URL]) {
         guard let dir = listing?.path, let c = client else { return }
-        guard progress == nil else { fleet.say("One Moment", "Wait for the file being sent to finish, then try again."); return }
+        guard progress == nil else { fleet.alert("One Moment", "Wait for the file being sent to finish, then try again."); return }
         Task {
             for (i, url) in urls.enumerated() {
                 let access = url.startAccessingSecurityScopedResource()
