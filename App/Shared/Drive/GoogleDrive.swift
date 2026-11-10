@@ -277,7 +277,7 @@ enum GoogleDrive {
         case (_, "rateLimitExceeded"), (_, "userRateLimitExceeded"), (429, _):
             return Failure("Google Drive is busy. Try again in a minute.")
         case (_, "downloadQuotaExceeded"):
-            return Failure("Google Drive won’t send this file again today (its daily limit). Try again tomorrow.")
+            return Failure("Google Drive won’t send this file again today (its daily limit). Try again tomorrow, or make a copy of it in Google Drive and play the copy.")
         case (_, "insufficientPermissions"), (_, "insufficientFilePermissions"), (_, "appNotAuthorizedToFile"):
             return Failure("Google Drive didn’t allow this. Sign out in Settings → Watch, sign in again and tick every box on Google’s screen.")
         case (404, _): return Failure("That file isn’t in Google Drive any more.")

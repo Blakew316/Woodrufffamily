@@ -1,5 +1,6 @@
 import SwiftUI
 import AVKit
+import os
 import WoodruffKit
 
 /// A film or episode from the TV's library played on this iPhone, iPad or Mac instead of a TV: the TV that holds
@@ -173,6 +174,44 @@ final class PhonePlayback {
     }
 }
 
+/// What's playing, kept while it plays. The system ending the app in the middle of a film (for memory, or for not
+/// answering) leaves no report anywhere on an Apple TV: so the next launch says what was playing, how far in and how
+/// the memory stood, in the Macs' log.
+@MainActor
+enum PlayCrumb {
+    private static let key = "playing.crumb"
+
+    static func note(_ title: String, _ stage: String, detail: String = "") {
+        let crumb: [String: Any] = ["title": title, "stage": stage, "detail": detail, "at": Date().timeIntervalSince1970,
+                                    "build": AppBuild.label]
+        UserDefaults.standard.set(crumb, forKey: key)
+    }
+
+    static func clear() {
+        UserDefaults.standard.removeObject(forKey: key)
+    }
+
+    /// At launch: what the app was playing when it last ended without the film being closed, if it was.
+    static func reportLast() {
+        guard let c = UserDefaults.standard.dictionary(forKey: key) else { return }
+        clear()
+        let title = c["title"] as? String ?? "a film", stage = c["stage"] as? String ?? "playing"
+        let detail = c["detail"] as? String ?? "", build = c["build"] as? String ?? ""
+        let when = (c["at"] as? Double).map { " at " + ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: $0)) } ?? ""
+        Diagnostics.shared.notePlayback("The app ended while \(stage) \(title)\(when)" + (build.isEmpty ? "" : " (\(build))")
+                                        + (detail.isEmpty ? "" : ": \(detail)"))
+    }
+
+    /// How much more memory the app may take before the system ends it (an iPhone, iPad or Apple TV says).
+    static var memoryLeft: String {
+        #if os(iOS) || os(tvOS)
+        return "\(os_proc_available_memory() >> 20) MB of memory left"
+        #else
+        return ""
+        #endif
+    }
+}
+
 #if os(iOS) || os(tvOS)
 /// Apple's player (AVPlayerViewController), presented full screen as the TV app's is: its controls come and go, its
 /// close button with them; picture in picture (also by itself when leaving the app while it plays), AirPlay, speed,
@@ -222,6 +261,9 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
     private var resumeAt: CMTime?
     /// How long the start waited for the TV to change its picture mode (for the Macs' log).
     private var switchWait: Double?
+    /// Times the system has said memory is short during this film, and what listens for it.
+    private var memoryWarnings = 0
+    private var memoryWatch: NSObjectProtocol?
 
     private static func titleItem(_ title: String) -> AVMetadataItem {
         let t = AVMutableMetadataItem()
@@ -312,12 +354,20 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
             // Always answered request by request (DriveStream), which asks Google for a piece of the film at a
             // time. Drive's own address is no longer handed to the player: fetching by itself it asks Google for
             // the whole rest of the film again and again, and Google then refused the big films for the day.
-            let s = DriveStream(fileID: id)
+            let s = DriveStream(fileID: id, name: play.title)
             stream = s
             item = AVPlayerItem(asset: s.asset())
         }
         metadata = [Self.titleItem(play.title)]
         item.externalMetadata = metadata
+        memoryWarnings = 0
+        PlayCrumb.note(play.title, "opening", detail: PlayCrumb.memoryLeft)
+        if memoryWatch == nil {
+            memoryWatch = NotificationCenter.default.addObserver(forName: UIApplication.didReceiveMemoryWarningNotification,
+                                                                 object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.memoryShort() }
+            }
+        }
 
         PhonePlayback.quickStart(item)
 
@@ -343,7 +393,10 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
         c.onGone = { [weak self] in self?.closed() }
         controller = c
         ticker = p.addPeriodicTimeObserver(forInterval: CMTime(seconds: 10, preferredTimescale: 1), queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.report() }
+            MainActor.assumeIsolated {
+                self?.report()
+                self?.crumb()
+            }
         }
         if let art = play.art { poster(art, on: c, play: play) }
         watchdog = Task { @MainActor [weak self] in
@@ -402,7 +455,7 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
         // Where it was: an item that failed while taking over mid-film never got there itself.
         let at = resumeAt ?? p.currentTime()
         let old = p.currentItem
-        let s = DriveStream(fileID: id)
+        let s = DriveStream(fileID: id, name: play.title)
         stream = s
         let fresh = AVPlayerItem(asset: s.asset())
         fresh.externalMetadata = metadata
@@ -426,6 +479,26 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
         } else {
             PhonePlayback.seekAhead(p, play)
         }
+    }
+
+    /// Where the film has got to and how the memory stands, kept in case the app is ended in the middle (`PlayCrumb`).
+    private func crumb() {
+        guard let p = player, let play = current else { return }
+        let pos = p.currentTime().seconds
+        var bits = [String(format: "%.0f s in", pos.isFinite ? pos : 0), PlayCrumb.memoryLeft]
+        if memoryWarnings > 0 { bits.append(memoryWarnings == 1 ? "1 memory warning" : "\(memoryWarnings) memory warnings") }
+        if let s = stream { bits.append("asked Google for \(s.askedNow())") }
+        PlayCrumb.note(play.title, begun ? "playing" : "opening", detail: bits.filter { !$0.isEmpty }.joined(separator: ", "))
+    }
+
+    /// The system says memory is short while a film plays: less of the film is kept, by the stream and by the player
+    /// (a quarter of a minute ahead instead of a whole one), rather than the app being ended in the middle of it.
+    private func memoryShort() {
+        guard player != nil else { return }
+        memoryWarnings += 1
+        stream?.shrink()
+        item?.preferredForwardBufferDuration = 15
+        crumb()
     }
 
     /// How it went, for the Macs' diagnostics log: which way it was read, how long it took to start, stalls,
@@ -696,6 +769,7 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
         renew = nil
         current = nil
         controller = nil
+        PlayCrumb.clear()
     }
 
     // MARK: Picture in picture
@@ -760,7 +834,7 @@ final class MacPlayer: NSObject, NSWindowDelegate {
         case .url(let u):
             item = AVPlayerItem(url: u)
         case .drive(let id):
-            let s = DriveStream(fileID: id)
+            let s = DriveStream(fileID: id, name: play.title)
             stream = s
             item = AVPlayerItem(asset: s.asset())
         }
@@ -799,7 +873,12 @@ final class MacPlayer: NSObject, NSWindowDelegate {
             for _ in 0..<(PhonePlayback.startLimit * 20) {
                 guard let self, self.player === p else { return }
                 // What the stream heard from Google or the connection, when it did (the player passes on a number).
-                if item.status == .failed { self.failed(PhonePlayback.failure(self.stream?.recentFailure ?? item.error, play)); return }
+                if item.status == .failed {
+                    let words = self.stream?.refusalNow() ?? PhonePlayback.failure(self.stream?.recentFailure ?? item.error, play)
+                    Diagnostics.shared.notePlayback("\(play.title): couldn’t play (\(PhonePlayback.errorTrail(item))): \(words)")
+                    self.failed(words)
+                    return
+                }
                 if !begun, item.status == .readyToPlay {
                     begun = true
                     await PhonePlayback.begin(p, play)
@@ -831,6 +910,10 @@ final class MacPlayer: NSObject, NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
         guard (notification.object as? NSWindow) === window else { return }
         report()
+        // What Google was asked for (what its daily limit for a file counts), for the Macs' log.
+        if let s = stream, let play = current {
+            Diagnostics.shared.notePlayback("\(play.title) via request by request: asked Google for \(s.askedNow())")
+        }
         DriveLibrary.shared.flush()
         // Watch shows where it was left off at once.
         DriveLibrary.shared.playStopped()

@@ -28,6 +28,8 @@ final class Diagnostics: NSObject {
     func start() {
         guard !started, !Demo.isOn else { return }
         started = true
+        // A film the app was ended in the middle of last time (the Apple TV reports that nowhere else).
+        PlayCrumb.reportLast()
         #if !os(tvOS)
         MXMetricManager.shared.add(self)
         // What was delivered while the app wasn't running.

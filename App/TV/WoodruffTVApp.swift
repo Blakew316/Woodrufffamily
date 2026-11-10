@@ -50,6 +50,9 @@ struct WoodruffTVApp: App {
                     // Behind-the-scenes work about a second in: Watch's first pictures, the weather, the sync.
                     try? await Task.sleep(nanoseconds: 1_000_000_000)
                     WatchPrefetch.start(fleet)
+                    // A film the app was ended in the middle of last time: said in the Macs' log (nothing else reports
+                    // it from an Apple TV).
+                    PlayCrumb.reportLast()
                     // The Top Shelf's album, its newest photos ready for the slideshow.
                     Task { await TopShelfAlbum.shared.refresh() }
                     // The weather from where this Apple TV is (asked once), whether or not its TVs are paired yet.
