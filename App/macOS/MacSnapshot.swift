@@ -95,10 +95,25 @@ enum MacSnapshot {
             lines.append("\(name) toolbar: \(items.isEmpty ? "none" : items.joined(separator: ", "))")
             let fields = searchFields(in: window.contentView?.superview)
             lines.append("\(name) search fields: \(fields.isEmpty ? "none" : fields.joined(separator: "; "))")
+            let panels = sidePanels(in: window.contentView, window: window)
+            lines.append("\(name) side panels: \(panels.isEmpty ? "none" : panels.joined(separator: "; "))")
         }
         let windows = NSApp.windows.filter(\.isVisible).map { "\(type(of: $0)) “\($0.title)” \(Int($0.frame.width))×\(Int($0.frame.height))" }
         lines.append("\(name) windows: \(windows.joined(separator: "; ")); remote panel \(Fleet.shared.remotePanel ? "on" : "off")")
         return lines
+    }
+
+    /// Views in the main window shaped like a panel down one side (250 to 420 points wide, most of the window's
+    /// height): the remote's panel when it's open. Each one's kind, size and where it starts.
+    private static func sidePanels(in view: NSView?, window: NSWindow, depth: Int = 0) -> [String] {
+        guard let view, depth < 14, !view.isHidden else { return [] }
+        let frame = view.convert(view.bounds, to: nil)
+        if frame.width >= 250, frame.width <= 420, frame.height >= window.frame.height * 0.6 {
+            return ["\(type(of: view)) \(Int(frame.width))×\(Int(frame.height)) from x \(Int(frame.minX))"]
+        }
+        var found: [String] = []
+        for sub in view.subviews { found += sidePanels(in: sub, window: window, depth: depth + 1) }
+        return found
     }
 
     /// The search fields under [view]: each one's size, whether it's hidden, and its prompt.

@@ -79,6 +79,8 @@ final class Diagnostics: NSObject {
 
     /// How a film played here (or why it didn't), for the Macs' log.
     func notePlayback(_ detail: String) {
+        // (Not from a picture run's sample data: its lines went into the family's log under a made-up device.)
+        guard !Demo.isOn else { return }
         add([Report(at: Date().timeIntervalSince1970, kind: "Playback", build: AppBuild.label, detail: detail)])
     }
 

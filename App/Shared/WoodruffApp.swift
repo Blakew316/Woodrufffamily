@@ -751,6 +751,26 @@ struct MacPageChrome<Header: View, Bottom: View>: ViewModifier {
     }
 }
 
+/// Watch's search field in the window's toolbar, for the page it's on (Watch's first page, or its search results).
+private struct MacWatchSearch: ViewModifier {
+    /// Watch is the section showing.
+    var shown: Bool
+    @Binding var text: String
+    /// The field has the keyboard (Find, ⌘F, puts it there).
+    @Binding var searching: Bool
+    var focused: FocusState<Bool>.Binding
+
+    func body(content: Content) -> some View {
+        if shown {
+            content
+                .searchable(text: $text, isPresented: $searching, placement: .toolbar, prompt: Text("Movies and TV Shows"))
+                .searchFocused(focused)
+        } else {
+            content
+        }
+    }
+}
+
 /// Mac: the window's own toolbar (Back, the page's name, Home | Watch | Settings in the middle, Edit Home on Home, the
 /// remote, and Watch's search), the page under it, and the remote as a sidebar on the right that slides out when it's
 /// wanted. Home and Watch keep one row of their own above the page (`headerRow`): Home's greeting and the thermostat;
@@ -834,6 +854,11 @@ struct MacRoot: View {
                     .navigationTitle(query.isEmpty ? rootTitle : "Search")
                     .navigationSubtitle(rootSubtitle)
                     .modifier(rootChrome)
+                    // Watch's search is the toolbar's own field, there on Watch's first page and over its results.
+                    // The page has it itself, so it's in the toolbar whenever that page is the one showing and on no
+                    // other page. (One field for the window: a second one crashes AppKit. And it isn't taken out of
+                    // the toolbar on the other pages by `toolbar(removing:)`: taken out that way, it never came back.)
+                    .modifier(MacWatchSearch(shown: inWatch, text: $bar.query, searching: $searching, focused: $searchFocused))
                     .navigationDestination(for: PageRoute.self) { page in
                         page.view
                             // Back is the toolbar's own button (below), on every page alike.
@@ -857,11 +882,7 @@ struct MacRoot: View {
             // The window's own toolbar, once for every page (not one per page: the same buttons stay put as pages
             // open and close). Each page says whether it's see-through over it (`MacPageChrome`).
             .toolbar { windowToolbar }
-            // Watch's search is the toolbar's own field: there on Watch's first page and over its results, and
-            // taken out everywhere else. (One field for the window: a second one in a page crashes AppKit.)
-            .toolbar(removing: showsSearch ? nil : .search)
-            .searchable(text: $bar.query, isPresented: $searching, placement: .toolbar, prompt: Text("Movies and TV Shows"))
-            .searchFocused($searchFocused)
+            // (Watch's search field is its first page's own, on that page: `MacWatchSearch`.)
             // Never narrower than Home's tiles: the window stops shrinking before anything is clipped.
             .frame(minWidth: 480)
             .onGeometryChange(for: CGFloat.self) { ($0.size.width / 20).rounded() * 20 } action: { width = $0 }

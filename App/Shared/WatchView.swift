@@ -194,8 +194,8 @@ struct WatchView: View {
         }
         // The screenshot run (-route title) opens a title's page: the sample show, or the first title a real library
         // shows (a Mac reads its own library even with sample TVs).
-        .onChange(of: home == nil, initial: true) { _, _ in
-            guard !routedTitle, UserDefaults.standard.string(forKey: "route") == "title", let h = home else { return }
+        .onChange(of: shown == nil, initial: true) { _, _ in
+            guard !routedTitle, UserDefaults.standard.string(forKey: "route") == "title", let h = shown else { return }
             let all = (h.featured ?? []) + (h.recent ?? [])
             guard let id = all.first(where: { $0.id == "t_backyard_science" })?.id ?? all.first?.id else { return }
             routedTitle = true
