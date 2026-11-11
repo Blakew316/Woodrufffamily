@@ -89,10 +89,10 @@ struct BedtimeControl: ControlWidget {
 struct NowPlayingLiveActivity: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: NowPlayingAttributes.self) { context in
+            // Laid out and coloured as the system's own Now Playing card is, so the two read as one kind of thing
+            // when they're on the Lock Screen together.
             LockScreenNowPlaying(state: context.state, idle: context.isStale && !context.state.isPlaying)
-                .background(WidgetBackdrop())   // the app icon's colours
-                .tint(WidgetPalette.cyan)
-                .activityBackgroundTint(WidgetPalette.navyBottom)
+                .activityBackgroundTint(LockScreenNowPlaying.card)
                 .activitySystemActionForegroundColor(.white)
                 // Tapping it (anywhere but its buttons) opens the remote, as the Dynamic Island does.
                 .widgetURL(URL(string: "woodruff://remote"))
@@ -156,33 +156,156 @@ struct NowPlayingLiveActivity: Widget {
     }
 }
 
+/// The Lock Screen's card for what the remote's TV is playing, arranged as the system's Now Playing card is: the
+/// title's picture; where it's playing in small grey letters, the title in bold, a grey line under it; the bar with
+/// how far in at its left and the time left at its right; the buttons in a row beneath. Its sizes are the system
+/// card's. It differs where iOS makes it: a Live Activity is at most 160 points tall and its controls are buttons, so
+/// there's no volume slider and no AirPlay button, and its type doesn't grow with the text size (it would be cut off).
 struct LockScreenNowPlaying: View {
     var state: NowPlayingAttributes.ContentState
     /// Left paused until it went stale (5 minutes on) while the app couldn't end it: the TV, with nothing playing.
     var idle = false
+
+    /// The system card's near-black, barely see-through.
+    static let card = Color(red: 0.075, green: 0.075, blue: 0.065).opacity(0.94)
+    static let grey = Color.white.opacity(0.6)
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 12) {
-                Image("Emblem").resizable().frame(width: 46, height: 46)
-                    .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(headline).font(.headline).lineLimit(1)
-                    Text(subline).font(.subheadline).foregroundStyle(WidgetPalette.ice).lineLimit(1)
+        VStack(spacing: 0) {
+            HStack(spacing: 11) {
+                picture
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(state.tvName).font(.system(size: 13, weight: .semibold)).foregroundStyle(Self.grey)
+                    Text(idle ? "Nothing playing" : state.title).font(.system(size: 17, weight: .bold)).foregroundStyle(.white)
+                    if let line { Text(line).font(.system(size: 17)).foregroundStyle(Self.grey) }
                 }
+                .lineLimit(1)
                 Spacer(minLength: 0)
             }
             if !idle {
-                ActivityProgress(state: state).tint(WidgetPalette.cyan)
-                ActivityTransport(state: state)
+                if let start = state.startedAt, let end = state.endsAt, end > start {
+                    LockScreenTimeline(state: state, start: start, end: end)
+                        .padding(.horizontal, 6)
+                        .padding(.top, 12)
+                }
+                LockScreenTransport(state: state)
+                    .padding(.top, 12)
             }
         }
-        .padding(16)
-        .foregroundStyle(WidgetPalette.frost)
+        .padding(.horizontal, 14)
+        .padding(.top, 14)
+        .padding(.bottom, idle ? 14 : 10)
     }
 
-    private var headline: String { idle ? state.tvName : state.title }
-    private var subline: String {
-        idle ? "Nothing playing" : [state.detail, state.tvName].filter { !$0.isEmpty }.joined(separator: " · ")
+    /// The line under the title: the episode and the app. Not when it only says the title again (an app that
+    /// doesn't say what it's playing has its own name for a title).
+    private var line: String? {
+        guard !idle, !state.detail.isEmpty,
+              state.detail.caseInsensitiveCompare(state.title) != .orderedSame else { return nil }
+        return state.detail
+    }
+
+    /// The title's picture, whatever its shape (a poster stands, a still lies), else the app's emblem.
+    @ViewBuilder private var picture: some View {
+        if !idle, let image = WidgetImage.load(state.art, pixels: 240) {
+            Image(uiImage: image).resizable().aspectRatio(contentMode: .fit)
+                .frame(maxWidth: 56, maxHeight: 44)
+                .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+        } else {
+            Image("Emblem").resizable().frame(width: 44, height: 44)
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        }
+    }
+}
+
+/// The bar with its times: how far in at the left, the time left (with a minus) at the right, a thick grey bar
+/// between them. While it plays all three run by themselves (the system draws them from the start and end times).
+struct LockScreenTimeline: View {
+    var state: NowPlayingAttributes.ContentState
+    var start: Date
+    var end: Date
+
+    var body: some View {
+        let length = end.timeIntervalSince(start)
+        // A timer's text takes all the room it's offered: each gets the width of its longest reading.
+        let hours = length >= 3600
+        let width: CGFloat = hours ? 50 : (length >= 600 ? 38 : 30)
+        HStack(spacing: 9) {
+            Group {
+                if state.isPlaying {
+                    Text(timerInterval: start...end, countsDown: false, showsHours: hours)
+                } else {
+                    Text(Self.clock(state.fraction * length))
+                }
+            }
+            .multilineTextAlignment(.leading)
+            .frame(width: width, alignment: .leading)
+            bar
+            Group {
+                if state.isPlaying {
+                    Text("−\(Text(timerInterval: start...end, countsDown: true, showsHours: hours))")
+                } else {
+                    Text("−" + Self.clock((1 - state.fraction) * length))
+                }
+            }
+            .multilineTextAlignment(.trailing)
+            .frame(width: width + 9, alignment: .trailing)
+        }
+        .font(.system(size: 13, weight: .semibold).monospacedDigit())
+        .foregroundStyle(LockScreenNowPlaying.grey)
+        .lineLimit(1)
+        .minimumScaleFactor(0.8)
+        .frame(height: 16)
+    }
+
+    /// The system's own bar (the only one it moves by itself), made as thick as the system card's and rounded.
+    private var bar: some View {
+        Group {
+            if state.isPlaying {
+                ProgressView(timerInterval: start...end, countsDown: false) { EmptyView() } currentValueLabel: { EmptyView() }
+            } else {
+                ProgressView(value: min(1, max(0, state.fraction)))
+            }
+        }
+        .progressViewStyle(.linear)
+        .tint(LockScreenNowPlaying.grey)
+        .scaleEffect(x: 1, y: 1.75, anchor: .center)
+        .frame(height: 7)
+        .clipShape(Capsule())
+    }
+
+    /// 0:45, 12:04, 1:02:45.
+    static func clock(_ seconds: Double) -> String {
+        let s = Int(max(0, seconds).rounded(.down))
+        return s >= 3600 ? String(format: "%d:%02d:%02d", s / 3600, s / 60 % 60, s % 60) : String(format: "%d:%02d", s / 60, s % 60)
+    }
+}
+
+/// Back 10 seconds, play or pause, forward 30 seconds: white, the middle one larger, spaced as the system card's.
+struct LockScreenTransport: View {
+    var state: NowPlayingAttributes.ContentState
+    var body: some View {
+        HStack(spacing: 0) {
+            if state.canSkip {
+                Button(intent: SkipBackTVIntent()) { glyph("gobackward.10", 23, .semibold) }
+                    .accessibilityLabel("Back 10 Seconds")
+            }
+            Button(intent: PlayPauseTVIntent()) { glyph(state.isPlaying ? "pause.fill" : "play.fill", 32, .bold) }
+                .accessibilityLabel(state.isPlaying ? "Pause" : "Play")
+            if state.canSkip {
+                Button(intent: SkipForwardTVIntent()) { glyph("goforward.30", 23, .semibold) }
+                    .accessibilityLabel("Forward 30 Seconds")
+            }
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.white)
+        .frame(maxWidth: .infinity)
+    }
+
+    private func glyph(_ name: String, _ size: CGFloat, _ weight: Font.Weight) -> some View {
+        Image(systemName: name).font(.system(size: size, weight: weight))
+            .frame(width: 71, height: 36)
+            .contentShape(Rectangle())
     }
 }
 
@@ -211,25 +334,6 @@ struct ActivityRing: View {
                 .font(.caption2.weight(.bold))
                 .foregroundStyle(.tint)
         }
-    }
-}
-
-struct ActivityTransport: View {
-    var state: NowPlayingAttributes.ContentState
-    var body: some View {
-        HStack(spacing: 34) {
-            if state.canSkip {
-                Button(intent: SkipBackTVIntent()) { Image(systemName: "gobackward.10").font(.title3.weight(.semibold)) }
-            }
-            Button(intent: PlayPauseTVIntent()) {
-                Image(systemName: state.isPlaying ? "pause.fill" : "play.fill").font(.title.weight(.semibold))
-            }
-            if state.canSkip {
-                Button(intent: SkipForwardTVIntent()) { Image(systemName: "goforward.30").font(.title3.weight(.semibold)) }
-            }
-        }
-        .buttonStyle(.plain)
-        .frame(maxWidth: .infinity)
     }
 }
 

@@ -20,6 +20,9 @@ struct NowPlayingAttributes: ActivityAttributes {
         /// How far through (0…1), for a paused title.
         var fraction: Double
         var canSkip: Bool
+        /// The title's picture: its name in the app group (where the widgets' pictures are), once the app has saved
+        /// it there. Nil until then, and for what has none (an app that doesn't say what it's playing).
+        var art: String? = nil
     }
     var tvID: String
 }

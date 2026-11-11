@@ -286,8 +286,9 @@ enum PhoneWidgetSync {
         return kinds
     }
 
-    /// Saves a small copy of the title's picture in the app group (once per title) and gives its name.
-    private static func art(_ fleet: Fleet, _ p: NowPlaying) async -> String? {
+    /// Saves a small copy of the title's picture in the app group (once per title) and gives its name. (The Lock
+    /// Screen's Live Activity shows it too: `LiveActivitySync`.)
+    static func art(_ fleet: Fleet, _ p: NowPlaying) async -> String? {
         let a = fleet.artwork(for: p)
         guard let path = a?.poster ?? a?.backdrop, let url = fleet.hubClient()?.art(path) else { return nil }
         // A name that stays the same from launch to launch for the same picture.

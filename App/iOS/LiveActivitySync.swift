@@ -17,6 +17,9 @@ final class LiveActivitySync {
     private var pending: Task<Void, Never>?
     /// Nothing to show for the activity's TV just now: it ends in a moment unless something plays again by then.
     private var ending: Task<Void, Never>?
+    /// The title whose picture was last asked for, and when (asked again after a while: the library may only then
+    /// have found it).
+    private var askedPicture: (title: String, at: Date)?
 
     private init() {
         // Lock Screen buttons (shared with the widgets extension) bring the Live Activity up to date through this.
@@ -53,16 +56,38 @@ final class LiveActivitySync {
         }
         ending?.cancel()
         ending = nil
-        let state = NowPlayingAttributes.ContentState(tv: tv, playing: p)
+        var state = NowPlayingAttributes.ContentState(tv: tv, playing: p)
+        // The same title keeps the picture it has.
+        if let l = last, l.title == state.title { state.art = l.art }
         if let current, current.attributes.tvID == tv.id {
-            guard needsUpdate(state) else { return }
-            last = state
-            pending = Task { await current.update(ActivityContent(state: state, staleDate: state.staleDate)) }
+            if needsUpdate(state) {
+                last = state
+                pending = Task { await current.update(ActivityContent(state: state, staleDate: state.staleDate)) }
+            }
         } else {
             end()
             last = state
             _ = try? Activity.request(attributes: NowPlayingAttributes(tvID: tv.id),
                                       content: ActivityContent(state: state, staleDate: state.staleDate))
+        }
+        if state.art == nil { addPicture(fleet, p, tvID: tv.id, title: state.title) }
+    }
+
+    /// The picture of what's playing, as the system's own player shows one: saved small in the app group (once per
+    /// title, with the widgets' pictures) and named in the Live Activity once it's there.
+    private func addPicture(_ fleet: Fleet, _ p: NowPlaying, tvID: String, title: String) {
+        if let asked = askedPicture, asked.title == title, Date().timeIntervalSince(asked.at) < 15 { return }
+        askedPicture = (title, Date())
+        Task { @MainActor in
+            guard let name = await PhoneWidgetSync.art(fleet, p) else { return }
+            let live = LiveActivitySync.shared
+            guard var state = live.last, state.title == title, state.art != name,
+                  let current = Activity<NowPlayingAttributes>.activities.first(where: {
+                      $0.attributes.tvID == tvID && ($0.activityState == .active || $0.activityState == .stale)
+                  }) else { return }
+            state.art = name
+            live.last = state
+            live.pending = Task { await current.update(ActivityContent(state: state, staleDate: state.staleDate)) }
         }
     }
 
@@ -70,6 +95,7 @@ final class LiveActivitySync {
         ending?.cancel()
         ending = nil
         last = nil
+        askedPicture = nil
         let all = Activity<NowPlayingAttributes>.activities
         guard !all.isEmpty else { return }
         // Kept as the last change, so a Lock Screen button's `syncAndWait` waits for it before the app sleeps again.
