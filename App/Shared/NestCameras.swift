@@ -727,11 +727,12 @@ final class CameraStreams {
     #if os(macOS)
     /// Far off screen: a camera's picture plays here while no window shows it (a web view in no window plays no video).
     @ObservationIgnored private lazy var grabWindow: NSWindow = {
-        let w = OffscreenCameraWindow(contentRect: NSRect(x: -20000, y: -20000, width: 640, height: 360), styleMask: .borderless,
-                         backing: .buffered, defer: false)
+        let w = OffscreenCameraWindow(contentRect: NSRect(origin: OffscreenCameraWindow.away, size: NSSize(width: 640, height: 360)),
+                                      styleMask: .borderless, backing: .buffered, defer: false)
         w.isReleasedWhenClosed = false
         w.ignoresMouseEvents = true
         w.contentView = NSView(frame: NSRect(x: 0, y: 0, width: 640, height: 360))
+        w.keepAway()
         return w
     }()
 
@@ -2039,7 +2040,55 @@ struct LiveWebView: NSViewRepresentable {
 }
 
 /// The far-off window the Mac's cameras play in while no window shows them.
-final class OffscreenCameraWindow: NSWindow {}
+/// It is never to be seen. macOS brings a window it finds off every screen back onto one when the screens change (a
+/// display woken or plugged in, its resolution changed, Screen Sharing): a camera's picture then sat on the desktop,
+/// stale, with nothing to close it by. So it's put back whenever anything moves it, and it lies under the desktop's
+/// picture, where it can't be seen even on a screen.
+final class OffscreenCameraWindow: NSWindow {
+    /// Where it stays.
+    static let away = NSPoint(x: -20000, y: -20000)
+
+    private var watching: [NSObjectProtocol] = []
+    private var putting = false
+    private var puts: [Date] = []
+
+    func keepAway() {
+        guard watching.isEmpty else { return }
+        level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.desktopWindow)) - 1)
+        let center = NotificationCenter.default
+        watching = [
+            center.addObserver(forName: NSWindow.didMoveNotification, object: self, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.goAway() }
+            },
+            center.addObserver(forName: NSWindow.didChangeScreenNotification, object: self, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.goAway() }
+            },
+            center.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.goAway() }
+            },
+        ]
+    }
+
+    private func goAway() {
+        guard !putting, frame.origin != Self.away else { return }
+        // Never a tug of war with macOS, should it insist: a few tries, then left (it's under the desktop's picture).
+        let now = Date()
+        puts.removeAll { now.timeIntervalSince($0) > 5 }
+        guard puts.count < 4 else { return }
+        puts.append(now)
+        putting = true
+        setFrameOrigin(Self.away)
+        putting = false
+    }
+
+    /// macOS doesn't get to bring it onto a screen.
+    override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect { frameRect }
+
+    override func orderBack(_ sender: Any?) {
+        goAway()
+        super.orderBack(sender)
+    }
+}
 #endif
 
 // MARK: - Settings
