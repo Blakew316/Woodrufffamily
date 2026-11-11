@@ -323,6 +323,12 @@ private final class StreamNotes: @unchecked Sendable {
     private var dropped = 0
     private var mostPlaces = 0
     private var widest: Int64 = 0
+    /// The player's requests for a set length (not "to the end"), and those made while it read from two places.
+    private var fixed = 0
+    private var apart = 0
+    /// Pieces put into files, and whether one couldn't be.
+    private var files = 0
+    private var filesFailed = false
     private var refused: String?
     private var limit = false
     /// The file's size, once Google has said.
@@ -342,13 +348,21 @@ private final class StreamNotes: @unchecked Sendable {
     }
     /// A piece is asked for at a place that doesn't carry on from the last one.
     func freshStart() { lock.lock(); starts += 1; lock.unlock() }
-    /// The player asked for something; its requests are now at [positions].
-    func playerAsked(at positions: [Int64]) {
+    /// The player asked for something ([bounded]: a set length, not "to the end"); its requests are now at
+    /// [positions].
+    func playerAsked(at positions: [Int64], bounded: Bool) {
         let p = StreamKeep.places(positions, near: 16 << 20)
         lock.lock(); defer { lock.unlock() }
         wanted += 1
+        if bounded { fixed += 1 }
+        if p.count > 1 { apart += 1 }
         mostPlaces = max(mostPlaces, p.count)
         widest = max(widest, p.spread)
+    }
+    /// A piece went into a file ([ok]), or couldn't.
+    func filed(_ ok: Bool) {
+        lock.lock(); defer { lock.unlock() }
+        if ok { files += 1 } else { filesFailed = true }
     }
     func playerDropped() { lock.lock(); dropped += 1; lock.unlock() }
     func got(_ bytes: Int64) {
@@ -379,13 +393,19 @@ private final class StreamNotes: @unchecked Sendable {
 
     var tally: String {
         lock.lock(); defer { lock.unlock() }
-        let speed = bestThree > 0 ? String(format: "up to %.0f Mb/s, ", Double(bestThree) * 8 / 3 / 1_000_000) : ""
-        let places = mostPlaces == 1 ? "1 place" : "\(mostPlaces) places"
-        let apart = widest > 0 ? " (\(Self.size(widest)) apart)" : ""
-        return "\(Self.size(asked)) in \(requests == 1 ? "1 request" : "\(requests) requests"), \(Self.size(sent)) sent, "
-            + "\(Self.size(handed)) to the player, \(speed)\(Self.size(most)) kept at most, "
-            + "\(Self.size(twice)) of it asked twice, \(starts) fresh starts, "
-            + "the player asked \(wanted) times and dropped \(dropped), \(places) at once at most\(apart)"
+        // (Put together a part at a time: one long sum of strings takes the compiler too long to check.)
+        var text = "\(Self.size(asked)) in \(requests == 1 ? "1 request" : "\(requests) requests")"
+        text += ", \(Self.size(sent)) sent, \(Self.size(handed)) to the player"
+        if bestThree > 0 { text += String(format: ", up to %.0f Mb/s", Double(bestThree) * 8 / 3 / 1_000_000) }
+        text += ", \(Self.size(most)) kept at most"
+        text += ", \(Self.size(twice)) of it asked twice, \(starts) fresh starts"
+        text += ", the player asked \(wanted) times (\(fixed) for a set length, \(apart) while reading two places)"
+        text += " and dropped \(dropped)"
+        text += mostPlaces == 1 ? ", 1 place at once at most" : ", \(mostPlaces) places at once at most"
+        if widest > 0 { text += " (\(Self.size(widest)) apart)" }
+        text += ", \(files) pieces kept in files"
+        if filesFailed { text += " until one couldn’t be written" }
+        return text
     }
 
     private static func size(_ bytes: Int64) -> String {
@@ -437,6 +457,27 @@ private final class Loader: NSObject, AVAssetResourceLoaderDelegate, StreamTask 
         return min(max(free / 4, 3 * piece), 10 * piece)
         #endif
     }
+    /// How much of the film is kept in files at most, and the smallest piece worth a file of its own.
+    private static let onDisk: Int64 = 3 << 30
+    private static let worthFiling = 1 << 20
+    /// Writing and removing the pieces' files, off the stream's own queue.
+    private static let disk = DispatchQueue(label: "woodruff.drive-stream.files", qos: .utility)
+    /// Where every film's pieces are kept, emptied once as the app starts (a film that ended with the app left its
+    /// pieces behind); nil when the device's cache folder can't be used.
+    private static let filmsFolder: URL? = {
+        guard let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first else { return nil }
+        let dir = caches.appendingPathComponent("FilmPieces", isDirectory: true)
+        try? FileManager.default.removeItem(at: dir)
+        do { try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true) } catch { return nil }
+        return dir
+    }()
+    /// A folder of its own for one film's pieces.
+    private static func newFolder() -> URL? {
+        guard let base = filmsFolder else { return nil }
+        let dir = base.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        do { try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true) } catch { return nil }
+        return dir
+    }
     /// How long a place the player has let go of still counts as one it reads from (it asks again from nearly the
     /// same place a moment later), how far behind a place still counts as where it is, and how close together two
     /// places are one.
@@ -459,6 +500,10 @@ private final class Loader: NSObject, AVAssetResourceLoaderDelegate, StreamTask 
         /// How far along a straight read it is (an index into `sizes`).
         let step: Int
         var data = Data()
+        /// The file its bytes are in once it's whole (`store`; they're then read from the file as they're needed),
+        /// and whether it's being written there now.
+        var file: URL?
+        var storing = false
         /// Still being fetched: waiting for Google, for a sign-in or for another try.
         var fetching = true
         var task: URLSessionDataTask?
@@ -513,6 +558,11 @@ private final class Loader: NSObject, AVAssetResourceLoaderDelegate, StreamTask 
     private var unplayable: String?
     /// The memory is short: less is kept (`shrink`).
     private var keepNow = Loader.room()
+    /// The folder this film's whole pieces are kept in, each in a file of its own (nil when it couldn't be made), and
+    /// whether pieces still go there: not once one couldn't be written (the storage full). Without it, pieces stay
+    /// in memory, as they did.
+    private let folder: URL? = Loader.newFolder()
+    private var filing = true
     /// Where the player's requests had got to when it let go of them, lately.
     private var lately: [(at: Int64, seen: Date)] = []
 
@@ -534,9 +584,13 @@ private final class Loader: NSObject, AVAssetResourceLoaderDelegate, StreamTask 
         pieces = []
         wants = []
         lately = []
+        // The film is over: its pieces' files go.
+        filing = false
+        if let gone = folder { Loader.disk.async { try? FileManager.default.removeItem(at: gone) } }
     }
 
-    /// The memory is short: only the piece being read and the next are kept from here on.
+    /// The memory is short: only the piece being read and the next are kept in memory from here on. (What's in
+    /// files isn't memory: it stays.)
     func shrink() {
         keepNow = min(keepNow, 2 * (Loader.sizes.last ?? 0))
         trim()
@@ -594,7 +648,7 @@ private final class Loader: NSObject, AVAssetResourceLoaderDelegate, StreamTask 
         let d = req.dataRequest
         let want = Want(request: req, at: d?.requestedOffset ?? 0, end: d.flatMap(Loader.wantedEnd))
         wants.append(want)
-        notes.playerAsked(at: wants.map { $0.at })
+        notes.playerAsked(at: wants.map { $0.at }, bounded: want.end != nil)
         pump(want)
     }
 
@@ -888,9 +942,56 @@ private final class Loader: NSObject, AVAssetResourceLoaderDelegate, StreamTask 
             piece.asked = Int64(piece.data.count)
         }
         piece.fetching = false
-        if piece.data.isEmpty { pieces.removeAll { $0 === piece } }
+        if piece.data.isEmpty { pieces.removeAll { $0 === piece } } else { store(piece) }
         trim()
         feed()
+    }
+
+    /// A whole piece goes into a file of its own and is read from there from then on. Kept that way it costs
+    /// storage, not memory, so far more of the film can be kept (`onDisk`), and what the player reads a second
+    /// time comes from here instead of being asked of Google again: on one film, 18 of the 21 GB asked of Google had
+    /// been asked for before, with 600 MB the most that memory could keep. If a piece can't be written (the storage
+    /// is full), it and the ones after it stay in memory, as they did.
+    private func store(_ piece: Piece) {
+        guard filing, let folder, piece.file == nil, !piece.storing, piece.data.count >= Loader.worthFiling else { return }
+        piece.storing = true
+        let bytes = piece.data
+        let file = folder.appendingPathComponent(String(piece.offset))
+        Loader.disk.async { [weak self] in
+            var mapped: Data?
+            do {
+                try bytes.write(to: file)
+                mapped = try Data(contentsOf: file, options: .alwaysMapped)
+            } catch {
+                try? FileManager.default.removeItem(at: file)
+            }
+            let read = mapped
+            streamQueue.async {
+                piece.storing = false
+                guard let self, self.pieces.contains(where: { $0 === piece }) else {
+                    // Let go of meanwhile, or the film is over.
+                    try? FileManager.default.removeItem(at: file)
+                    return
+                }
+                if let read, read.count == piece.data.count {
+                    piece.data = read
+                    piece.file = file
+                    self.notes.filed(true)
+                } else {
+                    try? FileManager.default.removeItem(at: file)
+                    self.filing = false
+                    self.notes.filed(false)
+                }
+                self.trim()
+            }
+        }
+    }
+
+    /// [piece] is no longer kept: its file goes.
+    private func unfile(_ piece: Piece) {
+        guard let file = piece.file else { return }
+        piece.file = nil
+        Loader.disk.async { try? FileManager.default.removeItem(at: file) }
     }
 
     /// What's left of [piece] is asked for again after a moment.
@@ -924,6 +1025,7 @@ private final class Loader: NSObject, AVAssetResourceLoaderDelegate, StreamTask 
         piece.task = nil
         piece.fetching = false
         pieces.removeAll { $0 === piece }
+        unfile(piece)
     }
 
     /// Google refused a piece. Busy (its rate limits, a server error): asked again after a growing pause. A file it
@@ -950,26 +1052,41 @@ private final class Loader: NSObject, AVAssetResourceLoaderDelegate, StreamTask 
         gaveUp(piece, f)
     }
 
-    /// Keeps what's held within `keepNow` (`StreamKeep`): what the film has gone past goes first, then what's
-    /// furthest ahead of the place that will come to it; never a piece that's being fetched or that one of the
-    /// player's requests is reading or about to.
+    /// Keeps what's held within what it may be: the pieces in files within `onDisk`, the whole ones still in memory
+    /// (being written to their files, too small for one, or with no files to go to) within `keepNow`.
     private func trim() {
-        var held: Int64 = 0
-        for p in pieces { held += Int64(p.data.count) }
-        notes.keeping(held)
-        guard held > keepNow else { return }
-        var parts: [StreamKeep.Part] = []
-        parts.reserveCapacity(pieces.count)
+        var filed: Int64 = 0, loose: Int64 = 0, all: Int64 = 0
         for p in pieces {
+            let n = Int64(p.data.count)
+            all += n
+            if p.file != nil { filed += n } else if !p.fetching { loose += n }
+        }
+        notes.keeping(all)
+        if filed > Loader.onDisk { release(to: Loader.onDisk, filed: true) }
+        if loose > keepNow { release(to: keepNow, filed: false) }
+    }
+
+    /// Lets go of what `StreamKeep` picks among the pieces in files ([filed]) or the whole ones in memory, so that
+    /// they fit [budget]: what the film has gone past goes first, then what's furthest ahead of the place that will
+    /// come to it; never a piece that one of the player's requests is reading or about to.
+    private func release(to budget: Int64, filed: Bool) {
+        var parts: [StreamKeep.Part] = []
+        var which: [Int] = []
+        for (i, p) in pieces.enumerated() {
+            guard !p.fetching, (p.file != nil) == filed else { continue }
             let reading = wants.contains(where: { p.offset <= $0.at && $0.at <= p.limit })
             parts.append(StreamKeep.Part(offset: p.offset, length: Int64(p.data.count),
-                                         used: p.used.timeIntervalSince1970, busy: p.fetching || reading))
+                                         used: p.used.timeIntervalSince1970, busy: reading))
+            which.append(i)
         }
-        let going = Set(StreamKeep.letGo(parts, places: readingAt(), budget: keepNow, back: Loader.behind))
-        guard !going.isEmpty else { return }
+        let picked = StreamKeep.letGo(parts, places: readingAt(), budget: budget, back: Loader.behind)
+        guard !picked.isEmpty else { return }
+        let going = Set(picked.map { which[$0] })
         var kept: [Piece] = []
         kept.reserveCapacity(pieces.count)
-        for (i, p) in pieces.enumerated() where !going.contains(i) { kept.append(p) }
+        for (i, p) in pieces.enumerated() {
+            if going.contains(i) { unfile(p) } else { kept.append(p) }
+        }
         pieces = kept
     }
 }
