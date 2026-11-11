@@ -14,6 +14,11 @@ struct WatchSettingsView: View {
     #endif
     @AppStorage("watch.source") private var source = "tv"
     @AppStorage("watch.playOn") private var playOn = "tv"
+    #if os(tvOS)
+    /// The TV this Apple TV is plugged into (`TVHandOff.screenKey`), and how many films are started there.
+    @AppStorage("watch.screenTV") private var screenTV = ""
+    @State private var handedOff = 0
+    #endif
     private let library = DriveLibrary.shared
 
     @State private var signedIn = GoogleDrive.signedIn
@@ -30,6 +35,33 @@ struct WatchSettingsView: View {
 
     var body: some View {
         Form {
+            #if os(tvOS)
+            // The TV this Apple TV is plugged into: a film Apple's player stutters on is played by that TV's own
+            // player (`TVHandOff`). Each Apple TV keeps its own choice.
+            Section {
+                Button { screenTV = "" } label: {
+                    HStack { Text("Not Chosen"); Spacer(); if screenTV.isEmpty { Image(systemName: "checkmark") } }
+                }
+                ForEach(fleet.tvs.filter { !$0.isUnpaired }) { tv in
+                    Button { screenTV = tv.id } label: {
+                        HStack { Text(tv.name); Spacer(); if screenTV == tv.id { Image(systemName: "checkmark") } }
+                    }
+                }
+                if handedOff > 0 {
+                    Button("Try Every Film Here Again") {
+                        TVHandOff.forgetAll()
+                        handedOff = 0
+                    }
+                }
+            } header: {
+                Text("This Apple TV’s Screen")
+            } footer: {
+                Text(handedOff > 0
+                     ? "The TV this Apple TV is plugged into. A film that stutters in Apple’s player plays on that TV’s own player instead: \(handedOff) so far."
+                     : "The TV this Apple TV is plugged into. A film that stutters in Apple’s player plays on that TV’s own player instead.")
+            }
+            .onAppear { handedOff = TVHandOff.count }
+            #endif
             // None of these three on Apple TV. Library did nothing there (it reads Drive whenever it's signed in), yet
             // the choice travelled to the family's phones; it plays right here; and it can keep no downloads (an
             // Apple TV app may only write in Caches, not where they're kept).

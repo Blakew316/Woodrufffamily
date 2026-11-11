@@ -1632,6 +1632,13 @@ enum PlayRouter {
     /// Starts [a] on [tv] (the remote's TV when nil). False when there's nowhere to play it (and says so).
     @discardableResult
     static func start(_ a: PlayAction, fleet: Fleet, on tv: FleetTV? = nil, fromStart: Bool = false) -> Bool {
+        #if os(tvOS)
+        // A film Apple's player stutters on goes to the TV this Apple TV is plugged into (`TVHandOff`), when one has
+        // been chosen and is on.
+        if tv == nil, a.isDrive, TVHandOff.knows(a.key), let screen = TVHandOff.screen(fleet) {
+            return start(a, fleet: fleet, on: screen, fromStart: fromStart)
+        }
+        #endif
         // Settings → Watch: Play plays on this device (Play On… still picks a TV).
         if tv == nil, PhonePlayback.playsHere, PhonePlayback.canPlay(a) {
             guard let p = PhonePlayback.play(a, fleet: fleet, fromStart: fromStart) else { return false }

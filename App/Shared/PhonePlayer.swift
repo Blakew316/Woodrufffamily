@@ -391,6 +391,8 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
     /// Times the system has said memory is short during this film, and what listens for it.
     private var memoryWarnings = 0
     private var memoryWatch: NSObjectProtocol?
+    /// This film has been seen hopping (`handOffIfHopping`): looked at once.
+    private var handedOff = false
     #if os(tvOS)
     /// Apple TV: what the player's title and info panel say about the film in words (`describe`), and its picture once
     /// that has come (`artwork`). Together they are `metadata`, whichever comes first.
@@ -604,6 +606,7 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
         #endif
         item.externalMetadata = metadata
         memoryWarnings = 0
+        handedOff = false
         PlayCrumb.note(play.title, "opening", detail: PlayCrumb.memoryLeft)
         if memoryWatch == nil {
             memoryWatch = NotificationCenter.default.addObserver(forName: UIApplication.didReceiveMemoryWarningNotification,
@@ -656,6 +659,7 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
                 self?.crumb()
                 #if os(tvOS)
                 self?.offerNext()
+                self?.handOffIfHopping()
                 #endif
             }
         }
@@ -1067,6 +1071,33 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
         guard pos.isFinite, pos > 0 else { return }
         DriveLibrary.shared.played(play.key, title: play.title, pos: pos * 1000, dur: dur.isFinite ? dur * 1000 : 0)
     }
+
+    #if os(tvOS)
+    /// Apple's player hopping between this film's sound and its picture (`TVHandOff`): the film is remembered as one
+    /// for the TV's own player, and goes on there from where it is, when the TV this Apple TV is plugged into has
+    /// been chosen and is on. Looked at once for each film played.
+    private func handOffIfHopping() {
+        guard begun, !handedOff, let play = current, let p = player, stream?.hoppingNow() == true,
+              play.key.hasPrefix("drive:") else { return }
+        handedOff = true
+        TVHandOff.remember(play.key)
+        let fleet = Fleet.shared
+        guard let screen = TVHandOff.screen(fleet) else {
+            Diagnostics.shared.notePlayback("\(play.title): Apple’s player is hopping between its sound and picture; no TV to hand it to")
+            if !TVHandOff.chosen {
+                fleet.alert("This Film Stutters Here", "Its sound and picture are stored far apart, which Apple’s player handles badly. In Settings, Watch, choose the TV this Apple TV is plugged into, and films like it play on that TV’s own player.")
+            }
+            return
+        }
+        let at = p.currentTime().seconds
+        let action = PlayAction(key: play.key, title: play.title, position: at.isFinite && at > 0 ? at * 1000 : nil,
+                                label: nil, duration: nil, resume: nil, latest: nil)
+        Diagnostics.shared.notePlayback("\(play.title): Apple’s player is hopping between its sound and picture; handed to \(screen.name)")
+        controller?.dismiss(animated: true)
+        PlayRouter.start(action, fleet: fleet, on: screen)
+        fleet.alert("Playing on \(screen.name)", "Apple’s player stutters on this film, so it’s playing on the TV’s own player. It starts there from now on.")
+    }
+    #endif
 
     /// The player went away: closed, or (in picture in picture) its window closed.
     private func closed() {

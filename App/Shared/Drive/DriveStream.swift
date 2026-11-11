@@ -65,6 +65,10 @@ final class DriveStream: NSObject {
     /// 3.1 GB to the player, 130 MB kept at most"), for the Macs' log.
     func askedNow() -> String { loader.notes.tally }
 
+    /// Whether the player is hopping between two places in the film all the time (its sound and its picture, stored
+    /// far apart): some hundreds of requests made while it read from both.
+    func hoppingNow() -> Bool { loader.notes.hopping }
+
     /// The memory is short: less of the film is kept from here on.
     func shrink() {
         let l = loader
@@ -390,6 +394,9 @@ private final class StreamNotes: @unchecked Sendable {
     var refusal: String? { lock.lock(); defer { lock.unlock() }; return refused }
     /// Google refused the file with its daily limit.
     var overLimit: Bool { lock.lock(); defer { lock.unlock() }; return limit }
+    /// The player has asked this many times while reading from two places: a film stored the usual way is asked
+    /// for a handful of times in all, one with its sound and picture far apart thousands of times a minute.
+    var hopping: Bool { lock.lock(); defer { lock.unlock() }; return apart >= 500 }
 
     var tally: String {
         lock.lock(); defer { lock.unlock() }
