@@ -432,6 +432,28 @@ final class NestAlerts {
             if !quiet {
                 CameraShare.shared.noteEvent(key: short, camera: camera, name: body, title: title, focus: focus,
                                              event: event, clip: race.clip ?? clip)
+                // The camera's page lists its last events: this one's picture is kept for it, and its clip (now, if
+                // Google's has come; else when it does, a few seconds after the event or in a later message).
+                let when = happened ?? received
+                let here = CameraEventMedia.cached(short).flatMap { $0.pathExtension == "mp4" ? $0 : nil }
+                await CameraHistory.keep(key: short, camera: camera, title: title, at: when, picture: shown, clip: here)
+                if here == nil {
+                    Task {
+                        var url = race.clip ?? clip
+                        var waited = 0
+                        while (url ?? "").isEmpty, waited < 30 {
+                            try? await Task.sleep(nanoseconds: 2_000_000_000)
+                            waited += 2
+                            url = race.clip
+                        }
+                        guard let url, !url.isEmpty, let token = try? await NestCameras.shared.accessToken() else { return }
+                        let file = await CameraEventMedia.fetch(camera: camera, eventID: nil, clipURL: url, key: short,
+                                                                until: Date().addingTimeInterval(60), using: token)
+                        if let file, file.pathExtension == "mp4" {
+                            await CameraHistory.keep(key: short, camera: camera, title: title, at: when, picture: nil, clip: file)
+                        }
+                    }
+                }
             }
             Notifier.deliver(c, id: id)
         }

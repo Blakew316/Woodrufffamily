@@ -195,7 +195,7 @@ final class CameraShare {
         let line = request.components(separatedBy: "\r\n").first ?? ""
         let parts = line.split(separator: " ")
         guard parts.count >= 2, let url = URLComponents(string: "http://x" + parts[1]),
-              ["/still", "/event", "/events", "/diag", "/drivetoken"].contains(url.path) else {
+              ["/still", "/event", "/events", "/history", "/clip", "/diag", "/drivetoken"].contains(url.path) else {
             return reply(c, "404 Not Found", nil)
         }
         let q = Dictionary((url.queryItems ?? []).map { ($0.name, $0.value ?? "") }, uniquingKeysWith: { a, _ in a })
@@ -223,7 +223,19 @@ final class CameraShare {
         guard let id = q["id"], !id.isEmpty else { return reply(c, "403 Forbidden", nil) }
         if url.path == "/event" {
             guard id.count <= 32, id.allSatisfy(\.isHexDigit) else { return reply(c, "403 Forbidden", nil) }
-            if let jpeg = CameraEventMedia.eventImage(id) { return reply(c, "200 OK", jpeg) }
+            // (An older event's picture is in the camera's history.)
+            if let jpeg = CameraEventMedia.eventImage(id) ?? CameraHistory.picture(id) { return reply(c, "200 OK", jpeg) }
+            return reply(c, "404 Not Found", nil)
+        }
+        // GET /history?id=<camera>&k=<key>: the camera's last events, newest first (its page lists them).
+        if url.path == "/history" {
+            let list = CameraHistory.events(camera: id)
+            return reply(c, "200 OK", (try? JSONEncoder().encode(list)) ?? Data("[]".utf8), type: "application/json")
+        }
+        // GET /clip?id=<event's short id>&k=<key>: the event's clip, when Google sent one.
+        if url.path == "/clip" {
+            guard id.count <= 32, id.allSatisfy(\.isHexDigit) else { return reply(c, "403 Forbidden", nil) }
+            if let clip = CameraHistory.clip(id) { return reply(c, "200 OK", clip, type: "video/mp4") }
             return reply(c, "404 Not Found", nil)
         }
         watched(id)

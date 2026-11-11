@@ -1292,7 +1292,18 @@ struct CameraLiveView: View {
                 .ignoresSafeArea()
                 .opacity(appeared ? 1 : 0)
                 .onTapGesture { close() }
-            card(player)
+            VStack(spacing: 12) {
+                card(player)
+                #if os(iOS)
+                // The camera's last events, as Google Home lists them under the live picture: one tapped plays where
+                // the live picture is (the alert's own replay), with Live a tap away.
+                CameraEventsList(camera: camera.id) { event, file in
+                    streams.replay = CameraReplay(camera: camera.id, key: event.key, event: nil, clip: nil, title: event.title,
+                                                  at: Date(timeIntervalSince1970: event.at), media: file)
+                    withAnimation(.smooth(duration: 0.25)) { showLive = false }
+                }
+                #endif
+            }
                 #if os(tvOS)
                 // Apple TV: a camera not opened from an alert has no button on it (see `card`), so the picture itself is
                 // what the remote is on: nothing shows for it, and a click does nothing. Menu closes the camera from
