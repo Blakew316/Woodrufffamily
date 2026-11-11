@@ -427,11 +427,14 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
     /// episode, its show's year.
     private static func infoItems(_ info: DriveLibrary.PlayerInfo, story: String?) -> [AVMetadataItem] {
         var out = [titleItem(info.title)]
-        if let line = info.subtitle, !line.isEmpty { out.append(infoItem(.iTunesMetadataTrackSubTitle, line)) }
+        // A film's line is just its year. The player shows a year beside that line by itself (from the film's date),
+        // so the year sent as the line too showed twice: "2019 · 2019". A film's year goes as its date only.
+        let filmYear = info.year == nil ? info.subtitle.flatMap { Int($0) } : nil
+        if filmYear == nil, let line = info.subtitle, !line.isEmpty { out.append(infoItem(.iTunesMetadataTrackSubTitle, line)) }
         if let story, !story.isEmpty { out.append(infoItem(.commonIdentifierDescription, story)) }
         if !info.genres.isEmpty { out.append(infoItem(.quickTimeMetadataGenre, info.genres.prefix(2).joined(separator: ", "))) }
         // A date in the middle of the year, so no time zone shows the year before or after.
-        if let year = info.year { out.append(infoItem(.commonIdentifierCreationDate, "\(year)-07-01T12:00:00Z")) }
+        if let year = info.year ?? filmYear { out.append(infoItem(.commonIdentifierCreationDate, "\(year)-07-01T12:00:00Z")) }
         return out
     }
 
