@@ -567,6 +567,21 @@ struct HomeTVTile: View, Equatable {
     #else
     static let macBig = false
     #endif
+    // The tile's type. Apple TV has sizes of its own: the system's named sizes there are made for one line read
+    // across a room (a title is 48 points, a headline 38), and in a tile 480 points wide they cut the TV's name
+    // short ("Master Be…") and made the rest gigantic. These sit with Home's other tiles there (a name is 26).
+    #if os(tvOS)
+    private static let nameFont = Font.system(size: 28, weight: .bold)
+    private static let stateFont = Font.system(size: 21, weight: .semibold)
+    private static let titleFont = Font.system(size: 26, weight: .semibold)
+    private static let detailFont = Font.system(size: 21)
+    #else
+    private static let nameFont: Font = macBig ? .title2.bold() : .title3.bold()
+    private static let stateFont: Font = .caption.weight(.semibold)
+    private static let titleFont: Font = macBig ? .title3.weight(.semibold) : .headline
+    private static let detailFont: Font = .subheadline
+    #endif
+
     @Environment(Fleet.self) private var fleet
     /// Home's tiles are being arranged: the hover lift rests (the tile is being moved or resized).
     @Environment(\.homeArranging) private var arranging
@@ -654,17 +669,17 @@ struct HomeTVTile: View, Equatable {
             }
             VStack(alignment: .leading, spacing: 0) {
                 HStack(alignment: .center) {
-                    Text(tv.name).font(Self.macBig ? .title2.bold() : .title3.bold())
+                    Text(tv.name).font(Self.nameFont)
                     if tv.needsAttention { Circle().fill(Palette.attention).frame(width: 8, height: 8) }
                     Spacer()
-                    Text(state).font(.caption.weight(.semibold))
+                    Text(state).font(Self.stateFont)
                         .foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 12)
                 if let p {
-                    Text(p.title).font(Self.macBig ? .title3.weight(.semibold) : .headline).lineLimit(1)
+                    Text(p.title).font(Self.titleFont).lineLimit(1)
                     Text([p.subtitle, p.app].compactMap { $0?.isEmpty == false ? $0 : nil }.joined(separator: " · "))
-                        .font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                        .font(Self.detailFont).foregroundStyle(.secondary).lineLimit(1)
                     LiveProgress(playing: p, times: false, tint: .white).padding(.top, 10)
                 } else if !tv.online {
                     // "Seen 5 min. ago" keeps up by itself: the tile is drawn again only when the TV changes, and one
@@ -697,6 +712,10 @@ struct HomeTVTile: View, Equatable {
                         .buttonStyle(.glass)
                     }
                 }
+                #if os(tvOS)
+                // (Remote, Turn On and Pair: the system's button type there is as large as a headline.)
+                .font(.system(size: 22, weight: .semibold))
+                #endif
                 .padding(.top, 12)
             }
             .padding(18)
@@ -783,7 +802,7 @@ struct HomeTVTile: View, Equatable {
     }
 
     private var idleText: some View {
-        Text(idleLine).font(Self.macBig ? .title3.weight(.semibold) : .headline).foregroundStyle(tv.online ? .primary : .secondary)
+        Text(idleLine).font(Self.titleFont).foregroundStyle(tv.online ? .primary : .secondary)
     }
 }
 

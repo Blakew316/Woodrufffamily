@@ -42,7 +42,9 @@ struct TVMacRoot: View {
                 .environment(\.watchChanged, WatchChanged { _ in searchAgain += 1 })
                 .titleSheet(Binding(get: { searchTitle.map { TitleRef(id: $0) } }, set: { searchTitle = $0?.id })) { TitleSheet(id: $0.id) }
             }
-            Tab("Home", systemImage: "house", value: "home") {
+            // The sidebar's icons are Apple's plain solid ones (a house, a film, a screen, a gear): the outlined
+            // ones were drawn with a heavy line there and looked busy.
+            Tab("Home", systemImage: "house.fill", value: "home") {
                 NavigationStack {
                     HomeView()
                         .toolbar(.hidden, for: .navigationBar)
@@ -51,11 +53,11 @@ struct TVMacRoot: View {
             }
             // Movies and TV Shows: a tab each, as the TV app's own sidebar has them, each with its own banner and rows
             // (they were one Watch tab, switched by a control over its banner).
-            Tab("Movies", systemImage: "movieclapper", value: "movies") { watchPage("movies") }
-            Tab("TV Shows", systemImage: "tv", value: "shows") { watchPage("shows") }
+            Tab("Movies", systemImage: "film.fill", value: "movies") { watchPage("movies") }
+            Tab("TV Shows", systemImage: "tv.fill", value: "shows") { watchPage("shows") }
             // Set apart lower in the sidebar, as Apple TV keeps Library.
             TabSection("") {
-                Tab("Settings", systemImage: "gearshape", value: "settings") {
+                Tab("Settings", systemImage: "gearshape.fill", value: "settings") {
                     NavigationStack(path: $settingsPath) { TVSettingsView() }
                         .background { IconBackdrop() }
                 }

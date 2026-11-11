@@ -122,7 +122,13 @@ final class HomeLayout {
         order = s?.order ?? [:]
         hiddenItems = Set(s?.hiddenItems ?? [])
         groupByRoom = s?.groupByRoom ?? true
-        favorites = s?.favorites ?? []
+        var starred = s?.favorites ?? []
+        #if os(tvOS)
+        // The sample family on Apple TV (-demo YES, the screenshot run): three of its TVs are favourites, so Home's
+        // first row shows TVs' tiles as the family's own Apple TVs do (one playing, one on YouTube, one off).
+        if Demo.isOn, starred.isEmpty { starred = ["this", "tv-den", "tv-kitchen"] }
+        #endif
+        favorites = starred
         pinnedRooms = s?.pinnedRooms ?? ["Kitchen", "Front Yard", "Living Room", "Backyard"]
         favoriteStamps = s?.favoriteStamps ?? [:]
         boards = s?.boards ?? [:]
