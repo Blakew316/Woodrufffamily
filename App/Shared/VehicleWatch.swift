@@ -12,8 +12,8 @@ import WoodruffKit
 /// (`VehicleDetector`) finds the vehicles in the picture, and `VehicleTracker` says when one has arrived: a vehicle
 /// that wasn't there, on the camera's zone (its driveway) at two looks, where the picture changed as it turned up.
 /// Cars parked in view, cars driving past and changes of light are not news. An arrival is an alert, at most one
-/// every three minutes per camera unless the drive went quiet in between. In Test Mode (the default) it only notes
-/// what it saw, with the frame, under the switch and in a log of its own beside the frames.
+/// every three minutes per camera unless the drive went quiet in between. In Test Mode (off unless it's switched on)
+/// it only notes what it saw, with the frame, under the switch and in a log of its own beside the frames.
 /// (It used to look for a change in the picture's brightness and ask Vision what the changed patch showed. In its
 /// first days every vehicle that named was a neighbour's parked car as the light changed, and it missed the ones
 /// that came.)
@@ -27,9 +27,11 @@ final class VehicleWatch {
         get { Set(UserDefaults.standard.stringArray(forKey: "vehicle.cameras") ?? []) }
         set { UserDefaults.standard.set(Array(newValue).sorted(), forKey: "vehicle.cameras"); sync() }
     }
-    /// Only noted here, no alerts to the iPhones.
+    /// Only noted here, no alerts to the iPhones. Off unless it's switched on. (It was on until switched off, and the
+    /// switch is only in a Mac's Settings: the family's phones show every alert as on, and never got one for a
+    /// vehicle, though the Mac noted a dozen in two days.)
     var testMode: Bool {
-        get { UserDefaults.standard.object(forKey: "vehicle.test") as? Bool ?? true }
+        get { UserDefaults.standard.object(forKey: "vehicle.test") as? Bool ?? false }
         set { UserDefaults.standard.set(newValue, forKey: "vehicle.test") }
     }
     private(set) var last: (at: Date, camera: String, file: URL)?
@@ -446,8 +448,8 @@ struct VehicleAlertsSection: View {
             }
         } header: { Text("Vehicle Alerts") } footer: {
             Text(VehicleWatch.watchesHere
-                 ? "Google doesn't pass on vehicles, so this Mac watches each camera chosen here itself and keeps its picture playing all the time. A vehicle that comes onto the driveway is one; cars parked in view or driving past aren't. In Test Mode it only notes what it saw, here; turn Test Mode off to alert the iPhones."
-                 : "Google doesn't pass on vehicles, so the Mac Studio watches each camera chosen here itself. In Test Mode it only notes what it saw; turn Test Mode off to alert the iPhones.")
+                 ? "Google doesn't pass on vehicles, so this Mac watches each camera chosen here itself and keeps its picture playing all the time. A vehicle that comes onto the driveway is one; cars parked in view or driving past aren't. Each one alerts the iPhones. In Test Mode it only notes what it saw, here."
+                 : "Google doesn't pass on vehicles, so the Mac Studio watches each camera chosen here itself. Each vehicle alerts the iPhones. In Test Mode it only notes what it saw.")
         }
     }
 }
