@@ -37,22 +37,23 @@ private enum Place {
     static let timeFont = UIFont.monospacedDigitSystemFont(ofSize: 29, weight: .semibold)
 }
 
-/// The film's bar: how far it has played, the playhead, the time under it and the time left at its end.
+/// The film's bar, as Apple TV draws it: a thin pill of Liquid Glass that fills as the film plays (no line riding on
+/// it), with the time under where the fill ends and the time left at the bar's end.
 ///
 /// It holds the remote's focus whenever the focus isn't on a button, also while the controls are out of sight (it
 /// draws nothing then): the remote's presses come to whatever has the focus.
 final class FilmBar: UIView {
-    /// The film's length and where it is, in seconds; where the playhead has been moved to and not yet gone to.
+    /// The film's length and where it is, in seconds; where the fill has been moved to and not yet gone to.
     var length = 0.0
     var time = 0.0
     var moved: Double?
     var paused = false
     /// The controls are out of sight.
-    var quiet = true { didSet { if quiet != oldValue { alphaAll(quiet ? 0 : 1) } } }
+    var quiet = true { didSet { if quiet != oldValue { show(!quiet) } } }
 
-    private let track = UIView()
+    /// The pill: glass, with what has played filling it from the left.
+    private let track = UIVisualEffectView(effect: UIGlassEffect(style: .regular))
     private let fill = UIView()
-    private let head = UIView()
     private let now = UILabel()
     private let left = UILabel()
     private let mark = UIImageView()
@@ -60,14 +61,12 @@ final class FilmBar: UIView {
 
     override init(frame: CGRect) {
         super.init(frame: frame)
-        track.backgroundColor = UIColor(white: 1, alpha: 0.28)
-        fill.backgroundColor = UIColor(white: 1, alpha: 0.82)
-        head.backgroundColor = .white
-        head.layer.cornerRadius = 1.5
         track.clipsToBounds = true
-        track.addSubview(fill)
+        track.layer.cornerCurve = .continuous
+        fill.backgroundColor = UIColor(white: 1, alpha: 0.92)
+        fill.layer.cornerCurve = .continuous
+        track.contentView.addSubview(fill)
         addSubview(track)
-        addSubview(head)
         for label in [now, left] {
             label.font = Place.timeFont
             label.textColor = .white
@@ -82,15 +81,17 @@ final class FilmBar: UIView {
         mark.tintColor = .white
         mark.contentMode = .center
         addSubview(mark)
-        alphaAll(0)
+        show(false)
     }
 
     required init?(coder: NSCoder) { fatalError("not made from a storyboard") }
 
     override var canBecomeFocused: Bool { !isHidden }
 
-    private func alphaAll(_ a: CGFloat) {
-        for v in [track, head, now, left, mark] as [UIView] { v.alpha = a }
+    /// The glass is there or it isn't (a see-through glass view stops being glass); the words fade.
+    private func show(_ on: Bool) {
+        track.isHidden = !on
+        for v in [now, left, mark] as [UIView] { v.alpha = on ? 1 : 0 }
     }
 
     override func didUpdateFocus(in context: UIFocusUpdateContext, with coordinator: UIFocusAnimationCoordinator) {
@@ -100,21 +101,21 @@ final class FilmBar: UIView {
         coordinator.addCoordinatedAnimations({ self.layoutIfNeeded() }, completion: nil)
     }
 
-    /// Where the playhead shows: where it has been moved to, else where the film is.
+    /// Where the fill ends: where it has been moved to, else where the film is.
     var shown: Double { moved ?? time }
 
     override func layoutSubviews() {
         super.layoutSubviews()
         let w = bounds.width
-        // The bar's middle is 30 points down this view; a little thicker while it has the focus.
+        // The pill's middle is 30 points down this view; a little thicker while it has the focus.
         let thick: CGFloat = emphasised ? 12 : 10
         track.frame = CGRect(x: 0, y: 30 - thick / 2, width: w, height: thick)
         track.layer.cornerRadius = thick / 2
         let part = length > 0 ? CGFloat(min(1, max(0, shown / length))) : 0
-        fill.frame = CGRect(x: 0, y: 0, width: w * part, height: thick)
+        // The fill is a pill itself: never narrower than it is thick, once anything has played.
         let x = w * part
-        let tall: CGFloat = emphasised ? 34 : 26
-        head.frame = CGRect(x: min(max(0, x - 1.5), w - 3), y: 30 - tall / 2, width: 3, height: tall)
+        fill.frame = CGRect(x: 0, y: 0, width: part > 0 ? max(thick, x) : 0, height: thick)
+        fill.layer.cornerRadius = thick / 2
 
         let hours = length >= 3600
         now.text = FilmText.clock(shown, hours: hours)
@@ -123,7 +124,7 @@ final class FilmBar: UIView {
         let top = 69 - Place.timeFont.ascender
         let nowWidth = ceil(now.intrinsicContentSize.width)
         let leftWidth = ceil(left.intrinsicContentSize.width)
-        // The time sits under the playhead, kept on the bar and clear of the time left at its end.
+        // The time sits under where the fill ends, kept on the bar and clear of the time left at its end.
         let markWidth: CGFloat = paused ? 46 : 0
         var nowX = x - nowWidth / 2
         nowX = max(0, min(nowX, w - leftWidth - 40 - nowWidth - markWidth))
@@ -135,8 +136,8 @@ final class FilmBar: UIView {
 }
 
 /// The film on screen, played by the app's own player (`FilmPlayer`), with controls laid out as Apple's player has
-/// them on Apple TV: the film's name with a line over it, the bar with the time under the playhead and the time
-/// left at its end, round glass buttons at the right (Start Over, Subtitles, Audio, whose menus are the system's
+/// them on Apple TV: the film's name with a line over it, the bar (a thin glass pill that fills) with the time under
+/// where it has got to and the time left at its end, round glass buttons at the right (Start Over, Subtitles, Audio, whose menus are the system's
 /// own), and Info and Chapters under the bar.
 ///
 /// The remote: the middle of the clickpad or Play/Pause stops and starts it; left and right skip ten seconds; a
@@ -191,6 +192,8 @@ final class FilmScreen: UIViewController, UIGestureRecognizerDelegate {
     private var lastState = FilmPlayer.State.idle
     private var hasPlayed = false
     private var gone = false
+    /// The app has been put away with the film up (`left`): it was stopped without the controls coming up.
+    private var away = false
 
     // MARK: Making it
 
@@ -455,7 +458,11 @@ final class FilmScreen: UIViewController, UIGestureRecognizerDelegate {
         UIApplication.shared.isIdleTimerDisabled = state == .playing || state == .waiting
         if state != lastState {
             lastState = state
-            if state == .paused { showControls() } else if state == .playing { restartHiding() }
+            if state == .paused {
+                if !away { showControls() }
+            } else if state == .playing {
+                restartHiding()
+            }
         }
         chapters.isHidden = player.film.chapters.isEmpty
         view.setNeedsLayout()
@@ -621,6 +628,21 @@ final class FilmScreen: UIViewController, UIGestureRecognizerDelegate {
         } else if player.state == .playing || player.state == .waiting {
             player.pause()
         }
+        showControls()
+    }
+
+    /// The app has gone off screen (Home was pressed): the film stops where it is. Only then, not as the button is
+    /// pressed: the picture keeps moving while the Apple TV leaves, as it does in Apple's player. Stopped at the
+    /// press, it stood still for the second the leaving takes.
+    func left() {
+        away = true
+        player?.pause()
+    }
+
+    /// The app is back with the film still up: it's where it was left, stopped, with the controls showing.
+    func cameBack() {
+        guard away else { return }
+        away = false
         showControls()
     }
 

@@ -335,7 +335,9 @@ final class OwnPlayer {
         PlayCrumb.note(play.title, started ? "playing" : "opening", detail: bits.filter { !$0.isEmpty }.joined(separator: ", "))
     }
 
-    /// Memory warnings (less of the film is kept), and the app put away (the film stops rather than play unseen).
+    /// Memory warnings (less of the film is kept), and the app put away: the film stops once the app is off screen
+    /// (not as Home is pressed, which froze the picture for the second the Apple TV takes to leave), and is there,
+    /// stopped, when the app comes back.
     private func watch() {
         guard watches.isEmpty else { return }
         let center = NotificationCenter.default
@@ -347,8 +349,11 @@ final class OwnPlayer {
                 self.crumb()
             }
         })
-        watches.append(center.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.player?.pause() }
+        watches.append(center.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.screen?.left() }
+        })
+        watches.append(center.addObserver(forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.screen?.cameBack() }
         })
     }
 
