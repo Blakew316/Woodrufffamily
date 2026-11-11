@@ -123,7 +123,9 @@ class FakeEnv(updater.Env):
         self.tv_has = {TV1: 1200, TV2: 1200}   # UDID -> the build of Woodruff Family there (None: not installed)
         self.tv_settings = {}            # UDID -> the app's settings there (where its film note is)
         self.tv_apps = {}                # UDID -> (status, output) to fail devicectl device info apps
-        self.tv_copy = {}                # UDID -> (status, output) to fail devicectl device copy from
+        self.tv_copy = {}                # UDID -> (status, output) to fail devicectl device copy from every time,
+                                         # or a list of them to fail that many tries (None: that try works)
+        self.tv_files = {}               # UDID -> False: no settings file there; (status, output): the listing fails
         self.tv_installs = []            # (UDID, build) of each Apple TV install, in order
         self.front_bundle = "com.apple.finder"
         self.idle_ns = 600 * 10 ** 9
@@ -178,12 +180,26 @@ class FakeEnv(updater.Env):
                 "--domain-type", "appDataContainer", "--domain-identifier", updater.TV_BUNDLE_ID,
                 "--source", "Library/Preferences/com.blakew316.woodruff.tv.plist"], argv
             assert argv[13] == "--destination" and not os.path.isdir(argv[14]), argv   # devicectl wants a file path
-            if argv[6] in self.tv_copy:
-                return self.tv_copy[argv[6]][0], self.tv_copy[argv[6]][1], ""
+            failing = self.tv_copy.get(argv[6])
+            if isinstance(failing, list):
+                failing = failing.pop(0) if failing else None
+            if failing is not None:
+                return failing[0], failing[1], ""
             with open(argv[14], "wb") as handle:
                 plistlib.dump(dict(self.tv_settings.get(argv[6], {}), **{"atv.name": "Apple TV"}), handle,
                               fmt=plistlib.FMT_BINARY)
             return 0, "File received from Device\n", ""
+        if name == "xcrun" and argv[1:5] == ["devicectl", "device", "info", "files"]:
+            # What's in the Apple TV app's own folder on an Apple TV.
+            assert argv[5] == "--device" and argv[7:] == ["--domain-type", "appDataContainer", "--domain-identifier",
+                                                           updater.TV_BUNDLE_ID, "--subdirectory", "Library"], argv
+            listed = self.tv_files.get(argv[6])
+            if isinstance(listed, tuple):
+                return listed[0], listed[1], ""
+            lines = ["Caches                                              Writable, Readable, Directory   96 bytes"]
+            if listed is not False:
+                lines.append("Preferences/com.blakew316.woodruff.tv.plist        Writable, Readable              55 KB")
+            return 0, "\n".join(lines) + "\n", ""
         if name == "xcrun":
             assert argv[1:6] == ["devicectl", "device", "install", "app", "--device"], argv
             assert argv[7:9] == ["--timeout", "240"], argv
@@ -980,17 +996,70 @@ class AppleTVs(UpdaterTest):
         self.assertEqual(self.tv(doc, TV1)["state"], "unreachable")
         self.assertEqual(self.env.tv_installs, [(TV2, 1234)])
 
+    TRANSFER = "ERROR: The specified file could not be transferred. (com.apple.dt.CoreDeviceError error 7000 (0x1B58))"
+
     def test_not_installed_when_it_cant_tell_whether_a_film_is_playing(self):
-        self.env.tv_copy[TV1] = (1, "ERROR: Failed to perform I/O operations. (com.apple.dt.remoteservices.error error 11001)")
+        self.env.tv_copy[TV1] = (1, self.TRANSFER)
         doc = self.run_once()
         tv = self.tv(doc, TV1)
-        self.assertEqual(tv["state"], "failed")
-        self.assertIn("Couldn't ask it whether a film is playing", tv["detail"])
-        self.assertEqual(tv["next_try"], self.at(15))
+        # Tried three times, two seconds apart; its settings file is there, so a film may be on: left alone, and
+        # asked again at the next check (not a failure to wait longer and longer after).
+        self.assertEqual(self.asked("copy", TV1), 3)
+        self.assertEqual(self.env.slept, [2, 2])
+        self.assertEqual(tv["state"], "unreachable")
+        self.assertIn("Couldn't tell whether a film is playing there. Next try at ", tv["detail"])
+        self.assertEqual(tv["next_try"], updater.iso(T0 + timedelta(seconds=4) + timedelta(minutes=4)))
+        self.assertIsNone(tv["commit"])
+        self.assertEqual(self.env.tv_installs, [(TV2, 1234)])
+        self.assertIn("Apple TV Living Room: couldn't ask it whether a film is playing: ERROR: The specified file could "
+                      "not be transferred.", self.log_text())
+        # Still the same at the next check, and the one after: the wait doesn't grow.
+        doc = self.run_once(5)
+        self.assertEqual(self.tv(doc, TV1)["state"], "unreachable")
+        doc = self.run_once(10)
+        self.assertEqual(self.tv(doc, TV1)["state"], "unreachable")
         self.assertEqual(self.env.tv_installs, [(TV2, 1234)])
         self.env.tv_copy.clear()
         doc = self.run_once(15)
         self.assertEqual(self.tv(doc, TV1)["state"], "current")
+        self.assertEqual(len(self.env.deploys), 2)
+
+    def test_a_copy_that_fails_once_is_tried_again_at_once(self):
+        self.env.tv_copy[TV1] = [(1, self.TRANSFER)]
+        doc = self.run_once()
+        self.assertEqual(self.asked("copy", TV1), 2)
+        self.assertEqual(self.tv(doc, TV1)["state"], "current")
+        self.assertEqual(self.env.tv_installs, [(TV1, 1234), (TV2, 1234)])
+
+    def test_a_copy_that_works_the_second_time_still_sees_the_film(self):
+        self.env.tv_copy[TV1] = [(1, self.TRANSFER)]
+        self.env.film(TV1, 5)
+        doc = self.run_once()
+        self.assertEqual(self.tv(doc, TV1)["state"], "waiting")
+        self.assertEqual(self.env.tv_installs, [(TV2, 1234)])
+
+    def test_an_apple_tv_where_the_app_was_never_opened_has_no_film(self):
+        # No settings file to copy at all: nothing can be playing in an app that never ran.
+        self.env.tv_copy[TV1] = (1, self.TRANSFER)
+        self.env.tv_files[TV1] = False
+        doc = self.run_once()
+        self.assertEqual(self.tv(doc, TV1)["state"], "current")
+        self.assertEqual(self.env.tv_installs, [(TV1, 1234), (TV2, 1234)])
+
+    def test_not_installed_when_its_folder_cant_be_listed_either(self):
+        self.env.tv_copy[TV1] = (1, self.TRANSFER)
+        self.env.tv_files[TV1] = (1, "ERROR: The operation couldn't be completed.")
+        doc = self.run_once()
+        self.assertEqual(self.tv(doc, TV1)["state"], "unreachable")
+        self.assertEqual(self.env.tv_installs, [(TV2, 1234)])
+
+    def test_cant_tell_because_it_cant_be_reached(self):
+        self.env.tv_copy[TV1] = (1, "ERROR: The device is unavailable. (com.apple.dt.CoreDeviceError error 1.)")
+        doc = self.run_once()
+        tv = self.tv(doc, TV1)
+        self.assertEqual(tv["state"], "unreachable")
+        self.assertIn("Not reachable from this Mac.", tv["detail"])
+        self.assertEqual(self.env.tv_installs, [(TV2, 1234)])
 
     def test_settings_that_cant_be_read_mean_no_install(self):
         real = self.env.run
@@ -1004,8 +1073,9 @@ class AppleTVs(UpdaterTest):
             return real(argv, timeout, cwd=cwd, env=env, output=output)
         self.env.run = run
         doc = self.run_once()
-        self.assertEqual(self.tv(doc, TV1)["state"], "failed")
-        self.assertIn("Couldn't read its settings", self.tv(doc, TV1)["detail"])
+        self.assertEqual(self.tv(doc, TV1)["state"], "unreachable")
+        self.assertIn("Couldn't tell whether a film is playing there.", self.tv(doc, TV1)["detail"])
+        self.assertIn("couldn't read its settings to see whether a film is playing", self.log_text())
         self.assertEqual(self.env.tv_installs, [(TV2, 1234)])
 
     def test_the_settings_copy_is_removed(self):

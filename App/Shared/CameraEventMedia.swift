@@ -163,13 +163,27 @@ enum CameraEventMedia {
 
     /// The first picture of the event there is, by [deadline]: Google's clip or snapshot ([google] when it's already
     /// being fetched) or the Mac Studio's picture of it, asked for at the same time. nil when neither came.
+    /// [prefersMac]: the Mac Studio's picture is the one wanted, whichever comes first (it's the moment the Mac picked
+    /// for the alert, with where its subject is; Google's clip is just the clip). Google's is still asked for at the
+    /// same time, and used when the Mac's hasn't come a second and a half on (away from home it can't be reached,
+    /// and the alert mustn't wait long for it).
     static func firstPicture(camera: String, eventID: String?, clipURL: String?, key: String, deadline: Date,
-                             google: Task<URL?, Never>? = nil) async -> (file: URL, fromMac: Bool)? {
+                             google: Task<URL?, Never>? = nil, prefersMac: Bool = false) async -> (file: URL, fromMac: Bool)? {
         let fromGoogle: @Sendable () async -> (file: URL, fromMac: Bool)? = {
             let f: URL?
             if let google { f = await google.value }
             else { f = await fetch(camera: camera, eventID: eventID, clipURL: clipURL, key: key, until: deadline) }
             return f.map { ($0, false) }
+        }
+        if prefersMac {
+            let other = Task { await fromGoogle() }
+            let by = min(deadline, Date().addingTimeInterval(1.5))
+            if let file = await fromMac(key: key, deadline: by) {
+                other.cancel()
+                return (file, true)
+            }
+            // (Its own fetch ends by the deadline.)
+            return await other.value
         }
         let mac: @Sendable () async -> (file: URL, fromMac: Bool)? = {
             await fromMac(key: key, deadline: deadline).map { ($0, true) }
@@ -321,12 +335,14 @@ enum CameraEventMedia {
     /// A notification attachment of a kept file (a copy: the system moves what it's given).
     /// [focus]: the part the alert's small picture shows (`stillAndFocus`, a unit rectangle from the top left); the
     /// expanded alert still shows all of it.
-    static func attachment(_ file: URL, focus: CGRect? = nil, identifier: String = "media") -> UNNotificationAttachment? {
+    /// [time]: for a clip, how far in its small picture is taken from: the frame the Mac Studio picked for the alert
+    /// (`ClipMoment`), when it said; else a second in.
+    static func attachment(_ file: URL, focus: CGRect? = nil, identifier: String = "media", at time: Double? = nil) -> UNNotificationAttachment? {
         let copy = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + "." + file.pathExtension)
         guard (try? FileManager.default.copyItem(at: file, to: copy)) != nil else { return nil }
         var options: [AnyHashable: Any] = [:]
-        // A clip's thumbnail (the picture on the alert's right) from a second in, where who was seen is usually in view.
-        if file.pathExtension == "mp4" { options[UNNotificationAttachmentOptionsThumbnailTimeKey] = 1 }
+        // A clip's thumbnail (the picture on the alert's right).
+        if file.pathExtension == "mp4" { options[UNNotificationAttachmentOptionsThumbnailTimeKey] = time ?? 1 }
         #if !os(tvOS)
         if let focus { options[UNNotificationAttachmentOptionsThumbnailClippingRectKey] = focus.dictionaryRepresentation }
         #endif
@@ -363,15 +379,33 @@ enum CameraEventMedia {
     /// stream): kept full size under [key] for the iPhones to fetch, where its subject is ([title]: the person for
     /// "Person seen", nothing for motion: the whole picture), and a still for the widget. Decoded once.
     /// [moved]: where the camera's picture changed around the event, when the Mac knows (`StreamMoment.moved`).
-    static func keepEventPicture(_ file: URL, key: String, title: String, moved: SubjectCrop.Moved? = nil) async -> (file: URL, focus: CGRect?, image: CGImage, still: Data?)? {
-        guard let image = await picture(file, maxSide: 1600), let out = eventFile(key),
+    /// A clip isn't looked at a second in whatever it shows there: the frame that shows what the alert is about is
+    /// found in it (`ClipMoment`), and how far in that is comes back as [clipTime] (nil for a picture, or a clip that
+    /// couldn't be looked through).
+    static func keepEventPicture(_ file: URL, key: String, title: String, moved: SubjectCrop.Moved? = nil) async -> (file: URL, focus: CGRect?, image: CGImage, still: Data?, clipTime: Double?)? {
+        let kind = SubjectCrop.kind(title)
+        var moved = moved
+        var clipTime: Double?
+        var found: CGImage?
+        #if os(macOS)
+        if file.pathExtension == "mp4", let pick = await ClipMoment.best(file, person: kind == .person, maxSide: 1600) {
+            found = pick.image
+            clipTime = pick.time
+            // Where the clip's own picture changed in that frame says where its subject is better than the stream's
+            // last few seconds do (another moment).
+            if let there = pick.moved { moved = there }
+            PushRelay.log.notice("clip for \(title, privacy: .public): \(pick.why, privacy: .public), the frame \(String(format: "%.1f", pick.time), privacy: .public) s in")
+        }
+        #endif
+        if found == nil { found = await picture(file, maxSide: 1600) }
+        guard let image = found, let out = eventFile(key),
               let full = jpeg(image, quality: 0.85), (try? full.write(to: out, options: .atomic)) != nil else { return nil }
         let look = max(image.width, image.height) > 1280 ? (scaled(image, maxSide: 1280) ?? image) : image
         // (The looking takes a moment with the Mac's detector: off the main thread.)
-        let kind = SubjectCrop.kind(title)
-        let focus = await Task.detached(priority: .userInitiated) { SubjectCrop.unitFocus(in: look, kind: kind, moved: moved) }.value
+        let changed = moved
+        let focus = await Task.detached(priority: .userInitiated) { SubjectCrop.unitFocus(in: look, kind: kind, moved: changed) }.value
         let still = scaled(image, maxSide: 480).flatMap { jpeg($0, quality: 0.75) }
-        return (out, focus, image, still)
+        return (out, focus, image, still, clipTime)
     }
 
     /// A focus as the push carries it ("x,y,w,h", unit rectangle from the top left).
@@ -446,20 +480,21 @@ enum CameraEventMedia {
         return CGImageDestinationFinalize(dest) && out.length > 0 ? out as Data : nil
     }
 
-    /// A picture of the moment for the TVs & Cameras widget: a JPEG at most 480 pixels across.
-    static func still(_ file: URL) async -> Data? {
-        guard let image = await picture(file), let small = scaled(image, maxSide: 480) else { return nil }
+    /// A picture of the moment for the TVs & Cameras widget: a JPEG at most 480 pixels across. [time]: a clip's frame
+    /// that far in (a second in when it isn't said).
+    static func still(_ file: URL, at time: Double = 1) async -> Data? {
+        guard let image = await picture(file, at: time), let small = scaled(image, maxSide: 480) else { return nil }
         return jpeg(small, quality: 0.75)
     }
 
-    /// The moment as an image at most [maxSide] pixels across: the snapshot itself, or a clip's frame a second in
-    /// (its first frame for a clip shorter than that).
-    static func picture(_ file: URL, maxSide: Int = 480) async -> CGImage? {
+    /// The moment as an image at most [maxSide] pixels across: the snapshot itself, or a clip's frame [time] seconds
+    /// in (a second, unless the Mac Studio picked another: `ClipMoment`; its first frame for a clip shorter than that).
+    static func picture(_ file: URL, maxSide: Int = 480, at time: Double = 1) async -> CGImage? {
         if file.pathExtension == "mp4" {
             let generator = AVAssetImageGenerator(asset: AVURLAsset(url: file))
             generator.appliesPreferredTrackTransform = true
             generator.maximumSize = CGSize(width: maxSide, height: maxSide)
-            if let i = try? await generator.image(at: CMTime(seconds: 1, preferredTimescale: 600)).image { return i }
+            if let i = try? await generator.image(at: CMTime(seconds: max(0, time), preferredTimescale: 600)).image { return i }
             return try? await generator.image(at: .zero).image
         }
         guard let src = CGImageSourceCreateWithURL(file as CFURL, nil) else { return nil }

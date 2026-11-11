@@ -41,6 +41,8 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
         // The app doesn't show its own copy of this alert now, whatever happens to this one.
         CameraEventMedia.notePushKey(key)
         let macFocus = CameraEventMedia.focus(text("f"))
+        // How far into Google's clip the Mac's picture of the event is from, when it's a frame of the clip.
+        let clipTime = text("t").flatMap { Double($0) }
         let title = request.content.title
 
         // The Mac's small picture first: whatever happens next, the alert has it.
@@ -67,20 +69,27 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
         lock.lock(); widget = line; lock.unlock()
 
         Task {
-            // Google's clip or snapshot, or the Mac Studio's full picture of the event: the first to come.
-            let got = await CameraEventMedia.firstPicture(camera: camera, eventID: event, clipURL: clip, key: key, deadline: deadline)
+            // The Mac Studio's full picture of the event (the moment it picked, with where its subject is), else
+            // Google's clip or snapshot. With no picture from the Mac in the push, whichever comes first.
+            let got = await CameraEventMedia.firstPicture(camera: camera, eventID: event, clipURL: clip, key: key, deadline: deadline,
+                                                          prefersMac: thumb != nil)
             if let got {
                 let file = got.file
                 let isClip = file.pathExtension == "mp4"
-                // Where who or what was seen is (the Mac says for its own picture; Vision finds it in Google's), and the
-                // widget's still, from one decode. Motion: the whole picture.
+                // Where who or what was seen is (the Mac says for its own picture, and for the frame of Google's clip
+                // it picked; otherwise Vision finds it here), and the widget's still, from one decode. Motion: the
+                // whole picture.
                 var look: (still: Data?, focus: CGRect?) = (nil, nil)
+                var at: Double?
                 if got.fromMac {
                     look = (await CameraEventMedia.still(file), macFocus)
+                } else if isClip, let clipTime {
+                    look = (await CameraEventMedia.still(file, at: clipTime), macFocus)
+                    at = clipTime
                 } else {
                     look = await CameraEventMedia.stillAndFocus(file, title: title)
                 }
-                if let a = CameraEventMedia.attachment(file, focus: look.focus) {
+                if let a = CameraEventMedia.attachment(file, focus: look.focus, at: at) {
                     var all = [a]
                     // A clip also carries a still: Apple Watch shows a picture with the alert, never a video. Its own
                     // frame, else the Mac's small picture of the moment (a clip never takes the alert's picture away).

@@ -143,7 +143,8 @@ struct NowPlayingLiveActivity: Widget {
                     }
                 }
             } compactLeading: {
-                Image(systemName: "tv.fill").font(.caption.weight(.semibold)).foregroundStyle(.tint)
+                // White, as the Lock Screen's card is (the app's blue is for the app).
+                Image(systemName: "tv.fill").font(.caption.weight(.semibold)).foregroundStyle(.white)
             } compactTrailing: {
                 // A small ring that fills as it plays: the island stays tight beside the camera.
                 ActivityRing(state: s).frame(width: 18, height: 18)
@@ -151,7 +152,7 @@ struct NowPlayingLiveActivity: Widget {
                 ActivityRing(state: s).frame(width: 18, height: 18)
             }
             .widgetURL(URL(string: "woodruff://remote"))
-            .keylineTint(.accentColor)
+            .keylineTint(.white)
         }
     }
 }
@@ -322,17 +323,18 @@ struct ActivityProgress: View {
 }
 
 /// A small ring that fills while playing (the system animates it from the start and end), a pause glyph when paused.
+/// White, in the Dynamic Island's corner and in its pill.
 struct ActivityRing: View {
     var state: NowPlayingAttributes.ContentState
     var body: some View {
         if state.isPlaying, let start = state.startedAt, let end = state.endsAt, end > start {
             ProgressView(timerInterval: start...end, countsDown: false) { EmptyView() } currentValueLabel: { EmptyView() }
                 .progressViewStyle(.circular)
-                .tint(.accentColor)
+                .tint(.white)
         } else {
             Image(systemName: state.isPlaying ? "play.fill" : "pause.fill")
                 .font(.caption2.weight(.bold))
-                .foregroundStyle(.tint)
+                .foregroundStyle(.white)
         }
     }
 }

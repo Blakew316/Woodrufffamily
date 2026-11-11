@@ -80,7 +80,9 @@ QUICK_LOOKS = 3
 BACKOFF = (15 * 60, 30 * 60, 60 * 60, 2 * 3600, 4 * 3600, 8 * 3600)   # after the 1st, 2nd, ... failure
 UNREACHABLE_RETRY = 10 * 60
 TV_FILM_FRESH = 90           # seconds: a film's note newer than this means the film is on screen now
-TV_FILM_RETRY = 4 * 60       # a film is playing: asked again at the next check
+TV_FILM_RETRY = 4 * 60       # a film is playing (or it couldn't be told): asked again at the next check
+TV_FILM_TRIES = 3            # the settings file is copied off the Apple TV up to this many times,
+TV_FILM_PAUSE = 2            # this many seconds apart (a copy fails now and then)
 NO_TV_WAIT = 6 * 3600        # no Apple TV is paired with this Mac: looked for again this often
 COURTESY_IDLE = 120          # seconds without input before the app counts as not in use
 COURTESY_RUNS = 6             # checks in a row the Mac app is left alone while in use (~30 minutes awake)
@@ -1190,10 +1192,9 @@ class Updater(object):
         installed, build = tv_app_build(doc, out)
         return installed, build, None
 
-    def tv_film(self, udid):
-        """(True or False, None): whether a film is on screen on that Apple TV now; (None, why) when it can't be
-        told. The app keeps a note in its settings while a film is open (film_on_screen): the settings file is
-        copied off the Apple TV, the note read, and the copy removed."""
+    def tv_settings(self, udid):
+        """The Apple TV app's settings, copied off that Apple TV once: (settings, None), or (None, why). The copy is
+        read and removed."""
         tmp = tempfile.mkdtemp(prefix="woodruff-tv.")
         try:
             path = os.path.join(tmp, "settings.plist")
@@ -1211,12 +1212,32 @@ class Updater(object):
                 if name.endswith(".plist"))
             try:
                 with open(copies[0], "rb") as handle:
-                    settings = plistlib.load(handle)
+                    return plistlib.load(handle), None
             except Exception:  # noqa: BLE001 - nothing copied, or not a settings file
                 return None, "couldn't read its settings to see whether a film is playing"
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
-        return film_on_screen(settings, self.env.now()), None
+
+    def tv_film(self, udid):
+        """(True or False, None): whether a film is on screen on that Apple TV now; (None, why) when it can't be
+        told. The app keeps a note in its settings while a film is open (film_on_screen): the settings file is
+        copied off the Apple TV and the note read. A copy fails now and then (devicectl's "the specified file could
+        not be transferred": an Apple TV just waking, or the app writing the file that moment), so it's tried a few
+        times. When it still doesn't come, the app's folder is listed: with no settings file in it at all (the app
+        was never opened there) no film is playing; with one there, it can't be told."""
+        why = None
+        for attempt in range(TV_FILM_TRIES):
+            if attempt:
+                self.env.sleep(TV_FILM_PAUSE)
+            settings, why = self.tv_settings(udid)
+            if why is None:
+                return film_on_screen(settings, self.env.now()), None
+        status, out, _ = self.env.run(["xcrun", "devicectl", "device", "info", "files", "--device", udid,
+                                       "--domain-type", "appDataContainer", "--domain-identifier", TV_BUNDLE_ID,
+                                       "--subdirectory", "Library"], TV_ASK_TIMEOUT)
+        if status == 0 and os.path.basename(TV_SETTINGS) not in out:
+            return False, None
+        return None, why
 
     def tv_held(self, record, state, detail, seconds):
         when = self.now + timedelta(seconds=seconds)
@@ -1313,8 +1334,15 @@ class Updater(object):
                 film, error = self.tv_film(udid)
                 self.tick()
                 if film is None:
-                    # Can't tell: left alone rather than risk a film.
-                    self.phone_failed(record, error, "Apple TV")
+                    # Can't tell: left alone rather than risk a film, and asked again at the next check (it isn't
+                    # a failure to wait longer and longer after).
+                    if UNREACHABLE.search(error or ""):
+                        self.phone_failed(record, error, "Apple TV")
+                    else:
+                        when = self.now + timedelta(seconds=TV_FILM_RETRY)
+                        record.update(state="unreachable", next_try=iso(when),
+                                      detail="Couldn't tell whether a film is playing there. Next try at %s." % clock(when))
+                        self.log("Apple TV %s: %s; asked again at %s" % (name, one_line(error, 200), iso(when)))
                     self.save(True)
                     continue
                 if film:

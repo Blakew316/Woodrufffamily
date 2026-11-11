@@ -395,7 +395,7 @@ final class NestAlerts {
             // and the alerts' small picture shows it (motion: the whole picture).
             var focus: CGRect?
             var shown: URL?
-            var made: (file: URL, focus: CGRect?, image: CGImage, still: Data?)?
+            var made: (file: URL, focus: CGRect?, image: CGImage, still: Data?, clipTime: Double?)?
             // Where the camera's picture changed around the event (the stream's last few seconds, on the Mac that
             // keeps them), and Apple's object detector where this Mac has it: the small picture zooms in on who or
             // what was there, as Google Home's does.
@@ -412,6 +412,9 @@ final class NestAlerts {
                 // A clip that came meanwhile goes in the push too.
                 if let later = race.clip, !later.isEmpty { c.userInfo["clip"] = later }
                 if let focus { c.userInfo["f"] = CameraEventMedia.focusText(focus) }
+                // The picture is a frame of Google's clip: how far in, so an iPhone that attaches the clip itself
+                // (away from home, where this Mac's picture can't be fetched) shows that frame, framed the same.
+                if let t = made.clipTime { c.userInfo["t"] = String(format: "%.2f", t) }
                 let info = c.userInfo.reduce(into: [String: String]()) { out, kv in if let k = kv.key as? String, let v = kv.value as? String { out[k] = v } }
                 let budget = PushRelay.thumbnailBudget(id: id, title: c.title, body: c.body, userInfo: info, sound: c.sound != nil)
                 // Many small encodes to find the biggest that fits: off the main thread.

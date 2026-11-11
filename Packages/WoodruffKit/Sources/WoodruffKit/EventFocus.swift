@@ -96,4 +96,66 @@ public enum EventFocus {
         guard let first = chosen.first else { return nil }
         return chosen.dropFirst().reduce(first) { $0.union($1) }
     }
+
+    // MARK: The moment in a clip
+
+    /// How a scene looks through a clip: each cell's middle value over the clip's frames (grey copies, all the same
+    /// size). Whoever or whatever passes through stands out against it, wherever in the clip they are; a clip's first
+    /// frame doesn't serve (they may be in it already).
+    public static func scene(_ frames: [[UInt8]]) -> [UInt8] {
+        guard let count = frames.first?.count, count > 0 else { return [] }
+        let same = frames.filter { $0.count == count }
+        var out = [UInt8](repeating: 0, count: count)
+        var column = [UInt8](repeating: 0, count: same.count)
+        for i in 0..<count {
+            for (j, frame) in same.enumerated() { column[j] = frame[i] }
+            column.sort()
+            out[i] = column[column.count / 2]
+        }
+        return out
+    }
+
+    /// One frame of a clip, looked at.
+    public struct Look: Sendable, Equatable {
+        /// How far into the clip it is, in seconds.
+        public var time: Double
+        /// The share of the picture that differs from the scene in it (0 to 1).
+        public var changed: Double
+        /// How well a figure standing where the picture changed shows in it: the share of the picture it fills times
+        /// how sure the finder is (0 with none).
+        public var moving: Double
+        /// The same for any figure, wherever it stands (someone who stood still the whole clip).
+        public var figure: Double
+
+        public init(time: Double, changed: Double, moving: Double = 0, figure: Double = 0) {
+            self.time = time; self.changed = changed; self.moving = moving; self.figure = figure
+        }
+    }
+
+    /// Which frame of a clip shows what its alert is about, and why (for the log); nil for no frames. For a person:
+    /// the frame where a figure that moved shows best, else where any figure does. Otherwise, or with nobody found:
+    /// the frame where the most of the picture differs from the scene, though not when over a third of it does
+    /// (that's the light changing) nor under a hundredth (noise). With nothing to go on, the frame nearest a second
+    /// in, where a clip was always looked at before.
+    public static func moment(_ looks: [Look], person: Bool) -> (index: Int, why: String)? {
+        guard !looks.isEmpty else { return nil }
+        func best(_ score: (Look) -> Double) -> Int? {
+            var at: Int?
+            for (i, look) in looks.enumerated() where score(look) > 0 {
+                if let a = at, score(looks[a]) >= score(look) { continue }
+                at = i
+            }
+            return at
+        }
+        if person {
+            if let i = best({ $0.moving }) { return (i, "person found") }
+            if let i = best({ $0.figure }) { return (i, "person found, standing still") }
+        }
+        if let i = best({ $0.changed >= 0.01 && $0.changed <= 0.34 ? $0.changed : 0 }) {
+            return (i, person ? "no person found, the most changed" : "the most changed")
+        }
+        var nearest = 0
+        for (i, look) in looks.enumerated() where abs(look.time - 1) < abs(looks[nearest].time - 1) { nearest = i }
+        return (nearest, "nothing stood out, a second in")
+    }
 }
