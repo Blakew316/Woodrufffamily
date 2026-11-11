@@ -230,7 +230,9 @@ final class CameraShare {
             let jpeg = close ? CameraEventMedia.closeImage(id) : CameraEventMedia.eventImage(id) ?? CameraHistory.picture(id)
             // In the log, which device took which picture of an alert: an iPhone's alert shows this Mac's close-up
             // only when this says its notification step fetched it.
-            PushRelay.log.notice("event \(id, privacy: .public): its \(close ? "close-up" : "picture", privacy: .public) asked for by \(Self.asker(request), privacy: .public), \(jpeg.map { "\($0.count / 1024) KB sent" } ?? "none kept", privacy: .public)")
+            let what = close ? "close-up" : "picture", who = Self.asker(request)
+            let sent = jpeg.map { "\($0.count / 1024) KB sent" } ?? "none kept"
+            PushRelay.log.notice("event \(id, privacy: .public): its \(what, privacy: .public) asked for by \(who, privacy: .public), \(sent, privacy: .public)")
             if let jpeg { return reply(c, "200 OK", jpeg) }
             return reply(c, "404 Not Found", nil)
         }

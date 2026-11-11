@@ -57,6 +57,12 @@ enum StreamMoment {
         var moving: Bool
         /// The frame says where the picture changed at all.
         var known: Bool
+        /// They fill a good part of the picture (a visitor at the door): somebody, whether they moved or not.
+        var near: Bool { box.width * box.height >= 0.05 }
+        /// Who the alert is about, as far as one frame can tell: somebody passing, somebody close, or somebody in a
+        /// frame that can't say what changed. A small figure standing where nothing changed, while the picture
+        /// changed elsewhere, may be a coat on a hook.
+        var likely: Bool { moving || near || !known }
     }
 
     /// The picture of [camera]'s event that happened at [happened] (Google's time), for its alert titled [title],
@@ -94,9 +100,9 @@ enum StreamMoment {
                     looked = new.last?.at ?? looked
                 }
                 let more = Date().addingTimeInterval(0.7) < until
-                // Somebody passing (or somebody, in a frame that can't say what changed) is who the alert is about.
-                // A figure standing where nothing changed may be a coat on a hook: the next frames are looked at too.
-                let good = seen.filter { $0.moving || !$0.known }
+                // Somebody passing or close is who the alert is about. Only a small figure standing where nothing
+                // changed has the next frames looked at too.
+                let good = seen.filter { $0.likely }
                 if !good.isEmpty {
                     // Every frame so far cuts them off at the picture's side: the next ones may show them whole
                     // (waited for once).
@@ -108,8 +114,8 @@ enum StreamMoment {
                 try? await Task.sleep(nanoseconds: 700_000_000)
                 frames = CameraStreams.shared.moments(camera, since: .distantPast)
             }
-            let passing = seen.filter { $0.moving }, unknown = seen.filter { !$0.known }
-            let pool = !passing.isEmpty ? passing : !unknown.isEmpty ? unknown : seen
+            let passing = seen.filter { $0.moving }, likely = seen.filter { $0.likely }
+            let pool = !passing.isEmpty ? passing : !likely.isEmpty ? likely : seen
             if let i = EventFocus.clearest(pool.map { (shows: $0.shows, sharp: $0.sharp) }), let file = write(pool[i].moment, key: key) {
                 let s = pool[i], m = s.moment
                 let why = passing.isEmpty ? "person found, standing still" : "person found"
