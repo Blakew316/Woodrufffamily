@@ -31,8 +31,10 @@ struct TVMacRoot: View {
         TabView(selection: $tab) {
             Tab(value: "search", role: .search) {
                 NavigationStack {
+                    // No words of its own in the search field: "Movies and TV Shows" sat there in large letters
+                    // before anything was typed, and read as a search already filled in.
                     ScrollView { WatchSearchResults(query: query, again: searchAgain).padding(.horizontal, 60) }
-                        .searchable(text: $query, prompt: "Movies and TV Shows")
+                        .searchable(text: $query, prompt: Text(""))
                 }
                 // A result opens its title's page, as everywhere else in Watch (without these, choosing one did
                 // nothing).
