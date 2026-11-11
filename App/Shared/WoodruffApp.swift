@@ -283,6 +283,16 @@ struct WoodruffApp: App {
             #if os(iOS) || os(tvOS)
             if phase == .active { fleet.setActive(true) } else if phase == .background { fleet.setActive(false) }
             #endif
+            #if os(iOS)
+            // Each camera's last events are kept on this device while the Mac Studio can be reached, so a camera's
+            // page has them away from home too (a moment after opening: nothing at launch waits on it).
+            if phase == .active {
+                Task {
+                    try? await Task.sleep(nanoseconds: 2_500_000_000)
+                    await CameraHistoryStore.warm(cameras: NestCameras.shared.cameras.map(\.id))
+                }
+            }
+            #endif
             if phase == .background {
                 AppWake.wentAway = true
                 CameraStreams.shared.background()

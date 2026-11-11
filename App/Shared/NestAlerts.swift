@@ -463,6 +463,32 @@ final class NestAlerts {
                 let here = CameraEventMedia.cached(short).flatMap { $0.pathExtension == "mp4" ? $0 : nil }
                 await CameraHistory.keep(key: short, camera: camera, title: title, at: when, picture: shown, clip: here)
                 if here == nil {
+                    // Its own short film, made here from the pictures of the stream this Mac keeps (Google sends no
+                    // clip for most of the family's cameras): something to play when the event is opened. The
+                    // pictures from before it are taken now (only the last twelve seconds are kept), the rest once
+                    // the seconds after it have come. Google's clip, if one comes, takes its place.
+                    let start = when.addingTimeInterval(-EventClip.before), end = when.addingTimeInterval(EventClip.after)
+                    let early = CameraStreams.shared.moments(camera, since: start).filter { $0.at <= end }
+                    Task {
+                        let wait = end.timeIntervalSinceNow + 0.6
+                        if wait > 0 { try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000)) }
+                        let from = early.last?.at ?? start
+                        let late = CameraStreams.shared.moments(camera, since: from).filter { $0.at > from && $0.at <= end }
+                        let frames = early + late
+                        guard frames.count >= EventClip.fewest, !CameraHistory.hasClip(short) else { return }
+                        let file = FileManager.default.temporaryDirectory.appendingPathComponent("eventclip-\(short).mp4")
+                        guard let made = await EventClip.write(frames, to: file) else {
+                            PushRelay.log.notice("clip for \(body, privacy: .public): none could be made from \(frames.count, privacy: .public) pictures")
+                            return
+                        }
+                        if !CameraHistory.hasClip(short) {
+                            await CameraHistory.keep(key: short, camera: camera, title: title, at: when, picture: nil, clip: made)
+                            let size = ((try? made.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0) / 1024
+                            let length = String(format: "%.1f", (frames.last?.at ?? when).timeIntervalSince(frames.first?.at ?? when))
+                            PushRelay.log.notice("clip for \(body, privacy: .public): made here from \(frames.count, privacy: .public) pictures, \(length, privacy: .public) s, \(size, privacy: .public) KB")
+                        }
+                        try? FileManager.default.removeItem(at: made)
+                    }
                     Task {
                         var url = race.clip ?? clip
                         var waited = 0
