@@ -333,20 +333,29 @@ enum CameraEventMedia {
     }
 
     /// A notification attachment of a kept file (a copy: the system moves what it's given).
-    /// [focus]: the part the alert's small picture shows (`stillAndFocus`, a unit rectangle from the top left); the
-    /// expanded alert still shows all of it.
     /// [time]: for a clip, how far in its small picture is taken from: the frame the Mac Studio picked for the alert
     /// (`ClipMoment`), when it said; else a second in.
-    static func attachment(_ file: URL, focus: CGRect? = nil, identifier: String = "media", at time: Double? = nil) -> UNNotificationAttachment? {
+    /// (An alert that closes in on its subject is given a picture cut to it, `closeUp`. iOS can clip an attachment's
+    /// small picture to a rectangle itself, and that was used; but it clips its own small copy of the picture, so the
+    /// close-up of a figure across the room came out a blur.)
+    static func attachment(_ file: URL, identifier: String = "media", at time: Double? = nil) -> UNNotificationAttachment? {
         let copy = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + "." + file.pathExtension)
         guard (try? FileManager.default.copyItem(at: file, to: copy)) != nil else { return nil }
         var options: [AnyHashable: Any] = [:]
         // A clip's thumbnail (the picture on the alert's right).
         if file.pathExtension == "mp4" { options[UNNotificationAttachmentOptionsThumbnailTimeKey] = time ?? 1 }
-        #if !os(tvOS)
-        if let focus { options[UNNotificationAttachmentOptionsThumbnailClippingRectKey] = focus.dictionaryRepresentation }
-        #endif
         return try? UNNotificationAttachment(identifier: identifier, url: copy, options: options.isEmpty ? nil : options)
+    }
+
+    /// The alert's picture close on its subject, as Google Home's is: [file] (a picture, or a clip's frame [time]
+    /// seconds in) cut to [focus] (a unit rectangle from the top left) at the picture's full size, written beside
+    /// it; nil when it can't be made or would be tiny (the alert then shows the picture whole).
+    static func closeUp(_ file: URL, focus: CGRect, at time: Double? = nil) async -> URL? {
+        guard let image = await picture(file, maxSide: 1600, at: time ?? 1),
+              let cut = SubjectCrop.crop(image, unit: focus), cut.width >= 64, cut.height >= 64,
+              let data = jpeg(cut, quality: 0.88), let f = folder else { return nil }
+        let out = f.appendingPathComponent("close-" + file.deletingPathExtension().lastPathComponent + ".jpg")
+        return (try? data.write(to: out, options: .atomic)) != nil ? out : nil
     }
 
     /// A JPEG of the moment for the widget (as `still`), and where the alert's subject is in the file (a snapshot, or
@@ -449,26 +458,39 @@ enum CameraEventMedia {
     static func pushThumbnail(_ image: CGImage, focus: CGRect?, budget: Int) -> String? {
         guard budget >= 400 else { return nil }
         let subject = focus.flatMap { SubjectCrop.crop(image, unit: $0) } ?? image
-        let sides = [400, 352, 312, 280, 248, 220, 196, 172, 148, 124, 100, 80, 64]
-        let qualities = [0.6, 0.46, 0.34, 0.25]
+        // What it's for is the alert's small picture (about a hundred pixels across on the screen), so it's sharpness
+        // at that size that counts: a good quality first, at the biggest size that fits it, and a lower quality only
+        // when even a small picture doesn't fit. (The biggest picture at any quality was tried first before: 300
+        // pixels of smear, a fog on the alert.)
+        let plans: [(quality: Double, sides: [Int])] = [
+            (0.6, [280, 248, 220, 196, 172, 148]),
+            (0.46, [220, 196, 172, 148, 124]),
+            (0.34, [172, 148, 124, 100]),
+            (0.25, [124, 100, 80, 64]),
+        ]
         var small: [Int: CGImage] = [:]
-        func biggest(_ type: String) -> (side: Int, b64: String)? {
-            for side in sides {
-                if small[side] == nil { small[side] = scaled(subject, maxSide: side) }
-                guard let s = small[side] else { continue }
-                for q in qualities {
+        // The first plan a picture of [type] fits (the lower the better), its side, and the picture.
+        func best(_ type: String) -> (plan: Int, side: Int, b64: String)? {
+            for (n, plan) in plans.enumerated() {
+                for side in plan.sides {
+                    if small[side] == nil { small[side] = scaled(subject, maxSide: side) }
+                    guard let s = small[side] else { continue }
                     // This Mac can't write the format at all.
-                    guard let d = encode(s, type: type, quality: q) else { return nil }
+                    guard let d = encode(s, type: type, quality: plan.quality) else { return nil }
                     let b = d.base64EncodedString()
-                    if b.count <= budget { return (side, b) }
+                    if b.count <= budget { return (n, side, b) }
                 }
             }
             return nil
         }
-        let j = biggest(UTType.jpeg.identifier)
+        let j = best(UTType.jpeg.identifier)
         #if os(macOS)
-        // Only worth it when it's clearly bigger (the same size goes as the JPEG every device reads).
-        if let h = biggest(UTType.heic.identifier), h.side > (j?.side ?? 0) { return h.b64 }
+        // HEIC holds more in the same bytes: taken when it gets a better quality in, or the same at a bigger size
+        // (the same either way goes as the JPEG every device reads).
+        if let h = best(UTType.heic.identifier) {
+            guard let j else { return h.b64 }
+            if h.plan < j.plan || (h.plan == j.plan && h.side > j.side) { return h.b64 }
+        }
         #endif
         return j?.b64
     }

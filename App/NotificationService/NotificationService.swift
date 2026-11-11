@@ -89,16 +89,20 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
                 } else {
                     look = await CameraEventMedia.stillAndFocus(file, title: title)
                 }
-                if let a = CameraEventMedia.attachment(file, focus: look.focus, at: at) {
+                // The alert's picture: close on who or what was seen, cut from the full picture (as Google Home's
+                // is); with nothing to close in on, the picture or the clip as it is.
+                var shown = file
+                if let focus = look.focus, let close = await CameraEventMedia.closeUp(file, focus: focus, at: at) { shown = close }
+                let showsClip = shown.pathExtension == "mp4"
+                let source = got.fromMac ? "The Mac’s full picture" : isClip ? "Google’s clip" : "Google’s snapshot"
+                if let a = CameraEventMedia.attachment(shown, at: at) {
                     var all = [a]
                     // A clip also carries a still: Apple Watch shows a picture with the alert, never a video. Its own
                     // frame, else the Mac's small picture of the moment (a clip never takes the alert's picture away).
-                    if isClip, let s = Self.stillAttachment(look.still ?? thumbStill, focus: look.still != nil ? look.focus : nil) {
-                        all.append(s)
-                    }
-                    self.set(all, got.fromMac ? "The Mac’s full picture attached" : isClip ? "Clip attached" : "Snapshot attached")
+                    if showsClip, let s = Self.stillAttachment(look.still ?? thumbStill) { all.append(s) }
+                    self.set(all, shown == file ? "\(source) attached" : "\(source), close on its subject, attached")
                     if let still = look.still { self.keep(still: still) }
-                } else if isClip, let still = look.still, let s = Self.stillAttachment(still, focus: look.focus) {
+                } else if isClip, let still = look.still, let s = Self.stillAttachment(still) {
                     // The clip itself couldn't go in: its picture does.
                     self.set([s], "The clip’s picture attached")
                     self.keep(still: still)
@@ -137,12 +141,12 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
     }
 
     /// [jpeg] as the alert's still, the picture Apple Watch shows (nil without one).
-    private static func stillAttachment(_ jpeg: Data?, focus: CGRect?) -> UNNotificationAttachment? {
+    private static func stillAttachment(_ jpeg: Data?) -> UNNotificationAttachment? {
         guard let jpeg else { return nil }
         let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".jpg")
         guard (try? jpeg.write(to: file)) != nil else { return nil }
         defer { try? FileManager.default.removeItem(at: file) }
-        return CameraEventMedia.attachment(file, focus: focus, identifier: "still")
+        return CameraEventMedia.attachment(file, identifier: "still")
     }
 
     /// The camera's latest picture the widgets have (kept by the app and by earlier alerts), if there is one.

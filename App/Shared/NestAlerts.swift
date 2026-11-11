@@ -349,14 +349,17 @@ final class NestAlerts {
                 PushRelay.log.notice("alert for \(body, privacy: .public) already shown from the Mac (not shown twice)")
                 return
             }
-            // Its small picture on who or what was seen; expanded, the whole scene.
+            // Its picture close on who or what was seen, cut from the full picture (as Google Home's is); with
+            // nothing to close in on, the picture or the clip as it is.
             if let file {
                 var all: [UNNotificationAttachment] = []
-                if let a = CameraEventMedia.attachment(file, focus: look.focus) { all.append(a) }
+                var pictured = file
+                if let focus = look.focus, let close = await CameraEventMedia.closeUp(file, focus: focus) { pictured = close }
+                if let a = CameraEventMedia.attachment(pictured) { all.append(a) }
                 // A clip also carries a still of it, as the alerts from the Mac do: Apple Watch shows a picture,
                 // never a video.
-                if file.pathExtension == "mp4", let jpeg = look.still, let f = CameraEventMedia.jpegFile(jpeg, name: "still-\(short)"),
-                   let s = CameraEventMedia.attachment(f, focus: look.focus, identifier: "still") {
+                if pictured.pathExtension == "mp4", let jpeg = look.still, let f = CameraEventMedia.jpegFile(jpeg, name: "still-\(short)"),
+                   let s = CameraEventMedia.attachment(f, identifier: "still") {
                     all.append(s)
                 }
                 c.attachments = all
@@ -430,7 +433,12 @@ final class NestAlerts {
             let waited = String(format: "%.1f", Date().timeIntervalSince(received))
             PushRelay.log.notice("picture for \(body, privacy: .public) after \(waited, privacy: .public) s: \(got.map { race.text($0.source) } ?? "none (no picture from Google, the live stream or before)", privacy: .public)\(thumb.map { ", \($0.count) characters in the push" } ?? ", none in the push", privacy: .public)\(focus != nil ? ", on its subject" : "", privacy: .public)")
             if let thumb { c.userInfo["thumb"] = thumb }
-            if let shown, let a = CameraEventMedia.attachment(shown, focus: focus) { c.attachments = [a] }
+            // This Mac's own alert: its picture close on who or what was seen, cut from the full one.
+            if let shown {
+                var pictured = shown
+                if let focus, let close = await CameraEventMedia.closeUp(shown, focus: focus) { pictured = close }
+                if let a = CameraEventMedia.attachment(pictured) { c.attachments = [a] }
+            }
             // The Apple TVs' own alert for it (the hub only; its picture is kept above for them to fetch).
             if !quiet {
                 CameraShare.shared.noteEvent(key: short, camera: camera, name: body, title: title, focus: focus,
