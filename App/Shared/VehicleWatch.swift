@@ -40,8 +40,18 @@ final class VehicleWatch {
     /// The Mac that sends the family's alerts does the watching (the Mac Studio, the updater's hub); the other Macs
     /// only show its switches. (A Mac with no updater watches for itself.)
     static var watchesHere: Bool { PushRelay.updaterRole() != "follower" }
-    /// The cameras whose pictures it keeps playing on this Mac (none on a Mac that doesn't do the watching).
-    var keeps: Set<String> { Self.watchesHere ? watched : [] }
+    /// The cameras whose pictures it keeps playing on this Mac (none on a Mac that doesn't do the watching), less any
+    /// that's inside the house: one chosen before that rule stays chosen, and isn't watched.
+    var keeps: Set<String> { Self.watchesHere ? watched.filter { !Self.indoors($0) } : [] }
+
+    /// Whether a camera is inside the house, by its name and room (`VehiclePlace`): never watched for vehicles.
+    /// (Kyler's Room camera was on the list, and what the detector took for a car there went out as "Vehicle seen".)
+    static func indoors(_ cam: NestCameras.Camera) -> Bool { VehiclePlace.indoors(name: cam.name, room: cam.room) }
+
+    /// The same by a camera's id; one not known (the cameras not found yet) counts as outside.
+    static func indoors(_ id: String) -> Bool {
+        NestCameras.shared.cameras.first { $0.id == id }.map { indoors($0) } ?? false
+    }
 
     /// How sure the detector has to be (`defaults write com.woodruff.family.mac vehicle.minConfidence 0.5`).
     private var minConfidence: Double { UserDefaults.standard.object(forKey: "vehicle.minConfidence") as? Double ?? 0.5 }
@@ -421,7 +431,8 @@ struct VehicleAlertsSection: View {
 
     var body: some View {
         Section {
-            ForEach(nest.cameras.filter(\.webRTC)) { cam in
+            // (Cameras inside the house aren't offered: a vehicle is never news in a room.)
+            ForEach(nest.cameras.filter { $0.webRTC && !VehicleWatch.indoors($0) }) { cam in
                 Toggle(cam.name, isOn: Binding(
                     get: { watched.contains(cam.id) },
                     set: { on in

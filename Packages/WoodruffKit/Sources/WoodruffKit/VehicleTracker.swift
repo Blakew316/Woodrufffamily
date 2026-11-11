@@ -8,6 +8,32 @@ import CoreGraphics
 // (Apple's object detector) and hands them here with how the picture changed; this says which of them is news. It is
 // plain arithmetic on boxes and times, so it's tested without a camera.
 
+/// Where a camera is, as far as its name and its room say. A camera inside the house is never watched for vehicles:
+/// what the detector calls a car in a bedroom (a toy, a picture on a screen) isn't one, and it went out as an alert.
+public enum VehiclePlace {
+    /// Words for a room inside a house.
+    private static let inside: Set<String> = [
+        "room", "bedroom", "kitchen", "living", "dining", "nursery", "office", "den", "hall", "hallway", "basement",
+        "bathroom", "bath", "playroom", "study", "loft", "attic", "closet", "laundry", "pantry", "stairs", "foyer",
+        "lounge", "indoor", "indoors", "inside", "upstairs", "downstairs",
+    ]
+    /// Words for a place a vehicle can be, or that looks out on one. ("Front" and "back" aren't among them: a front
+    /// room and a back bedroom are rooms.)
+    private static let outside: Set<String> = [
+        "driveway", "garage", "carport", "street", "road", "yard", "backyard", "porch", "door", "doorbell", "gate",
+        "alley", "patio", "deck", "garden", "lot", "parking", "outside", "outdoor", "outdoors", "exterior", "shed",
+        "barn", "pool", "fence", "curb", "kerb",
+    ]
+
+    /// Whether a camera called [name], in [room], is inside the house: its name or room has a word for a room
+    /// ("Kyler Room camera", the kitchen) and none for a place a vehicle can be (the driveway, the front door, the
+    /// garage, a yard). A camera whose name says neither counts as outside, and can be watched.
+    public static func indoors(name: String, room: String?) -> Bool {
+        let words = Set((name + " " + (room ?? "")).lowercased().split(whereSeparator: { !$0.isLetter }).map(String.init))
+        return !words.isDisjoint(with: inside) && words.isDisjoint(with: outside)
+    }
+}
+
 /// A vehicle found in one of a camera's pictures: what the detector called it, how sure it was, and where it is (a
 /// box in shares of the picture, 0 to 1, across from its left and down from its top).
 public struct VehicleSighting: Sendable, Equatable {

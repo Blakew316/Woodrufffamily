@@ -220,4 +220,21 @@ final class VehicleTrackerTests: XCTestCase {
         XCTAssertEqual(cam.look([kerb], changing: [kerb.box]), [])
         XCTAssertEqual(cam.look([kerb]), [.arrived(kerb)])
     }
+
+    func testACameraInsideTheHouseIsNeverWatchedForVehicles() {
+        // The family's own: a bedroom and the kitchen are inside; the driveway, the doorbell and the yard aren't.
+        XCTAssertTrue(VehiclePlace.indoors(name: "Kyler Room camera", room: "Kyler Room"))
+        XCTAssertTrue(VehiclePlace.indoors(name: "Kitchen camera", room: "Kitchen"))
+        XCTAssertTrue(VehiclePlace.indoors(name: "Living Room Camera", room: nil))
+        XCTAssertFalse(VehiclePlace.indoors(name: "Front Driveway camera", room: "Front Driveway"))
+        XCTAssertFalse(VehiclePlace.indoors(name: "Front door doorbell", room: "Front door"))
+        XCTAssertFalse(VehiclePlace.indoors(name: "Backyard camera", room: "Backyard"))
+        // A front room and a back bedroom are rooms; a room's door onto the garage looks out on vehicles.
+        XCTAssertTrue(VehiclePlace.indoors(name: "Front Room camera", room: nil))
+        XCTAssertTrue(VehiclePlace.indoors(name: "Camera", room: "Back Bedroom"))
+        XCTAssertFalse(VehiclePlace.indoors(name: "Mud Room Garage Door", room: nil))
+        // A name that says neither can be watched (it's the family's to choose).
+        XCTAssertFalse(VehiclePlace.indoors(name: "Camera", room: nil))
+        XCTAssertFalse(VehiclePlace.indoors(name: "Shop camera", room: "Shop"))
+    }
 }
