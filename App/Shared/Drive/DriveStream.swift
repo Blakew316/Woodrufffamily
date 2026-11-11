@@ -461,10 +461,11 @@ private final class Loader: NSObject, AVAssetResourceLoaderDelegate, StreamTask 
     /// second). The player asks for "everything from here on" and lets the request go a moment later, once it has
     /// the next part it needed. Handed all that's kept as fast as memory allows, one film (its sound and picture
     /// stored far apart, so the player hopped between them seven times a second) was given 367 GB in three minutes,
-    /// for a film that plays at 36 megabits a second, and the Apple TV had that to carry. Paced, a request gets what
-    /// it came for at once and the rest no faster than this: still several times faster than the heaviest film
-    /// plays.
-    private static let burst: Int64 = 8 << 20
+    /// for a film that plays at 36 megabits a second, and the Apple TV had that to carry. With everything it asked
+    /// for kept on the device (nothing asked of Google twice), that film still stopped 18 times in seven minutes.
+    /// Paced, a request gets what it came for at once and the rest no faster than this: still several times faster
+    /// than the heaviest film plays.
+    private static let burst: Int64 = 4 << 20
     private static let pace: Double = 64 * 1_048_576
     /// How much of the film is kept in files at most, and the smallest piece worth a file of its own.
     private static let onDisk: Int64 = 3 << 30
