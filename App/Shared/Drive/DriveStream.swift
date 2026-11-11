@@ -457,6 +457,15 @@ private final class Loader: NSObject, AVAssetResourceLoaderDelegate, StreamTask 
         return min(max(free / 4, 3 * piece), 10 * piece)
         #endif
     }
+    /// How much a request of the player's is handed at once from what's kept, and how fast after that (bytes a
+    /// second). The player asks for "everything from here on" and lets the request go a moment later, once it has
+    /// the next part it needed. Handed all that's kept as fast as memory allows, one film (its sound and picture
+    /// stored far apart, so the player hopped between them seven times a second) was given 367 GB in three minutes,
+    /// for a film that plays at 36 megabits a second, and the Apple TV had that to carry. Paced, a request gets what
+    /// it came for at once and the rest no faster than this: still several times faster than the heaviest film
+    /// plays.
+    private static let burst: Int64 = 8 << 20
+    private static let pace: Double = 64 * 1_048_576
     /// How much of the film is kept in files at most, and the smallest piece worth a file of its own.
     private static let onDisk: Int64 = 3 << 30
     private static let worthFiling = 1 << 20
@@ -536,6 +545,11 @@ private final class Loader: NSObject, AVAssetResourceLoaderDelegate, StreamTask 
         let end: Int64?
         /// Whether it has been told what the file is (when it asked).
         var told = false
+        /// How much it has been handed, when it may next be handed more (`pace`), and whether a later turn is
+        /// already set for that.
+        var handed: Int64 = 0
+        var notBefore = Date.distantPast
+        var waiting = false
 
         init(request: AVAssetResourceLoadingRequest, at: Int64, end: Int64?) {
             self.request = request
@@ -710,10 +724,26 @@ private final class Loader: NSObject, AVAssetResourceLoaderDelegate, StreamTask 
         let end = min(want.end ?? .max, total ?? .max)
         if want.at >= end { finish(want); return }
         if let piece = piece(holding: want.at) {
+            // Paced once it has had its first part (`burst`): the next part at a later turn of the queue.
+            if want.handed >= Loader.burst {
+                let wait = want.notBefore.timeIntervalSinceNow
+                if wait > 0 {
+                    if !want.waiting {
+                        want.waiting = true
+                        streamQueue.asyncAfter(deadline: .now() + wait) { [weak self] in
+                            want.waiting = false
+                            self?.pump(want)
+                        }
+                    }
+                    return
+                }
+            }
             let upTo = min(piece.end, end, want.at + Loader.slice)
             let lo = piece.data.startIndex + Int(want.at - piece.offset), hi = piece.data.startIndex + Int(upTo - piece.offset)
             let bytes = piece.data.subdata(in: lo..<hi)
             want.at = upTo
+            want.handed += Int64(bytes.count)
+            if want.handed >= Loader.burst { want.notBefore = Date().addingTimeInterval(Double(bytes.count) / Loader.pace) }
             piece.used = Date()
             notes.gave(Int64(bytes.count))
             d.respond(with: bytes)
