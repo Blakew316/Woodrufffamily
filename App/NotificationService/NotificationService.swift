@@ -73,20 +73,39 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
             // The Mac Studio's own close-up of who or what was seen, asked for at the same time as its whole picture:
             // cut there from the camera's full-size frame, and a small file, so it comes quickly even far from home
             // and nothing large is decoded here (this step has little memory).
-            let fromMacClose: Task<URL?, Never>? = thumb != nil && macFocus != nil ? Task {
-                await CameraEventMedia.fromMac(key: key, deadline: min(deadline, Date().addingTimeInterval(2)), close: true)
+            let closeUp = Slot<URL>(), whole = Slot<(file: URL, fromMac: Bool)>()
+            let closeTask: Task<Void, Never>? = thumb != nil && macFocus != nil ? Task {
+                closeUp.set(await CameraEventMedia.fromMac(key: key, deadline: deadline, close: true))
             } : nil
+            if closeTask == nil { closeUp.set(nil) }
             // The Mac Studio's full picture of the event (the moment it picked, with where its subject is), else
             // Google's clip or snapshot. With no picture from the Mac in the push, whichever comes first.
-            let got = await CameraEventMedia.firstPicture(camera: camera, eventID: event, clipURL: clip, key: key, deadline: deadline,
-                                                          prefersMac: thumb != nil)
-            let macClose = await fromMacClose?.value
+            let wholeTask = Task {
+                whole.set(await CameraEventMedia.firstPicture(camera: camera, eventID: event, clipURL: clip, key: key, deadline: deadline,
+                                                              prefersMac: thumb != nil))
+            }
+            // Both are waited for until the deadline, with these ways out sooner: both have come (or said they
+            // won't); the whole picture came from Google, or not at all (the Mac can't be reached: its close-up
+            // isn't waited for either); one of the Mac's two came, and the other hasn't eight tenths of a second on.
+            var grace: Date?
+            while Date() < deadline {
+                let c = closeUp.state, w = whole.state
+                if c.done && w.done { break }
+                if w.done, w.value?.fromMac != true { break }
+                if (c.value != nil || w.value != nil) && grace == nil { grace = Date().addingTimeInterval(0.8) }
+                if let g = grace, Date() >= g { break }
+                try? await Task.sleep(nanoseconds: 50_000_000)
+            }
+            closeTask?.cancel(); wholeTask.cancel()
+            let macClose = closeUp.state.value, got = whole.state.value
             if let macClose, let a = CameraEventMedia.attachment(macClose) {
-                // The Mac's close-up is the alert's picture; the whole picture, when it came too, is the widgets'
-                // still (and what opening the alert replays).
+                // The Mac's close-up is the alert's picture. The widgets' still is the whole picture when it came
+                // too (it's also what opening the alert replays), else the close-up itself: either is far better
+                // than the push's small picture, which is what they showed when the whole picture didn't come.
                 let size = CameraEventMedia.pixelSize(macClose).map { " (\($0.width)x\($0.height))" } ?? ""
                 self.set([a], "The Mac’s close-up of its subject attached\(size)")
-                if let whole = got?.file, let still = await CameraEventMedia.still(whole, at: clipTime ?? 1) { self.keep(still: still) }
+                if let file = got?.file, let still = await CameraEventMedia.still(file, at: clipTime ?? 1) { self.keep(still: still) }
+                else if let still = await CameraEventMedia.still(macClose) { self.keep(still: still) }
             } else if let got {
                 let file = got.file
                 let isClip = file.pathExtension == "mp4"
@@ -129,6 +148,15 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
             }
             self.finish()
         }
+    }
+
+    /// What one of the alert's fetches came back with, once it has: read by the wait above while the other still runs.
+    private final class Slot<T>: @unchecked Sendable {
+        private let lock = NSLock()
+        private var done = false
+        private var value: T?
+        func set(_ v: T?) { lock.lock(); value = v; done = true; lock.unlock() }
+        var state: (done: Bool, value: T?) { lock.lock(); defer { lock.unlock() }; return (done, value) }
     }
 
     /// The alert's picture, unless it has already gone.

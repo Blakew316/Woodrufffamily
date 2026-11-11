@@ -138,33 +138,51 @@ enum CameraEventMedia {
         guard let s = store, let token = s.string(forKey: "cam.shareToken"), !token.isEmpty, let f = folder else { return nil }
         let hosts = (s.string(forKey: "cam.shareHosts") ?? "").split(separator: ",").map(String.init).filter { !$0.isEmpty }
         guard !hosts.isEmpty, key.allSatisfy(\.isHexDigit) else { return nil }
-        var pause = 0.5
+        // Asked again soon, and often: an iPhone woken by the alert has no network for its first second or more, and
+        // a request made then fails at once. (The close-up was asked for once, so on a sleeping iPhone it never came;
+        // the whole picture was asked for again only after longer and longer waits, and ran out of time.)
+        var pause = 0.3
         while !Task.isCancelled {
             let left = deadline.timeIntervalSinceNow
             guard left > 0.3 else { return nil }
-            let wait = min(left, 4)
-            let jobs: [@Sendable () async -> Data?] = hosts.map { h in { await macEvent(h, key: key, token: token, timeout: wait, close: close) } }
-            if let d = await FirstOf<Data>(jobs.count).run(jobs, deadline: Date().addingTimeInterval(wait + 0.2)) {
+            // (A request that hangs is given up after a second and a half and made again; one that's coming in has
+            // until the deadline.)
+            let answered = Answered()
+            let idle = min(left, 1.5)
+            let jobs: [@Sendable () async -> Data?] = hosts.map { h in
+                { await macEvent(h, key: key, token: token, timeout: idle, close: close, answered: answered) }
+            }
+            if let d = await FirstOf<Data>(jobs.count).run(jobs, deadline: deadline) {
                 let file = f.appendingPathComponent(close ? "close-\(key).jpg" : "\(key).jpg")
                 if (try? d.write(to: file, options: .atomic)) != nil { return file }
                 return nil
             }
-            if close { return nil }
+            // The Mac answered, and has no close-up of this event (it made none): nothing to ask again for. (Its
+            // whole picture is asked for again: the Mac may still be making it.)
+            if close, answered.isSet { return nil }
             try? await Task.sleep(nanoseconds: UInt64(min(pause, max(0, deadline.timeIntervalSinceNow - 0.3)) * 1_000_000_000))
-            pause = min(pause * 2, 3)
+            pause = min(pause + 0.15, 1)
         }
         return nil
     }
 
-    private static func macEvent(_ host: String, key: String, token: String, timeout: Double, close: Bool = false) async -> Data? {
+    /// Whether any of the Mac Studio's addresses answered a request (with a picture or without).
+    private final class Answered: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value = false
+        func set() { lock.lock(); value = true; lock.unlock() }
+        var isSet: Bool { lock.lock(); defer { lock.unlock() }; return value }
+    }
+
+    private static func macEvent(_ host: String, key: String, token: String, timeout: Double, close: Bool, answered: Answered) async -> Data? {
         var c = URLComponents()
         c.scheme = "http"; c.host = host; c.port = sharePort; c.path = close ? "/close" : "/event"
         c.queryItems = [URLQueryItem(name: "id", value: key), URLQueryItem(name: "k", value: token)]
         guard let url = c.url else { return nil }
         var r = URLRequest(url: url, timeoutInterval: timeout)
         r.cachePolicy = .reloadIgnoringLocalCacheData
-        guard let (d, resp) = try? await URLSession.shared.data(for: r),
-              (resp as? HTTPURLResponse)?.statusCode == 200, d.count > 500 else { return nil }
+        guard let (d, resp) = try? await URLSession.shared.data(for: r), let code = (resp as? HTTPURLResponse)?.statusCode else { return nil }
+        guard code == 200, d.count > 500 else { answered.set(); return nil }
         return d
     }
 
@@ -172,8 +190,8 @@ enum CameraEventMedia {
     /// being fetched) or the Mac Studio's picture of it, asked for at the same time. nil when neither came.
     /// [prefersMac]: the Mac Studio's picture is the one wanted, whichever comes first (it's the moment the Mac picked
     /// for the alert, with where its subject is; Google's clip is just the clip). Google's is still asked for at the
-    /// same time, and used when the Mac's hasn't come a second and a half on (away from home it can't be reached,
-    /// and the alert mustn't wait long for it).
+    /// same time, and used when it has come and the Mac's hasn't a second and a half on (away from home the Mac
+    /// can't be reached).
     static func firstPicture(camera: String, eventID: String?, clipURL: String?, key: String, deadline: Date,
                              google: Task<URL?, Never>? = nil, prefersMac: Bool = false) async -> (file: URL, fromMac: Bool)? {
         let fromGoogle: @Sendable () async -> (file: URL, fromMac: Bool)? = {
@@ -183,14 +201,21 @@ enum CameraEventMedia {
             return f.map { ($0, false) }
         }
         if prefersMac {
-            let other = Task { await fromGoogle() }
-            let by = min(deadline, Date().addingTimeInterval(1.5))
-            if let file = await fromMac(key: key, deadline: by) {
-                other.cancel()
-                return (file, true)
+            // The Mac's picture is asked for until the deadline. Google's stands in for it only from a second and a
+            // half on (it's held back until then); with nothing from Google either, the Mac's is waited for to the
+            // end. (It was given up after a second and a half whatever Google had, which for most of the family's
+            // cameras is nothing: an iPhone still waking its network then showed only the push's small picture.)
+            let release = min(deadline, Date().addingTimeInterval(1.5))
+            let held: @Sendable () async -> (file: URL, fromMac: Bool)? = {
+                guard let got = await fromGoogle() else { return nil }
+                let wait = release.timeIntervalSinceNow
+                if wait > 0 { try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000)) }
+                return got
             }
-            // (Its own fetch ends by the deadline.)
-            return await other.value
+            let wanted: @Sendable () async -> (file: URL, fromMac: Bool)? = {
+                await fromMac(key: key, deadline: deadline).map { ($0, true) }
+            }
+            return await FirstOf<(file: URL, fromMac: Bool)>(2).run([held, wanted], deadline: deadline)
         }
         let mac: @Sendable () async -> (file: URL, fromMac: Bool)? = {
             await fromMac(key: key, deadline: deadline).map { ($0, true) }

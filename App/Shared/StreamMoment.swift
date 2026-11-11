@@ -179,7 +179,7 @@ enum StreamMoment {
             let patch = cells.flatMap { EventFocus.patch($0, width: gridWidth, height: gridHeight) }
             guard let who = person(in: image, changed: cells, patch: patch) else { continue }
             let cut = who.box.minX < 0.01 || who.box.maxX > 0.99
-            let shows = Double(who.box.width * who.box.height) * who.confidence * (cut ? 0.6 : 1)
+            let shows = Double(who.box.width * who.box.height) * who.confidence * (cut ? 0.6 : 1) * fullness(m)
             let moving = cells.map { EventFocus.share(of: $0, in: who.box, width: gridWidth, height: gridHeight) >= 0.1 } ?? false
             out.append(Seen(moment: m, grid: cells, box: who.box, shows: shows, sharp: sharpness(image, in: who.box),
                             cut: cut, moving: moving, known: patch != nil))
@@ -261,10 +261,11 @@ enum StreamMoment {
         if let most = clear.map({ $0.share }).max() {
             let close = clear.filter { $0.share >= most * 0.6 }
             let scores = close.map { c -> (shows: Double, sharp: Double) in
+                let shows = c.share * fullness(c.moment)
                 guard let patch = EventFocus.patch(c.grid, width: gridWidth, height: gridHeight), let image = decoded(c.moment) else {
-                    return (shows: c.share, sharp: 0)
+                    return (shows: shows, sharp: 0)
                 }
-                return (shows: c.share, sharp: sharpness(image, in: patch))
+                return (shows: shows, sharp: sharpness(image, in: patch))
             }
             if let i = EventFocus.clearest(scores), let file = write(close[i].moment, key: key) {
                 return (file: file, moment: close[i].moment, grid: close[i].grid, changed: true)
@@ -275,6 +276,13 @@ enum StreamMoment {
         let nearest = near.min { off($0) < off($1) } ?? first
         guard let file = write(nearest, key: key) else { return nil }
         return (file: file, moment: nearest, grid: nil, changed: false)
+    }
+
+    /// How much of a full-size picture [m] is (1 for 1920 by 1080, a ninth for 640 by 360). A stream sends a small
+    /// picture for a while after it starts, and at times when its connection is poor: of two frames that show the
+    /// same thing, the one sent at full size has that many times the pixels of it, and is the one to alert with.
+    private static func fullness(_ m: FrameGrabber.Moment) -> Double {
+        min(1, Double(m.width * m.height) / (1920 * 1080))
     }
 
     /// [m]'s picture, decoded once and kept (it's looked at several times: closer in, whole, and for its sharpness).

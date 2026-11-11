@@ -806,7 +806,11 @@ final class CameraStreams {
             host.addSubview(p.surface)
             grabWindow.orderBack(nil)
         }
-        if cam.online, !p.isRunning { p.start() }
+        // Not one that's waiting to try again after it failed: that wait grows each time (a second, up to a minute).
+        // Asked every second for a camera watched for vehicles, this started it again at once: nine tries in a minute
+        // while the driveway's connection was down, each a command to Google (which allows only so many, for every
+        // camera together) and each a stream that starts small again.
+        if cam.online, !p.isRunning, !p.isRetrying { p.start() }
         return p
     }
 
@@ -1523,6 +1527,8 @@ final class LivePlayer: NSObject, WKNavigationDelegate {
     private var startedAt: Date?
     private static let log = Logger(subsystem: "com.woodruff.family", category: "camera")
     var isRunning: Bool { running }
+    /// It failed and is waiting to try again (`reconnect`): whoever keeps it playing leaves it to that.
+    var isRetrying: Bool { retry != nil }
     /// When the stream last started.
     var lastStart: Date? { startedAt }
 

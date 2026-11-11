@@ -72,12 +72,14 @@ enum SubjectCrop {
     }
 
     /// [box] with room around it, between square and 4:3 (wider for a wide subject), at least a good quarter of the
-    /// picture's height so a far-off figure isn't blown up into a blur, kept inside the picture.
+    /// picture's height so a far-off figure isn't blown up into a blur, and never fewer than 260 pixels of it (a
+    /// stream that comes in small, 640 by 360, gave close-ups of a hundred pixels, enlarged into a smear), kept
+    /// inside the picture.
     static func frame(_ box: CGRect, in size: CGSize) -> CGRect? {
         let iw = size.width, ih = size.height
         guard iw > 0, ih > 0, box.width > 0, box.height > 0 else { return nil }
         var w = box.width * 1.5, h = box.height * 1.3
-        let least = max(min(iw, ih) * 0.28, 96)
+        let least = max(min(iw, ih) * 0.28, 260)
         if w < least { w = least }
         if h < least { h = least }
         if w < h { w = h }
