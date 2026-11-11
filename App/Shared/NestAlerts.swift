@@ -376,7 +376,8 @@ final class NestAlerts {
         // One alert per event, with its picture: the first good one there is (Google's picture of the event, else a
         // frame of the camera's live stream, else its latest picture), waited for a few seconds (less for the doorbell,
         // a few more when its latest picture is an old one); then it goes once, here and to every iPhone, the picture
-        // inside the push and kept full size here for the iPhones to fetch.
+        // inside the push and kept full size here for the iPhones to fetch. Google's own picture is waited for only
+        // on a camera Google has given one for (`EventPicture.googleGives`).
         let ring = c.userInfo["ring"] != nil
         let received = Date(), happened = eventHappened
         // The Mac's TVs & Cameras widget: the camera's red tag at once, its picture of the moment when there is one.
@@ -392,8 +393,9 @@ final class NestAlerts {
         let race = EventPicture(camera: camera, event: event, clip: clip, key: short, happened: happened, title: title)
         if let session { racing[session] = race }
         race.start(given: picture)
+        let googleWait: Double = EventPicture.googleGives(camera) ? (ring ? 2.5 : 4.5) : 0
         Task { [weak self] in
-            let got = await race.result(googleWait: ring ? 2.5 : 4.5, cap: ring ? 4 : 7, staleCap: ring ? 8 : 12, last: 20)
+            let got = await race.result(googleWait: googleWait, cap: ring ? 4 : 7, staleCap: ring ? 8 : 12, last: 20)
             if let session, self?.racing[session] === race { self?.racing[session] = nil }
             var thumb: String?
             var still: Data?
@@ -518,9 +520,10 @@ final class NestAlerts {
 #if os(macOS)
 /// The Mac: the picture for one event's alert, got every way at once the moment the event comes. Google's own picture
 /// of the event (its snapshot, asked for at once as it's made only within 30 seconds, or its clip's first frames) is
-/// the one Google Home shows, so it's waited for a few seconds; meanwhile the moment it happened is picked from the
-/// last few seconds of the camera's live stream (every camera is kept live on the Mac that sends, `StreamMoment`), a
-/// frame of the stream now is ready in case that can't be had, and the camera's latest picture is the last resort.
+/// the one Google Home shows, so on a camera Google gives one for it's waited for a few seconds; meanwhile the moment
+/// it happened is picked from the last few seconds of the camera's live stream (every camera is kept live on the Mac
+/// that sends, `StreamMoment`), a frame of the stream now is ready in case that can't be had, and the camera's latest
+/// picture is the last resort.
 @MainActor
 private final class EventPicture {
     enum Source: Int {
@@ -622,10 +625,38 @@ private final class EventPicture {
                 file = await CameraEventMedia.fetch(camera: camera, eventID: image, clipURL: clip, key: key,
                                                     until: Date().addingTimeInterval(20), using: token)
             }
+            // (Noted even when it comes after the alert has gone, and this is no longer here to take it.)
+            if file != nil { EventPicture.noteGoogleGave(camera) }
             guard let self else { return }
             self.googleBusy -= 1
             if let file { self.take(file, .google) }
         }
+    }
+
+    // MARK: Whether Google gives this camera's pictures
+
+    private static let gaveKey = "nest.googleGave"
+    /// A camera Google hasn't given a picture for in this long isn't waited on for one.
+    private static let gaveFor: TimeInterval = 30 * 86400
+
+    /// Whether Google has given an event's picture for [camera] (its snapshot or its clip) in the last month: only
+    /// then is an alert held back for Google's. The newer Nest cameras give other apps neither, and every alert of
+    /// theirs was held up to four and a half seconds for a picture that never came, though the frame from the
+    /// stream was picked within a second.
+    static func googleGives(_ camera: String) -> Bool {
+        guard let at = (UserDefaults.standard.dictionary(forKey: gaveKey) as? [String: Double])?[camera] else { return false }
+        return Date().timeIntervalSince1970 - at < gaveFor
+    }
+
+    /// Google gave a picture of one of [camera]'s events: its alerts wait for Google's from now on.
+    private static func noteGoogleGave(_ camera: String) {
+        var all = UserDefaults.standard.dictionary(forKey: gaveKey) as? [String: Double] ?? [:]
+        if !googleGives(camera) {
+            let name = NestCameras.shared.cameras.first { $0.id == camera }?.name ?? "a camera"
+            PushRelay.log.notice("Google gave a picture for \(name, privacy: .public): its alerts wait for Google’s from now on")
+        }
+        all[camera] = Date().timeIntervalSince1970
+        UserDefaults.standard.set(all, forKey: gaveKey)
     }
 
     private func take(_ u: URL, _ s: Source) {
@@ -640,7 +671,8 @@ private final class EventPicture {
     static let freshStill: TimeInterval = 30
 
     /// The picture to alert with: Google's as soon as it's there; else, once [googleWait] seconds are up (or Google
-    /// has nothing), the moment it happened from the stream (waited for until [cap] at most), else the stream's frame;
+    /// has nothing; none at all on a camera Google gives no pictures for), the moment it happened from the stream
+    /// (waited for until [cap] at most), else the stream's frame;
     /// with nothing at all by [cap], the camera's latest picture if it's from the last half minute, and by [staleCap]
     /// whatever its age (an older one shows an earlier moment, while the stream started for this, or Google's clip a few
     /// seconds behind the event, can still bring this one); nil only when there's still nothing after [last] seconds.
