@@ -191,7 +191,8 @@ final class FilmPlayerTests: XCTestCase {
             asset.resourceLoader.setDelegate(loader, queue: loader.queue)
             var checked = 0
             for track in try await asset.load(.tracks) where track.mediaType == .video || track.mediaType == .audio {
-                XCTAssertTrue(track.canProvideSampleCursors, "\(name) track \(track.trackID)")
+                let walks = try await track.load(.canProvideSampleCursors)
+                XCTAssertTrue(walks, "\(name) track \(track.trackID)")
                 let reader = try XCTUnwrap(FilmTrackReader(track: track), "\(name) track \(track.trackID)")
                 var mine: [FilmSample] = []
                 var runs = 0

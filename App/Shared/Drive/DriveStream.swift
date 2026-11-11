@@ -75,6 +75,21 @@ final class DriveStream: NSObject {
         streamQueue.async { l.shrink() }
     }
 
+    /// The app's own player has read the file's index and keeps it (`FilmIndexFile`): Apple's reader, which read it,
+    /// isn't answered any more, so nothing more of the film is fetched on its account.
+    func indexRead() {
+        let l = loader
+        streamQueue.async { l.dropPlayerRequests() }
+    }
+
+    /// The file's size and every part of it held now: its start and its index, wherever Apple's reader looked.
+    func heldNow() async -> (total: Int64, parts: [(offset: Int64, data: Data)]) {
+        let l = loader
+        return await withCheckedContinuation { waiting in
+            streamQueue.async { waiting.resume(returning: l.held()) }
+        }
+    }
+
     /// Not used for playing any more: the player fetching from Drive's own address asks Google for everything from
     /// where it is to the end of the film each time it starts, seeks or reconnects, which the app can't change, and
     /// the day it was used Google refused the big films for the rest of the day
@@ -128,6 +143,20 @@ final class DriveStream: NSObject {
         info.contentType = UTType(mimeType: mime ?? "video/mp4")?.identifier ?? UTType.mpeg4Movie.identifier
         info.contentLength = total
         info.isByteRangeAccessSupported = true
+    }
+}
+
+/// The app's own player (`FilmPlayer`) reads the film through the same pieces Apple's player is answered from: each
+/// of its tracks straight on from its own place.
+extension DriveStream: FilmBytes {
+    func read(from offset: Int64, count: Int, lane: Int, then: @escaping (Result<Data, Error>) -> Void) {
+        let l = loader
+        streamQueue.async { l.read(from: offset, count: count, lane: lane, then: then) }
+    }
+
+    func forgetReads() {
+        let l = loader
+        streamQueue.async { l.forgetReads() }
     }
 }
 
@@ -333,6 +362,9 @@ private final class StreamNotes: @unchecked Sendable {
     /// Pieces put into files, and whether one couldn't be.
     private var files = 0
     private var filesFailed = false
+    /// What the app's own player has read: how many runs, and their bytes.
+    private var runs = 0
+    private var read: Int64 = 0
     private var refused: String?
     private var limit = false
     /// The file's size, once Google has said.
@@ -369,6 +401,12 @@ private final class StreamNotes: @unchecked Sendable {
         if ok { files += 1 } else { filesFailed = true }
     }
     func playerDropped() { lock.lock(); dropped += 1; lock.unlock() }
+    /// The app's own player was handed a run of [bytes].
+    func readerGot(_ bytes: Int64) {
+        lock.lock(); defer { lock.unlock() }
+        runs += 1
+        read += bytes
+    }
     func got(_ bytes: Int64) {
         lock.lock(); defer { lock.unlock() }
         sent += bytes
@@ -412,6 +450,7 @@ private final class StreamNotes: @unchecked Sendable {
         if widest > 0 { text += " (\(Self.size(widest)) apart)" }
         text += ", \(files) pieces kept in files"
         if filesFailed { text += " until one couldn’t be written" }
+        if runs > 0 { text += ", the app’s own player read \(Self.size(read)) in \(runs) runs" }
         return text
     }
 
@@ -507,7 +546,11 @@ private final class Loader: NSObject, AVAssetResourceLoaderDelegate, StreamTask 
     /// the film never waits for Google to start sending between pieces.
     private static let aheadFrom = 1
     /// Pieces being fetched at once, at most, before the one used longest ago that nobody is waiting for is let go.
-    private static let fetchingAtMost = 4
+    private static let fetchingAtMost = 6
+    /// The app's own player reading its sound far from its picture: the sound's pieces stay small (eight megabytes
+    /// is minutes of sound). Near the picture, the picture's pieces hold the sound too.
+    private static let soundStep = 1
+    private static let nearPicture: Int64 = 128 << 20
 
     /// A piece of the film: asked of Google once, fetched whole and kept for a while.
     private final class Piece {
@@ -566,9 +609,32 @@ private final class Loader: NSObject, AVAssetResourceLoaderDelegate, StreamTask 
         }
     }
 
+    /// A read by the app's own player (`FilmPlayer`): the bytes from `at` up to `end`, gathered from the pieces as
+    /// they arrive and handed over whole.
+    private final class Read {
+        let lane: Int
+        var at: Int64
+        let end: Int64
+        var data = Data()
+        let then: (Result<Data, Error>) -> Void
+
+        init(lane: Int, at: Int64, end: Int64, then: @escaping (Result<Data, Error>) -> Void) {
+            self.lane = lane
+            self.at = at
+            self.end = end
+            self.then = then
+        }
+    }
+
     private var pieces: [Piece] = []
     private var byTask: [Int: Piece] = [:]
     private var wants: [Want] = []
+    /// The app's own player's reads still being gathered, and where each of its readers has got to (its picture 0,
+    /// its sound 1, its subtitles 2): places the film is read from, like the player's requests.
+    private var reads: [Read] = []
+    private var lanes: [Int: Int64] = [:]
+    /// The app's own player has the file's index: Apple's reader isn't answered any more (`dropPlayerRequests`).
+    private var own = false
     /// The file's size and type, once Google has said.
     private var total: Int64?
     private var mime: String?
@@ -605,6 +671,8 @@ private final class Loader: NSObject, AVAssetResourceLoaderDelegate, StreamTask 
         byTask = [:]
         pieces = []
         wants = []
+        reads = []
+        lanes = [:]
         lately = []
         // The film is over: its pieces' files go.
         filing = false
@@ -650,20 +718,29 @@ private final class Loader: NSObject, AVAssetResourceLoaderDelegate, StreamTask 
     private func readingAt() -> [Int64] {
         let now = Date()
         lately.removeAll { now.timeIntervalSince($0.seen) > Loader.placeLife }
-        return wants.map { $0.at } + lately.map { $0.at }
+        return wants.map { $0.at } + Array(lanes.values) + lately.map { $0.at }
+    }
+
+    /// Whether something is waiting for [piece], or reading in it: one of the player's requests, or one of the app's
+    /// own player's reads or readers.
+    private func wanted(_ piece: Piece) -> Bool {
+        wants.contains { piece.offset <= $0.at && $0.at < piece.limit }
+            || reads.contains { piece.offset <= $0.at && $0.at < piece.limit }
+            || lanes.values.contains { piece.offset <= $0 && $0 < piece.limit }
     }
 
     /// What the player is waiting for comes first: a piece still arriving that none of its requests is waiting for
     /// any more (it has moved elsewhere in the film) gives way to the ones that are waited for.
     private func rank() {
         for piece in pieces where piece.fetching {
-            let waitedFor = wants.contains { piece.offset <= $0.at && $0.at < piece.limit }
-            piece.task?.priority = waitedFor ? URLSessionTask.highPriority : URLSessionTask.lowPriority
+            piece.task?.priority = wanted(piece) ? URLSessionTask.highPriority : URLSessionTask.lowPriority
         }
     }
 
     private func begin(_ req: AVAssetResourceLoadingRequest) {
         guard !req.isCancelled, !req.isFinished else { return }
+        // The app's own player has what Apple's reader was for.
+        if own { req.finishLoading(with: URLError(.cancelled)); return }
         // Its start is on the way already: that, rather than asking Google a second time.
         if Prefetch.wait(fileID, then: { [weak self] in self?.begin(req) }) { return }
         adopt()
@@ -705,10 +782,107 @@ private final class Loader: NSObject, AVAssetResourceLoaderDelegate, StreamTask 
         pieces.first { $0.fetching && $0.offset <= at && at < $0.limit }
     }
 
-    /// Answers every request of the player's as far as it can be.
+    /// Answers every request of the player's, and every read of the app's own player, as far as it can be.
     private func feed() {
         for want in wants { pump(want) }
+        for read in reads { pump(read) }
     }
+
+    // MARK: The app's own player
+
+    /// The bytes from [offset], [count] of them, for the app's own player's reader [lane]: from what's held where it
+    /// can be, else as the pieces arrive. Answered on the stream queue.
+    func read(from offset: Int64, count: Int, lane: Int, then: @escaping (Result<Data, Error>) -> Void) {
+        adopt()
+        let read = Read(lane: lane, at: offset, end: offset + Int64(max(0, count)), then: then)
+        read.data.reserveCapacity(max(0, count))
+        reads.append(read)
+        lanes[lane] = offset
+        pump(read)
+    }
+
+    /// The app's own player wants nothing it asked for before (it was moved to another place, or closed). What's
+    /// on its way from Google carries on and is kept, as for the player's dropped requests.
+    func forgetReads() {
+        reads = []
+    }
+
+    /// Apple's reader has done what it was for (it read the file's index, which the app's own player now keeps):
+    /// its requests end here, and any more it makes are turned away.
+    func dropPlayerRequests() {
+        own = true
+        let all = wants
+        wants = []
+        for want in all where !want.request.isCancelled && !want.request.isFinished {
+            want.request.finishLoading(with: URLError(.cancelled))
+        }
+    }
+
+    /// The file's size (0 until Google has said) and every part of it held now.
+    func held() -> (total: Int64, parts: [(offset: Int64, data: Data)]) {
+        (total ?? 0, pieces.filter { !$0.data.isEmpty }.map { (offset: $0.offset, data: $0.data) })
+    }
+
+    /// How big a piece the reader [lane] may ask for at [at] (an index into `sizes`): the picture's grow as far as
+    /// they go, and so does anything read near the picture (the same pieces hold both); sound read far from the
+    /// picture stays small.
+    private func mostStep(lane: Int, at: Int64) -> Int {
+        let full = Loader.sizes.count - 1
+        guard lane != 0, let picture = lanes[0] else { return lane == 0 ? full : Loader.soundStep }
+        return abs(picture - at) < Loader.nearPicture ? full : Loader.soundStep
+    }
+
+    /// Gathers [read] as far as it can be: from the pieces that are held, else it waits for the one on its way,
+    /// else Google is asked for the piece it needs next.
+    private func pump(_ read: Read) {
+        guard reads.contains(where: { $0 === read }) else { return }
+        while read.at < read.end {
+            // Past the end of the file: what there is.
+            if let size = total, read.at >= size { break }
+            guard let piece = piece(holding: read.at) else {
+                if let coming = piece(bringing: read.at) {
+                    coming.used = Date()
+                    return
+                }
+                if !ask(from: read.at, upTo: nil, sizeOnly: false, most: mostStep(lane: read.lane, at: read.at)) {
+                    fail(read, URLError(.resourceUnavailable))
+                }
+                return
+            }
+            let upTo = min(piece.end, read.end)
+            let lo = piece.data.startIndex + Int(read.at - piece.offset), hi = piece.data.startIndex + Int(upTo - piece.offset)
+            read.data.append(piece.data[lo..<hi])
+            read.at = upTo
+            lanes[read.lane] = upTo
+            piece.used = Date()
+            ahead(reading: piece, lane: read.lane)
+        }
+        reads.removeAll { $0 === read }
+        notes.readerGot(Int64(read.data.count))
+        read.then(.success(read.data))
+    }
+
+    /// The app's own player reading [piece]: the piece after it is asked for at once, so the film never waits for
+    /// Google to start sending between pieces. (From a film's first piece on: it reads only where it plays, where
+    /// Apple's player looks at many places as it opens a film.) Sound read near the picture leaves that to the
+    /// picture's reader, whose pieces hold both.
+    private func ahead(reading piece: Piece, lane: Int) {
+        let next = piece.limit
+        guard next < (total ?? .max) else { return }
+        if lane != 0, let picture = lanes[0], abs(picture - next) < Loader.nearPicture { return }
+        guard self.piece(holding: next) == nil, self.piece(bringing: next) == nil else { return }
+        guard pieces.filter({ $0.fetching }).count < Loader.fetchingAtMost else { return }
+        ask(from: next, upTo: nil, sizeOnly: false, most: mostStep(lane: lane, at: next))
+    }
+
+    private func fail(_ read: Read, _ error: Error) {
+        guard reads.contains(where: { $0 === read }) else { return }
+        reads.removeAll { $0 === read }
+        failure.set(error)
+        read.then(.failure(error))
+    }
+
+    // MARK: Apple's player
 
     /// Answers [want] as far as it can be: from a piece that's held, else it waits for the piece that's on its way,
     /// else Google is asked for the piece it needs next.
@@ -781,19 +955,26 @@ private final class Loader: NSObject, AVAssetResourceLoaderDelegate, StreamTask 
         ask(from: next, for: want)
     }
 
-    /// Asks Google for the piece that starts at [at]: small at a new place in the film, twice the last one when it
-    /// carries straight on from it, and never past what the player asked for, the end of the file, or a piece that's
-    /// already held or on its way further on.
+    /// Asks Google for the piece that starts at [at], for one of the player's requests.
     @discardableResult
     private func ask(from at: Int64, for want: Want) -> Bool {
+        ask(from: at, upTo: want.end, sizeOnly: want.request.dataRequest == nil, most: Loader.sizes.count - 1)
+    }
+
+    /// Asks Google for the piece that starts at [at]: small at a new place in the film, twice the last one when it
+    /// carries straight on from it (up to the size [most] stands for), and never past [end] (what was asked for), the
+    /// end of the file, or a piece that's already held or on its way further on. [sizeOnly]: only what the file is
+    /// was asked for.
+    @discardableResult
+    private func ask(from at: Int64, upTo end: Int64?, sizeOnly: Bool, most: Int) -> Bool {
         let before = pieces.first { $0.limit == at }
-        let step = before.map { min($0.step + 1, Loader.sizes.count - 1) } ?? 0
+        let step = before.map { min($0.step + 1, max(0, most)) } ?? 0
         var length = Loader.sizes[step]
-        if let end = want.end { length = min(length, end - at) }
+        if let end { length = min(length, end - at) }
         if let size = total { length = min(length, size - at) }
         if let next = pieces.filter({ $0.offset > at }).map(\.offset).min() { length = min(length, next - at) }
         // Only what the file is was asked for: its first two bytes are enough.
-        if want.request.dataRequest == nil { length = min(length, 2) }
+        if sizeOnly { length = min(length, 2) }
         guard length > 0 else { return false }
         if before == nil, length > 2 { notes.freshStart() }
         let piece = Piece(offset: at, asked: length, step: step)
@@ -802,8 +983,7 @@ private final class Loader: NSObject, AVAssetResourceLoaderDelegate, StreamTask 
         // Too many at once (the player has moved about): the one nobody is waiting for that was used longest ago goes.
         let fetching = pieces.filter { $0.fetching }
         if fetching.count > Loader.fetchingAtMost,
-           let idle = fetching.filter({ p in p !== piece && !wants.contains { p.offset <= $0.at && $0.at < p.limit } })
-            .min(by: { $0.used < $1.used }) {
+           let idle = fetching.filter({ p in p !== piece && !wanted(p) }).min(by: { $0.used < $1.used }) {
             drop(idle)
         }
         fetch(piece)
@@ -915,10 +1095,11 @@ private final class Loader: NSObject, AVAssetResourceLoaderDelegate, StreamTask 
         if unplayable == nil, let why = DriveStream.unplayable(mime) {
             unplayable = why
             answer(.cancel)
-            let all = wants, f = GoogleDrive.Failure(why)
+            let all = wants, waiting = reads, f = GoogleDrive.Failure(why)
             cancelAll()
             failure.set(f)
             for want in all where !want.request.isCancelled && !want.request.isFinished { want.request.finishLoading(with: f) }
+            for read in waiting { read.then(.failure(f)) }
             return
         }
         answer(.allow)
@@ -1050,6 +1231,7 @@ private final class Loader: NSObject, AVAssetResourceLoaderDelegate, StreamTask 
         piece.asked = Int64(piece.data.count)
         if piece.data.isEmpty { pieces.removeAll { $0 === piece } }
         for want in wants where want.at >= from && want.at < max(to, from + 1) { fail(want, error) }
+        for read in reads where read.at >= from && read.at < max(to, from + 1) { fail(read, error) }
         feed()
     }
 
@@ -1113,6 +1295,7 @@ private final class Loader: NSObject, AVAssetResourceLoaderDelegate, StreamTask 
         for (i, p) in pieces.enumerated() {
             guard !p.fetching, (p.file != nil) == filed else { continue }
             let reading = wants.contains(where: { p.offset <= $0.at && $0.at <= p.limit })
+                || lanes.values.contains(where: { p.offset <= $0 && $0 <= p.limit })
             parts.append(StreamKeep.Part(offset: p.offset, length: Int64(p.data.count),
                                          used: p.used.timeIntervalSince1970, busy: reading))
             which.append(i)

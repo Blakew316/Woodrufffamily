@@ -57,7 +57,7 @@ public final class FilmTrackReader {
 
     /// Nil when the file's index can't be walked for this track.
     public init?(track: AVAssetTrack, shift: CMTime = .zero) {
-        guard track.canProvideSampleCursors, let first = track.makeSampleCursorAtFirstSampleInDecodeOrder() else { return nil }
+        guard let first = track.makeSampleCursorAtFirstSampleInDecodeOrder() else { return nil }
         self.track = track
         self.shift = shift
         cursor = first

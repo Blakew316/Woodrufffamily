@@ -269,7 +269,7 @@ public final class FilmPlayer: @unchecked Sendable {
             let formats = (try? await track.load(.formatDescriptions)) ?? []
             let segments = (try? await track.load(.segments)) ?? []
             let shift = Self.shift(segments)
-            guard let format = formats.first, track.canProvideSampleCursors else { continue }
+            guard let format = formats.first, (try? await track.load(.canProvideSampleCursors)) ?? false else { continue }
             let kind = Self.letters(CMFormatDescriptionGetMediaSubType(format))
             if track.mediaType == .video {
                 guard picture == nil, (try? await track.load(.isDecodable)) ?? true else { continue }
