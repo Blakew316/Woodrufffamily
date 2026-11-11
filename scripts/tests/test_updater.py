@@ -863,7 +863,10 @@ class AppleTVs(UpdaterTest):
                     and c["argv"][6] == udid])
 
     def test_built_once_and_installed_on_each_apple_tv(self):
-        deltas = os.path.join(self.env.home, *updater.TV_DELTAS)
+        # What CoreDevice keeps on this Mac of the apps it installs (to send only the changes) is left alone: macOS
+        # guards that folder, and nothing here may wait for a permission nobody is there to give.
+        deltas = os.path.join(self.env.home, "Library", "Containers", "com.apple.CoreDevice.CoreDeviceService", "Data",
+                              "Library", "Caches", "AppInstallationBinaryDeltas", "com.blakew316.woodruff.tv")
         os.makedirs(os.path.join(deltas, "22785a11", "Stashed"))
         doc = self.run_once()
         # The Mac and the iPhones first, then the Apple TV app: built with Xcode's signing, kept, installed nowhere.
@@ -877,8 +880,7 @@ class AppleTVs(UpdaterTest):
             self.assertEqual((tv["name"], tv["state"], tv["commit"], tv["detail"]), (name, "current", NEW, "Up to date."))
             self.assertEqual(tv["updated_at"], self.at(0))
             self.assertIsNone(tv["next_try"])
-        # The whole app is sent: what CoreDevice kept to send only the changes is gone.
-        self.assertFalse(os.path.exists(deltas))
+        self.assertTrue(os.path.isdir(os.path.join(deltas, "22785a11", "Stashed")))
         # Never opened on the Apple TV afterwards (one that's asleep stays asleep).
         self.assertFalse([c for c in self.env.calls if "launch" in c["argv"]])
         log = self.log_text()

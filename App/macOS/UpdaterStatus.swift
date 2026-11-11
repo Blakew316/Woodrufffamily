@@ -399,7 +399,7 @@ extension UpdaterStatus {
             switch state {
             case "current"?: return "Up to date"
             case "unreachable"?: return kind == "Apple TV" ? "Waiting to reach it" : "Waiting for it to be on Wi‑Fi"
-            case "waiting"?: return "After the film"   // an Apple TV with a film playing
+            case "waiting"?: return "Waiting for the film to end"   // an Apple TV with a film on screen
             case "pending"?: return (detail ?? "").hasPrefix("Installing") ? "Installing…" : "Waiting to install"
             case "failed"?: return "Couldn’t install"
             case let other?: return spoken(other)

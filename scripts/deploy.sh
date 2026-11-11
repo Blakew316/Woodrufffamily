@@ -57,9 +57,8 @@
 #
 # It deletes nothing but its own temporary folder, at most once a stale generated
 # build/Build/Products/Release/Woodruff Family.app, (share) the older zips and manifests it shared in
-# iCloud Drive's "Woodruff Family builds" folder, (--keep-iphone, --keep-tv) the copy it kept in that folder before,
-# and (tv, before an install) what CoreDevice kept of the Apple TV app to send only the changes: installed that way,
-# an Apple TV has kept running an old Top Shelf part.
+# iCloud Drive's "Woodruff Family builds" folder, and (--keep-iphone, --keep-tv) the copy it kept in that folder
+# before.
 # Logs stay in a temporary folder named at the end.
 # The exit status is 0 only if everything asked for worked; iPhone problems never stop the Mac part.
 #
@@ -77,8 +76,6 @@ BRANCH="claude/native-apps"
 IPHONE_BUNDLE_ID="com.blakew316.woodruff"          # always this id on the iPhones
 IPHONE_WIDGETS_ID="com.blakew316.woodruff.widgets"
 TV_BUNDLE_ID="com.blakew316.woodruff.tv"           # the Apple TV app
-# What CoreDevice keeps of the Apple TV app to send an Apple TV only the changes (see the top of this file).
-TV_DELTAS="$HOME/Library/Containers/com.apple.CoreDevice.CoreDeviceService/Data/Library/Caches/AppInstallationBinaryDeltas/$TV_BUNDLE_ID"
 MAC_BUNDLE_ID="com.woodruff.family.mac"
 HOMEKIT="com.apple.developer.homekit"
 APP_NAME="Woodruff Family"
@@ -1569,8 +1566,6 @@ deploy_tv() {
     ilog="$LOGDIR/tv-install-$udid.log"
     llog="$LOGDIR/tv-launch-$udid.log"
     say "    $name ($udid): installing"
-    # The whole app each time, never only the changes (see the top of this file).
-    rm -rf "$TV_DELTAS"
     if ! xcrun devicectl device install app --device "$udid" --timeout 300 "$product" </dev/null >"$ilog" 2>&1; then
       problem "$name: the install failed:"
       show_matches 'ERROR|[Ee]rror|[Ff]ailed|[Uu]nable|[Uu]navailable|[Dd]enied|[Tt]imed out|not paired|not available' "$ilog" 12

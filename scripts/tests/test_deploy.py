@@ -364,7 +364,7 @@ echo "** BUILD SUCCEEDED **"
 """
 
 # The Apple TVs named in $FAKE/paired ("udid name" lines) are paired, next to an iPhone; an install works unless the
-# Apple TV is named in $FAKE/install-fails. An install while CoreDevice's kept changes are still there is a violation.
+# Apple TV is named in $FAKE/install-fails.
 TV_XCRUN = LOG + r"""
 case "$1 $2 $3" in
   "devicectl list devices")
@@ -388,9 +388,6 @@ case "$1 $2 $3" in
     for a in "$@"; do
       if grep -q "^$a\$" "$FAKE/install-fails" 2>/dev/null; then echo "ERROR: The device is unavailable."; exit 1; fi
     done
-    if [ -e "$HOME/Library/Containers/com.apple.CoreDevice.CoreDeviceService/Data/Library/Caches/AppInstallationBinaryDeltas/com.blakew316.woodruff.tv" ]; then
-      echo "VIOLATION installed with the kept changes still there" >>"$FAKE/violations"
-    fi
     echo "App installed:"
     ;;
   "devicectl device process") ;;
@@ -468,11 +465,10 @@ class AppleTV(DeployHarness):
         self.assertIn("Apple TV: built and kept in", out)
 
     def test_installed_on_each_apple_tv_and_opened(self):
+        # (What CoreDevice keeps on this Mac of the apps it installs is left alone.)
         deltas = os.path.join(self.tmp, "home", "Library", "Containers", "com.apple.CoreDevice.CoreDeviceService",
                               "Data", "Library", "Caches", "AppInstallationBinaryDeltas", "com.blakew316.woodruff.tv")
         os.makedirs(os.path.join(deltas, "22785a11", "Stashed"))
-        other = os.path.join(os.path.dirname(deltas), "com.blakew316.woodruff")
-        os.makedirs(other)
         status, out = self.tv()
         self.assertEqual(status, 0, out)
         rows = self.rows(self.results)
@@ -485,9 +481,7 @@ class AppleTV(DeployHarness):
         self.assertEqual(len(self.launches()), 2)
         self.assertTrue(self.launches()[1].endswith("[--device] [%s] [--timeout] [45] [com.blakew316.woodruff.tv]"
                                                      % TV2))
-        # Only what CoreDevice kept of the Apple TV app is removed (the whole app is sent each time).
-        self.assertFalse(os.path.exists(deltas))
-        self.assertTrue(os.path.isdir(other))
+        self.assertTrue(os.path.isdir(os.path.join(deltas, "22785a11", "Stashed")))
 
     def test_not_opened_with_no_launch(self):
         status, out = self.tv("--no-launch")

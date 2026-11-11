@@ -35,8 +35,7 @@ deploy-<time>.log for each deploy.sh run, the newest 10 kept).
 It signs nothing and never touches a certificate, key, profile or keychain item: deploy.sh does every build and
 signature, and devicectl installs the copy deploy.sh kept. From an Apple TV it reads two things with devicectl:
 which build of the app is there, and the app's own settings file, for the note it keeps while a film is open (the
-copy is read and removed at once). Before an Apple TV install it removes what CoreDevice kept of the app to send
-only the changes (see deploy.sh). Apple's /usr/bin/python3 (3.9), standard library only. Every effect on the world
+copy is read and removed at once). Apple's /usr/bin/python3 (3.9), standard library only. Every effect on the world
 goes through Env, so the tests can replace it.
 """
 
@@ -66,9 +65,6 @@ TV_BUNDLE_ID = "com.blakew316.woodruff.tv"
 # screen, removed as it closes).
 TV_SETTINGS = "Library/Preferences/%s.plist" % TV_BUNDLE_ID
 TV_FILM_NOTE = "playing.crumb"
-# What CoreDevice keeps of the Apple TV app to send only the changes (under the home folder); see deploy.sh.
-TV_DELTAS = ("Library", "Containers", "com.apple.CoreDevice.CoreDeviceService", "Data", "Library", "Caches",
-             "AppInstallationBinaryDeltas", TV_BUNDLE_ID)
 RELEASE_BRANCH = "release"
 ROLES = ("hub", "follower")
 PYTHON = "/usr/bin/python3"
@@ -1330,8 +1326,6 @@ class Updater(object):
             record.update(state="pending", detail="Installing.")
             self.save(True)
             self.log("Apple TV %s: installing the kept build of %s" % (name, release[:12]))
-            # The whole app each time, never only the changes (see deploy.sh).
-            shutil.rmtree(os.path.join(self.env.home, *TV_DELTAS), ignore_errors=True)
             status, out, err = self.env.run(["xcrun", "devicectl", "device", "install", "app", "--device", udid,
                                              "--timeout", "240", kept["app"]], INSTALL_TIMEOUT)
             self.tick()
