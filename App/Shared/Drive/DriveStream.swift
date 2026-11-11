@@ -1,6 +1,8 @@
 import Foundation
 import AVFoundation
 import UniformTypeIdentifiers
+import os
+import WoodruffKit
 
 /// Every Drive stream's work, one thing at a time: the player's requests, Google's answers and what's fetched ahead.
 private let streamQueue = DispatchQueue(label: "woodruff.drive-stream", qos: .userInitiated)
@@ -311,6 +313,16 @@ private final class StreamNotes: @unchecked Sendable {
     private var sent: Int64 = 0
     private var handed: Int64 = 0
     private var most: Int64 = 0
+    /// Every part asked of Google so far, and how much of what was asked had been asked for before.
+    private var askedFor = ByteRanges()
+    private var twice: Int64 = 0
+    /// Pieces asked for at a place that didn't carry on from the last one, the player's requests and how many of
+    /// them it dropped, and the most places it read from at once (and how far apart the furthest two were).
+    private var starts = 0
+    private var wanted = 0
+    private var dropped = 0
+    private var mostPlaces = 0
+    private var widest: Int64 = 0
     private var refused: String?
     private var limit = false
     /// The file's size, once Google has said.
@@ -321,7 +333,24 @@ private final class StreamNotes: @unchecked Sendable {
     private var second = 0
     private var bestThree: Int64 = 0
 
-    func asking(_ bytes: Int64) { lock.lock(); requests += 1; asked += bytes; lock.unlock() }
+    /// Google is asked for the bytes from [lo] up to, not including, [hi].
+    func asking(from lo: Int64, to hi: Int64) {
+        lock.lock(); defer { lock.unlock() }
+        requests += 1
+        asked += hi - lo
+        twice += askedFor.add(lo, hi)
+    }
+    /// A piece is asked for at a place that doesn't carry on from the last one.
+    func freshStart() { lock.lock(); starts += 1; lock.unlock() }
+    /// The player asked for something; its requests are now at [positions].
+    func playerAsked(at positions: [Int64]) {
+        let p = StreamKeep.places(positions, near: 16 << 20)
+        lock.lock(); defer { lock.unlock() }
+        wanted += 1
+        mostPlaces = max(mostPlaces, p.count)
+        widest = max(widest, p.spread)
+    }
+    func playerDropped() { lock.lock(); dropped += 1; lock.unlock() }
     func got(_ bytes: Int64) {
         lock.lock(); defer { lock.unlock() }
         sent += bytes
@@ -351,8 +380,12 @@ private final class StreamNotes: @unchecked Sendable {
     var tally: String {
         lock.lock(); defer { lock.unlock() }
         let speed = bestThree > 0 ? String(format: "up to %.0f Mb/s, ", Double(bestThree) * 8 / 3 / 1_000_000) : ""
+        let places = mostPlaces == 1 ? "1 place" : "\(mostPlaces) places"
+        let apart = widest > 0 ? " (\(Self.size(widest)) apart)" : ""
         return "\(Self.size(asked)) in \(requests == 1 ? "1 request" : "\(requests) requests"), \(Self.size(sent)) sent, "
-            + "\(Self.size(handed)) to the player, \(speed)\(Self.size(most)) kept at most"
+            + "\(Self.size(handed)) to the player, \(speed)\(Self.size(most)) kept at most, "
+            + "\(Self.size(twice)) of it asked twice, \(starts) fresh starts, "
+            + "the player asked \(wanted) times and dropped \(dropped), \(places) at once at most\(apart)"
     }
 
     private static func size(_ bytes: Int64) -> String {
@@ -376,6 +409,9 @@ private final class StreamNotes: @unchecked Sendable {
 ///   and nothing asked of Google goes unused.
 /// - The first piece at a new place in the film is small; each one that carries straight on from the last is
 ///   twice it, so a film playing is few requests and a place only looked at costs little.
+/// - The player reads from more than one place at a time (its picture and its sound each at their own). When more
+///   is held than may be, what the film has gone past goes first and what a place is about to come to goes last
+///   (`StreamKeep`), so no place's fetched-ahead piece is thrown away for another's and asked of Google again.
 private final class Loader: NSObject, AVAssetResourceLoaderDelegate, StreamTask {
     let fileID: String
     /// The film's title, for the Macs' log.
@@ -386,8 +422,27 @@ private final class Loader: NSObject, AVAssetResourceLoaderDelegate, StreamTask 
 
     /// How big a piece is asked for, by how far along a straight read it is.
     private static let sizes: [Int64] = [4 << 20, 8 << 20, 16 << 20, 32 << 20, 64 << 20]
-    /// How much of the film is kept in memory at most (the pieces used longest ago go first).
-    private static let keep: Int64 = 192 << 20
+    /// How much of the film is kept in memory at most: a quarter of the memory the app may still take as the film
+    /// opens, never less than three of the biggest pieces nor more than ten (ten on a Mac). One place being read
+    /// needs the piece it's in and the one fetched ahead of it; the player reads its picture and its sound each at a
+    /// place of their own, and what lies between two of them is still to come for the slower one. Three pieces
+    /// (192 MB, as it was) left no room for a second place: each one's fetched-ahead piece pushed the other's out,
+    /// and Google was asked for it again.
+    private static func room() -> Int64 {
+        let piece = sizes.last ?? (64 << 20)
+        #if os(macOS)
+        return 10 * piece
+        #else
+        let free = Int64(os_proc_available_memory())
+        return min(max(free / 4, 3 * piece), 10 * piece)
+        #endif
+    }
+    /// How long a place the player has let go of still counts as one it reads from (it asks again from nearly the
+    /// same place a moment later), how far behind a place still counts as where it is, and how close together two
+    /// places are one.
+    private static let placeLife: TimeInterval = 30
+    private static let behind: Int64 = 8 << 20
+    private static let near: Int64 = 16 << 20
     /// How much of what's kept is handed to the player at a time.
     private static let slice: Int64 = 2 << 20
     /// From this far along a straight read, the next piece is asked for as soon as this one starts being read, so
@@ -457,7 +512,9 @@ private final class Loader: NSObject, AVAssetResourceLoaderDelegate, StreamTask 
     /// Why Apple's player can't open this file, once known.
     private var unplayable: String?
     /// The memory is short: less is kept (`shrink`).
-    private var keepNow = Loader.keep
+    private var keepNow = Loader.room()
+    /// Where the player's requests had got to when it let go of them, lately.
+    private var lately: [(at: Int64, seen: Date)] = []
 
     /// Failures worth asking again for (the connection, not the file).
     private static let transient: Set<URLError.Code> = [.timedOut, .networkConnectionLost, .cannotConnectToHost,
@@ -476,6 +533,7 @@ private final class Loader: NSObject, AVAssetResourceLoaderDelegate, StreamTask 
         byTask = [:]
         pieces = []
         wants = []
+        lately = []
     }
 
     /// The memory is short: only the piece being read and the next are kept from here on.
@@ -494,8 +552,29 @@ private final class Loader: NSObject, AVAssetResourceLoaderDelegate, StreamTask 
     /// The player has dropped a request. What Google is sending for it carries on and is kept: the player nearly
     /// always asks again from the same place, or a little before it, a moment later.
     func resourceLoader(_ resourceLoader: AVAssetResourceLoader, didCancel loadingRequest: AVAssetResourceLoadingRequest) {
+        if let want = wants.first(where: { $0.request === loadingRequest }) {
+            remember(want.at)
+            notes.playerDropped()
+        }
         wants.removeAll { $0.request === loadingRequest }
         rank()
+    }
+
+    /// A request of the player's is over (dropped, answered in full or failed): where it had got to stays a place
+    /// the film is read from for a while.
+    private func remember(_ at: Int64) {
+        let now = Date()
+        lately.removeAll { now.timeIntervalSince($0.seen) > Loader.placeLife || abs($0.at - at) <= Loader.near }
+        lately.append((at: at, seen: now))
+        if lately.count > 8 { lately.removeFirst(lately.count - 8) }
+    }
+
+    /// Every place the film is being read from: the player's requests, and where the ones it let go of lately had
+    /// got to.
+    private func readingAt() -> [Int64] {
+        let now = Date()
+        lately.removeAll { now.timeIntervalSince($0.seen) > Loader.placeLife }
+        return wants.map { $0.at } + lately.map { $0.at }
     }
 
     /// What the player is waiting for comes first: a piece still arriving that none of its requests is waiting for
@@ -515,6 +594,7 @@ private final class Loader: NSObject, AVAssetResourceLoaderDelegate, StreamTask 
         let d = req.dataRequest
         let want = Want(request: req, at: d?.requestedOffset ?? 0, end: d.flatMap(Loader.wantedEnd))
         wants.append(want)
+        notes.playerAsked(at: wants.map { $0.at })
         pump(want)
     }
 
@@ -623,6 +703,7 @@ private final class Loader: NSObject, AVAssetResourceLoaderDelegate, StreamTask 
         // Only what the file is was asked for: its first two bytes are enough.
         if want.request.dataRequest == nil { length = min(length, 2) }
         guard length > 0 else { return false }
+        if before == nil, length > 2 { notes.freshStart() }
         let piece = Piece(offset: at, asked: length, step: step)
         piece.data.reserveCapacity(Int(length))
         pieces.append(piece)
@@ -651,6 +732,7 @@ private final class Loader: NSObject, AVAssetResourceLoaderDelegate, StreamTask 
     }
 
     private func forget(_ want: Want) {
+        if wants.contains(where: { $0 === want }) { remember(want.at) }
         wants.removeAll { $0 === want }
     }
 
@@ -691,7 +773,7 @@ private final class Loader: NSObject, AVAssetResourceLoaderDelegate, StreamTask 
         piece.body = Data()
         byTask[t.taskIdentifier] = piece
         StreamRouter.shared.handlers[t.taskIdentifier] = self
-        notes.asking(last - start + 1)
+        notes.asking(from: start, to: last + 1)
         t.resume()
         rank()
     }
@@ -868,18 +950,26 @@ private final class Loader: NSObject, AVAssetResourceLoaderDelegate, StreamTask 
         gaveUp(piece, f)
     }
 
-    /// Keeps what's held within `keepNow`: the pieces used longest ago go first, never one that's being fetched or
-    /// that one of the player's requests is reading or about to.
+    /// Keeps what's held within `keepNow` (`StreamKeep`): what the film has gone past goes first, then what's
+    /// furthest ahead of the place that will come to it; never a piece that's being fetched or that one of the
+    /// player's requests is reading or about to.
     private func trim() {
-        var held = pieces.reduce(Int64(0)) { $0 + Int64($1.data.count) }
+        var held: Int64 = 0
+        for p in pieces { held += Int64(p.data.count) }
         notes.keeping(held)
         guard held > keepNow else { return }
-        let idle = pieces.filter { p in !p.fetching && !wants.contains { p.offset <= $0.at && $0.at <= p.limit } }
-            .sorted { $0.used < $1.used }
-        for p in idle {
-            guard held > keepNow else { break }
-            held -= Int64(p.data.count)
-            pieces.removeAll { $0 === p }
+        var parts: [StreamKeep.Part] = []
+        parts.reserveCapacity(pieces.count)
+        for p in pieces {
+            let reading = wants.contains(where: { p.offset <= $0.at && $0.at <= p.limit })
+            parts.append(StreamKeep.Part(offset: p.offset, length: Int64(p.data.count),
+                                         used: p.used.timeIntervalSince1970, busy: p.fetching || reading))
         }
+        let going = Set(StreamKeep.letGo(parts, places: readingAt(), budget: keepNow, back: Loader.behind))
+        guard !going.isEmpty else { return }
+        var kept: [Piece] = []
+        kept.reserveCapacity(pieces.count)
+        for (i, p) in pieces.enumerated() where !going.contains(i) { kept.append(p) }
+        pieces = kept
     }
 }

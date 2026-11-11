@@ -150,6 +150,70 @@ final class PhonePlayback {
         return PhonePlay(source: .url(c.streamURL(a.key)), key: a.key, title: a.title, start: start)
     }
 
+    // MARK: What the film is
+
+    /// The film's picture and sound as the player has them, for the Macs' log ("picture hvc1 3840×2160 24 fps Dolby
+    /// Vision profile 8; sound ec-3 6 channels; sound dtsh 8 channels, can’t be played here"). A film whose sound
+    /// Apple's player can't play shows its picture in silence, and nothing else says why. [also]: more to say after
+    /// them (how the Apple TV is set).
+    static func noteFormats(of item: AVPlayerItem, title: String, also: String = "") {
+        let tracks = item.tracks.compactMap { $0.assetTrack }
+        guard !tracks.isEmpty else { return }
+        let hdr = AVPlayer.eligibleForHDRPlayback ? "HDR can be shown here" : "HDR can’t be shown here"
+        Task { @MainActor in
+            var words: [String] = []
+            for t in tracks {
+                let picture = t.mediaType == .video
+                guard picture || t.mediaType == .audio else { continue }
+                let formats = (try? await t.load(.formatDescriptions)) ?? []
+                let decodable = (try? await t.load(.isDecodable)) ?? true
+                var line = picture ? "picture" : "sound"
+                if let f = formats.first {
+                    line += " " + PhonePlayback.fourLetters(CMFormatDescriptionGetMediaSubType(f))
+                    if picture {
+                        let size = CMVideoFormatDescriptionGetDimensions(f)
+                        line += " \(size.width)×\(size.height)"
+                        let rate = (try? await t.load(.nominalFrameRate)) ?? 0
+                        if rate > 0 { line += String(format: " %.0f fps", rate) }
+                        line += PhonePlayback.dynamicRange(f)
+                    } else if let sound = CMAudioFormatDescriptionGetStreamBasicDescription(f)?.pointee {
+                        line += " \(sound.mChannelsPerFrame) channels"
+                    }
+                } else {
+                    line += " of a kind the player couldn’t read"
+                }
+                if !decodable { line += ", can’t be played here" }
+                words.append(line)
+            }
+            guard !words.isEmpty else { return }
+            Diagnostics.shared.notePlayback("\(title): " + words.joined(separator: "; ") + "; \(hdr)\(also)")
+        }
+    }
+
+    /// A format's four-letter name ("hvc1", "ec-3"), or its number when it isn't letters.
+    private static func fourLetters(_ code: FourCharCode) -> String {
+        var text = ""
+        for shift in [24, 16, 8, 0] {
+            let byte = UInt8((code >> UInt32(shift)) & 0xFF)
+            guard byte >= 0x20, byte < 0x7F else { return String(format: "0x%08X", code) }
+            text.append(Character(UnicodeScalar(byte)))
+        }
+        return text.trimmingCharacters(in: .whitespaces)
+    }
+
+    /// " Dolby Vision profile 8", " HDR" or " HLG" when the picture's description says so.
+    private static func dynamicRange(_ f: CMFormatDescription) -> String {
+        if let atoms = CMFormatDescriptionGetExtension(f, extensionKey: kCMFormatDescriptionExtension_SampleDescriptionExtensionAtoms) as? [String: Any],
+           let box = (atoms["dvcC"] ?? atoms["dvvC"] ?? atoms["dvwC"]) as? Data {
+            return box.count >= 3 ? " Dolby Vision profile \(box[box.startIndex + 2] >> 1)" : " Dolby Vision"
+        }
+        // (The picture's transfer function, under the name Core Video gives it.)
+        let transfer = CMFormatDescriptionGetExtension(f, extensionKey: "CVImageBufferTransferFunction" as CFString) as? String ?? ""
+        if transfer.contains("2084") { return " HDR" }
+        if transfer.contains("HLG") { return " HLG" }
+        return ""
+    }
+
     // MARK: Google's daily limit
 
     static let limitTitle = "Google Drive’s Daily Limit"
@@ -322,6 +386,8 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
     private var resumeAt: CMTime?
     /// How long the start waited for the TV to change its picture mode (for the Macs' log).
     private var switchWait: Double?
+    /// The film whose picture and sound formats have been written down.
+    private var formatsNotedFor: UUID?
     /// Times the system has said memory is short during this film, and what listens for it.
     private var memoryWarnings = 0
     private var memoryWatch: NSObjectProtocol?
@@ -637,6 +703,19 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
                     }
                     self.failed(refusal ?? heard.map { PhonePlayback.failure($0, play) } ?? words)
                 } else {
+                    // What the film's picture and sound are, once for each film played.
+                    if self.formatsNotedFor != play.id {
+                        self.formatsNotedFor = play.id
+                        #if os(tvOS)
+                        let matches = self.controller?.viewIfLoaded?.window?.avDisplayManager.isDisplayCriteriaMatchingEnabled
+                        let also = matches == nil ? "" : matches == true
+                            ? "; the Apple TV matches the film’s picture mode"
+                            : "; the Apple TV keeps its own picture mode (Match Content is off)"
+                        #else
+                        let also = ""
+                        #endif
+                        PhonePlayback.noteFormats(of: now, title: play.title, also: also)
+                    }
                     self.ready(p, play)
                 }
             }
@@ -1180,6 +1259,7 @@ final class MacPlayer: NSObject, NSWindowDelegate {
                 }
                 if !begun, item.status == .readyToPlay {
                     begun = true
+                    PhonePlayback.noteFormats(of: item, title: play.title)
                     await PhonePlayback.begin(p, play)
                 }
                 if begun, p.timeControlStatus == .playing { PhonePlayback.playing(item); return }
