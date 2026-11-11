@@ -208,6 +208,15 @@ summary of what was installed where, and names the temporary folder its logs are
   - `Fleet.swift`: the observable state: paired hubs, every TV merged from all hubs, polling, health, inbox, releases, LG remotes.
   - `Discovery.swift`: Bonjour browsing and Wake-on-LAN. `LGRemote.swift`: LG's SSAP WebSocket remote.
   - `Releases.swift`: GitHub releases and version numbers. `WebOSInstaller.swift`: SSH install on LG TVs (Mac).
+  - `FilmRuns.swift`, `FilmTrack.swift`, `FilmPlayer.swift`, `FilmIndexFile.swift`: the app's own film player (Apple TV).
+    Apple's player can't play a film whose sound and picture are stored far apart: it hops between the two hundreds of
+    times a second and stops every twenty seconds or so. This one has Apple's reader say where each sample is, reads each
+    track straight on from its own place (as the Android TVs' player does) and hands the samples to Apple's decoders on
+    one clock. The film's index is kept in a small file on the device, so it's read from Google once. `swift test` plays
+    three small films with it on a Mac. `App/TV/TVFilmScreen.swift` is its screen, laid out as Apple's player's, and
+    `App/TV/TVFilmPlayer.swift` runs a film on it. It has the films Apple's player stutters on, or every film
+    (Settings, Watch on the Apple TV). On a Mac, `open -a "Woodruff Family" --args -filmCheck "own:<film>"` plays a film
+    with it and writes how it went to `~/Library/Logs/Woodruff Family/film-check.log`.
 - `App/Shared`: the SwiftUI screens, the same on iPhone (tabs), iPad and Mac (sidebar). `AndroidTVRemote.swift` is Android's
   own TV remote protocol (v2, as Google's TV remote app): pairing on port 6467, keys on 6466, over TLS with one client
   certificate built into the app (so a TV paired once takes every family device), the TV's certificate pinned per address. `App/iOS`: the QR scanner. `App/macOS`: the menu bar and commands.

@@ -259,7 +259,7 @@ final class FilmScreen: UIViewController, UIGestureRecognizerDelegate {
         chapters = pill("Chapters")
         chapters.addAction(UIAction { [weak self] _ in self?.toggle(.chapters) }, for: .primaryActionTriggered)
         chapters.isHidden = true
-        for button in [startOver, subtitles, sound, info, chapters] as [UIButton] { controls.addSubview(button) }
+        for button in [startOver!, subtitles!, sound!, info!, chapters!] { controls.addSubview(button) }
 
         view.addSubview(bar)
 
@@ -438,8 +438,9 @@ final class FilmScreen: UIViewController, UIGestureRecognizerDelegate {
             hasPlayed = true
             UIView.animate(withDuration: 0.3, animations: { self.poster.alpha = 0 }, completion: { _ in self.poster.isHidden = true })
         }
-        // The spinner: while it waits for the film, after a moment (a short wait shows nothing).
-        let busy = state == .waiting || state == .idle
+        // The spinner: until the film first plays, and after that while it waits for the film (after a moment: a
+        // short wait shows nothing).
+        let busy = state == .waiting || state == .idle || (!hasPlayed && state == .paused)
         spinnerWork?.cancel()
         if busy {
             let after: UInt64 = hasPlayed ? 600_000_000 : 0
@@ -515,8 +516,13 @@ final class FilmScreen: UIViewController, UIGestureRecognizerDelegate {
         guard shownControls, panel == nil else { return }
         shownControls = false
         hideWork?.cancel()
-        // The focus goes back to the bar (a button out of sight can't keep it).
-        if !barFocused { focus(offering ? nextEpisode : bar) }
+        // The focus goes to Next Episode when it's offered (one click starts it), else back to the bar (a button
+        // out of sight can't keep it).
+        if offering {
+            focus(nextEpisode!)
+        } else if !barFocused {
+            focus(bar)
+        }
         UIView.animate(withDuration: 0.35) {
             self.controls.alpha = 0
             self.shade.alpha = 0
@@ -808,7 +814,7 @@ final class FilmScreen: UIViewController, UIGestureRecognizerDelegate {
         bar.isHidden = true
         UIView.animate(withDuration: 0.25) {
             made.alpha = 1
-            for v in [self.line, self.name, self.startOver, self.subtitles, self.sound] as [UIView] { v.alpha = 0 }
+            for v in [self.line, self.name, self.startOver!, self.subtitles!, self.sound!] as [UIView] { v.alpha = 0 }
             self.layoutWords()
         }
         hideWork?.cancel()
@@ -817,14 +823,14 @@ final class FilmScreen: UIViewController, UIGestureRecognizerDelegate {
 
     private func closePanel() {
         guard let old = panel else { return }
-        let back: UIView = panelKind == .chapters ? chapters : info
+        let back: UIView = panelKind == .chapters ? chapters! : info!
         panel = nil
         panelKind = nil
         bar.isHidden = false
         focus(back)
         UIView.animate(withDuration: 0.2, animations: {
             old.alpha = 0
-            for v in [self.line, self.name, self.startOver, self.subtitles, self.sound] as [UIView] { v.alpha = 1 }
+            for v in [self.line, self.name, self.startOver!, self.subtitles!, self.sound!] as [UIView] { v.alpha = 1 }
             self.layoutWords()
         }, completion: { _ in old.removeFromSuperview() })
         restartHiding()
@@ -949,7 +955,7 @@ final class FilmScreen: UIViewController, UIGestureRecognizerDelegate {
         nextEpisode.isHidden = !on
         view.setNeedsLayout()
         if on {
-            if barFocused, !shownControls { focus(nextEpisode) }
+            if barFocused, !shownControls { focus(nextEpisode!) }
         } else if nextEpisode.isFocused {
             focus(bar)
         }

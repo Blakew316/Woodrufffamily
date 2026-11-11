@@ -546,7 +546,10 @@ private final class Loader: NSObject, AVAssetResourceLoaderDelegate, StreamTask 
     /// the film never waits for Google to start sending between pieces.
     private static let aheadFrom = 1
     /// Pieces being fetched at once, at most, before the one used longest ago that nobody is waiting for is let go.
-    private static let fetchingAtMost = 6
+    private static let fetchingAtMost = 4
+    /// The same while the app's own player reads: its picture and its sound each have the piece they're in and the
+    /// next one on the way.
+    private static let fetchingAtMostOwn = 6
     /// The app's own player reading its sound far from its picture: the sound's pieces stay small (eight megabytes
     /// is minutes of sound). Near the picture, the picture's pieces hold the sound too.
     private static let soundStep = 1
@@ -846,6 +849,10 @@ private final class Loader: NSObject, AVAssetResourceLoaderDelegate, StreamTask 
                 }
                 if !ask(from: read.at, upTo: nil, sizeOnly: false, most: mostStep(lane: read.lane, at: read.at)) {
                     fail(read, URLError(.resourceUnavailable))
+                } else if let asked = piece(bringing: read.at) {
+                    // And the piece after it, at the same moment: a film starts with two pieces on their way, not
+                    // with the second asked for only once the first has come.
+                    ahead(reading: asked, lane: read.lane)
                 }
                 return
             }
@@ -871,7 +878,7 @@ private final class Loader: NSObject, AVAssetResourceLoaderDelegate, StreamTask 
         guard next < (total ?? .max) else { return }
         if lane != 0, let picture = lanes[0], abs(picture - next) < Loader.nearPicture { return }
         guard self.piece(holding: next) == nil, self.piece(bringing: next) == nil else { return }
-        guard pieces.filter({ $0.fetching }).count < Loader.fetchingAtMost else { return }
+        guard pieces.filter({ $0.fetching }).count < Loader.fetchingAtMostOwn else { return }
         ask(from: next, upTo: nil, sizeOnly: false, most: mostStep(lane: lane, at: next))
     }
 
@@ -982,7 +989,7 @@ private final class Loader: NSObject, AVAssetResourceLoaderDelegate, StreamTask 
         pieces.append(piece)
         // Too many at once (the player has moved about): the one nobody is waiting for that was used longest ago goes.
         let fetching = pieces.filter { $0.fetching }
-        if fetching.count > Loader.fetchingAtMost,
+        if fetching.count > (lanes.isEmpty ? Loader.fetchingAtMost : Loader.fetchingAtMostOwn),
            let idle = fetching.filter({ p in p !== piece && !wanted(p) }).min(by: { $0.used < $1.used }) {
             drop(idle)
         }

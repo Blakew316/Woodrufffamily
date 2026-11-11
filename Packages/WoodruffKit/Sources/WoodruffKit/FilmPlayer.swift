@@ -200,6 +200,11 @@ public final class FilmPlayer: @unchecked Sendable {
     private var hasWaited = false
     private var lastMend = Date.distantPast
 
+    /// The track the film's chapters are in (their names, each at the time it starts), until they've been read; and
+    /// which try at reading them is the current one (a move to another place drops what was asked for).
+    private var chapterTrack: Loaded?
+    private var chapterTurn = 0
+
     private var wordsReader: FilmTrackReader?
     private var wordsReading = false
     private var wordsUpTo = CMTime.invalid
@@ -293,6 +298,16 @@ public final class FilmPlayer: @unchecked Sendable {
         // The sound the file itself puts first, else the first that can be played.
         film.sound = firstEnabled ?? film.sounds.first(where: { $0.playable })?.id
         guard picture != nil || film.sound != nil else { throw Failure.nothingToPlay }
+        // The film's chapters: a track of their names that one of the others points at.
+        var chapters: Loaded?
+        for track in tracks where chapters == nil {
+            guard let lists = try? await track.loadAssociatedTracks(ofType: .chapterList) else { continue }
+            for list in lists where list.mediaType == .text || list.mediaType == .subtitle {
+                let segments = (try? await list.load(.segments)) ?? []
+                chapters = Loaded(track: list, shift: Self.shift(segments), format: nil, playable: true)
+                break
+            }
+        }
 
         let took = Date().timeIntervalSince(began)
         let chosen = film.sound.flatMap { sounds[$0] }
@@ -307,6 +322,7 @@ public final class FilmPlayer: @unchecked Sendable {
             }
             soundTracks = sounds
             wordTracks = words
+            chapterTrack = chapters
             opened = true
             lock.lock()
             sharedFilm = film
@@ -319,30 +335,56 @@ public final class FilmPlayer: @unchecked Sendable {
             timer = t
             publish()
         }
-        // The chapters come from the film itself (a little of it is read for them): after it's open, not before.
-        Task { [weak self] in await self?.readChapters() }
     }
 
-    private func readChapters() async {
-        guard let locale = (try? await asset.load(.availableChapterLocales))?.first,
-              let groups = try? await asset.loadChapterMetadataGroups(withTitleLocale: locale, containingItemsWithCommonKeys: []) else { return }
-        var chapters: [Chapter] = []
-        for group in groups {
-            var title = ""
-            for item in group.items where item.commonKey == .commonKeyTitle {
-                title = (try? await item.load(.stringValue)) ?? ""
+    /// Reads the film's chapters (their names are in the film itself, a few hundred bytes of it): asked for a
+    /// moment after the film has been placed, so they never hold up its start.
+    private func chaptersSoon() {
+        guard chapterTrack != nil else { return }
+        chapterTurn += 1
+        let turn = chapterTurn
+        queue.asyncAfter(deadline: .now() + 2) { [weak self] in
+            guard let self, turn == self.chapterTurn, !self.closed, let from = self.chapterTrack,
+                  let reader = FilmTrackReader(track: from.track, shift: from.shift) else { return }
+            var runs: [FilmRun] = []
+            while runs.count < 64, let run = reader.next(most: 1 << 20, gap: 64 << 10, limit: 480, seconds: .infinity) {
+                runs.append(run)
             }
-            let start = group.timeRange.start.seconds
-            chapters.append(Chapter(title: title, start: start.isFinite ? max(0, start) : 0))
+            self.readChapters(runs, at: 0, found: [], turn: turn)
         }
-        guard !chapters.isEmpty else { return }
-        let found = chapters
-        queue.async { [weak self] in
-            guard let self, !self.closed else { return }
-            self.lock.lock()
-            self.sharedFilm.chapters = found
-            self.lock.unlock()
-            self.publish()
+    }
+
+    private func readChapters(_ runs: [FilmRun], at i: Int, found: [Chapter], turn: Int) {
+        guard turn == chapterTurn, !closed else { return }
+        guard i < runs.count else {
+            // All read: they're known from now on.
+            chapterTrack = nil
+            guard !found.isEmpty else { return }
+            lock.lock()
+            sharedFilm.chapters = found.sorted { $0.start < $1.start }
+            lock.unlock()
+            publish()
+            return
+        }
+        let run = runs[i]
+        guard run.length > 0 else {
+            readChapters(runs, at: i + 1, found: found, turn: turn)
+            return
+        }
+        bytes.read(from: run.offset, count: run.length, lane: 2) { [weak self] result in
+            self?.queue.async {
+                guard let self else { return }
+                var found = found
+                if case .success(let data) = result, data.count >= run.length {
+                    for sample in run.samples where sample.size > 0 {
+                        let from = Int(sample.offset - run.offset)
+                        let part = data.subdata(in: (data.startIndex + from)..<(data.startIndex + from + sample.size))
+                        let start = sample.shown.seconds
+                        found.append(Chapter(title: FilmText.subtitle(part) ?? "", start: start.isFinite ? max(0, start) : 0))
+                    }
+                }
+                self.readChapters(runs, at: i + 1, found: found, turn: turn)
+            }
         }
     }
 
@@ -496,6 +538,8 @@ public final class FilmPlayer: @unchecked Sendable {
         waiting = wanted
         resetWords(to: target)
         for pipe in pipes { fill(pipe) }
+        // (What was asked for before this move was dropped, the chapters with it if they were being read.)
+        chaptersSoon()
         publish()
     }
 

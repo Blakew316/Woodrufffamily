@@ -84,6 +84,8 @@ final class OwnPlayer {
         CameraStreams.shared.filmStarting()
         let audio = AVAudioSession.sharedInstance()
         try? audio.setCategory(.playback, mode: .moviePlayback)
+        // Sound mixed for more than two speakers goes out that way (Apple's player says so for itself).
+        try? audio.setSupportsMultichannelContent(true)
         // Activating can take a moment; not on the main thread, where the screen is being shown.
         DispatchQueue.global(qos: .userInitiated).async { try? audio.setActive(true) }
 

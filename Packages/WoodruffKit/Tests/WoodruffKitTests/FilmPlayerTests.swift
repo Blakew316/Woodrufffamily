@@ -425,7 +425,8 @@ final class FilmPlayerTests: XCTestCase {
         let gone = await wait(2) { r.player.line == nil && r.player.film.showing == nil }
         XCTAssertTrue(gone)
 
-        let chapters = await wait(4) { r.player.film.chapters.count == 2 }
+        // (They're read a moment after the film starts, so they never hold up its start.)
+        let chapters = await wait(8) { r.player.film.chapters.count == 2 }
         XCTAssertTrue(chapters, "chapters \(r.player.film.chapters)")
         XCTAssertEqual(r.player.film.chapters.map(\.title), ["Opening", "The Rest"])
         XCTAssertEqual(r.player.film.chapters.map(\.start), [0, 2])
