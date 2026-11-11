@@ -126,7 +126,7 @@ final class HomeLayout {
         #if os(tvOS)
         // The sample family on Apple TV (-demo YES, the screenshot run): three of its TVs are favourites, so Home's
         // first row shows TVs' tiles as the family's own Apple TVs do (one playing, one on YouTube, one off).
-        if Demo.isOn, starred.isEmpty { starred = ["this", "tv-den", "tv-kitchen"] }
+        if Demo.isOn, starred.isEmpty { starred = [Demo.hub.id, "tv-den", "tv-kitchen"] }
         #endif
         favorites = starred
         pinnedRooms = s?.pinnedRooms ?? ["Kitchen", "Front Yard", "Living Room", "Backyard"]
