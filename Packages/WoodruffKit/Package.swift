@@ -7,6 +7,7 @@ let package = Package(
     products: [.library(name: "WoodruffKit", targets: ["WoodruffKit"])],
     targets: [
         .target(name: "WoodruffKit"),
-        .testTarget(name: "WoodruffKitTests", dependencies: ["WoodruffKit"]),
+        // Fixtures: a few seconds of film in each layout the app's own player has to read (the Mac tests play them).
+        .testTarget(name: "WoodruffKitTests", dependencies: ["WoodruffKit"], resources: [.copy("Fixtures")]),
     ]
 )
