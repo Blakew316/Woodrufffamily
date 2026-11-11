@@ -1633,16 +1633,20 @@ enum PlayRouter {
     @discardableResult
     static func start(_ a: PlayAction, fleet: Fleet, on tv: FleetTV? = nil, fromStart: Bool = false) -> Bool {
         #if os(tvOS)
-        // A film Apple's player stutters on goes to the TV this Apple TV is plugged into (`TVHandOff`), when one has
-        // been chosen and is on.
-        if tv == nil, a.isDrive, TVHandOff.knows(a.key), let screen = TVHandOff.screen(fleet) {
+        // A film Apple's player stutters on plays in the app's own player (`OwnPlayer`, below). Only one that player
+        // couldn't open goes to the TV this Apple TV is plugged into (`TVHandOff`), when one has been chosen and is on.
+        if tv == nil, a.isDrive, TVHandOff.knows(a.key), OwnPlayer.hasGivenUp(on: a.key), let screen = TVHandOff.screen(fleet) {
             return start(a, fleet: fleet, on: screen, fromStart: fromStart)
         }
         #endif
         // Settings → Watch: Play plays on this device (Play On… still picks a TV).
         if tv == nil, PhonePlayback.playsHere, PhonePlayback.canPlay(a) {
             guard let p = PhonePlayback.play(a, fleet: fleet, fromStart: fromStart) else { return false }
-            #if os(iOS) || os(tvOS)
+            #if os(tvOS)
+            // Apple TV: in the app's own player when it's one of its films (the ones Apple's player stutters on, or
+            // every film when Settings says so), else in Apple's.
+            OwnPlayer.start(p)
+            #elseif os(iOS)
             // The film starts loading at once; Apple's player shows over the topmost screen as soon as the title page
             // that asked has closed.
             NativePlayer.shared.present(p)

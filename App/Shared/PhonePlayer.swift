@@ -202,7 +202,7 @@ final class PhonePlayback {
     }
 
     /// " Dolby Vision profile 8", " HDR" or " HLG" when the picture's description says so.
-    private static func dynamicRange(_ f: CMFormatDescription) -> String {
+    static func dynamicRange(_ f: CMFormatDescription) -> String {
         if let atoms = CMFormatDescriptionGetExtension(f, extensionKey: kCMFormatDescriptionExtension_SampleDescriptionExtensionAtoms) as? [String: Any],
            let box = (atoms["dvcC"] ?? atoms["dvvC"] ?? atoms["dvwC"]) as? Data {
             return box.count >= 3 ? " Dolby Vision profile \(box[box.startIndex + 2] >> 1)" : " Dolby Vision"
@@ -346,8 +346,18 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
     private var controller: PlayerController?
     #if os(tvOS)
     /// A film's player is on screen, over everything (what's under it can't be seen meanwhile). Not one that never got
-    /// on screen, nor one put away into picture in picture.
-    var isOpen: Bool { controller?.presentingViewController != nil }
+    /// on screen, nor one put away into picture in picture. The app's own player's screen counts (`OwnPlayer`).
+    var isOpen: Bool { controller?.presentingViewController != nil || OwnPlayer.shared.isOpen }
+
+    /// Closes the film showing here, without a word: the app's own player takes over (`OwnPlayer.start`).
+    func closeForAnother() {
+        let old = controller
+        old?.onGone = nil
+        old?.delegate = nil
+        finish()
+        if let old, old.presentingViewController != nil { old.dismiss(animated: false) }
+        inPictureInPicture = false
+    }
     #endif
     private var player: AVPlayer?
     private var stream: DriveStream?
@@ -494,7 +504,8 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
         guard let next = nextUp, let play = PhonePlayback.play(next, fleet: Fleet.shared) else { return }
         // Asked once (a second press while it closes starts nothing more).
         nextUp = nil
-        Task { @MainActor [weak self] in self?.present(play) }
+        // In the app's own player when it's one of its films (`OwnPlayer`), else here.
+        Task { @MainActor in OwnPlayer.start(play) }
     }
 
     /// Start Over, in the player's bar: from the beginning, playing.
@@ -1081,6 +1092,17 @@ final class NativePlayer: NSObject, AVPlayerViewControllerDelegate {
               play.key.hasPrefix("drive:") else { return }
         handedOff = true
         TVHandOff.remember(play.key)
+        // The app's own player reads such a film its own way, each track straight on: the film goes on there, from
+        // where it is. (Only when it couldn't open the film does the TV's own player get it, below.)
+        if !OwnPlayer.hasGivenUp(on: play.key) {
+            let at = p.currentTime().seconds
+            var on = play
+            if at.isFinite, at > 0 { on.start = at }
+            Diagnostics.shared.notePlayback("\(play.title): Apple’s player is hopping between its sound and picture; it goes on in the app’s own player")
+            // Once this look at the film is over (it's made from inside Apple's player's own clock).
+            Task { @MainActor in OwnPlayer.start(on) }
+            return
+        }
         let fleet = Fleet.shared
         guard let screen = TVHandOff.screen(fleet) else {
             Diagnostics.shared.notePlayback("\(play.title): Apple’s player is hopping between its sound and picture; no TV to hand it to")

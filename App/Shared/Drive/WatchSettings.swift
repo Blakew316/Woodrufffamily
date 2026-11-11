@@ -18,6 +18,8 @@ struct WatchSettingsView: View {
     /// The TV this Apple TV is plugged into (`TVHandOff.screenKey`), and how many films are started there.
     @AppStorage("watch.screenTV") private var screenTV = ""
     @State private var handedOff = 0
+    /// Every Drive film plays in the app's own player (`OwnPlayer.everyKey`).
+    @AppStorage("watch.ownPlayerEvery") private var ownEvery = false
     #endif
     private let library = DriveLibrary.shared
 
@@ -36,7 +38,24 @@ struct WatchSettingsView: View {
     var body: some View {
         Form {
             #if os(tvOS)
-            // The TV this Apple TV is plugged into: a film Apple's player stutters on is played by that TV's own
+            // The app's own player (`OwnPlayer`): it has the films Apple's player stutters on, and every film when
+            // this is on. Each Apple TV keeps its own choice.
+            Section {
+                Toggle("Woodruff’s Player for Every Film", isOn: $ownEvery)
+                if handedOff > 0 {
+                    Button("Try Apple’s Player Again") {
+                        TVHandOff.forgetAll()
+                        handedOff = 0
+                    }
+                }
+            } header: {
+                Text("Player")
+            } footer: {
+                Text(handedOff > 0
+                     ? "A film that stutters in Apple’s player plays in Woodruff’s own from then on: \(handedOff) so far. Turn this on to play every film that way."
+                     : "A film that stutters in Apple’s player plays in Woodruff’s own from then on. Turn this on to play every film that way.")
+            }
+            // The TV this Apple TV is plugged into: a film neither player here can play is played by that TV's own
             // player (`TVHandOff`). Each Apple TV keeps its own choice.
             Section {
                 Button { screenTV = "" } label: {
@@ -47,18 +66,10 @@ struct WatchSettingsView: View {
                         HStack { Text(tv.name); Spacer(); if screenTV == tv.id { Image(systemName: "checkmark") } }
                     }
                 }
-                if handedOff > 0 {
-                    Button("Try Every Film Here Again") {
-                        TVHandOff.forgetAll()
-                        handedOff = 0
-                    }
-                }
             } header: {
                 Text("This Apple TV’s Screen")
             } footer: {
-                Text(handedOff > 0
-                     ? "The TV this Apple TV is plugged into. A film that stutters in Apple’s player plays on that TV’s own player instead: \(handedOff) so far."
-                     : "The TV this Apple TV is plugged into. A film that stutters in Apple’s player plays on that TV’s own player instead.")
+                Text("The TV this Apple TV is plugged into. A film that neither player here can play goes to that TV’s own player.")
             }
             .onAppear { handedOff = TVHandOff.count }
             #endif

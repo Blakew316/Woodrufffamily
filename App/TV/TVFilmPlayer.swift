@@ -1,0 +1,480 @@
+import UIKit
+import AVFoundation
+import MediaPlayer
+import WoodruffKit
+
+/// A Drive film played on this Apple TV by the app's own player (`FilmPlayer`) on its own screen (`FilmScreen`),
+/// in place of Apple's player (`NativePlayer`).
+///
+/// Apple's player can't play a film whose sound and picture are stored far apart: it hops between the two some
+/// hundreds of times a second and stops every twenty seconds or so. The app's own player reads each track straight
+/// on, as the Android TVs' player does. It has the films Apple's player has been seen hopping on (`TVHandOff`
+/// remembers them), and every Drive film when Settings → Watch says so. A film it can't open goes to Apple's
+/// player, which says why if it can't either.
+///
+/// Around the film it does what `NativePlayer` does: where it was left off, the TV's picture mode waited for,
+/// where it got to kept every ten seconds, Next Episode, closing at the end, and how it went for the Macs' log.
+@MainActor
+final class OwnPlayer {
+    static let shared = OwnPlayer()
+
+    /// Settings → Watch on Apple TV: every Drive film plays in the app's own player, not only the ones Apple's
+    /// player stutters on.
+    static let everyKey = "watch.ownPlayerEvery"
+    static var forEvery: Bool { UserDefaults.standard.bool(forKey: everyKey) }
+
+    /// Films the app's own player couldn't open since the app started: Apple's player has them.
+    private static var gaveUp: Set<String> = []
+    static func hasGivenUp(on key: String) -> Bool { gaveUp.contains(key) }
+
+    /// Whether [play] is one for the app's own player.
+    static func plays(_ play: PhonePlay) -> Bool {
+        guard case .drive = play.source, !gaveUp.contains(play.key) else { return false }
+        return forEvery || TVHandOff.knows(play.key)
+    }
+
+    /// Plays [play] on this Apple TV: in the app's own player when it's one of its films, else in Apple's. Whichever
+    /// was showing a film closes first.
+    static func start(_ play: PhonePlay) {
+        if plays(play) {
+            NativePlayer.shared.closeForAnother()
+            shared.present(play)
+        } else {
+            shared.closeForAnother()
+            NativePlayer.shared.present(play)
+        }
+    }
+
+    /// A film's screen is up.
+    var isOpen: Bool { screen?.presentingViewController != nil }
+
+    private var screen: FilmScreen?
+    private var player: FilmPlayer?
+    private var stream: DriveStream?
+    private var index: FilmIndex.Opened?
+    private var current: PhonePlay?
+    private var ticker: Timer?
+    private var opening: Task<Void, Never>?
+    private var watchdog: Task<Void, Never>?
+    /// The film has been told to play; it has played (its first frame moved).
+    private var begun = false
+    private var started = false
+    private var ticks = 0
+    private var checkedIndex = false
+    /// Why it can't go on has been said.
+    private var said = false
+    private var nextUp: PlayAction?
+    private var switchWait: Double?
+    private var indexTook = 0.0
+    private var presentAttempts = 0
+    private var memoryWarnings = 0
+    private var watches: [NSObjectProtocol] = []
+    private var commands: [(command: MPRemoteCommand, target: Any)] = []
+    private var artwork: MPMediaItemArtwork?
+
+    // MARK: Starting
+
+    func present(_ play: PhonePlay) {
+        guard case .drive(let id) = play.source else {
+            NativePlayer.shared.present(play)
+            return
+        }
+        closeForAnother()
+        // Camera tiles no page shows any more let go now: their pictures came down the same connection.
+        CameraStreams.shared.filmStarting()
+        let audio = AVAudioSession.sharedInstance()
+        try? audio.setCategory(.playback, mode: .moviePlayback)
+        // Activating can take a moment; not on the main thread, where the screen is being shown.
+        DispatchQueue.global(qos: .userInitiated).async { try? audio.setActive(true) }
+
+        let stream = DriveStream(fileID: id, name: play.title)
+        let screen = FilmScreen()
+        screen.modalPresentationStyle = .fullScreen
+        screen.card = Self.card(play)
+        screen.onGone = { [weak self, weak screen] in
+            guard let self, let screen, self.screen === screen else { return }
+            self.finish()
+        }
+        screen.onNext = { [weak self] in self?.playNext() }
+        self.screen = screen
+        self.stream = stream
+        current = play
+        begun = false
+        started = false
+        ticks = 0
+        checkedIndex = false
+        said = false
+        nextUp = nil
+        switchWait = nil
+        indexTook = 0
+        presentAttempts = 0
+        memoryWarnings = 0
+        artwork = nil
+        PlayCrumb.note(play.title, "opening", detail: PlayCrumb.memoryLeft)
+        if let art = play.art { poster(art, on: screen, play: play) }
+        details(play, on: screen)
+        watch()
+        show(screen, tries: 0)
+        opening = Task { @MainActor [weak self] in
+            await self?.open(play, id: id, stream: stream, screen: screen)
+        }
+        watchdog = Task { @MainActor [weak self] in
+            // Until it's playing, or said why not.
+            try? await Task.sleep(nanoseconds: UInt64(PhonePlayback.startLimit) * 1_000_000_000)
+            guard let self, !Task.isCancelled, self.current?.id == play.id, !self.started, !self.said else { return }
+            self.failed(self.slowerThanFilm() ?? PhonePlayback.tooSlow)
+        }
+    }
+
+    /// The film's index (kept on this Apple TV, or read from Google and kept), then the film from where it was
+    /// left off: fetched while the TV changes its picture mode, playing once it has.
+    private func open(_ play: PhonePlay, id: String, stream: DriveStream, screen: FilmScreen) async {
+        let began = Date()
+        do {
+            let index = try await FilmIndex.open(stream, id: id)
+            guard current?.id == play.id, self.screen === screen else { return }
+            let player = FilmPlayer(asset: index.asset, bytes: stream)
+            try await player.open()
+            guard current?.id == play.id, self.screen === screen else {
+                player.close()
+                return
+            }
+            self.index = index
+            self.player = player
+            indexTook = Date().timeIntervalSince(began)
+            screen.attach(player)
+            player.seek(to: play.start > 5 ? play.start : 0)
+            let waited = await screen.matchDisplay(to: player.film.picture)
+            guard current?.id == play.id, self.screen === screen else { return }
+            switchWait = waited
+            noteFormats(player.film, play, matches: screen.matchesContent)
+            player.play()
+            begun = true
+            commandsOn()
+            ticker?.invalidate()
+            ticker = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated { self?.tick() }
+            }
+        } catch {
+            guard current?.id == play.id, self.screen === screen else { return }
+            giveToApple(play, error)
+        }
+    }
+
+    /// The app's own player can't open this film (it isn't a kind Apple's reader knows, or none of its picture or
+    /// sound can be played here, or Google wouldn't send it): Apple's player has it from now on, and says why if it
+    /// can't play it either.
+    private func giveToApple(_ play: PhonePlay, _ error: Error) {
+        Self.gaveUp.insert(play.key)
+        let ns = error as NSError
+        Diagnostics.shared.notePlayback("\(play.title): the app’s own player couldn’t open it (\(ns.domain) \(ns.code)); Apple’s player has it")
+        closeForAnother()
+        NativePlayer.shared.present(play)
+    }
+
+    /// Closes the film showing here, without a word (another player, or another film, takes over).
+    func closeForAnother() {
+        let old = screen
+        old?.onGone = nil
+        finish()
+        if let old, old.presentingViewController != nil { old.dismiss(animated: false) }
+    }
+
+    /// Shows the screen once what it goes over is still: the title's page that asked has closed (presenting while
+    /// it's closing does nothing, and the film would never show).
+    private func show(_ c: FilmScreen, tries: Int) {
+        guard screen === c, c.presentingViewController == nil else { return }
+        let top = NativePlayer.top()
+        let busy = top.map { $0.transitionCoordinator != nil || $0.presentedViewController != nil || $0.isBeingPresented || $0.isBeingDismissed } ?? true
+        if tries == 0 || (busy && tries < 40) {
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: tries == 0 ? 120_000_000 : 50_000_000)
+                self?.show(c, tries: tries + 1)
+            }
+            return
+        }
+        guard let top else { return }
+        presentAttempts += 1
+        let attempt = presentAttempts
+        // UIKit refuses a presentation silently (the screen under it still changing): looked at a second later, and
+        // put up again over whatever is on top then (a few times at most).
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            guard let self, self.screen === c, c.presentingViewController == nil, self.presentAttempts == attempt, attempt < 4 else { return }
+            self.show(c, tries: 40)
+        }
+        top.present(c, animated: true)
+    }
+
+    // MARK: What the film is
+
+    /// What the screen says about [play] in words, from what's kept here.
+    private static func card(_ play: PhonePlay) -> FilmCard {
+        guard let info = DriveLibrary.shared.playerInfo(play.key) else { return FilmCard(title: play.title) }
+        var facts: [String] = []
+        if let year = info.year { facts.append(String(year)) }
+        if !info.genres.isEmpty { facts.append(info.genres.prefix(2).joined(separator: ", ")) }
+        return FilmCard(title: info.title, line: info.subtitle, facts: facts.isEmpty ? nil : facts.joined(separator: " · "), story: info.story)
+    }
+
+    /// An episode's own story, and the episode after it (for Next Episode), once they've been looked up.
+    private func details(_ play: PhonePlay, on screen: FilmScreen) {
+        Task { @MainActor [weak self, weak screen] in
+            let more = await DriveLibrary.shared.playerDetails(play.key)
+            guard let self, let screen, self.current?.id == play.id, self.screen === screen else { return }
+            if let story = more.story, !story.isEmpty { screen.card.story = story }
+            self.nextUp = more.next
+        }
+    }
+
+    /// The title's picture behind the spinner until the first frame shows, in Info, and in Now Playing.
+    private func poster(_ url: URL, on screen: FilmScreen, play: PhonePlay) {
+        if let image = ImageStore.shared.cached(url) {
+            screen.setPoster(image)
+            artwork = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
+            return
+        }
+        Task { @MainActor [weak self, weak screen] in
+            guard let image = await ImageStore.shared.image(url), let self, self.current?.id == play.id else { return }
+            screen?.setPoster(image)
+            self.artwork = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
+        }
+    }
+
+    /// The film's picture and sound, for the Macs' log.
+    private func noteFormats(_ film: FilmPlayer.Film, _ play: PhonePlay, matches: Bool?) {
+        var words: [String] = []
+        if let p = film.picture {
+            var line = "picture \(p.codec) \(p.width)×\(p.height)"
+            if p.framesASecond > 0 { line += String(format: " %.0f fps", p.framesASecond) }
+            line += PhonePlayback.dynamicRange(p.format)
+            words.append(line)
+        }
+        for s in film.sounds {
+            words.append("sound \(s.codec) \(s.channels) channels" + (s.playable ? "" : ", can’t be played here") + (s.id == film.sound ? ", playing" : ""))
+        }
+        if !film.words.isEmpty { words.append(film.words.count == 1 ? "1 subtitle track" : "\(film.words.count) subtitle tracks") }
+        let hdr = AVPlayer.eligibleForHDRPlayback ? "HDR can be shown here" : "HDR can’t be shown here"
+        let also = matches == nil ? "" : matches == true ? "; the Apple TV matches the film’s picture mode"
+            : "; the Apple TV keeps its own picture mode (Match Content is off)"
+        Diagnostics.shared.notePlayback("\(play.title), the app’s own player: " + words.joined(separator: "; ") + "; \(hdr)\(also)")
+    }
+
+    // MARK: While it plays
+
+    private func tick() {
+        guard let player, let play = current, let screen else { return }
+        ticks += 1
+        let state = player.state
+        if state == .playing { started = true }
+        if state == .ended {
+            // Played to its end: the screen closes, back to the page it was started from.
+            screen.close()
+            return
+        }
+        if state == .failed, !said {
+            failed(why(player.failure))
+            return
+        }
+        // The film Google sends must be the one the kept index was read from.
+        if !checkedIndex, let index, let stream, stream.sizeNow() != nil {
+            checkedIndex = true
+            if !FilmIndex.stillRight(index, stream), case .drive(let id) = play.source {
+                Diagnostics.shared.notePlayback("\(play.title): the film has changed since its index was kept; read again")
+                FilmIndex.forget(id)
+                var again = play
+                again.start = player.time
+                present(again)
+                return
+            }
+        }
+        offerNext()
+        if ticks % 10 == 0 {
+            report()
+            crumb()
+        }
+        if ticks % 5 == 0 { nowPlaying() }
+    }
+
+    /// Next Episode over the picture for the last part of an episode, when the library knows the one after it: its
+    /// last twentieth, three minutes at most.
+    private func offerNext() {
+        guard let player, let screen else { return }
+        var near = false
+        let length = player.length
+        if nextUp != nil, started, length > 0 {
+            let left = length - player.time
+            near = left > 0 && left <= min(length * 0.05, 180)
+        }
+        screen.offerNext(near)
+    }
+
+    private func playNext() {
+        guard let next = nextUp, let play = PhonePlayback.play(next, fleet: Fleet.shared) else { return }
+        // Asked once (a second press while it closes starts nothing more).
+        nextUp = nil
+        Task { @MainActor in OwnPlayer.start(play) }
+    }
+
+    /// Where it got to, once it has played (one that never started would only stamp its old place as the newest).
+    private func report() {
+        guard started, let player, let play = current else { return }
+        let pos = player.time, length = player.length
+        guard pos > 0 else { return }
+        DriveLibrary.shared.played(play.key, title: play.title, pos: pos * 1000, dur: length * 1000)
+    }
+
+    /// Where the film has got to and how the memory stands, kept in case the app is ended in the middle (`PlayCrumb`).
+    private func crumb() {
+        guard let player, let play = current else { return }
+        var bits = [String(format: "%.0f s in (the app’s own player)", player.time), PlayCrumb.memoryLeft]
+        if memoryWarnings > 0 { bits.append(memoryWarnings == 1 ? "1 memory warning" : "\(memoryWarnings) memory warnings") }
+        if let s = stream { bits.append("asked Google for \(s.askedNow())") }
+        PlayCrumb.note(play.title, started ? "playing" : "opening", detail: bits.filter { !$0.isEmpty }.joined(separator: ", "))
+    }
+
+    /// Memory warnings (less of the film is kept), and the app put away (the film stops rather than play unseen).
+    private func watch() {
+        guard watches.isEmpty else { return }
+        let center = NotificationCenter.default
+        watches.append(center.addObserver(forName: UIApplication.didReceiveMemoryWarningNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.current != nil else { return }
+                self.memoryWarnings += 1
+                self.stream?.shrink()
+                self.crumb()
+            }
+        })
+        watches.append(center.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.player?.pause() }
+        })
+    }
+
+    // MARK: Saying why not
+
+    private func why(_ error: Error?) -> String {
+        guard let play = current else { return PhonePlayback.tooSlow }
+        return stream?.refusalNow() ?? PhonePlayback.failure(stream?.recentFailure ?? error, play)
+    }
+
+    /// Said instead of "it didn't start" when the connection brings the film slower than it plays.
+    private func slowerThanFilm() -> String? {
+        guard let stream, let size = stream.sizeNow(), let length = player?.length, length > 60 else { return nil }
+        let fastest = stream.fastestNow(), needs = Double(size) * 8 / length / 1_000_000
+        guard fastest > 0, fastest < needs * 0.95 else { return nil }
+        return String(format: "This film needs about %.0f megabits a second, and the connection here is giving about %.0f, so it can’t keep up.", needs, fastest)
+    }
+
+    private func failed(_ words: String) {
+        guard let screen, let play = current, !said else { return }
+        said = true
+        player?.pause()
+        Diagnostics.shared.notePlayback("\(play.title), the app’s own player: couldn’t go on: \(words)")
+        // Google's daily limit: whether it's this film alone or every film is found out first, and said.
+        if stream?.overLimitNow() == true, case .drive(let id) = play.source {
+            Task { @MainActor [weak self, weak screen] in
+                let answer = await PhonePlayback.limitAnswer(for: id)
+                guard let self, let screen, self.current?.id == play.id else { return }
+                if case .said(let text) = answer {
+                    screen.fail(PhonePlayback.limitTitle, text)
+                } else {
+                    screen.fail("Can’t Play This Here", words)
+                }
+            }
+            return
+        }
+        screen.fail("Can’t Play This Here", words)
+    }
+
+    // MARK: The Lock Screen's and Siri's controls
+
+    private func nowPlaying() {
+        guard let player, let play = current else { return }
+        var info: [String: Any] = [
+            MPMediaItemPropertyTitle: screen?.card.title ?? play.title,
+            MPMediaItemPropertyPlaybackDuration: player.length,
+            MPNowPlayingInfoPropertyElapsedPlaybackTime: player.time,
+            MPNowPlayingInfoPropertyPlaybackRate: player.state == .playing ? 1.0 : 0.0,
+        ]
+        if let artwork { info[MPMediaItemPropertyArtwork] = artwork }
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+    }
+
+    /// Play, Pause and a place in the film asked for from outside the remote (Siri, the iPhone's remote).
+    private func commandsOn() {
+        commandsOff()
+        let center = MPRemoteCommandCenter.shared()
+        func add(_ command: MPRemoteCommand, _ act: @escaping @MainActor (OwnPlayer, MPRemoteCommandEvent) -> Void) {
+            command.isEnabled = true
+            let target = command.addTarget { [weak self] event in
+                Task { @MainActor in
+                    if let self { act(self, event) }
+                }
+                return .success
+            }
+            commands.append((command, target))
+        }
+        add(center.playCommand) { me, _ in me.screen?.remote(play: true) }
+        add(center.pauseCommand) { me, _ in me.screen?.remote(play: false) }
+        add(center.changePlaybackPositionCommand) { me, event in
+            if let to = (event as? MPChangePlaybackPositionCommandEvent)?.positionTime { me.screen?.go(to) }
+        }
+        nowPlaying()
+    }
+
+    private func commandsOff() {
+        for entry in commands { entry.command.removeTarget(entry.target) }
+        commands = []
+    }
+
+    // MARK: Ending
+
+    /// How it went, for the Macs' log: how long the index and the start took, how often it stopped to wait, what it
+    /// read, and what Google was asked for (what its daily limit counts).
+    private func notePlayback() {
+        guard let player, let play = current, let stream else { return }
+        let n = player.notes
+        var words = "\(play.title) via the app’s own player: index "
+        words += index?.file == nil ? "read through the stream" : index?.fresh == true ? "read from Google and kept" : "kept on this Apple TV"
+        words += String(format: " in %.1f s", indexTook)
+        if let s = n.started { words += String(format: ", started in %.1f s", s) }
+        if let w = switchWait { words += String(format: ", %.1f s for the TV’s picture mode", w) }
+        words += String(format: ", %ld stops to wait (%.1f s), %ld moves", n.waits, n.waited, max(0, n.jumps - 1))
+        words += String(format: ", read %ld runs of picture and %ld of sound, the slowest in %.2f s", n.reads[0], n.reads[1], n.slowest)
+        if n.again > 0 { words += ", \(n.again) asked again" }
+        if n.mended > 0 { words += ", decoders started afresh \(n.mended) times" }
+        words += ", asked Google for \(stream.askedNow())"
+        if let size = stream.sizeNow(), player.length > 60 {
+            words += String(format: ", the film needs %.0f Mb/s", Double(size) * 8 / player.length / 1_000_000)
+        }
+        Diagnostics.shared.notePlayback(words)
+    }
+
+    private func finish() {
+        guard current != nil else { return }
+        report()
+        if begun { notePlayback() }
+        // Queued, not waited for: the page the film closes back to froze while the whole library was written.
+        DriveLibrary.shared.flush(wait: false)
+        // Watch shows where it was left off at once.
+        DriveLibrary.shared.playStopped()
+        Task { await DriveLibrary.shared.sync() }
+        ticker?.invalidate()
+        ticker = nil
+        opening?.cancel()
+        opening = nil
+        watchdog?.cancel()
+        watchdog = nil
+        commandsOff()
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+        player?.close()
+        player = nil
+        stream = nil
+        index = nil
+        current = nil
+        screen = nil
+        nextUp = nil
+        artwork = nil
+        PlayCrumb.clear()
+    }
+}
