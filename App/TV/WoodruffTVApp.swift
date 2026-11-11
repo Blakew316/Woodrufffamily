@@ -76,6 +76,8 @@ struct WoodruffTVApp: App {
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { fleet.setActive(true) } else if phase == .background { fleet.setActive(false) }
+            // Cync keeps one connection for the whole account: this Apple TV holds it while Woodruff is on screen.
+            if phase == .active { Cync.shared.active(true) } else if phase == .background { Cync.shared.active(false) }
             if phase == .background {
                 AppWake.wentAway = true
                 TVAlerts.shared.pause()

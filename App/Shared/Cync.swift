@@ -80,11 +80,57 @@ final class Cync {
     private var innerCounter: UInt32 = 257
     private var pinger: Task<Void, Never>?
     private var reconnecting: Task<Void, Never>?
-    private var reconnectWait: Double = 10
+    private var reconnectWait: Double = Cync.firstWait
+
+    // Whose turn it is. Cync's server keeps one connection for the whole account: a new one closes whichever was
+    // open. Every one of the family's devices used to hold one and take it back ten seconds after losing it, so they
+    // kept knocking each other off (the Cync app does it too), and a light changed in between went nowhere. A device
+    // now holds the connection only while it's in use (the app in front; on a Mac, a window showing), gives it up
+    // when it isn't, and when another takes it leaves it with that one until there's something to send, or a few
+    // minutes on, to show the lights as they are.
+
+    /// How soon a connection that failed is tried again the first time (twice as long each time after, up to a minute).
+    private static let firstWait: Double = 1
+    /// How long a connection another device took is left with it, when nothing here is waiting to be sent.
+    private static let leftWithOther: Double = 300
+    /// Whether this device has a use for the connection now: said by the app as it comes to the front and leaves
+    /// (`active`). Not until then: an iPhone the system started in the background, or a Mac with no window showing,
+    /// would take the connection from the device somebody is using.
+    private var inUse = false
+    var isInUse: Bool { inUse }
+    /// When this connection was opened (one still not signed in long after is started again).
+    private var openedAt = Date.distantPast
+    /// A connection opened only to send something, on a device not in use, is given up a little after.
+    private var release: Task<Void, Never>?
+    /// When Cync closed this device's connection (for another's, as far as can be told).
+    private var takenAt: Date?
+    /// When anything last came from Cync, and whether it answers this connection's pings (a connection that has gone
+    /// quiet when it does is dead: commands written to it go nowhere).
+    private var lastHeard = Date.distantPast
+    private var pongs = 0
+    /// When Cync signed this connection in (the lights on the Wi‑Fi answer in the moment after).
+    private var signedInAt: Date?
+
+    /// A change asked for while the connection wasn't ready: sent the moment it is.
+    private struct Waiting {
+        let light: GoveeLight
+        let command: LightCommand
+    }
+    private var waiting: [Waiting] = []
+    private var waitingCheck: Task<Void, Never>?
+    /// On and off not yet seen to have happened: sent once more if the light doesn't say it changed.
+    private var unconfirmed: [String: Bool] = [:]
 
     func start() {
         guard connected, loop == nil, !Demo.isOn else { return }
         SmartHome.shared.cyncControl = { [weak self] l, c in self?.send(l, c) }
+        // The lights as they were last listed: the connection opens with them now, without waiting for the list.
+        if lights.isEmpty { loadKept() }
+        #if os(iOS) || os(tvOS)
+        // In front already (the app says so again each time it comes to the front).
+        if UIApplication.shared.applicationState != .background { inUse = true }
+        #endif
+        connect()
         loop = Task { [weak self] in
             // The list every ten minutes (lights added or renamed in the Cync app); states come over the connection.
             while !Task.isCancelled {
@@ -138,8 +184,10 @@ final class Cync {
 
     func signOut() {
         loop?.cancel(); loop = nil
-        reconnecting?.cancel(); reconnecting = nil; reconnectWait = 10
+        reconnecting?.cancel(); reconnecting = nil; reconnectWait = Self.firstWait
+        waitingCheck?.cancel(); waitingCheck = nil; waiting = []; unconfirmed = [:]; takenAt = nil
         disconnect()
+        UserDefaults.standard.removeObject(forKey: Self.keptKey)
         for k in ["cync.access", "cync.refresh", "cync.authorize", "cync.user", "cync.expires"] { Keychain.set(nil, for: k) }
         // Signing in again trusts the server's certificate afresh.
         UserDefaults.standard.removeObject(forKey: Self.pinKey)
@@ -154,7 +202,8 @@ final class Cync {
 
     private func begin() {
         loop?.cancel(); loop = nil
-        reconnecting?.cancel(); reconnecting = nil; reconnectWait = 10
+        reconnecting?.cancel(); reconnecting = nil; reconnectWait = Self.firstWait
+        takenAt = nil
         disconnect()
         start()
     }
@@ -239,8 +288,57 @@ final class Cync {
     /// Back in front: the list read again now, and the connection tried again at once if it's down, not at the end
     /// of a wait that grew (up to five minutes) while the app was away.
     func wake() async {
-        reconnectWait = 10
+        active(true)
         await refresh()
+    }
+
+    /// The app came to the front (true) or left it (false). In front, the connection is opened now (the one from
+    /// before the app went away is dead more often than not, and nothing waits for the list to be read again).
+    /// Away, it's given up, for whichever of the family's devices is in use.
+    func active(_ on: Bool) {
+        inUse = on
+        guard connected, loop != nil else { return }
+        reconnecting?.cancel(); reconnecting = nil
+        if on {
+            takenAt = nil
+            reconnectWait = Self.firstWait
+            release?.cancel(); release = nil
+            // One that has gone quiet, or has been signing in for a long while, is opened again.
+            let quiet = loggedIn && Date().timeIntervalSince(lastHeard) > 25
+            let stuck = !loggedIn && Date().timeIntervalSince(openedAt) > 8
+            if connection != nil, quiet || stuck { disconnect() }
+            connect()
+        } else if waiting.isEmpty {
+            disconnect()
+        }
+    }
+
+    // MARK: The list kept
+
+    private static let keptKey = "cync.lights"
+
+    /// The lights as last listed, kept on this device: what's needed to send to each.
+    private func keep() {
+        let rows = lights.values.map { l -> [String: Any] in
+            var r: [String: Any] = ["id": l.id, "device": l.deviceID, "home": l.home, "mesh": l.mesh, "name": l.name]
+            if let room = l.room { r["room"] = room }
+            return r
+        }
+        UserDefaults.standard.set(rows, forKey: Self.keptKey)
+    }
+
+    private func loadKept() {
+        var found: [String: Light] = [:]
+        for r in UserDefaults.standard.array(forKey: Self.keptKey) as? [[String: Any]] ?? [] {
+            guard let id = r["id"] as? String, let device = r["device"] as? Int, let home = r["home"] as? Int,
+                  let mesh = r["mesh"] as? Int, let name = r["name"] as? String else { continue }
+            var l = Light(id: id, deviceID: device, home: home, mesh: mesh, name: name)
+            l.room = r["room"] as? String
+            found[id] = l
+        }
+        guard !found.isEmpty else { return }
+        lights = found
+        index()
     }
 
     /// The homes, their lights and Cync's rooms; then the connection for their states and commands.
@@ -278,6 +376,7 @@ final class Cync {
             }
             lights = found
             index()
+            keep()
             error = nil
             publish()
             connect()
@@ -305,6 +404,13 @@ final class Cync {
             if loggedIn { queryStates() }
             return
         }
+        // Only with a use for it: this device in use, or a change waiting to be sent. One another device took is
+        // left with it for a while (a change to send takes it back at once).
+        guard inUse || !waiting.isEmpty else { return }
+        if waiting.isEmpty, let t = takenAt, Date().timeIntervalSince(t) < Self.leftWithOther {
+            reconnectSoon(after: Self.leftWithOther - Date().timeIntervalSince(t))
+            return
+        }
         // Cync's command server over TLS: a certificate Apple trusts is taken as usual; otherwise only the one this
         // device first saw from it (Cync's own, long expired and without the server's name).
         let tls = NWProtocolTLS.Options()
@@ -322,6 +428,7 @@ final class Cync {
         let c = NWConnection(host: NWEndpoint.Host(Self.host), port: NWEndpoint.Port(rawValue: Self.port)!,
                              using: NWParameters(tls: tls))
         connection = c
+        openedAt = Date()
         loggedIn = false
         buffer = Data()
         c.stateUpdateHandler = { [weak self] state in
@@ -339,10 +446,12 @@ final class Cync {
         case .failed(let e):
             // A certificate Apple won't trust is said plainly; the lights stay listed but can't be changed.
             if case .tls = e { error = Self.tlsRefused }
-            fallthrough
+            // Reset by Cync once signed in: closed for another connection, as a clean close is.
+            var reset = false
+            if case .posix(let code) = e, code == .ECONNRESET { reset = true }
+            lost(taken: reset && loggedIn)
         case .cancelled:
-            disconnect()
-            reconnectSoon()
+            lost(taken: false)
         case .waiting(let e):
             if case .tls = e { error = Self.tlsRefused }
         default: break
@@ -355,25 +464,51 @@ final class Cync {
     private func disconnect() {
         pinger?.cancel(); pinger = nil
         stateCheck?.cancel(); stateCheck = nil
+        release?.cancel(); release = nil
         connection?.stateUpdateHandler = nil
         connection?.cancel()
         connection = nil
         loggedIn = false
+        signedInAt = nil
+        pongs = 0
         // The hubs are found again by the next sign-in's probes.
         hubs = [:]
     }
 
-    /// Tries the connection again, while signed in and the list is kept up to date: in ten seconds, then twice as
-    /// long each time it fails again (up to five minutes), back to ten seconds once Cync signs it in.
-    private func reconnectSoon() {
-        guard connected, loop != nil, reconnecting == nil else { return }
-        let wait = reconnectWait
-        reconnectWait = min(wait * 2, 300)
+    /// The connection went. [taken]: Cync closed it after signing it in, which is what it does when another of the
+    /// family's devices (or the Cync app) connects: it's left with that one, unless there's a change to send, which
+    /// takes it back now. Otherwise it's the network: tried again in a second, then twice as long each time.
+    private func lost(taken: Bool) {
+        disconnect()
+        if !waiting.isEmpty {
+            takenAt = nil
+            reconnectSoon()
+        } else if taken {
+            takenAt = Date()
+            reconnectWait = Self.firstWait
+            reconnectSoon(after: Self.leftWithOther)
+        } else {
+            reconnectSoon()
+        }
+    }
+
+    /// Tries the connection again while this device has a use for it: after [fixed] seconds when given, else in a
+    /// second, then twice as long each time it fails again (up to a minute), back to a second once Cync signs it in.
+    private func reconnectSoon(after fixed: Double? = nil) {
+        guard connected, loop != nil, reconnecting == nil, inUse || !waiting.isEmpty else { return }
+        let wait: Double
+        if let fixed {
+            wait = max(0.5, fixed)
+        } else {
+            wait = reconnectWait
+            reconnectWait = min(wait * 2, 60)
+        }
         reconnecting = Task { [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
-            guard let self else { return }
+            guard let self, !Task.isCancelled else { return }
             self.reconnecting = nil
             guard self.connected, self.loop != nil else { return }
+            if fixed != nil { self.takenAt = nil }
             self.connect()
         }
     }
@@ -396,6 +531,7 @@ final class Cync {
             Task { @MainActor in
                 guard let self, c === self.connection else { return }
                 if let data { self.buffer.append(data); self.drain() }
+                guard c === self.connection else { return }
                 if done || err != nil { self.changed(.failed(err ?? NWError.posix(.ECONNRESET)), c) } else { self.receive(c) }
             }
         }
@@ -410,8 +546,7 @@ final class Cync {
             // for it would hold everything after it (and the memory) forever. Start the connection again instead.
             guard length <= 1 << 20 else {
                 buffer = Data()
-                disconnect()
-                reconnectSoon()
+                lost(taken: false)
                 return
             }
             guard buffer.count >= 5 + length else { return }
@@ -425,28 +560,46 @@ final class Cync {
         let type = Int(p[0] & 0xF0) >> 4
         let version = Int(p[0] & 0x07)
         let body = Array(p[5...])
+        lastHeard = Date()
         switch type {
         case 1:   // signed in
             loggedIn = true
-            reconnectWait = 10
+            signedInAt = Date()
+            takenAt = nil
+            reconnectWait = Self.firstWait
             if error == Self.tlsRefused { error = nil }
             pinger?.cancel()
             pinger = Task { [weak self] in
                 while !Task.isCancelled {
                     try? await Task.sleep(nanoseconds: 20_000_000_000)
-                    self?.write(Data([0xd3, 0, 0, 0, 0]))
+                    guard let self, !Task.isCancelled else { return }
+                    // Gone quiet though Cync answers this connection's pings: it's dead, and a new one is opened.
+                    if self.pongs > 0, Date().timeIntervalSince(self.lastHeard) > 50 {
+                        self.lost(taken: false)
+                        return
+                    }
+                    self.write(Data([0xd3, 0, 0, 0, 0]))
                 }
             }
             // Which lights are on the Wi‑Fi (one per home carries the commands), then everyone's state.
             for l in lights.values { write(probePacket(l.deviceID)) }
             queryStatesSoon(after: 2)
+            // What was asked for meanwhile goes as soon as a light on the Wi‑Fi has answered, and in a second or so
+            // through any light if none has.
+            Task { [weak self] in
+                try? await Task.sleep(nanoseconds: UInt64(Self.hubWait * 1_000_000_000) + 50_000_000)
+                self?.flush()
+            }
         case 10:  // a light answered the probe
             guard version != 0, body.count >= 4 else { return }
             let device = be32(body, 0)
             if let home = homeOfDevice[device], hubs[home] == nil {
                 hubs[home] = device
                 queryStates()
+                flush()
             }
+        case 13:  // Cync's answer to a ping
+            pongs += 1
         case 4:   // a light changed (pushed)
             guard body.count >= 7 else { return }
             let device = be32(body, 0)
@@ -488,9 +641,8 @@ final class Cync {
                 at += 24
             }
             if changed { publish() }
-        case 14:  // Cync closed the session
-            disconnect()
-            reconnectSoon()
+        case 14:  // Cync closed the session (another device signed in to the account)
+            lost(taken: true)
         default: break
         }
     }
@@ -499,6 +651,7 @@ final class Cync {
     private func apply(home: Int, mesh: Int, on: Bool, brightness: Int, mode: Int, rgb: (UInt8, UInt8, UInt8), online: Bool?) -> Bool {
         guard let id = lightAt[home]?[mesh], var l = lights[id] else { return false }
         let before = (l.on, l.brightness, l.kelvin, l.color, l.online)
+        if unconfirmed[id] == on { unconfirmed[id] = nil }
         l.on = on
         l.brightness = max(0, min(100, brightness))
         if (1...100).contains(mode) {
@@ -532,32 +685,106 @@ final class Cync {
 
     // MARK: Commands
 
+    /// How long after signing in a home's change waits for one of its lights to answer on the Wi‑Fi (it goes
+    /// through that one; through one that isn't on the Wi‑Fi it goes nowhere).
+    private static let hubWait: Double = 1.2
+
     func send(_ g: GoveeLight, _ c: LightCommand) {
         guard let l = lights[g.id] else { SmartHome.shared.cyncControlFailed(g.id, "Cync doesn’t list \(g.name) any more."); return }
-        guard loggedIn, let hub = hub(l.home) else {
-            SmartHome.shared.cyncControlFailed(g.id, "Cync isn’t connected right now; try again in a moment.")
-            connect()
+        // Not connected, or just connected and no light has answered yet: it waits (a second or so) and goes then.
+        let settled = hubs[l.home] != nil || (signedInAt.map { Date().timeIntervalSince($0) >= Self.hubWait } ?? false)
+        guard loggedIn, settled, let hub = hub(l.home) else {
+            hold(g, c)
             return
         }
-        let mesh = l.mesh % 1000, group = l.mesh / 1000
-        let m0 = UInt8(mesh & 0xff), m1 = UInt8((mesh >> 8) & 0xff)
-        let packet: [UInt8]
-        switch c {
-        case .power(let on):
-            packet = inner(0xd0, [0, m0, UInt8(group & 0xff), 0xd0, 0x11, 0x02, on ? 1 : 0, 0, 0], second: true)
-        case .brightness(let b):
-            packet = inner(0xd2, [0, m0, m1, 0xd2, 0x11, 0x02, UInt8(max(0, min(100, b)))], second: true)
-        case .kelvin(let k):
-            let ct = max(1, min(100, (k - Self.warmest) * 100 / (Self.coolest - Self.warmest)))
-            packet = inner(0xe2, [0, m0, m1, 0xe2, 0x11, 0x02, 0x05, UInt8(ct)], second: true)
-        case .color(let col):
-            packet = inner(0xe2, [0, m0, m1, 0xe2, 0x11, 0x02, 0x04, UInt8(max(0, min(255, col.r))),
-                                  UInt8(max(0, min(255, col.g))), UInt8(max(0, min(255, col.b)))], second: true)
-        }
-        write(pipePacket(hub, packet))
+        guard let frame = self.packet(l, c) else { return }
+        write(pipePacket(hub, frame))
+        if case .power(let on) = c { confirm(l.id, on) }
         // Cync pushes the new state; ask too, in case the push doesn't come (once for a burst of changes: turning on
         // and setting the brightness, or a whole room).
         queryStatesSoon(after: 1.5)
+        // On a device not in use (a Mac's widget or menu bar), the connection opened for this is given up after.
+        if !inUse {
+            release?.cancel()
+            release = Task { [weak self] in
+                try? await Task.sleep(nanoseconds: 20_000_000_000)
+                guard let self, !Task.isCancelled, !self.inUse, self.waiting.isEmpty else { return }
+                self.disconnect()
+            }
+        }
+    }
+
+    /// The inner packet that makes [c] happen to [l].
+    private func packet(_ l: Light, _ c: LightCommand) -> [UInt8]? {
+        let mesh = l.mesh % 1000, group = l.mesh / 1000
+        let m0 = UInt8(mesh & 0xff), m1 = UInt8((mesh >> 8) & 0xff)
+        switch c {
+        case .power(let on):
+            return inner(0xd0, [0, m0, UInt8(group & 0xff), 0xd0, 0x11, 0x02, on ? 1 : 0, 0, 0], second: true)
+        case .brightness(let b):
+            return inner(0xd2, [0, m0, m1, 0xd2, 0x11, 0x02, UInt8(max(0, min(100, b)))], second: true)
+        case .kelvin(let k):
+            let ct = max(1, min(100, (k - Self.warmest) * 100 / (Self.coolest - Self.warmest)))
+            return inner(0xe2, [0, m0, m1, 0xe2, 0x11, 0x02, 0x05, UInt8(ct)], second: true)
+        case .color(let col):
+            return inner(0xe2, [0, m0, m1, 0xe2, 0x11, 0x02, 0x04, UInt8(max(0, min(255, col.r))),
+                                UInt8(max(0, min(255, col.g))), UInt8(max(0, min(255, col.b)))], second: true)
+        }
+    }
+
+    /// On or off was sent to [id]: if the light hasn't said it changed in a moment, it's sent once more (a command
+    /// can be lost on the way through another light).
+    private func confirm(_ id: String, _ on: Bool) {
+        unconfirmed[id] = on
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 900_000_000)
+            guard let self, self.unconfirmed[id] == on, let l = self.lights[id] else { return }
+            self.unconfirmed[id] = nil
+            guard l.on != on, self.loggedIn, let hub = self.hub(l.home), let again = self.packet(l, .power(on)) else { return }
+            self.write(self.pipePacket(hub, again))
+            self.queryStatesSoon(after: 1)
+        }
+    }
+
+    /// Which of a light's settings a command changes (a newer one for the same setting replaces one still waiting).
+    private static func setting(_ c: LightCommand) -> Int {
+        switch c {
+        case .power: return 0
+        case .brightness: return 1
+        case .color, .kelvin: return 2
+        }
+    }
+
+    /// [c] waits for the connection, which is opened now if it isn't (and taken back from another device if that one
+    /// has it). Sent the moment Cync is ready; said to have failed if that hasn't happened in eight seconds.
+    private func hold(_ g: GoveeLight, _ c: LightCommand) {
+        waiting.removeAll { $0.light.id == g.id && Self.setting($0.command) == Self.setting(c) }
+        waiting.append(Waiting(light: g, command: c))
+        waitingCheck?.cancel()
+        waitingCheck = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 8_000_000_000)
+            guard let self, !Task.isCancelled else { return }
+            let late = self.waiting
+            self.waiting = []
+            for w in late { SmartHome.shared.cyncControlFailed(w.light.id, "Cync isn’t answering right now; try again in a moment.") }
+            // Away from the front all this while: the connection opened for them isn't kept.
+            if !self.inUse { self.disconnect() }
+        }
+        // One that has been signing in for a long while is opened again.
+        if connection != nil, !loggedIn, Date().timeIntervalSince(openedAt) > 4 { disconnect() }
+        guard connection == nil else { return }
+        takenAt = nil
+        reconnecting?.cancel(); reconnecting = nil
+        connect()
+    }
+
+    /// Everything waiting goes now (each through `send`, which holds it again if its home isn't ready yet).
+    private func flush() {
+        guard loggedIn, !waiting.isEmpty else { return }
+        let now = waiting
+        waiting = []
+        waitingCheck?.cancel(); waitingCheck = nil
+        for w in now { send(w.light, w.command) }
     }
 
     @ObservationIgnored private var stateCheck: Task<Void, Never>?

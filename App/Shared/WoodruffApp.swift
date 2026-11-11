@@ -284,6 +284,9 @@ struct WoodruffApp: App {
             if phase == .active { fleet.setActive(true) } else if phase == .background { fleet.setActive(false) }
             #endif
             #if os(iOS)
+            // Cync keeps one connection for the whole account: this device holds it while the app is in front (opened
+            // at once, so the lights answer straight away) and gives it up for the family's other devices when it isn't.
+            if phase == .active { Cync.shared.active(true) } else if phase == .background { Cync.shared.active(false) }
             // Each camera's last events are kept on this device while the Mac Studio can be reached, so a camera's
             // page has them away from home too (a moment after opening: nothing at launch waits on it).
             if phase == .active {
@@ -1375,6 +1378,8 @@ enum WindowActivity {
         let id = ObjectIdentifier(window)
         if on { visible.insert(id) } else { visible.remove(id) }
         let any = !visible.isEmpty
+        // Cync's one connection for the account is this Mac's while a window can be seen, and given up when none can.
+        if Cync.shared.isInUse != any { Cync.shared.active(any) }
         // Only a change: the fleet asks every TV afresh each time it's made active.
         if any != Fleet.shared.isActive {
             Fleet.shared.setActive(any)
