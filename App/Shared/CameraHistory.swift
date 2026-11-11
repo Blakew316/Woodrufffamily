@@ -170,14 +170,19 @@ enum CameraHistoryClient {
         return d
     }
 
-    /// [event]'s clip (else its picture) as a file on this device, fetched once.
+    /// [event]'s clip (else its picture) as a file on this device, fetched once. A clip that doesn't come (the Mac
+    /// Studio let go of it, or it's too slow from where this device is) gives the picture instead.
     static func media(_ event: CameraHistoryEvent) async -> URL? {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("CameraHistory", isDirectory: true)
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        let file = folder.appendingPathComponent("\(event.key).\(event.clip ? "mp4" : "jpg")")
-        if FileManager.default.fileExists(atPath: file.path) { return file }
-        guard let d = await get(event.clip ? "/clip" : "/event", id: event.key, timeout: 15), d.count > 500 else { return nil }
-        return (try? d.write(to: file, options: .atomic)) != nil ? file : nil
+        func fetched(_ path: String, _ ext: String) async -> URL? {
+            let file = folder.appendingPathComponent("\(event.key).\(ext)")
+            if FileManager.default.fileExists(atPath: file.path) { return file }
+            guard let d = await get(path, id: event.key, timeout: 15), d.count > 500 else { return nil }
+            return (try? d.write(to: file, options: .atomic)) != nil ? file : nil
+        }
+        if event.clip, let clip = await fetched("/clip", "mp4") { return clip }
+        return await fetched("/event", "jpg")
     }
 }
 

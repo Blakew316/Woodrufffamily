@@ -1469,7 +1469,7 @@ deploy_tv() {
   local devs="$LOGDIR/appletvs.json" listed="$LOGDIR/tv-profile.json" log="$LOGDIR/tv-build.log"
   local product="$ROOT/build/Build/Products/Release-appletvos/$APP_NAME.app"
   local -a targets sign
-  local udid name i status bid uuid expires profile vlog ilog llog installed=0 kept why
+  local udid name i status bid uuid expires profile vlog ilog llog installed=0 why
 
   step "Apple TV: the Apple TVs paired with this Mac"
   if ! signing devices --platform tvOS >"$devs" 2>"$LOGDIR/appletvs.log"; then
@@ -1551,7 +1551,6 @@ deploy_tv() {
     esac
   done
   say "    signed and verified: ${profile:-profile} (expires ${expires%%T*})"
-  kept=""
   if [ -n "$KEEP_TV" ]; then
     if ! keep_tv "$product" "$uuid" "$expires" "$devs" "${targets[@]}"; then
       note "Apple TV: NOT installed: the signed app couldn't be kept in $KEEP_TV"
