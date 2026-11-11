@@ -64,24 +64,28 @@ public final class FilmTrackReader {
     }
 
     /// The next run: samples that follow one another in the file (a gap of up to [gap] bytes is read through), no
-    /// more than [most] bytes nor [limit] samples. Nil at the end of the track.
-    public func next(most: Int = 4 << 20, gap: Int64 = 256 << 10, limit: Int = 480) -> FilmRun? {
+    /// more than [most] bytes, [limit] samples or [seconds] of the film. Nil at the end of the track.
+    public func next(most: Int = 4 << 20, gap: Int64 = 256 << 10, limit: Int = 480, seconds: Double = 2) -> FilmRun? {
         guard !ended else { return nil }
         var samples: [FilmSample] = []
         var start: Int64 = 0, end: Int64 = 0
+        var began = CMTime.invalid
         while samples.count < limit {
             let range = cursor.currentSampleStorageRange
             let offset = range.offset, size = Int(range.length)
+            let decoded = cursor.decodeTimeStamp
             if samples.isEmpty {
                 start = offset
                 end = offset + Int64(size)
+                began = decoded
             } else {
-                guard FilmRuns.joins(start: start, end: end, offset: offset, size: size, gap: gap, most: most) else { break }
+                guard FilmRuns.joins(start: start, end: end, offset: offset, size: size, gap: gap, most: most),
+                      CMTimeSubtract(decoded, began).seconds < seconds else { break }
                 end = offset + Int64(size)
             }
             samples.append(FilmSample(offset: offset, size: size,
                                       shown: CMTimeAdd(cursor.presentationTimeStamp, shift),
-                                      decoded: CMTimeAdd(cursor.decodeTimeStamp, shift),
+                                      decoded: CMTimeAdd(decoded, shift),
                                       lasts: cursor.currentSampleDuration,
                                       sync: cursor.currentSampleSyncInfo.sampleIsFullSync.boolValue,
                                       attachments: cursor.currentSampleDependencyAttachments,
@@ -96,16 +100,18 @@ public final class FilmTrackReader {
     }
 
     /// Moves to where decoding can start for the film's time [time]: the last sample at or before it that needs
-    /// nothing before it. Returns when that sample plays (the next run starts with it), or nil when the index
-    /// couldn't be walked there.
+    /// nothing before it, and [back] samples more before that (a sound decoder wants a packet or two to get going).
+    /// Returns when the sample it now stands on plays (the next run starts with it), or nil when the index couldn't
+    /// be walked there (it stands where it stood).
     @discardableResult
-    public func seek(to time: CMTime) -> CMTime? {
+    public func seek(to time: CMTime, back: Int = 0) -> CMTime? {
         guard let at = track.makeSampleCursor(presentationTimeStamp: CMTimeSubtract(time, shift)) else { return nil }
         var steps = 0
         while !at.currentSampleSyncInfo.sampleIsFullSync.boolValue, steps < 5000 {
             guard at.stepInDecodeOrder(byCount: -1) != 0 else { break }
             steps += 1
         }
+        if back > 0 { _ = at.stepInDecodeOrder(byCount: Int64(-back)) }
         cursor = at
         ended = false
         return CMTimeAdd(at.presentationTimeStamp, shift)
@@ -162,20 +168,22 @@ public enum FilmSampleBuffers {
     }
 
     /// [run]'s samples as sound: packets that follow one another with the same format and length go into one buffer
-    /// together, as Apple's own reader hands sound on.
-    public static func together(_ run: FilmRun, bytes: Data, format: CMFormatDescription?) throws -> [CMSampleBuffer] {
+    /// together, as Apple's own reader hands sound on. [from]: the film's time the sound is wanted from. What a
+    /// buffer holds before that is decoded and cut, not heard: a sound codec's lead-in at the film's start, or the
+    /// packets before the place the film was moved to.
+    public static func together(_ run: FilmRun, bytes: Data, format: CMFormatDescription?, from: CMTime = .invalid) throws -> [CMSampleBuffer] {
         guard bytes.count >= run.length else { throw Failure.short }
         var out: [CMSampleBuffer] = []
-        var from = 0
-        while from < run.samples.count {
-            let first = run.samples[from]
-            guard let fd = first.format ?? format else { throw Failure.noFormat }
-            var to = from + 1
+        var first = 0
+        while first < run.samples.count {
+            let lead = run.samples[first]
+            guard let fd = lead.format ?? format else { throw Failure.noFormat }
+            var to = first + 1
             while to < run.samples.count, same(run.samples[to].format ?? format, fd),
-                  CMTimeCompare(run.samples[to].lasts, first.lasts) == 0 {
+                  CMTimeCompare(run.samples[to].lasts, lead.lasts) == 0 {
                 to += 1
             }
-            let group = run.samples[from..<to]
+            let group = run.samples[first..<to]
             let total = group.reduce(0) { $0 + $1.size }
             let packed = try block(total)
             var packets: [AudioStreamPacketDescription] = []
@@ -196,11 +204,18 @@ public enum FilmSampleBuffers {
             var made: CMSampleBuffer?
             try check(CMAudioSampleBufferCreateReadyWithPacketDescriptions(allocator: kCFAllocatorDefault, dataBuffer: packed,
                                                                            formatDescription: fd, sampleCount: group.count,
-                                                                           presentationTimeStamp: first.shown,
+                                                                           presentationTimeStamp: lead.shown,
                                                                            packetDescriptions: &packets, sampleBufferOut: &made))
             guard let buffer = made else { throw Failure.refused(-1) }
+            if from.isValid, CMTimeCompare(lead.shown, from) < 0 {
+                let whole = CMTimeMultiply(lead.lasts, multiplier: Int32(group.count))
+                let cut = CMTimeMinimum(CMTimeSubtract(from, lead.shown), whole)
+                CMSetAttachment(buffer, key: kCMSampleBufferAttachmentKey_TrimDurationAtStart,
+                                value: CMTimeCopyAsDictionary(cut, allocator: kCFAllocatorDefault),
+                                attachmentMode: kCMAttachmentMode_ShouldPropagate)
+            }
             out.append(buffer)
-            from = to
+            first = to
         }
         return out
     }

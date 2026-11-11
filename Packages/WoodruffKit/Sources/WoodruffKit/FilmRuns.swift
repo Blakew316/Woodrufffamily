@@ -51,14 +51,47 @@ public enum FilmBuffering {
 
     /// [waiting]: the clock is stopped for want of data. [picture] and [sound]: how many seconds of each are ready
     /// past where the film is (nil for a film without one), and [pictureDone], [soundDone]: whether everything to
-    /// the end of each has been read. [enough]: the seconds of each a film starts with.
+    /// the end of each has been read. [enough]: the seconds of each a film starts with. [low]: with this little
+    /// left of either, it waits (a moment before the last of it has gone to the decoder).
     public static func move(waiting: Bool, picture: Double?, sound: Double?, pictureDone: Bool, soundDone: Bool,
-                            enough: Double) -> Move {
+                            enough: Double, low: Double = 0) -> Move {
         func ready(_ ahead: Double?, _ done: Bool) -> Bool { ahead.map { $0 >= enough || done } ?? true }
-        func out(_ ahead: Double?, _ done: Bool) -> Bool { ahead.map { $0 <= 0 && !done } ?? false }
+        func out(_ ahead: Double?, _ done: Bool) -> Bool { ahead.map { $0 <= low && !done } ?? false }
         if waiting {
             return ready(picture, pictureDone) && ready(sound, soundDone) ? .go : .stay
         }
         return out(picture, pictureDone) || out(sound, soundDone) ? .wait : .stay
+    }
+}
+
+/// The words of a film's own subtitles.
+public enum FilmText {
+    /// What one sample of a film's subtitle track says: its length in two bytes, then the words (whatever follows
+    /// them, about how they're styled, is left). Nil for a sample that says nothing (the gap between two lines).
+    public static func subtitle(_ sample: Data) -> String? {
+        guard sample.count >= 2 else { return nil }
+        let bytes = [UInt8](sample)
+        let length = Int(bytes[0]) << 8 | Int(bytes[1])
+        guard length > 0, 2 + length <= bytes.count else { return nil }
+        let words = Array(bytes[2..<(2 + length)])
+        var text: String?
+        if words.count >= 2, (words[0] == 0xFE && words[1] == 0xFF) || (words[0] == 0xFF && words[1] == 0xFE) {
+            text = String(bytes: words, encoding: .utf16)
+        } else {
+            text = String(bytes: words, encoding: .utf8) ?? String(bytes: words, encoding: .isoLatin1)
+        }
+        let trimmed = text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    /// A film's time as its player shows it: "1:02:03", "2:03", "0:07". Hours only when [hours] (the film is an hour
+    /// or longer), so the time doesn't change width as it passes an hour.
+    public static func clock(_ seconds: Double, hours: Bool) -> String {
+        let whole = seconds.isFinite ? max(0, Int(seconds.rounded(.down))) : 0
+        let h = whole / 3600, m = whole % 3600 / 60, s = whole % 60
+        if hours || h > 0 {
+            return "\(h):" + (m < 10 ? "0\(m)" : "\(m)") + ":" + (s < 10 ? "0\(s)" : "\(s)")
+        }
+        return "\(m):" + (s < 10 ? "0\(s)" : "\(s)")
     }
 }

@@ -70,4 +70,36 @@ final class FilmRunsTests: XCTestCase {
         XCTAssertEqual(move(0, 0, pDone: true, sDone: true), .stay)
         XCTAssertEqual(move(0, nil, pDone: true), .stay)
     }
+
+    func testItWaitsALittleBeforeTheLastOfItHasGone() {
+        let move = FilmBuffering.move(waiting: false, picture: 0.2, sound: 3, pictureDone: false, soundDone: false, enough: 2, low: 0.25)
+        XCTAssertEqual(move, .wait)
+        let fine = FilmBuffering.move(waiting: false, picture: 0.3, sound: 3, pictureDone: false, soundDone: false, enough: 2, low: 0.25)
+        XCTAssertEqual(fine, .stay)
+    }
+
+    func testSubtitleWords() {
+        // As the test film has them: two bytes of length, then the words.
+        XCTAssertEqual(FilmText.subtitle(Data([0x00, 0x0a] + Array("First line".utf8))), "First line")
+        // A gap between two lines.
+        XCTAssertNil(FilmText.subtitle(Data([0x00, 0x00])))
+        XCTAssertNil(FilmText.subtitle(Data()))
+        // What follows the words (their styling) is left.
+        XCTAssertEqual(FilmText.subtitle(Data([0x00, 0x02] + Array("Hi".utf8) + [0, 0, 0, 12, 0x73, 0x74, 0x79, 0x6c])), "Hi")
+        // A length that runs past the sample says nothing.
+        XCTAssertNil(FilmText.subtitle(Data([0x00, 0x09] + Array("Hi".utf8))))
+        // Two bytes a letter, when it starts with the mark that says so.
+        XCTAssertEqual(FilmText.subtitle(Data([0x00, 0x06, 0xFE, 0xFF, 0x00, 0x48, 0x00, 0x69])), "Hi")
+        XCTAssertEqual(FilmText.subtitle(Data([0x00, 0x05] + Array("  Hi\n".utf8))), "Hi")
+    }
+
+    func testAFilmsTimeAsItsPlayerShowsIt() {
+        XCTAssertEqual(FilmText.clock(7, hours: false), "0:07")
+        XCTAssertEqual(FilmText.clock(123.9, hours: false), "2:03")
+        XCTAssertEqual(FilmText.clock(8621, hours: true), "2:23:41")
+        XCTAssertEqual(FilmText.clock(59, hours: true), "0:00:59")
+        XCTAssertEqual(FilmText.clock(3723, hours: false), "1:02:03")
+        XCTAssertEqual(FilmText.clock(-4, hours: false), "0:00")
+        XCTAssertEqual(FilmText.clock(.nan, hours: false), "0:00")
+    }
 }
