@@ -203,7 +203,7 @@ struct GeneralSettingsView: View {
 }
 
 /// Settings → General → Woodruff Family: which build this is and, on a Mac, how the family's updater is doing here (on
-/// the Mac Studio, also each iPhone it installs on), with Check for Updates Now. A view of its own: what the updater
+/// the Mac Studio, also each iPhone and Apple TV it installs on), with Check for Updates Now. A view of its own: what the updater
 /// says is read every few seconds while General shows, and only these rows redraw when it changes.
 struct WoodruffFamilySection: View {
     #if os(macOS)
@@ -217,6 +217,7 @@ struct WoodruffFamilySection: View {
             SpeedRows()
             updatesRow
             ForEach(updater.iPhones) { IPhoneUpdateRow(phone: $0) }
+            ForEach(updater.appleTVs) { IPhoneUpdateRow(phone: $0) }
             if let tf = updater.testFlight {
                 VStack(alignment: .leading, spacing: 3) {
                     IconRow(symbol: "", color: .clear, title: "TestFlight", value: tf.value, valueColor: tf.problem ? Palette.attention : .secondary)

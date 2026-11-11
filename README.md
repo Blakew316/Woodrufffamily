@@ -65,8 +65,8 @@ release, it then ships it to every device (see below).
 
 ## Deploying to the family's devices
 
-The family's Macs and iPhones update themselves. Once each Mac is set up, nobody has to run anything on them, and
-nothing needs a remote session.
+The family's Macs, iPhones and Apple TVs update themselves. Once each Mac is set up, nobody has to run anything on
+them, and nothing needs a remote session.
 
 **How a release happens.** A commit pushed to `claude/native-apps` with `[release]` in its message is a release.
 CI builds and tests it, and only if all of that works does it move the `release` branch to that commit. Commits
@@ -78,7 +78,8 @@ earlier build, move `release` back to it: `git push --force origin <commit>:rele
 looks at `release` and brings that Mac up to date when it isn't. `scripts/deploy.sh` does every build:
 
 - **The Mac Studio** builds and installs the Mac app, and shares that build in iCloud Drive for the other Macs. It
-  also builds and signs the iPhone app once, and installs it on each iPhone paired with it.
+  also builds and signs the iPhone app once, and installs it on each iPhone paired with it; and the Apple TV app
+  once, for each Apple TV paired with it.
 - **Mac Studio 2** can't sign (Apple revoked its certificate), so it installs the build the Mac Studio shared. It
   depends on iCloud Drive: it needs iCloud Drive on, with the same Apple ID as the Mac Studio, and it gets each
   update only once the Mac Studio has shared it.
@@ -93,9 +94,18 @@ battery below 30% puts off building; installing a shared build still goes ahead.
 The Mac Studio keeps trying until both have it, and it doesn't open the app on them. So keep the Mac Studio awake
 with its user logged in (a locked screen is fine).
 
+**The Apple TVs** get each release from the Mac Studio too, over the home network (no cable, awake or asleep).
+Installing closes the app on an Apple TV, so the Mac Studio first asks each one whether a film is on screen (the app
+keeps a note of the film in its settings, renewed every ten seconds), and leaves that Apple TV alone until the film
+is closed or the app is put away, looking again at every check. It doesn't open the app afterwards, so an Apple TV
+that's asleep stays asleep; one with the app open on a page other than a film sees it close, and has the new build
+when it's opened again. An Apple TV already on the build (installed by hand) is left as it is, and one is called up
+to date once it says itself that it has the build. The Apple TVs are paired with the Mac Studio once, in Xcode's
+Devices window, as the iPhones are.
+
 **Settings → General** shows which build a device has ("Build 412 · e7d8293"). On a Mac, the app's own Settings
 window (Woodruff Family > Settings…, ⌘,) has the rest under General: the remote's key click, and how its updates are
-going (on the Mac Studio, each iPhone's too), with **Check for Updates Now** (**Check for Updates…** in the Woodruff
+going (on the Mac Studio, each iPhone's and Apple TV's too), with **Check for Updates Now** (**Check for Updates…** in the Woodruff
 Family menu does the same). Its Notifications tab has the alerts that Mac shows.
 
 **Setting up a Mac (once).** In Terminal, in the repository folder, run the line for that Mac:
@@ -119,7 +129,7 @@ doesn't have `scripts/updater.py` yet, get it first with
 On a Mac with the updater:
 
 - `python3 scripts/updater.py status` says what `release` is at, what this Mac has and, on the Mac Studio, what
-  each iPhone has, with the end of its log. Add `--json` for the status file the app reads.
+  each iPhone and Apple TV has, with the end of its log. Add `--json` for the status file the app reads.
 - `python3 scripts/updater.py now` checks right away instead of waiting up to 5 minutes.
 - `python3 scripts/updater.py uninstall` stops it on that Mac. Add `--purge` to also delete its status, kept builds
   and logs.
@@ -187,6 +197,8 @@ key enabled for Sandbox & Production.
   `/Applications/Woodruff Family.app` with it (only once the new build's signature checks out).
 - `scripts/deploy.sh mac iphone`, on the Mac the iPhones are paired with, also signs the iPhone app with the
   profiles already there and installs it on every paired iPhone.
+- `scripts/deploy.sh --xcode-signing tv`, on the Mac Studio, builds the Apple TV app and installs it on every Apple
+  TV paired with it, at once (it doesn't ask about a film: that's the updater's care), and opens it there.
 - `share` (with `mac`) then puts a zip of the build and a manifest in iCloud Drive, in "Woodruff Family builds", for
   a Mac that can't sign. On that Mac, `scripts/deploy.sh mac-shared` waits up to 20 minutes for the zip of the
   commit it's at (give both Macs the same `--expect <commit>`), and installs it only if it matches the manifest and

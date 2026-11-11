@@ -300,6 +300,11 @@ final class PhonePlayback {
 /// What's playing, kept while it plays. The system ending the app in the middle of a film (for memory, or for not
 /// answering) leaves no report anywhere on an Apple TV: so the next launch says what was playing, how far in and how
 /// the memory stood, in the Macs' log.
+///
+/// The Mac Studio's updater reads this note off each Apple TV before it installs a new build there (an install
+/// closes the app): one written in the last minute and a half means a film is on screen, and that Apple TV is left
+/// alone until it isn't (`film_on_screen` in scripts/updater.py). So it stays as it is: written as a film opens,
+/// again every ten seconds while the film is on screen, removed as the film closes, under this key, with `at`.
 @MainActor
 enum PlayCrumb {
     private static let key = "playing.crumb"
@@ -308,11 +313,40 @@ enum PlayCrumb {
         let crumb: [String: Any] = ["title": title, "stage": stage, "detail": detail, "at": Date().timeIntervalSince1970,
                                     "build": AppBuild.label]
         UserDefaults.standard.set(crumb, forKey: key)
+        #if os(tvOS)
+        keepFresh()
+        #endif
     }
 
     static func clear() {
         UserDefaults.standard.removeObject(forKey: key)
+        #if os(tvOS)
+        keeper?.invalidate()
+        keeper = nil
+        #endif
     }
+
+    #if os(tvOS)
+    private static var keeper: Timer?
+
+    /// The note's time, renewed every ten seconds for as long as a film is open and the app is on screen, also while
+    /// the film is stopped (Apple's player only says where it is while it plays): a film stopped for a while is
+    /// still a film on screen to the Mac Studio's updater. With the app put away nothing runs, and the note ages.
+    private static func keepFresh() {
+        guard keeper == nil else { return }
+        keeper = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { _ in
+            MainActor.assumeIsolated {
+                guard var crumb = UserDefaults.standard.dictionary(forKey: key) else {
+                    keeper?.invalidate()
+                    keeper = nil
+                    return
+                }
+                crumb["at"] = Date().timeIntervalSince1970
+                UserDefaults.standard.set(crumb, forKey: key)
+            }
+        }
+    }
+    #endif
 
     /// At launch: what the app was playing when it last ended without the film being closed, if it was.
     static func reportLast() {

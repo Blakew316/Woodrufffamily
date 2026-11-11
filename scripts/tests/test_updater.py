@@ -1,6 +1,6 @@
-"""Tests for scripts/updater.py. Every command it runs goes to FakeEnv, which plays git, deploy.sh, devicectl,
-lsappinfo, ioreg, pmset and launchctl; files go to a temporary folder. Nothing touches this Mac's ~/Library,
-/Applications, launchd or the network.
+"""Tests for scripts/updater.py. Every command it runs goes to FakeEnv, which plays git, deploy.sh, devicectl
+(the iPhones and the Apple TVs), lsappinfo, ioreg, pmset and launchctl; files go to a temporary folder. Nothing
+touches this Mac's ~/Library, /Applications, launchd or the network.
 
 Run from the repository root: python3 -m unittest discover -s scripts/tests -p 'test_*.py'
 """
@@ -31,19 +31,21 @@ NEWER = hashlib.sha1(b"newer release").hexdigest()
 P1 = "00008150-001E68E80A32401C"
 P2 = "00008150-0002615C3C87801C"
 P3 = "00008110-000A1B2C3D4E5F60"
+TV1 = "00008110-000131602193801E"
+TV2 = "00008110-000E418C1E39801E"
 T0 = datetime(2026, 11, 4, 12, 0, tzinfo=timezone.utc)
 STAMP = re.compile(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
 BUSY_ASN = "ASN:0x0-0x2b02b:"
 
 
 def parse_deploy_args(args):
-    opts = {"parts": [], "branch": None, "expect": None, "wait": None, "keep": None, "no_launch": False,
-            "results": None}
+    opts = {"parts": [], "branch": None, "expect": None, "wait": None, "keep": None, "keep_tv": None,
+            "no_launch": False, "results": None}
     i = 0
     while i < len(args):
         arg = args[i]
-        if arg in ("--branch", "--expect", "--wait", "--keep-iphone", "--results"):
-            opts[{"--keep-iphone": "keep"}.get(arg, arg[2:])] = args[i + 1]
+        if arg in ("--branch", "--expect", "--wait", "--keep-iphone", "--keep-tv", "--results"):
+            opts[{"--keep-iphone": "keep", "--keep-tv": "keep_tv"}.get(arg, arg[2:])] = args[i + 1]
             i += 2
             continue
         if arg == "--no-launch":
@@ -73,6 +75,10 @@ def all_ok(env, opts):
                      % opts["keep"]))
         for device in env.devices:
             rows.append(("iphone", "installed", device["udid"], "%s: installed" % device["name"]))
+    if "tv" in parts:
+        env.keep_tv(opts["keep_tv"], commit)
+        rows.append(("tv-build", "ok", commit, "signed by Xcode (team D8D94SXAG6), profile tvOS Team Provisioning "
+                     "Profile: * (expires 2027-11-04), kept in %s" % opts["keep_tv"]))
     return rows
 
 
@@ -111,6 +117,14 @@ class FakeEnv(updater.Env):
                         {"udid": P2, "name": "Mia's iPhone", "pairing": "paired", "tunnel": "connected"}]
         self.devices_status = 0
         self.install = {}                # UDID -> (status, output) for devicectl device install app
+        self.tvs = [{"udid": TV1, "name": "Living Room", "pairing": "paired", "tunnel": "disconnected"},
+                    {"udid": TV2, "name": "Extra Apple TV", "pairing": "paired", "tunnel": "disconnected"}]
+        self.tvs_status = 0
+        self.tv_has = {TV1: 1200, TV2: 1200}   # UDID -> the build of Woodruff Family there (None: not installed)
+        self.tv_settings = {}            # UDID -> the app's settings there (where its film note is)
+        self.tv_apps = {}                # UDID -> (status, output) to fail devicectl device info apps
+        self.tv_copy = {}                # UDID -> (status, output) to fail devicectl device copy from
+        self.tv_installs = []            # (UDID, build) of each Apple TV install, in order
         self.front_bundle = "com.apple.finder"
         self.idle_ns = 600 * 10 ** 9
         self.lsappinfo_status = 0
@@ -141,12 +155,45 @@ class FakeEnv(updater.Env):
         if name == "deploy.sh":
             return self.run_deploy(argv, output)
         if any(a.endswith("signing.py") for a in argv):
-            assert argv[-1] == "devices" and "-I" in argv, argv
+            assert "-I" in argv, argv
+            if argv[-2:] == ["--platform", "tvOS"]:
+                assert argv[-3] == "devices", argv
+                return self.tvs_status, json.dumps(self.tvs), "" if self.tvs_status == 0 else "devicectl failed"
+            assert argv[-1] == "devices", argv
             return self.devices_status, json.dumps(self.devices), "" if self.devices_status == 0 else "devicectl failed"
+        if name == "xcrun" and argv[1:5] == ["devicectl", "device", "info", "apps"]:
+            # Which build of the Apple TV app an Apple TV has.
+            assert argv[5] == "--device" and argv[7:10] == ["--bundle-id", updater.TV_BUNDLE_ID, "--json-output"], argv
+            if argv[6] in self.tv_apps:
+                return self.tv_apps[argv[6]][0], self.tv_apps[argv[6]][1], ""
+            build = self.tv_has.get(argv[6])
+            apps = [] if build is None else [{"bundleIdentifier": updater.TV_BUNDLE_ID, "bundleVersion": str(build),
+                                              "version": "1.0", "name": "Woodruff"}]
+            with open(argv[10], "w") as handle:
+                json.dump({"info": {"outcome": "success"}, "result": {"apps": apps, "deviceIdentifier": "x"}}, handle)
+            return 0, "Apps installed:\n", ""
+        if name == "xcrun" and argv[1:5] == ["devicectl", "device", "copy", "from"]:
+            # The Apple TV app's settings file, copied off an Apple TV.
+            assert argv[5] == "--device" and argv[7:13] == [
+                "--domain-type", "appDataContainer", "--domain-identifier", updater.TV_BUNDLE_ID,
+                "--source", "Library/Preferences/com.blakew316.woodruff.tv.plist"], argv
+            assert argv[13] == "--destination" and not os.path.isdir(argv[14]), argv   # devicectl wants a file path
+            if argv[6] in self.tv_copy:
+                return self.tv_copy[argv[6]][0], self.tv_copy[argv[6]][1], ""
+            with open(argv[14], "wb") as handle:
+                plistlib.dump(dict(self.tv_settings.get(argv[6], {}), **{"atv.name": "Apple TV"}), handle,
+                              fmt=plistlib.FMT_BINARY)
+            return 0, "File received from Device\n", ""
         if name == "xcrun":
             assert argv[1:6] == ["devicectl", "device", "install", "app", "--device"], argv
             assert argv[7:9] == ["--timeout", "240"], argv
             status, out = self.install.get(argv[6], (0, "App installed:\n  bundleID: com.blakew316.woodruff\n"))
+            if argv[6] in (TV1, TV2):
+                with open(os.path.join(os.path.dirname(argv[9]), "build.json")) as handle:
+                    build = json.load(handle)["build"]
+                self.tv_installs.append((argv[6], build))
+                if status == 0:
+                    self.tv_has[argv[6]] = build
             return status, out, ""
         if name == "lsappinfo":
             if self.lsappinfo_status:
@@ -225,6 +272,20 @@ class FakeEnv(updater.Env):
         with open(os.path.join(folder, "build.json"), "w") as handle:
             json.dump(meta, handle)
 
+    def keep_tv(self, folder, commit, devices=None, expires="2027-11-04T05:00:00Z"):
+        os.makedirs(os.path.join(folder, "Woodruff Family.app"), exist_ok=True)
+        meta = {"commit": commit, "build": self.counts.get(commit, 1), "signed_at": updater.iso(self.clock),
+                "identity": "XCODE AUTOMATIC SIGNING", "app_profile_uuid": "5e0f1c2d", "app_profile_expires": expires,
+                "devices": [{"udid": d["udid"], "name": d["name"]} for d in (self.tvs if devices is None else devices)]}
+        with open(os.path.join(folder, "build.json"), "w") as handle:
+            json.dump(meta, handle)
+
+    def film(self, udid, seconds_ago, stage="playing"):
+        """The Apple TV app's note of a film open there, last written that long ago."""
+        self.tv_settings[udid] = {"playing.crumb": {
+            "title": "Avengers - Endgame", "stage": stage, "detail": "30 s in", "build": "Build 1200",
+            "at": (self.clock - timedelta(seconds=seconds_ago)).timestamp()}}
+
     # ------------------------------------------------------------------ looking at it
 
     def names(self, since=0):
@@ -244,9 +305,10 @@ class UpdaterTest(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def configure(self, role="hub", fallback=False, testflight=False):
+    def configure(self, role="hub", fallback=False, testflight=False, appletv=False):
         updater.write_json(os.path.join(self.support, "config.json"), {
             "role": role, "build_fallback": fallback, "repo": self.env.repo, "testflight": testflight,
+            "appletv": appletv,
             "remote": "https://github.com/Blakew316/Woodrufffamily.git", "branch": "release", "interval": 300})
 
     def main(self, *argv):
@@ -275,6 +337,20 @@ class UpdaterTest(unittest.TestCase):
             if phone["udid"] == udid:
                 return phone
         self.fail("no iPhone %s in %s" % (udid, doc["iphones"]))
+
+    def tv(self, doc, udid):
+        for tv in doc["appletvs"]:
+            if tv["udid"] == udid:
+                return tv
+        self.fail("no Apple TV %s in %s" % (udid, doc["appletvs"]))
+
+    def tv_args(self, commit=NEW):
+        return self.deploy_args("--branch", "release", "--expect", commit, "--xcode-signing", "tv", "--keep-tv",
+                                os.path.join(self.support, "tv-builds", commit))
+
+    def log_text(self):
+        with open(os.path.join(self.env.logs, "updater.log"), encoding="utf-8") as handle:
+            return handle.read()
 
     def deploy_args(self, *middle):
         return list(middle) + ["--results", self.results]
@@ -764,6 +840,423 @@ class Hub(UpdaterTest):
         self.assertEqual(self.env.deploys, [self.hub_args()])
 
 
+# ------------------------------------------------------------------------------------------ the Apple TVs
+
+
+class AppleTVs(UpdaterTest):
+    """The hub keeps the Apple TVs paired with it on the release: the app is built once (deploy.sh tv, kept), then
+    installed on each Apple TV over the network, never while a film is on screen there."""
+
+    def setUp(self):
+        super().setUp()
+        self.configure("hub", appletv=True)
+        self.tv_builds = os.path.join(self.support, "tv-builds")
+        self.kept_app = os.path.join(self.tv_builds, NEW, "Woodruff Family.app")
+
+    def tv_installs(self):
+        return [c["argv"] for c in self.env.calls if c["argv"][:5] == ["xcrun", "devicectl", "device", "install", "app"]
+                and c["argv"][6] in (TV1, TV2)]
+
+    def asked(self, what, udid):
+        """How many times that Apple TV was asked for its build ("info") or its settings ("copy")."""
+        return len([c for c in self.env.calls if c["argv"][:4] == ["xcrun", "devicectl", "device", what]
+                    and c["argv"][6] == udid])
+
+    def test_built_once_and_installed_on_each_apple_tv(self):
+        deltas = os.path.join(self.env.home, *updater.TV_DELTAS)
+        os.makedirs(os.path.join(deltas, "22785a11", "Stashed"))
+        doc = self.run_once()
+        # The Mac and the iPhones first, then the Apple TV app: built with Xcode's signing, kept, installed nowhere.
+        self.assertEqual(self.env.deploys, [self.hub_args(), self.tv_args()])
+        self.assertEqual(self.tv_installs(), [
+            ["xcrun", "devicectl", "device", "install", "app", "--device", TV1, "--timeout", "240", self.kept_app],
+            ["xcrun", "devicectl", "device", "install", "app", "--device", TV2, "--timeout", "240", self.kept_app]])
+        self.assertEqual(self.env.tv_installs, [(TV1, 1234), (TV2, 1234)])
+        for udid, name in ((TV1, "Living Room"), (TV2, "Extra Apple TV")):
+            tv = self.tv(doc, udid)
+            self.assertEqual((tv["name"], tv["state"], tv["commit"], tv["detail"]), (name, "current", NEW, "Up to date."))
+            self.assertEqual(tv["updated_at"], self.at(0))
+            self.assertIsNone(tv["next_try"])
+        # The whole app is sent: what CoreDevice kept to send only the changes is gone.
+        self.assertFalse(os.path.exists(deltas))
+        # Never opened on the Apple TV afterwards (one that's asleep stays asleep).
+        self.assertFalse([c for c in self.env.calls if "launch" in c["argv"]])
+        log = self.log_text()
+        self.assertIn("Apple TV Living Room: installing the kept build of %s" % NEW[:12], log)
+        self.assertIn("Apple TV Extra Apple TV: installed %s" % NEW[:12], log)
+        # Nothing more at the next check: everything is on the release.
+        calls = len(self.env.calls)
+        self.run_once(5)
+        self.assertEqual(len(self.env.deploys), 2)
+        self.assertEqual(self.env.names(calls), ["git"])
+        self.assertIn("up to date: %s, build 1234" % NEW[:12], self.log_text())
+
+    def test_left_alone_while_a_film_is_playing(self):
+        self.env.film(TV1, 20)
+        doc = self.run_once()
+        tv = self.tv(doc, TV1)
+        self.assertEqual(tv["state"], "waiting")
+        self.assertEqual(tv["detail"], "A film is playing. It installs once the film is over.")
+        self.assertEqual(tv["next_try"], self.at(4))
+        self.assertIsNone(tv["commit"])
+        # The other Apple TV isn't held up by it.
+        self.assertEqual(self.tv(doc, TV2)["state"], "current")
+        self.assertEqual(self.env.tv_installs, [(TV2, 1234)])
+        self.assertIn("Apple TV Living Room: a film is playing", self.log_text())
+        # Still playing five minutes on (the app renews its note every ten seconds): still left alone.
+        self.env.clock = T0 + timedelta(minutes=5)
+        self.env.film(TV1, 4)
+        doc = self.run_once(5)
+        self.assertEqual(self.tv(doc, TV1)["state"], "waiting")
+        self.assertEqual(self.env.tv_installs, [(TV2, 1234)])
+        # The film was closed (the app removes its note): installed at the next check, without building again.
+        self.env.tv_settings.pop(TV1)
+        doc = self.run_once(10)
+        self.assertEqual(self.tv(doc, TV1)["state"], "current")
+        self.assertEqual(self.env.tv_installs, [(TV2, 1234), (TV1, 1234)])
+        self.assertEqual(len(self.env.deploys), 2)
+
+    def test_check_now_doesnt_interrupt_a_film(self):
+        self.env.film(TV1, 20)
+        self.run_once()
+        open(os.path.join(self.support, "check-now"), "w").close()
+        self.env.clock = T0 + timedelta(minutes=1)
+        self.env.film(TV1, 5)
+        os.utime(os.path.join(self.support, "check-now"), (self.env.clock.timestamp(), self.env.clock.timestamp()))
+        doc = self.run_once(1)
+        # Asked again at once (its wait is skipped), and still left alone.
+        self.assertEqual(self.asked("copy", TV1), 2)
+        self.assertEqual(self.tv(doc, TV1)["state"], "waiting")
+        self.assertEqual(self.env.tv_installs, [(TV2, 1234)])
+
+    def test_a_film_being_opened_counts(self):
+        self.env.film(TV1, 2, stage="opening")
+        doc = self.run_once()
+        self.assertEqual(self.tv(doc, TV1)["state"], "waiting")
+
+    def test_a_film_left_open_in_an_app_put_away_doesnt_hold_it(self):
+        # (The note stays in the settings when the app is put away with a film open, but is no longer renewed.)
+        self.env.film(TV1, 2259)
+        doc = self.run_once()
+        self.assertEqual(self.tv(doc, TV1)["state"], "current")
+        self.assertEqual(self.env.tv_installs, [(TV1, 1234), (TV2, 1234)])
+
+    def test_one_already_on_the_build_is_left_as_it_is(self):
+        self.env.tv_has[TV1] = 1234   # installed by hand
+        doc = self.run_once()
+        self.assertEqual(self.tv(doc, TV1)["state"], "current")
+        self.assertEqual(self.tv(doc, TV1)["commit"], NEW)
+        self.assertEqual(self.env.tv_installs, [(TV2, 1234)])
+        self.assertEqual(self.asked("copy", TV1), 0)
+        self.assertIn("Apple TV Living Room: already has %s" % NEW[:12], self.log_text())
+
+    def test_one_without_the_app_gets_it(self):
+        self.env.tv_has[TV1] = None
+        doc = self.run_once()
+        self.assertEqual(self.tv(doc, TV1)["state"], "current")
+        self.assertEqual(self.env.tv_installs, [(TV1, 1234), (TV2, 1234)])
+        self.assertEqual(self.asked("copy", TV1), 0)   # no app there, so no film to ask about
+
+    def test_one_that_cant_be_reached_is_tried_every_ten_minutes(self):
+        self.env.tv_apps[TV1] = (1, "ERROR: The device is unavailable. (com.apple.dt.CoreDeviceError error 1.)")
+        doc = self.run_once()
+        tv = self.tv(doc, TV1)
+        self.assertEqual(tv["state"], "unreachable")
+        self.assertEqual(tv["next_try"], self.at(10))
+        self.assertEqual(tv["detail"], "Not reachable from this Mac. Next try at %s." % updater.clock(T0 + timedelta(minutes=10)))
+        self.assertEqual(self.env.tv_installs, [(TV2, 1234)])
+        self.run_once(5)   # not due yet: not even asked
+        self.assertEqual(self.asked("info", TV1), 1)
+        self.env.tv_apps.clear()
+        doc = self.run_once(10)
+        self.assertEqual(self.tv(doc, TV1)["state"], "current")
+        self.assertEqual(len(self.env.deploys), 2)
+
+    def test_one_that_doesnt_answer_in_time(self):
+        self.env.tv_apps[TV1] = (124, "")
+        doc = self.run_once()
+        self.assertEqual(self.tv(doc, TV1)["state"], "unreachable")
+        self.assertEqual(self.env.tv_installs, [(TV2, 1234)])
+
+    def test_not_installed_when_it_cant_tell_whether_a_film_is_playing(self):
+        self.env.tv_copy[TV1] = (1, "ERROR: Failed to perform I/O operations. (com.apple.dt.remoteservices.error error 11001)")
+        doc = self.run_once()
+        tv = self.tv(doc, TV1)
+        self.assertEqual(tv["state"], "failed")
+        self.assertIn("Couldn't ask it whether a film is playing", tv["detail"])
+        self.assertEqual(tv["next_try"], self.at(15))
+        self.assertEqual(self.env.tv_installs, [(TV2, 1234)])
+        self.env.tv_copy.clear()
+        doc = self.run_once(15)
+        self.assertEqual(self.tv(doc, TV1)["state"], "current")
+
+    def test_settings_that_cant_be_read_mean_no_install(self):
+        real = self.env.run
+
+        def run(argv, timeout, cwd=None, env=None, output=None):
+            if argv[1:5] == ["devicectl", "device", "copy", "from"] and argv[6] == TV1:
+                self.env.calls.append({"argv": list(argv), "timeout": timeout, "cwd": cwd, "env": {}, "output": output})
+                with open(argv[14], "w") as handle:
+                    handle.write("not a settings file")
+                return 0, "File received from Device\n", ""
+            return real(argv, timeout, cwd=cwd, env=env, output=output)
+        self.env.run = run
+        doc = self.run_once()
+        self.assertEqual(self.tv(doc, TV1)["state"], "failed")
+        self.assertIn("Couldn't read its settings", self.tv(doc, TV1)["detail"])
+        self.assertEqual(self.env.tv_installs, [(TV2, 1234)])
+
+    def test_the_settings_copy_is_removed(self):
+        seen = []
+        real = self.env.run
+
+        def run(argv, timeout, cwd=None, env=None, output=None):
+            if argv[1:5] == ["devicectl", "device", "copy", "from"]:
+                seen.append(argv[14])
+            return real(argv, timeout, cwd=cwd, env=env, output=output)
+        self.env.run = run
+        self.run_once()
+        self.assertEqual(len(seen), 2)
+        for path in seen:
+            self.assertFalse(os.path.exists(os.path.dirname(path)), path)
+
+    def test_install_failure_backs_off(self):
+        self.env.install[TV1] = (1, "ERROR: The application could not be installed: the signature is not valid")
+        doc = self.run_once()
+        tv = self.tv(doc, TV1)
+        self.assertEqual(tv["state"], "failed")
+        self.assertIn("The install failed: ERROR: The application could not be installed", tv["detail"])
+        self.assertEqual(tv["next_try"], self.at(15))
+        self.assertEqual(self.tv(doc, TV2)["state"], "current")
+        self.env.install.clear()
+        self.run_once(10)
+        self.assertEqual(self.env.tv_installs, [(TV1, 1234), (TV2, 1234)])   # not due yet
+        doc = self.run_once(15)
+        self.assertEqual(self.tv(doc, TV1)["state"], "current")
+        self.assertEqual(self.env.tv_installs, [(TV1, 1234), (TV2, 1234), (TV1, 1234)])
+
+    def test_up_to_date_only_once_the_apple_tv_says_so(self):
+        real = self.env.run
+
+        def run(argv, timeout, cwd=None, env=None, output=None):
+            status, out, err = real(argv, timeout, cwd=cwd, env=env, output=output)
+            if argv[1:5] == ["devicectl", "device", "install", "app"] and argv[6] == TV1:
+                self.env.tv_has[TV1] = 1200   # devicectl says installed, the Apple TV still has the old build
+            return status, out, err
+        self.env.run = run
+        doc = self.run_once()
+        tv = self.tv(doc, TV1)
+        self.assertEqual(tv["state"], "failed")
+        self.assertIn("Devicectl installed it, but the Apple TV says it has build 1200", tv["detail"])
+        self.assertIsNone(tv["commit"])
+        self.assertEqual(self.tv(doc, TV2)["state"], "current")
+
+    def test_installed_when_it_cant_be_asked_afterwards(self):
+        real = self.env.run
+
+        def run(argv, timeout, cwd=None, env=None, output=None):
+            status, out, err = real(argv, timeout, cwd=cwd, env=env, output=output)
+            if argv[1:5] == ["devicectl", "device", "install", "app"] and argv[6] == TV1:
+                self.env.tv_apps[TV1] = (1, "ERROR: The device is unavailable.")
+            return status, out, err
+        self.env.run = run
+        doc = self.run_once()
+        self.assertEqual(self.tv(doc, TV1)["state"], "current")
+
+    def test_install_that_times_out_is_unreachable(self):
+        self.env.install[TV1] = (124, "")
+        doc = self.run_once()
+        self.assertEqual(self.tv(doc, TV1)["state"], "unreachable")
+        self.assertEqual(self.tv(doc, TV1)["next_try"], self.at(10))
+
+    def test_no_apple_tv_paired(self):
+        self.env.tvs = []
+        doc = self.run_once()
+        self.assertEqual(self.env.deploys, [self.hub_args()])   # nothing is built for no Apple TV
+        self.assertEqual(doc["appletvs"], [])
+        self.assertIsNone(doc["last_error"])
+        self.assertEqual(self.state()["tv_build"]["state"], "skipped")
+        # Looked for again hours later, not at every check; meanwhile the hub is up to date.
+        calls = len(self.env.calls)
+        self.run_once(60)
+        self.assertEqual(self.env.names(calls), ["git"])
+        self.assertIn("up to date: %s" % NEW[:12], self.log_text())
+        self.env.tvs = [{"udid": TV1, "name": "Living Room", "pairing": "paired", "tunnel": "disconnected"}]
+        doc = self.run_once(6 * 60)
+        self.assertEqual(self.env.deploys[-1], self.tv_args())
+        self.assertEqual(self.tv(doc, TV1)["state"], "current")
+
+    def test_the_apple_tvs_cant_be_listed(self):
+        self.env.tvs_status = 1
+        doc = self.run_once()
+        self.assertEqual(self.env.deploys, [self.hub_args()])
+        self.assertEqual(doc["last_error"], "couldn't list the Apple TVs: devicectl failed")
+        self.env.tvs_status = 0
+        doc = self.run_once(5)
+        self.assertEqual(self.tv(doc, TV1)["state"], "current")
+
+    def test_build_failure_backs_off_and_shows_on_each_apple_tv(self):
+        def failing(env, opts):
+            if "tv" in opts["parts"]:
+                return [("tv-build", "failed", opts["expect"], "the Apple TV app didn't build: error: no such module")]
+            return all_ok(env, opts)
+        self.env.deploy = failing
+        doc = self.run_once()
+        self.assertEqual(self.state()["tv_build"]["state"], "failed")
+        for udid in (TV1, TV2):
+            tv = self.tv(doc, udid)
+            self.assertEqual(tv["state"], "failed")
+            self.assertIn("The Apple TV build failed: The Apple TV app didn't build: error: no such module.", tv["detail"])
+            self.assertEqual(tv["next_try"], self.at(15))
+        self.assertEqual(self.env.tv_installs, [])
+        self.run_once(10)
+        self.assertEqual(len(self.env.deploys), 2)   # not built again before its wait is over
+        self.env.deploy = all_ok
+        doc = self.run_once(15)
+        self.assertEqual(self.env.deploys[-1], self.tv_args())
+        self.assertEqual(self.tv(doc, TV2)["state"], "current")
+
+    def test_deploy_that_stops_without_a_result(self):
+        def silent(env, opts):
+            return [] if "tv" in opts["parts"] else all_ok(env, opts)
+        self.env.deploy = silent
+        self.env.deploy_status = 1
+        doc = self.run_once()
+        self.assertEqual(self.state()["tv_build"]["state"], "failed")
+        self.assertIn("eploy.sh stopped (exit 1) without saying how it went", self.tv(doc, TV1)["detail"])
+
+    def test_one_the_profile_doesnt_list(self):
+        def partly(env, opts):
+            if "tv" in opts["parts"]:
+                env.keep_tv(opts["keep_tv"], opts["expect"], devices=[env.tvs[0]])
+                return [("tv", "skipped", TV2, "Extra Apple TV: not installed, Xcode's profile doesn't list it"),
+                        ("tv-build", "ok", opts["expect"], "signed by Xcode, kept")]
+            return all_ok(env, opts)
+        self.env.deploy = partly
+        doc = self.run_once()
+        self.assertEqual(self.tv(doc, TV1)["state"], "current")
+        tv = self.tv(doc, TV2)
+        self.assertEqual((tv["state"], tv["detail"]), ("failed", "Not installed, Xcode's profile doesn't list it."))
+        self.assertIsNone(tv["next_try"])
+        self.assertEqual(self.env.tv_installs, [(TV1, 1234)])
+        # It isn't tried again for this release, and doesn't keep the hub from being up to date.
+        self.run_once(5)
+        self.assertEqual(len(self.env.deploys), 2)
+
+    def test_not_built_until_the_mac_app_built_here(self):
+        def mac_fails(env, opts):
+            if "mac" in opts["parts"]:
+                return [("mac", "failed", opts["expect"], "the Mac app didn't build"),
+                        ("share", "failed", opts["expect"], "nothing to share")]
+            return all_ok(env, opts)
+        self.env.deploy = mac_fails
+        doc = self.run_once()
+        self.assertEqual(len(self.env.deploys), 1)
+        self.assertEqual(doc["appletvs"], [])
+        self.assertEqual(self.env.tv_installs, [])
+
+    def test_kept_build_whose_profile_expired_is_built_again(self):
+        self.run_once()
+        self.env.keep_tv(os.path.join(self.tv_builds, NEW), NEW, expires="2026-11-04T11:00:00Z")
+        state = self.state()
+        state["appletvs"][0].update(commit=OLD, state="pending")
+        updater.write_json(os.path.join(self.support, "state.json"), state)
+        self.run_once(5)
+        self.assertEqual(self.env.deploys[-1], self.tv_args())
+        self.assertEqual(len(self.env.deploys), 3)
+
+    def test_a_new_release_is_built_again_and_the_old_build_removed(self):
+        self.run_once()
+        self.assertTrue(os.path.isdir(os.path.join(self.tv_builds, NEW)))
+        self.env.release = NEWER
+        doc = self.run_once(5)
+        self.assertEqual(self.env.deploys[-1], self.tv_args(NEWER))
+        self.assertEqual(self.env.tv_installs[-2:], [(TV1, 1240), (TV2, 1240)])
+        self.assertEqual(self.tv(doc, TV1)["commit"], NEWER)
+        self.assertFalse(os.path.exists(os.path.join(self.tv_builds, NEW)))
+        self.assertTrue(os.path.isdir(os.path.join(self.tv_builds, NEWER)))
+        self.assertIn("removed the kept Apple TV build %s" % NEW[:12], self.log_text())
+
+    def test_a_new_release_while_one_waits_for_a_film(self):
+        self.env.film(TV1, 20)
+        self.run_once()
+        self.env.release = NEWER
+        self.env.clock = T0 + timedelta(minutes=5)
+        self.env.film(TV1, 3)
+        doc = self.run_once(5)
+        tv = self.tv(doc, TV1)
+        self.assertEqual(tv["state"], "waiting")
+        self.assertEqual(self.env.tv_installs, [(TV2, 1234), (TV2, 1240)])
+        self.env.tv_settings.clear()
+        doc = self.run_once(10)
+        self.assertEqual(self.env.tv_installs[-1], (TV1, 1240))   # straight to the newest
+        self.assertEqual(self.tv(doc, TV1)["commit"], NEWER)
+
+    def test_one_no_longer_paired_is_forgotten_at_the_next_build(self):
+        self.run_once()
+        self.env.tvs = [self.env.tvs[0]]
+        self.env.release = NEWER
+        doc = self.run_once(5)
+        self.assertEqual([tv["udid"] for tv in doc["appletvs"]], [TV1])
+
+    def test_one_unpaired_between_the_build_and_the_install(self):
+        def unpair(env, opts):
+            rows = all_ok(env, opts)
+            if "tv" in opts["parts"]:
+                env.tvs[1]["pairing"] = "unpaired"
+            return rows
+        self.env.deploy = unpair
+        doc = self.run_once()
+        tv = self.tv(doc, TV2)
+        self.assertEqual((tv["state"], tv["detail"]), ("pending", "Not paired with this Mac."))
+        self.assertEqual(self.env.tv_installs, [(TV1, 1234)])
+
+    def test_tunnel_unavailable(self):
+        self.env.tvs[0]["tunnel"] = "unavailable"
+        doc = self.run_once()
+        self.assertEqual(self.tv(doc, TV1)["state"], "unreachable")
+        self.assertEqual(self.asked("info", TV1), 0)
+
+    def test_off_in_config(self):
+        self.configure("hub", appletv=False)
+        doc = self.run_once()
+        self.assertEqual(self.env.deploys, [self.hub_args()])
+        self.assertEqual(doc["appletvs"], [])
+
+    def test_on_unless_config_says_otherwise(self):
+        config = updater.read_json(os.path.join(self.support, "config.json"))
+        del config["appletv"]   # as on a Mac Studio set up before the Apple TVs were kept current
+        updater.write_json(os.path.join(self.support, "config.json"), config)
+        doc = self.run_once()
+        self.assertEqual(self.env.deploys, [self.hub_args(), self.tv_args()])
+        self.assertEqual(self.tv(doc, TV1)["state"], "current")
+
+    def test_a_follower_has_no_apple_tvs(self):
+        self.configure("follower", appletv=True)
+        doc = self.run_once()
+        self.assertEqual(doc["appletvs"], [])
+        self.assertFalse([d for d in self.env.deploys if "tv" in d])
+
+    def test_state_from_before_the_apple_tvs(self):
+        self.configure("hub", appletv=False)
+        self.run_once()
+        state = self.state()
+        del state["appletvs"], state["tv_build"]   # state.json as an older updater.py left it
+        updater.write_json(os.path.join(self.support, "state.json"), state)
+        self.configure("hub", appletv=True)
+        doc = self.run_once(5)
+        self.assertEqual(self.env.deploys[-1], self.tv_args())
+        self.assertEqual(self.tv(doc, TV1)["state"], "current")
+
+    def test_status_shows_the_apple_tvs(self):
+        self.env.film(TV1, 20)
+        self.run_once()
+        status, out, _ = self.main("status")
+        self.assertEqual(status, 0)
+        self.assertIn("  Apple TVs:  Living Room: waiting. A film is playing. It installs once the film is over.", out)
+        self.assertIn("              Extra Apple TV: current. Up to date.", out)
+
+
 # -------------------------------------------------------------------------------------------- the followers
 
 
@@ -968,6 +1461,7 @@ class Follower(UpdaterTest):
 class StatusFile(UpdaterTest):
     MAC_STATES = {"current", "updating", "waiting", "postponed", "failed"}
     PHONE_STATES = {"current", "pending", "unreachable", "failed"}
+    TV_STATES = PHONE_STATES | {"waiting"}
 
     def check_time(self, value, nullable=True):
         if value is None and nullable:
@@ -981,7 +1475,7 @@ class StatusFile(UpdaterTest):
 
     def check(self, doc):
         self.assertEqual(sorted(doc), sorted(["format", "updated_at", "role", "running", "release", "mac", "iphones",
-                                              "share", "testflight", "last_check", "last_error"]))
+                                              "appletvs", "share", "testflight", "last_check", "last_error"]))
         self.assertEqual(doc["format"], 1)
         self.check_time(doc["updated_at"], nullable=False)
         self.assertIn(doc["role"], ("hub", "follower"))
@@ -1009,6 +1503,17 @@ class StatusFile(UpdaterTest):
             self.assertIn(phone["state"], self.PHONE_STATES)
             self.assertIsInstance(phone["detail"], str)
             self.check_time(phone["next_try"])
+        self.assertIsInstance(doc["appletvs"], list)
+        for tv in doc["appletvs"]:
+            self.assertEqual(sorted(tv), ["commit", "detail", "name", "next_try", "state", "udid", "updated_at"])
+            self.assertIsInstance(tv["udid"], str)
+            self.assertIsInstance(tv["name"], str)
+            self.check_sha(tv["commit"])
+            self.check_time(tv["updated_at"])
+            self.assertIn(tv["state"], self.TV_STATES)
+            self.assertIsInstance(tv["detail"], str)
+            self.assertNotIn("\n", tv["detail"])
+            self.check_time(tv["next_try"])
         self.assertEqual(sorted(doc["share"]), ["commit", "detail", "state"])
         self.check_sha(doc["share"]["commit"])
         self.assertIn(doc["share"]["state"], ("ok", "failed", None))
@@ -1049,6 +1554,20 @@ class StatusFile(UpdaterTest):
         self.busy()
         self.env.release = NEWER
         self.check(self.run_once(5))
+
+    def test_matches_the_contract_with_apple_tvs(self):
+        self.configure("hub", appletv=True)
+        self.env.film(TV1, 10)
+        self.env.tv_apps[TV2] = (1, "ERROR: The device is unavailable.")
+        doc = self.run_once()
+        self.check(doc)
+        self.assertEqual([tv["state"] for tv in doc["appletvs"]], ["waiting", "unreachable"])
+        self.env.tv_settings.clear()
+        self.env.tv_apps.clear()
+        self.env.install[TV2] = (1, "ERROR: The application could not be installed.")
+        doc = self.run_once(10)
+        self.check(doc)
+        self.assertEqual([tv["state"] for tv in doc["appletvs"]], ["current", "failed"])
 
     def test_running_while_deploying(self):
         self.configure("hub")
@@ -1266,6 +1785,66 @@ class Commands(UpdaterTest):
 
 
 # ------------------------------------------------------------------------------------------------- helpers
+
+
+class AppleTVAnswers(unittest.TestCase):
+    """What an Apple TV says through devicectl, read."""
+
+    APPS = {"info": {"outcome": "success"}, "result": {"apps": [{
+        "appClip": False, "builtByDeveloper": True, "bundleIdentifier": "com.blakew316.woodruff.tv",
+        "bundleVersion": "596", "containerAccessible": True, "defaultApp": False, "hidden": False, "internalApp": False,
+        "name": "Woodruff", "removable": True, "url": "file:///private/var/containers/Bundle/Application/AA331B2F/",
+        "version": "1.0"}], "deviceIdentifier": "6D6A", "matchingBundleIdentifier": "com.blakew316.woodruff.tv"}}
+    TABLE = ("Apps installed:\nName       Bundle Identifier           Version   Bundle Version\n"
+             "Woodruff   com.blakew316.woodruff.tv   1.0       596\n")
+
+    def test_build_from_the_json(self):
+        self.assertEqual(updater.tv_app_build(self.APPS), (True, 596))
+
+    def test_build_from_the_table_when_the_json_says_nothing(self):
+        self.assertEqual(updater.tv_app_build(None, self.TABLE), (True, 596))
+        self.assertEqual(updater.tv_app_build({"result": {}}, self.TABLE), (True, 596))
+
+    def test_not_installed(self):
+        self.assertEqual(updater.tv_app_build({"result": {"apps": []}}, "Apps installed:\n"), (False, None))
+        other = {"result": {"apps": [{"bundleIdentifier": "com.apple.TVWatchList", "bundleVersion": "9"}]}}
+        self.assertEqual(updater.tv_app_build(other), (False, None))
+
+    def test_a_build_that_isnt_a_number(self):
+        doc = {"result": {"apps": [{"bundleIdentifier": "com.blakew316.woodruff.tv", "bundleVersion": "1.0b"}]}}
+        self.assertEqual(updater.tv_app_build(doc), (True, None))
+        self.assertEqual(updater.tv_app_build({"result": {"apps": [{"bundleIdentifier": "com.blakew316.woodruff.tv"}]}}),
+                         (True, None))
+
+    def note(self, seconds_ago, **more):
+        note = {"title": "Avengers - Endgame", "stage": "playing", "detail": "", "build": "Build 596",
+                "at": (T0 - timedelta(seconds=seconds_ago)).timestamp()}
+        note.update(more)
+        return {"playing.crumb": note, "atv.name": "Apple TV"}
+
+    def test_film_on_screen(self):
+        self.assertTrue(updater.film_on_screen(self.note(0), T0))
+        self.assertTrue(updater.film_on_screen(self.note(12), T0))
+        self.assertTrue(updater.film_on_screen(self.note(89), T0))
+        self.assertTrue(updater.film_on_screen(self.note(3, stage="opening"), T0))
+
+    def test_film_left_open_in_an_app_put_away(self):
+        self.assertFalse(updater.film_on_screen(self.note(90), T0))
+        self.assertFalse(updater.film_on_screen(self.note(2259), T0))   # what an Apple TV really had
+
+    def test_no_film(self):
+        self.assertFalse(updater.film_on_screen({"atv.name": "Apple TV"}, T0))
+        self.assertFalse(updater.film_on_screen({}, T0))
+        self.assertFalse(updater.film_on_screen(None, T0))
+
+    def test_a_note_from_a_clock_ahead_counts_as_on_screen(self):
+        self.assertTrue(updater.film_on_screen(self.note(-400), T0))
+
+    def test_a_note_without_a_time(self):
+        self.assertFalse(updater.film_on_screen({"playing.crumb": {"title": "x"}}, T0))
+        self.assertFalse(updater.film_on_screen({"playing.crumb": {"at": "soon"}}, T0))
+        self.assertFalse(updater.film_on_screen({"playing.crumb": {"at": True}}, T0))
+        self.assertFalse(updater.film_on_screen({"playing.crumb": "playing"}, T0))
 
 
 class Helpers(unittest.TestCase):

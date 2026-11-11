@@ -182,8 +182,9 @@ enum CameraHistoryClient {
 }
 
 #if os(iOS)
-/// A camera's last three events under its live picture, listed as Google Home lists them: a small picture of each,
-/// what was seen, and when. Tapping one plays it where the live picture is.
+/// A camera's last three events under its live picture: one pane of Liquid Glass as wide as the picture, a row for
+/// each event (a small picture of it, what was seen, and when) and nothing else. Tapping one plays it where the live
+/// picture is. Nothing shows until the camera has had an event.
 struct CameraEventsList: View {
     let camera: String
     /// An event was tapped and its clip (or picture) is on this device.
@@ -193,15 +194,32 @@ struct CameraEventsList: View {
     @State private var pictures: [String: UIImage] = [:]
     /// The event being fetched after a tap.
     @State private var opening: String?
+    @Environment(\.displayScale) private var displayScale
+
+    /// The pane has the camera picture's corners; a row's picture sits ten points inside them.
+    private let pane = RoundedRectangle(cornerRadius: 28, style: .continuous)
 
     var body: some View {
-        VStack(spacing: 3) {
-            ForEach(events.prefix(3)) { event in
-                Button { open(event) } label: { row(event) }
-                    .buttonStyle(.plain)
+        let shown = Array(events.prefix(3))
+        // The stack is always here (the list is fetched from it); the pane only once there's an event to show.
+        VStack(spacing: 0) {
+            if !shown.isEmpty {
+                VStack(spacing: 0) {
+                    ForEach(shown) { event in
+                        if event.id != shown.first?.id {
+                            Rectangle().fill(.white.opacity(0.16))
+                                .frame(height: 1 / max(1, displayScale))
+                                .padding(.leading, 90)
+                        }
+                        Button { open(event) } label: { row(event) }
+                            .buttonStyle(EventRowPress())
+                    }
+                }
+                .clipShape(pane)
+                .glass(pane, interactive: false)
+                .padding(.top, 12)
             }
         }
-        .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
         .environment(\.colorScheme, .dark)
         .task(id: camera) { await watch() }
     }
@@ -209,22 +227,24 @@ struct CameraEventsList: View {
     private func row(_ event: CameraHistoryEvent) -> some View {
         HStack(spacing: 14) {
             ZStack {
-                Color(white: 0.24)
+                Color.white.opacity(0.1)
                 if let image = pictures[event.key] {
                     Image(uiImage: image).resizable().scaledToFill()
                 }
-                if opening == event.key { ProgressView().tint(.white) }
+                if opening == event.key {
+                    Color.black.opacity(0.35)
+                    ProgressView().tint(.white)
+                }
             }
             .frame(width: 66, height: 66)
-            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
             VStack(alignment: .leading, spacing: 3) {
-                Text(event.title).font(.body.weight(.medium)).foregroundStyle(.white).lineLimit(2)
-                Text(event.when).font(.subheadline).foregroundStyle(.white.opacity(0.7)).lineLimit(1)
+                Text(event.title).font(.body.weight(.medium)).foregroundStyle(.primary).lineLimit(2)
+                Text(event.when).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer(minLength: 0)
         }
         .padding(10)
-        .background(Color(white: 0.16))
         .contentShape(Rectangle())
     }
 
@@ -233,7 +253,7 @@ struct CameraEventsList: View {
         while !Task.isCancelled {
             let latest = await CameraHistoryClient.events(camera: camera)
             if !Task.isCancelled, latest != events, !(latest.isEmpty && !events.isEmpty) {
-                withAnimation(.smooth(duration: 0.25)) { events = latest }
+                withAnimation(.smooth(duration: 0.3)) { events = latest }
             }
             for event in latest.prefix(3) where pictures[event.key] == nil {
                 guard let d = await CameraHistoryClient.picture(event), !Task.isCancelled else { continue }
@@ -255,6 +275,15 @@ struct CameraEventsList: View {
             opening = nil
             if let file { play(event, file) }
         }
+    }
+}
+
+/// A row of the events pane lightens under a finger; the glass is the pane's, not the row's.
+private struct EventRowPress: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .background(Color.white.opacity(configuration.isPressed ? 0.12 : 0))
+            .animation(.easeOut(duration: 0.15), value: configuration.isPressed)
     }
 }
 #endif

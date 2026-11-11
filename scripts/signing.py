@@ -18,8 +18,11 @@ contacts Apple. The only file it writes is the --out file of share-manifest, kep
   signing.py check-share --manifest FILE --zip ZIP --commit SHA [--team TEAM]
   signing.py kept-build --commit SHA --build N --identity SHA1 --app-profile-uuid UUID
              --app-profile-expires TIME --devices FILE --device UDID... --out FILE
-                                                the build.json next to an iPhone app deploy.sh kept (--keep-iphone)
-  signing.py devices                            the iOS devices paired with this Mac
+                                                the build.json next to an iPhone app deploy.sh kept (--keep-iphone),
+                                                or next to an Apple TV app (--keep-tv)
+  signing.py devices [--platform iOS|tvOS]      the iPhones and iPads (or the Apple TVs) paired with this Mac
+  signing.py profile-devices --profile PATH --device UDID...
+                                                which of those devices a provisioning profile lists
   signing.py bundle-id PATH                     CFBundleIdentifier of a .app or .appex
   signing.py get FILE KEY.PATH                  values from a JSON file, one per line ("*" walks a list)
 
@@ -1063,8 +1066,9 @@ def share_problem(manifest, digest, size, commit, team=None):
 
 
 def kept_build(commit, build, signed_at, identity, app_profile_uuid, app_profile_expires, devices, names=None):
-    """The build.json saved next to an iPhone app deploy.sh signed and kept (--keep-iphone): devices are the UDIDs
-    it's signed for, names {UDID: name} from `devicectl list devices` (a UDID stands in for a missing name)."""
+    """The build.json saved next to an iPhone app deploy.sh signed and kept (--keep-iphone), or an Apple TV app
+    (--keep-tv): devices are the UDIDs it's signed for, names {UDID: name} from `devicectl list devices` (a UDID
+    stands in for a missing name)."""
     names = names or {}
     try:
         number = int(str(build).strip())
@@ -1116,8 +1120,9 @@ def physical_iphone(hardware, udid):
     return not VIRTUAL_UDID.match(udid)
 
 
-def parse_devices(doc):
-    """`devicectl list devices --json-output` -> [{"udid", "name", ...}] for iOS devices (missing keys are fine)."""
+def parse_devices(doc, platform="iOS"):
+    """`devicectl list devices --json-output` -> [{"udid", "name", ...}] for the devices of one platform: iOS (the
+    iPhones and iPads) or tvOS (the Apple TVs). Missing keys are fine."""
     devices = _dict(_dict(doc).get("result")).get("devices")
     out, seen = [], set()
     for device in devices if isinstance(devices, list) else []:
@@ -1125,7 +1130,7 @@ def parse_devices(doc):
         props = _dict(_dict(device).get("deviceProperties"))
         connection = _dict(_dict(device).get("connectionProperties"))
         udid = hardware.get("udid")
-        if hardware.get("platform") != "iOS" or not isinstance(udid, str) or not udid.strip():
+        if hardware.get("platform") != platform or not isinstance(udid, str) or not udid.strip():
             continue
         udid = udid.strip()
         if udid in seen or not physical_iphone(hardware, udid):
@@ -1143,7 +1148,7 @@ def parse_devices(doc):
     return out
 
 
-def read_devices():
+def read_devices(platform="iOS"):
     """(devices, None) or (None, error) from `xcrun devicectl list devices`."""
     with tempfile.TemporaryDirectory(prefix="woodruff-devices.") as tmp:
         path = os.path.join(tmp, "devices.json")
@@ -1154,7 +1159,20 @@ def read_devices():
         except (OSError, ValueError):
             message = err.decode("utf-8", "replace").strip()
             return None, message or "xcrun devicectl list devices wrote no JSON (status %d)" % status
-    return parse_devices(doc), None
+    return parse_devices(doc, platform), None
+
+
+def profile_devices(profile, devices):
+    """Which of the devices (UDIDs) a decoded profile lists: {"name", "uuid", "expires", "listed", "missing"}. The
+    Apple TV app is signed by Xcode with the team's profile, and installs only where that profile lists the device."""
+    missing = set(missing_devices(profile, devices))
+    return {
+        "name": profile["name"],
+        "uuid": profile["uuid"],
+        "expires": profile["expires"],
+        "listed": [udid for udid in devices if udid not in missing],
+        "missing": [udid for udid in devices if udid in missing],
+    }
 
 
 # ----------------------------------------------------------------------------------------------- misc
@@ -1341,10 +1359,18 @@ def cmd_kept_build(args):
 
 
 def cmd_devices(args):
-    devices, error = read_devices()
+    devices, error = read_devices(args.platform)
     if devices is None:
         return _fail("Couldn't list the devices: %s" % error, 1)
     print_json(devices)
+    return 0
+
+
+def cmd_profile_devices(args):
+    profile = decode_profile(args.profile)
+    if profile is None:
+        return _fail("Couldn't read the provisioning profile %s" % args.profile, 1)
+    print_json(profile_devices(profile, _unique(udid for group in args.device or [] for udid in group)))
     return 0
 
 
@@ -1446,8 +1472,15 @@ def main(argv=None):
     p.add_argument("--out", required=True)
     p.set_defaults(func=cmd_kept_build)
 
-    p = sub.add_parser("devices", help="the iOS devices paired with this Mac")
+    p = sub.add_parser("devices", help="the iPhones and iPads (or, with --platform tvOS, the Apple TVs) paired "
+                                       "with this Mac")
+    p.add_argument("--platform", default="iOS", choices=("iOS", "tvOS"))
     p.set_defaults(func=cmd_devices)
+
+    p = sub.add_parser("profile-devices", help="which of the devices a provisioning profile lists")
+    p.add_argument("--profile", required=True)
+    p.add_argument("--device", action="append", nargs="+", metavar="UDID")
+    p.set_defaults(func=cmd_profile_devices)
 
     p = sub.add_parser("bundle-id", help="CFBundleIdentifier of a .app or .appex")
     p.add_argument("path")

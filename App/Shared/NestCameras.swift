@@ -1292,11 +1292,12 @@ struct CameraLiveView: View {
                 .ignoresSafeArea()
                 .opacity(appeared ? 1 : 0)
                 .onTapGesture { close() }
-            VStack(spacing: 12) {
+            VStack(spacing: 0) {
                 card(player)
                 #if os(iOS)
-                // The camera's last events, as Google Home lists them under the live picture: one tapped plays where
-                // the live picture is (the alert's own replay), with Live a tap away.
+                // The camera's last events in one pane of glass under the live picture, and nothing else: one tapped
+                // plays where the live picture is (the alert's own replay), with Live a tap away. (The pane brings
+                // its own space above it, so a camera with no events yet sits where it always did.)
                 CameraEventsList(camera: camera.id) { event, file in
                     streams.replay = CameraReplay(camera: camera.id, key: event.key, event: nil, clip: nil, title: event.title,
                                                   at: Date(timeIntervalSince1970: event.at), media: file)
@@ -1337,7 +1338,10 @@ struct CameraLiveView: View {
                 ZStack {
                     // The live picture connects underneath meanwhile (hidden by the replay), so Live is ready at once.
                     LiveWebView(player: player).id(reattach)
+                    // (A new view for each event: one picked from the list under the picture starts afresh, with
+                    // nothing of the event before it.)
                     EventReplayView(replay: r) { withAnimation(.smooth(duration: 0.25)) { showLive = true } }
+                        .id(r.key)
                 }
             } else if fullScreen {
                 Color.black

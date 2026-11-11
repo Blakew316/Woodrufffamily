@@ -211,6 +211,74 @@ class Devices(unittest.TestCase):
         ))
         self.assertEqual([d["name"] for d in out], ["Blakes IPhone", "Old iPhone"])
 
+    def test_apple_tvs_are_listed_apart(self):
+        doc = {"result": {"devices": [
+            {"hardwareProperties": {"platform": "tvOS", "udid": "00008110-000131602193801E", "deviceType": "appleTV",
+                                    "reality": "physical"},
+             "deviceProperties": {"name": "Blake & Haley's TV"},
+             "connectionProperties": {"pairingState": "paired", "tunnelState": "disconnected",
+                                      "transportType": "localNetwork"}},
+            {"hardwareProperties": {"platform": "iOS", "udid": "00008150-001E68E80A32401C"},
+             "deviceProperties": {"name": "Blakes IPhone"}},
+            {"hardwareProperties": {"platform": "watchOS", "udid": "00008310-00117C5621D2601E"},
+             "deviceProperties": {"name": "Haley's Apple Watch"}},
+            {"hardwareProperties": {"platform": "tvOS", "udid": "00008110-000E418C1E39801E"},
+             "deviceProperties": {"name": "Extra Apple TV"}},
+        ]}}
+        tvs = signing.parse_devices(doc, "tvOS")
+        self.assertEqual([(d["udid"], d["name"]) for d in tvs], [
+            ("00008110-000131602193801E", "Blake & Haley's TV"), ("00008110-000E418C1E39801E", "Extra Apple TV")])
+        self.assertEqual((tvs[0]["pairing"], tvs[0]["tunnel"]), ("paired", "disconnected"))
+        # The iPhones' list has neither the Apple TVs nor the watch.
+        self.assertEqual([d["name"] for d in signing.parse_devices(doc)], ["Blakes IPhone"])
+
+
+class ProfileDevices(unittest.TestCase):
+    """Which Apple TVs the profile Xcode signed the Apple TV app with lists: it installs only on those."""
+
+    TV1, TV2 = "00008110-000131602193801E", "00008110-000E418C1E39801E"
+
+    def profile(self, **plist):
+        base = {"Name": "tvOS Team Provisioning Profile: *", "UUID": "5e0f1c2d-0000-4000-8000-000000000000",
+                "ExpirationDate": datetime(2027, 11, 4, 5, 0), "ProvisionedDevices": [self.TV1]}
+        base.update(plist)
+        return base
+
+    def test_listed_and_missing(self):
+        out = signing.profile_devices(signing.profile_from_plist(self.profile()), [self.TV1, self.TV2])
+        self.assertEqual(out["listed"], [self.TV1])
+        self.assertEqual(out["missing"], [self.TV2])
+        self.assertEqual(out["name"], "tvOS Team Provisioning Profile: *")
+        self.assertEqual(out["expires"], datetime(2027, 11, 4, 5, 0, tzinfo=timezone.utc))
+
+    def test_any_case(self):
+        profile = signing.profile_from_plist(self.profile(ProvisionedDevices=[self.TV2.lower()]))
+        self.assertEqual(signing.profile_devices(profile, [self.TV1, self.TV2])["listed"], [self.TV2])
+
+    def test_a_profile_for_every_device(self):
+        profile = signing.profile_from_plist(self.profile(ProvisionsAllDevices=True, ProvisionedDevices=[]))
+        self.assertEqual(signing.profile_devices(profile, [self.TV1, self.TV2])["missing"], [])
+
+    def test_command(self):
+        import plistlib
+        tmp = tempfile.mkdtemp(prefix="signing-test.")
+        try:
+            path = os.path.join(tmp, "embedded.mobileprovision")
+            with open(path, "wb") as handle:   # (a profile's plist as it is, without the signed message around it)
+                plistlib.dump(self.profile(), handle)
+            out, err = io.StringIO(), io.StringIO()
+            with redirect_stdout(out), redirect_stderr(err):
+                status = signing.main(["profile-devices", "--profile", path, "--device", self.TV1, self.TV2])
+            self.assertEqual(status, 0, err.getvalue())
+            doc = json.loads(out.getvalue())
+            self.assertEqual((doc["listed"], doc["missing"]), ([self.TV1], [self.TV2]))
+            self.assertEqual(doc["expires"], "2027-11-04T05:00:00Z")
+            with redirect_stdout(io.StringIO()), redirect_stderr(err):
+                status = signing.main(["profile-devices", "--profile", os.path.join(tmp, "none"), "--device", self.TV1])
+            self.assertEqual(status, 1)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
 
 if __name__ == "__main__":
     unittest.main()

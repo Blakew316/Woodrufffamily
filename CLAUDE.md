@@ -14,10 +14,12 @@ Every feature request or bug fix ends with exactly one release:
    installed anywhere (so parse-check every changed Swift file before pushing a `[release]` commit).
 3. Every device then updates itself. Each Mac's updater (`scripts/updater.py`, within about a minute) sees the new
    `release`: the Mac Studio builds and installs the Mac app, installs the iPhone app on both iPhones and shares
-   its Mac build in iCloud Drive; the other Macs install that build, or build it themselves.
+   its Mac build in iCloud Drive; the other Macs install that build, or build it themselves. The Mac Studio then
+   builds the Apple TV app and installs it on both Apple TVs over the home network, each once no film is on screen
+   there (it looks again at every check).
 
 - Never deploy through remote sessions, and never ask the user to run `scripts/deploy.sh` on each device. The
-  release is the deploy.
+  release is the deploy, for the Apple TVs too: no install commands to paste.
 - Never put `[release]` on a work-in-progress commit. Any commit whose message contains it (in any case, anywhere
   in the message) ships to the whole family once it builds, so don't mention it in other commit messages either.
   Commits without it are built but not shipped.
@@ -36,11 +38,13 @@ Every feature request or bug fix ends with exactly one release:
 ## Rules
 
 - The team (D8D94SXAG6) is a paid Apple Developer account. Only the Mac Studio signs: `scripts/deploy.sh
-  --xcode-signing` (which its updater uses) lets Xcode's signed-in account sign both apps and renew a revoked or
-  expired certificate and the profiles by itself. No other Mac signs with `-allowProvisioningUpdates`, and nothing
+  --xcode-signing` (which its updater uses) lets Xcode's signed-in account sign the apps (Mac, iPhone, Apple TV) and renew a
+  revoked or expired certificate and the profiles by itself. No other Mac signs with `-allowProvisioningUpdates`, and nothing
   creates, revokes, imports or exports certificates or keychain items by hand or adds `keychain-access-groups`.
 - The iPhone app's bundle id is always `com.blakew316.woodruff` (`scripts/deploy.sh` sets it). Another id loses
-  the TVs' pairings.
+  the TVs' pairings. The Apple TV app's is `com.blakew316.woodruff.tv`.
+- The Apple TV app keeps `playing.crumb` in its settings while a film is open (`PlayCrumb`), renewed every ten
+  seconds. The Mac Studio's updater reads it off each Apple TV to leave a film alone: keep it written that way.
 - Swift 5.10 with `SWIFT_STRICT_CONCURRENCY: minimal`, iOS 26 and macOS 26 SDKs. Parse-check every changed Swift
   file (`swiftc -parse`) and treat CI as the real compile.
 - `scripts/deploy.sh` runs under macOS's `/bin/bash` 3.2: no associative arrays, `mapfile`, `${x,,}`, `&>>` or
@@ -56,7 +60,7 @@ Every feature request or bug fix ends with exactly one release:
 
 The user sets it up once per Mac, in Terminal in the repository folder:
 
-- Mac Studio (it builds, and the iPhones are paired with it): `python3 scripts/updater.py install --role hub`
+- Mac Studio (it builds, and the iPhones and Apple TVs are paired with it): `python3 scripts/updater.py install --role hub`
 - MacBook Pro: `python3 scripts/updater.py install --role follower --build-fallback`
 - Mac Studio 2 (Apple revoked its certificate, so it can't build): `python3 scripts/updater.py install --role follower`
 

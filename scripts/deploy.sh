@@ -1,8 +1,8 @@
 #!/bin/bash
 #
-# Deploy Woodruff Family to this Mac and/or the iPhones paired with it, signed with what's already here.
+# Deploy Woodruff Family to this Mac and/or the iPhones and Apple TVs paired with it, signed with what's already here.
 #
-#   scripts/deploy.sh [options] [mac] [share] [mac-shared] [iphone] [testflight]      (no part named: mac)
+#   scripts/deploy.sh [options] [mac] [share] [mac-shared] [iphone] [tv] [testflight]      (no part named: mac)
 #
 #   mac      Build the Mac app signed with this Mac's own "Apple Development" identity (it needs no profile),
 #            quit the running Woodruff Family, copy the new one over /Applications/Woodruff Family.app,
@@ -16,6 +16,10 @@
 #   iphone   Build the iPhone app unsigned, sign a copy with codesign and the provisioning profiles Xcode
 #            already made on this Mac, and install it on every iPhone paired with this Mac.
 #
+#   tv       (Needs --xcode-signing.) Build the Apple TV app, signed by Xcode's account, and install it on every
+#            Apple TV paired with this Mac, over the home network. The app closes on an Apple TV it's open on, and is
+#            opened again.
+#
 #   testflight   (Needs --xcode-signing.) Archive the iPhone app and upload it to TestFlight, signed for the App
 #            Store by Xcode's account (and the App Store Connect key, when there is one). Every iPhone and iPad with
 #            TestFlight then updates itself, on Wi-Fi or cellular, at home or away. App Store Connect needs an app for
@@ -26,11 +30,14 @@
 #   --wait <seconds>    mac-shared: how long to wait for the shared zip (default 1200; 0 looks once).
 #   --keep-iphone <dir> iphone: once the signed copy verifies, keep it as <dir>/Woodruff Family.app, with
 #                       <dir>/build.json (commit, build, signed_at, identity, app profile, devices).
-#   --no-launch         iphone: don't open the app on the iPhones after installing it.
+#   --keep-tv <dir>     tv: once the signed app verifies, keep it as <dir>/Woodruff Family.app, with <dir>/build.json
+#                       (commit, build, signed_at, the profile, the Apple TVs it lists), and install it nowhere:
+#                       scripts/updater.py installs the kept copy on each Apple TV once no film is playing there.
+#   --no-launch         iphone, tv: don't open the app on the iPhones or Apple TVs after installing it.
 #   --results <file>    Append one line per outcome, tab-separated: part (mac, share, mac-shared, iphone-build,
-#                       iphone), status (installed, ok, waiting, failed, skipped), target (the commit, or the
-#                       iPhone's UDID for iphone) and detail. testflight reports ok, skipped (no app in App Store
-#                       Connect yet) or failed. mac-shared says waiting, not failed, while the zip
+#                       iphone, tv-build, tv), status (installed, ok, waiting, failed, skipped), target (the commit,
+#                       or the device's UDID for iphone and tv) and detail. testflight reports ok, skipped (no app in
+#                       App Store Connect yet) or failed. mac-shared says waiting, not failed, while the zip
 #                       isn't there or doesn't match its manifest yet. scripts/updater.py reads these.
 #
 # First it updates the checkout (git fetch, checkout claude/native-apps, pull --ff-only; with --branch, fetch that
@@ -50,7 +57,9 @@
 #
 # It deletes nothing but its own temporary folder, at most once a stale generated
 # build/Build/Products/Release/Woodruff Family.app, (share) the older zips and manifests it shared in
-# iCloud Drive's "Woodruff Family builds" folder, and (--keep-iphone) the copy it kept in that folder before.
+# iCloud Drive's "Woodruff Family builds" folder, (--keep-iphone, --keep-tv) the copy it kept in that folder before,
+# and (tv, before an install) what CoreDevice kept of the Apple TV app to send only the changes: installed that way,
+# an Apple TV has kept running an old Top Shelf part.
 # Logs stay in a temporary folder named at the end.
 # The exit status is 0 only if everything asked for worked; iPhone problems never stop the Mac part.
 #
@@ -67,6 +76,9 @@ ASC_DIR="$HOME/Library/Application Support/Woodruff Family/AppStoreConnect"
 BRANCH="claude/native-apps"
 IPHONE_BUNDLE_ID="com.blakew316.woodruff"          # always this id on the iPhones
 IPHONE_WIDGETS_ID="com.blakew316.woodruff.widgets"
+TV_BUNDLE_ID="com.blakew316.woodruff.tv"           # the Apple TV app
+# What CoreDevice keeps of the Apple TV app to send an Apple TV only the changes (see the top of this file).
+TV_DELTAS="$HOME/Library/Containers/com.apple.CoreDevice.CoreDeviceService/Data/Library/Caches/AppInstallationBinaryDeltas/$TV_BUNDLE_ID"
 MAC_BUNDLE_ID="com.woodruff.family.mac"
 HOMEKIT="com.apple.developer.homekit"
 APP_NAME="Woodruff Family"
@@ -82,15 +94,17 @@ QUIT_NOTIFICATION="com.woodruff.family.mac.quit-for-update"   # the Mac app quit
 DETACH=0          # --branch: check out origin/$BRANCH detached instead of pulling claude/native-apps
 BRANCH_OPT=""     # "--branch <name> " for the commands this suggests
 KEEP_IPHONE=""    # --keep-iphone
+KEEP_TV=""        # --keep-tv
 IPHONE_FALLBACK=""   # set while the iPhone is signed with this Mac's own profiles after Xcode couldn't
 XCODE_SIGNING=0   # --xcode-signing: Xcode's automatic signing with its signed-in (paid) account
-LAUNCH_IPHONE=1   # 0 with --no-launch
+LAUNCH_IPHONE=1   # 0 with --no-launch (the Apple TVs too)
 RESULTS=""        # --results
 EXPECT=""         # --expect
 DO_MAC=0
 DO_SHARE=0
 DO_MAC_SHARED=0
 DO_IPHONE=0
+DO_TV=0
 DO_TESTFLIGHT=0
 MAC_PART="mac"    # the --results part a Mac install reports as: mac or mac-shared
 COMMIT=""         # the checkout's full commit, once it's updated
@@ -109,6 +123,8 @@ HEAD_DESC="(not updated)"
 SUMMARY=()
 IPHONE_UDIDS=()
 IPHONE_NAMES=()
+TV_UDIDS=()
+TV_NAMES=()
 
 say()     { printf '%s\n' "$*"; }
 step()    { printf '\n==> %s\n' "$*"; }
@@ -120,7 +136,7 @@ signing() { python3 -I "$SIGNING" "$@"; }
 
 usage() {
   cat <<'EOF'
-Usage: scripts/deploy.sh [options] [mac] [share] [mac-shared] [iphone] [testflight]      (no part named: mac)
+Usage: scripts/deploy.sh [options] [mac] [share] [mac-shared] [iphone] [tv] [testflight]      (no part named: mac)
   mac                 build, sign and install the Mac app in /Applications on this Mac
   share               share this Mac's build in iCloud Drive (with mac the new one, alone the installed one)
   mac-shared          install the build another Mac shared for this commit instead of building one here
@@ -129,7 +145,11 @@ Usage: scripts/deploy.sh [options] [mac] [share] [mac-shared] [iphone] [testflig
   --branch <name>     deploy origin/<name>, checked out detached, instead of the newest claude/native-apps
   --wait <seconds>    mac-shared: how long to wait for the shared build (default 1200; 0 looks once)
   --keep-iphone <dir> iphone: keep the signed app as <dir>/Woodruff Family.app, with <dir>/build.json
-  --no-launch         iphone: don't open the app on the iPhones after installing it
+  tv                  (with --xcode-signing) build the Apple TV app and install it on every Apple TV paired
+                      with this Mac
+  --keep-tv <dir>     tv: keep the signed app as <dir>/Woodruff Family.app, with <dir>/build.json, and install it
+                      nowhere (scripts/updater.py does, once no film is playing)
+  --no-launch         iphone, tv: don't open the app on the iPhones or Apple TVs after installing it
   --xcode-signing     let Xcode sign with its signed-in account (renews revoked certificates and profiles)
   testflight          (with --xcode-signing) archive the iPhone app and upload it to TestFlight
   --results <file>    append one tab-separated line per outcome: part, status, target, detail
@@ -160,6 +180,7 @@ nothing_built() {
   if [ "$DO_SHARE" -eq 1 ]; then result share failed "" "$why"; fi
   if [ "$DO_MAC_SHARED" -eq 1 ]; then result mac-shared failed "" "$why"; fi
   if [ "$DO_IPHONE" -eq 1 ]; then result iphone-build failed "" "$why"; fi
+  if [ "$DO_TV" -eq 1 ]; then result tv-build failed "" "$why"; fi
   return 0
 }
 
@@ -1394,6 +1415,191 @@ deploy_iphone() {
   [ "$installed" -gt 0 ]
 }
 
+# ---------------------------------------------------------------------------------------------- the Apple TVs
+
+tv_name() {  # $1 = UDID
+  local i=0
+  while [ "$i" -lt "${#TV_UDIDS[@]}" ]; do
+    if [ "${TV_UDIDS[$i]}" = "$1" ]; then
+      printf '%s\n' "${TV_NAMES[$i]:-$1}"
+      return 0
+    fi
+    i=$((i + 1))
+  done
+  printf '%s\n' "$1"
+}
+
+tv_failed() {  # $1 = what happened, $2 = a log to show the end of (optional), $3 = --results status (failed)
+  problem "$1"
+  if [ -n "${2:-}" ] && [ -f "$2" ]; then
+    tail -n 8 "$2" | indent
+    hints "$2"
+  fi
+  note "Apple TV: NOT installed: $1"
+  result tv-build "${3:-failed}" "" "$1${2:+ (log $2)}"
+  return 1
+}
+
+# Keeps the signed Apple TV app $1 as $KEEP_TV/Woodruff Family.app with $KEEP_TV/build.json, for scripts/updater.py
+# to install on each Apple TV once no film is playing there. Replaces only the copy kept there before.
+# $2 the profile's UUID, $3 its expiry, $4 the Apple TVs JSON, then the UDIDs the profile lists.
+keep_tv() {
+  local copy=$1 uuid=$2 expires=$3 devs=$4 kept="$KEEP_TV/$APP_NAME.app" klog="$LOGDIR/tv-keep.log"
+  shift 4
+  rm -f "$KEEP_TV/build.json"
+  if ! mkdir -p "$KEEP_TV" 2>>"$klog" || { [ -e "$kept" ] && ! rm -rf "$kept"; } ||
+    ! ditto "$copy" "$kept" </dev/null >>"$klog" 2>&1 ||
+    ! codesign --verify --deep --strict --verbose=2 "$kept" </dev/null >>"$klog" 2>&1 ||
+    ! signing kept-build --commit "$COMMIT" --build "$BUILD_NUMBER" --identity "Xcode automatic signing" \
+      --app-profile-uuid "$uuid" --app-profile-expires "$expires" --devices "$devs" --device "$@" \
+      --out "$KEEP_TV/build.json" 2>>"$klog"; then
+    tail -n 5 "$klog" | indent
+    problem "couldn't keep the signed Apple TV app in $KEEP_TV (log $klog)"
+    return 1
+  fi
+  say "    kept in $kept"
+  return 0
+}
+
+# Builds the Apple TV app signed by Xcode's account (only the Mac Studio signs) and installs it on every Apple TV
+# paired with this Mac: they're reached over the home network, as the iPhones are. With --keep-tv it's kept for
+# scripts/updater.py instead and installed nowhere: an install closes the app, so the updater waits on each Apple TV
+# until no film is playing there.
+deploy_tv() {
+  local devs="$LOGDIR/appletvs.json" listed="$LOGDIR/tv-profile.json" log="$LOGDIR/tv-build.log"
+  local product="$ROOT/build/Build/Products/Release-appletvos/$APP_NAME.app"
+  local -a targets sign
+  local udid name i status bid uuid expires profile vlog ilog llog installed=0 kept why
+
+  step "Apple TV: the Apple TVs paired with this Mac"
+  if ! signing devices --platform tvOS >"$devs" 2>"$LOGDIR/appletvs.log"; then
+    indent <"$LOGDIR/appletvs.log"
+    tv_failed "couldn't list the Apple TVs (xcrun devicectl list devices)"
+    return 1
+  fi
+  # One value per line; bash 3.2 has no mapfile, so split on newlines with globbing off.
+  set -f
+  IFS=$'\n'
+  # shellcheck disable=SC2207
+  TV_UDIDS=($(signing get "$devs" '*.udid'))
+  # shellcheck disable=SC2207
+  TV_NAMES=($(signing get "$devs" '*.name'))
+  IFS=$' \t\n'
+  set +f
+  if [ "${#TV_UDIDS[@]}" -eq 0 ]; then
+    tv_failed "no Apple TV is paired with this Mac (xcrun devicectl list devices shows none)" "" skipped
+    return 1
+  fi
+  i=0
+  while [ "$i" -lt "${#TV_UDIDS[@]}" ]; do
+    say "    ${TV_NAMES[$i]:-?}  ${TV_UDIDS[$i]}"
+    i=$((i + 1))
+  done
+
+  step "Apple TV: building (Release, signed by Xcode's account, team $TEAM)"
+  sign=(CODE_SIGN_STYLE=Automatic -allowProvisioningUpdates)
+  asc_key_args
+  xcodebuild -project WoodruffFamily.xcodeproj -scheme WoodruffFamilyTV -destination 'generic/platform=tvOS' \
+    -configuration Release -derivedDataPath build DEVELOPMENT_TEAM="$TEAM" "${sign[@]}" \
+    ${VERSION_SETTINGS[@]+"${VERSION_SETTINGS[@]}"} build </dev/null >"$log" 2>&1
+  status=$?
+  show_build "$log"
+  if ! build_succeeded "$status" "$log" "$product"; then
+    hints "$log"
+    why=$(first_errors "$log")
+    problem "the Apple TV app didn't build"
+    note "Apple TV: NOT installed: the build failed (log $log)"
+    result tv-build failed "" "the Apple TV app didn't build${why:+: $why} (log $log)"
+    return 1
+  fi
+  bid=$(signing bundle-id "$product" 2>>"$log")
+  if [ "$bid" != "$TV_BUNDLE_ID" ]; then
+    tv_failed "the built app is '$bid', not $TV_BUNDLE_ID"
+    return 1
+  fi
+  vlog="$LOGDIR/tv-verify.log"
+  if ! codesign --verify --deep --strict --verbose=2 "$product" </dev/null >"$vlog" 2>&1; then
+    tv_failed "the signed Apple TV app doesn't verify" "$vlog"
+    return 1
+  fi
+  # It installs only on the Apple TVs the profile Xcode signed it with lists.
+  if ! signing profile-devices --profile "$product/embedded.mobileprovision" --device "${TV_UDIDS[@]}" \
+    >"$listed" 2>"$LOGDIR/tv-profile.log"; then
+    tv_failed "couldn't read the profile Xcode signed the Apple TV app with" "$LOGDIR/tv-profile.log"
+    return 1
+  fi
+  set -f
+  IFS=$'\n'
+  # shellcheck disable=SC2207
+  targets=($(signing get "$listed" 'listed.*' 2>/dev/null))
+  IFS=$' \t\n'
+  set +f
+  profile=$(signing get "$listed" name 2>/dev/null)
+  uuid=$(signing get "$listed" uuid 2>/dev/null)
+  expires=$(signing get "$listed" expires 2>/dev/null)
+  if [ "${#targets[@]}" -eq 0 ]; then
+    tv_failed "the profile Xcode signed the Apple TV app with (${profile:-unnamed}) lists none of the Apple TVs paired with this Mac"
+    return 1
+  fi
+  for udid in "${TV_UDIDS[@]}"; do
+    case " ${targets[*]} " in
+      *" $udid "*) ;;
+      *)
+        note "Apple TV: NOT installed on $(tv_name "$udid") ($udid): Xcode's profile doesn't list it"
+        result tv skipped "$udid" "$(tv_name "$udid"): not installed, Xcode's profile doesn't list it"
+        ;;
+    esac
+  done
+  say "    signed and verified: ${profile:-profile} (expires ${expires%%T*})"
+  kept=""
+  if [ -n "$KEEP_TV" ]; then
+    if ! keep_tv "$product" "$uuid" "$expires" "$devs" "${targets[@]}"; then
+      note "Apple TV: NOT installed: the signed app couldn't be kept in $KEEP_TV"
+      result tv-build failed "" "the signed Apple TV app couldn't be kept in $KEEP_TV (log $LOGDIR/tv-keep.log)"
+      return 1
+    fi
+    result tv-build ok "" "signed by Xcode (team $TEAM), profile ${profile:-?} (expires ${expires%%T*}), kept in $KEEP_TV"
+    note "Apple TV: built and kept in $KEEP_TV (the updater installs it once no film is playing)"
+    return 0
+  fi
+  result tv-build ok "" "signed by Xcode (team $TEAM), profile ${profile:-?} (expires ${expires%%T*})"
+
+  step "Apple TV: installing"
+  for udid in "${targets[@]}"; do
+    name=$(tv_name "$udid")
+    ilog="$LOGDIR/tv-install-$udid.log"
+    llog="$LOGDIR/tv-launch-$udid.log"
+    say "    $name ($udid): installing"
+    # The whole app each time, never only the changes (see the top of this file).
+    rm -rf "$TV_DELTAS"
+    if ! xcrun devicectl device install app --device "$udid" --timeout 300 "$product" </dev/null >"$ilog" 2>&1; then
+      problem "$name: the install failed:"
+      show_matches 'ERROR|[Ee]rror|[Ff]ailed|[Uu]nable|[Uu]navailable|[Dd]enied|[Tt]imed out|not paired|not available' "$ilog" 12
+      hints "$ilog"
+      note "Apple TV: NOT installed on $name ($udid): the install failed (log $ilog)"
+      why=$(grep -E -m 1 'ERROR|[Ee]rror|[Ff]ailed|[Uu]nable|[Uu]navailable|[Dd]enied|[Tt]imed out|not paired|not available' "$ilog" 2>/dev/null | sed 's/^[[:space:]]*//')
+      result tv failed "$udid" "$name: the install failed${why:+: $why} (log $ilog)"
+      continue
+    fi
+    installed=$((installed + 1))
+    if [ "$LAUNCH_IPHONE" -eq 0 ]; then
+      say "    $name: installed"
+      note "Apple TV: installed on $name ($udid)"
+      result tv installed "$udid" "$name: installed"
+    elif xcrun devicectl device process launch --device "$udid" --timeout 45 "$TV_BUNDLE_ID" \
+      </dev/null >"$llog" 2>&1; then
+      say "    $name: installed and opened"
+      note "Apple TV: installed on $name ($udid) and opened it"
+      result tv installed "$udid" "$name: installed and opened"
+    else
+      warn "$name: installed, but the app didn't open"
+      note "Apple TV: installed on $name ($udid) (it didn't open; log $llog)"
+      result tv installed "$udid" "$name: installed, but it didn't open (log $llog)"
+    fi
+  done
+  [ "$installed" -gt 0 ]
+}
+
 # ------------------------------------------------------------------------------------------------------ main
 
 testflight_failed() {  # $1 = what happened, $2 = a log to show the end of (optional), $3 = status (failed)
@@ -1536,7 +1742,7 @@ main() {
     opt=$1
     value=""
     case "$opt" in
-      --expect | --branch | --wait | --keep-iphone | --results)
+      --expect | --branch | --wait | --keep-iphone | --keep-tv | --results)
         if [ $# -lt 2 ]; then
           say "$opt needs a value"
           usage
@@ -1545,7 +1751,7 @@ main() {
         value=$2
         shift 2
         ;;
-      --expect=* | --branch=* | --wait=* | --keep-iphone=* | --results=*)
+      --expect=* | --branch=* | --wait=* | --keep-iphone=* | --keep-tv=* | --results=*)
         value=${opt#*=}
         opt=${opt%%=*}
         shift
@@ -1561,6 +1767,11 @@ main() {
         KEEP_IPHONE=$(absolute "$value")
         value=$KEEP_IPHONE
         ;;
+      --keep-tv)
+        if [ -z "$value" ]; then say "--keep-tv wants a folder"; return 2; fi
+        KEEP_TV=$(absolute "$value")
+        value=$KEEP_TV
+        ;;
       --results)
         if [ -z "$value" ]; then say "--results wants a file"; return 2; fi
         RESULTS=$(absolute "$value")
@@ -1572,12 +1783,13 @@ main() {
       share) DO_SHARE=1 ;;
       mac-shared) DO_MAC_SHARED=1 ;;
       iphone | iphones) DO_IPHONE=1 ;;
+      tv | appletv | appletvs) DO_TV=1 ;;
       testflight) DO_TESTFLIGHT=1 ;;
       -h | --help) usage; return 0 ;;
       *) say "Unknown argument: $opt"; usage; return 2 ;;
     esac
     case "$opt" in
-      --expect | --branch | --wait | --keep-iphone | --results) pass_args+=("$opt" "$value") ;;
+      --expect | --branch | --wait | --keep-iphone | --keep-tv | --results) pass_args+=("$opt" "$value") ;;
       *) pass_args+=("$opt") ;;
     esac
   done
@@ -1587,8 +1799,12 @@ main() {
     return 2
   fi
   if [ "$DO_MAC" -eq 0 ] && [ "$DO_IPHONE" -eq 0 ] && [ "$DO_MAC_SHARED" -eq 0 ] && [ "$DO_SHARE" -eq 0 ] &&
-    [ "$DO_TESTFLIGHT" -eq 0 ]; then
+    [ "$DO_TESTFLIGHT" -eq 0 ] && [ "$DO_TV" -eq 0 ]; then
     DO_MAC=1
+  fi
+  if [ "$DO_TV" -eq 1 ] && [ "$XCODE_SIGNING" -ne 1 ]; then
+    say "tv is signed by Xcode's account: it needs --xcode-signing (the Mac Studio)"
+    return 2
   fi
   if [ "$DO_TESTFLIGHT" -eq 1 ] && [ "$XCODE_SIGNING" -ne 1 ]; then
     say "testflight signs for the App Store with Xcode's account: it needs --xcode-signing (the Mac Studio)"
@@ -1624,6 +1840,7 @@ main() {
   [ "$DO_SHARE" -eq 1 ] && parts="Mac (shared in iCloud Drive)"
   [ "$DO_MAC_SHARED" -eq 1 ] && parts="Mac (another Mac's shared build)"
   [ "$DO_IPHONE" -eq 1 ] && parts="${parts:+$parts and }iPhones"
+  [ "$DO_TV" -eq 1 ] && parts="${parts:+$parts and }Apple TVs"
   [ "$DO_TESTFLIGHT" -eq 1 ] && parts="${parts:+$parts and }TestFlight"
 
   ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
@@ -1679,7 +1896,7 @@ main() {
       command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"
     done
   fi
-  if [ "$DO_IPHONE" -eq 1 ] || [ "$DO_TESTFLIGHT" -eq 1 ]; then
+  if [ "$DO_IPHONE" -eq 1 ] || [ "$DO_TESTFLIGHT" -eq 1 ] || [ "$DO_TV" -eq 1 ]; then
     command -v xcrun >/dev/null 2>&1 || missing="$missing xcrun"
   fi
   if [ -n "$missing" ]; then
@@ -1704,7 +1921,7 @@ main() {
       shopt -u execfail
       problem "couldn't run the updated scripts/deploy.sh; run it again"
       nothing_built
-    elif [ "$DO_MAC" -eq 0 ] && [ "$DO_IPHONE" -eq 0 ] && [ "$DO_TESTFLIGHT" -eq 0 ]; then
+    elif [ "$DO_MAC" -eq 0 ] && [ "$DO_IPHONE" -eq 0 ] && [ "$DO_TESTFLIGHT" -eq 0 ] && [ "$DO_TV" -eq 0 ]; then
       # Nothing to build here, so no xcodegen.
       if [ "$DO_MAC_SHARED" -eq 1 ]; then
         deploy_mac_shared
@@ -1727,6 +1944,9 @@ main() {
       if [ "$DO_IPHONE" -eq 1 ]; then
         deploy_iphone
         cleanup
+      fi
+      if [ "$DO_TV" -eq 1 ]; then
+        deploy_tv
       fi
       if [ "$DO_TESTFLIGHT" -eq 1 ]; then
         deploy_testflight

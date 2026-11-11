@@ -6,7 +6,7 @@ import WoodruffKit
 // MARK: - The family's updater on this Mac
 //
 // scripts/updater.py, which launchd runs every 5 minutes (com.woodruff.family.updater), keeps this Mac (and, on the Mac
-// Studio, the iPhones) on the newest release and writes how that's going in status.json. Woodruff only reads that
+// Studio, the iPhones and the Apple TVs) on the newest release and writes how that's going in status.json. Woodruff only reads that
 // file, asks launchd to run the updater now (Check for Updates), and quits itself when deploy.sh is about to replace
 // it. It never changes what the updater does.
 
@@ -216,6 +216,9 @@ final class UpdaterStatus {
     /// The iPhones the Mac Studio installs on (only it has them).
     var iPhones: [Phone] { isSetUp && snapshot?.role == "hub" ? snapshot?.iphones ?? [] : [] }
 
+    /// The Apple TVs the Mac Studio installs on, over the home network (never while a film is playing there).
+    var appleTVs: [Phone] { isSetUp && snapshot?.role == "hub" ? snapshot?.appletvs ?? [] : [] }
+
     /// The update waits for power, not for you (builds wait while the battery is low).
     private var postponedForBattery: Bool {
         snapshot?.mac?.detail?.range(of: "battery", options: .caseInsensitive) != nil
@@ -273,6 +276,8 @@ extension UpdaterStatus {
         var release: Release?
         var mac: Mac?
         var iphones: [Phone] = []
+        /// The Apple TVs, as the iPhones (an updater from before it kept them current says nothing of them).
+        var appletvs: [Phone] = []
         var share: Share?
         /// The release uploaded to TestFlight (the Mac Studio only).
         var testflight: Share?
@@ -280,7 +285,7 @@ extension UpdaterStatus {
         var lastError: String?
 
         private enum CodingKeys: String, CodingKey {
-            case role, running, release, mac, iphones, share, testflight
+            case role, running, release, mac, iphones, appletvs, share, testflight
             case updatedAt = "updated_at", lastCheck = "last_check", lastError = "last_error"
         }
 
@@ -296,15 +301,20 @@ extension UpdaterStatus {
             lastCheck = c.time(.lastCheck)
             lastError = c.text(.lastError)
             // Each keeps a distinct id for its row: its UDID, or its place in the list.
-            var seen = Set<String>()
-            let phones = (c.lenient(.iphones) as [Lossy<Phone>]?)?.compactMap(\.value) ?? []
-            iphones = phones.enumerated().map { i, phone in
-                var phone = phone
-                let udid = phone.udid ?? ""
-                phone.id = udid.isEmpty || seen.contains(udid) ? "#\(i)" : udid
-                seen.insert(phone.id)
-                return phone
+            func rows(_ key: CodingKeys, _ kind: String) -> [Phone] {
+                var seen = Set<String>()
+                let devices = (c.lenient(key) as [Lossy<Phone>]?)?.compactMap(\.value) ?? []
+                return devices.enumerated().map { i, device in
+                    var device = device
+                    let udid = device.udid ?? ""
+                    device.id = udid.isEmpty || seen.contains(udid) ? "\(kind) #\(i)" : udid
+                    seen.insert(device.id)
+                    device.kind = kind
+                    return device
+                }
             }
+            iphones = rows(.iphones, "iPhone")
+            appletvs = rows(.appletvs, "Apple TV")
         }
     }
 
@@ -352,9 +362,11 @@ extension UpdaterStatus {
         }
     }
 
-    /// One iPhone the Mac Studio keeps current.
+    /// One iPhone, or one Apple TV, the Mac Studio keeps current.
     struct Phone: Decodable, Equatable, Identifiable {
         var id = ""
+        /// What it is, for a row whose device gave no name: "iPhone" or "Apple TV".
+        var kind = "iPhone"
         var udid: String?
         var name: String?
         var commit: String?
@@ -379,14 +391,15 @@ extension UpdaterStatus {
             nextTry = c.time(.nextTry)
         }
 
-        /// Its name as the iPhone gives it.
-        var displayName: String { nonEmpty(name) ?? "iPhone" }
+        /// Its name as the iPhone (or Apple TV) gives it.
+        var displayName: String { nonEmpty(name) ?? kind }
 
         /// Its row's value.
         var summary: String? {
             switch state {
             case "current"?: return "Up to date"
-            case "unreachable"?: return "Waiting for it to be on Wi‑Fi"
+            case "unreachable"?: return kind == "Apple TV" ? "Waiting to reach it" : "Waiting for it to be on Wi‑Fi"
+            case "waiting"?: return "After the film"   // an Apple TV with a film playing
             case "pending"?: return (detail ?? "").hasPrefix("Installing") ? "Installing…" : "Waiting to install"
             case "failed"?: return "Couldn’t install"
             case let other?: return spoken(other)

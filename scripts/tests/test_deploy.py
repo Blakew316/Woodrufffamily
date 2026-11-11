@@ -1,13 +1,14 @@
 """Runs scripts/deploy.sh with /bin/bash (macOS's bash 3.2 on CI) against stand-in tools, for its options and
---results lines on the way that ends before anything is built, and for the iPhone build's and the TestFlight
-archive's retries when Apple refuses an entitlement (a stand-in xcodebuild that refuses the one asked). Nothing real
-is built, signed or installed: every tool it would call first in PATH is a stand-in in a temporary folder, and the
-checkout is a copy.
+--results lines on the way that ends before anything is built, for the iPhone build's and the TestFlight
+archive's retries when Apple refuses an entitlement (a stand-in xcodebuild that refuses the one asked), and for the
+Apple TV part from the build to the kept copy or the installs. Nothing real is built, signed or installed: every tool
+it would call first in PATH is a stand-in in a temporary folder, and the checkout is a copy.
 
 Run from the repository root: python3 -m unittest discover -s scripts/tests -p 'test_*.py'
 """
 
 import hashlib
+import json
 import os
 import shutil
 import subprocess
@@ -114,6 +115,15 @@ class DeployOptions(DeployHarness):
         self.assertFalse(any(line.startswith("git [checkout]") for line in self.calls()))
         self.assertFalse(os.path.exists(os.path.join(self.tmp, "kept")))
 
+    def test_nothing_built_says_so_for_the_apple_tvs_too(self):
+        results = os.path.join(self.tmp, "results.tsv")
+        status, out = self.deploy("--branch", "release", "--expect", WANT, "--xcode-signing", "tv", "--keep-tv",
+                                  os.path.join(self.tmp, "kept-tv"), "--results", results)
+        self.assertEqual(status, 1, out)
+        why = "origin has no branch release (--branch release), so nothing was built"
+        self.assertEqual(self.rows(results), [["tv-build", "failed", WANT, why]])
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "kept-tv")))
+
     def test_expect_mismatch_after_a_detached_checkout(self):
         open(os.path.join(self.fake, "has-branch"), "w").close()
         status, out = self.deploy("--branch", "release", "--expect", WANT, "mac-shared", "--wait", "0", "--results",
@@ -136,6 +146,7 @@ class DeployOptions(DeployHarness):
     def test_bad_options(self):
         for args in (["--wait", "soon", "mac-shared"], ["--wait"], ["--branch", "-x"], ["--branch", "a b"],
                      ["--branch", "a..b"], ["--keep-iphone="], ["--expect", "xyz!"], ["frobnicate"],
+                     ["--keep-tv="], ["--keep-tv"], ["tv"], ["tv", "--keep-tv", "kept"],   # tv needs --xcode-signing
                      ["--results", os.path.join(self.tmp, "no", "such", "folder", "r.tsv")],
                      ["mac", "mac-shared"]):
             status, out = self.deploy(*args)
@@ -146,7 +157,7 @@ class DeployOptions(DeployHarness):
         status, out = self.deploy("--help")
         self.assertEqual(status, 0)
         for option in ("--branch <name>", "--wait <seconds>", "--keep-iphone <dir>", "--no-launch",
-                       "--results <file>", "--expect <commit>"):
+                       "--results <file>", "--expect <commit>", "--keep-tv <dir>", "[tv]"):
             self.assertIn(option, out)
 
     def test_syntax(self):
@@ -309,6 +320,253 @@ class SigningRetries(DeployHarness):
         self.upload()
         self.assertEqual(self.xcodebuilds(), [("archive", None, None, None), ("archive", None, WIDGETS, None),
                                               ("archive", None, WIDGETS, ""), ("export", None, None, None)])
+
+
+TV1 = "00008110-000131602193801E"
+TV2 = "00008110-000E418C1E39801E"
+
+# Builds the Apple TV app like xcodebuild with Xcode's signing: the app, its Info.plist and the profile it was signed
+# with (listing the Apple TVs named in $FAKE/profile-devices, one per line). With $FAKE/tv-fails, the build fails.
+TV_XCODEBUILD = LOG + r"""
+case "$*" in
+  *"-scheme WoodruffFamilyTV "*) ;;
+  *) echo "unexpected xcodebuild $*" >&2; exit 99 ;;
+esac
+if [ -f "$FAKE/tv-fails" ]; then
+  echo "/repo/App/TV/TVFilmScreen.swift:12:8: error: no such module 'Missing'"
+  echo "** BUILD FAILED **"
+  exit 65
+fi
+app="build/Build/Products/Release-appletvos/Woodruff Family.app"
+mkdir -p "$app"
+id=com.blakew316.woodruff.tv
+if [ -f "$FAKE/tv-bundle-id" ]; then id=$(cat "$FAKE/tv-bundle-id"); fi
+{
+  echo '<?xml version="1.0" encoding="UTF-8"?>'
+  echo '<plist version="1.0"><dict>'
+  echo "<key>CFBundleIdentifier</key><string>$id</string>"
+  echo '<key>CFBundleVersion</key><string>412</string>'
+  echo '</dict></plist>'
+} >"$app/Info.plist"
+{
+  echo '<?xml version="1.0" encoding="UTF-8"?>'
+  echo '<plist version="1.0"><dict>'
+  echo '<key>Name</key><string>tvOS Team Provisioning Profile: *</string>'
+  echo '<key>UUID</key><string>5e0f1c2d-0000-4000-8000-000000000000</string>'
+  echo '<key>ExpirationDate</key><date>2027-11-04T05:00:00Z</date>'
+  echo '<key>ProvisionedDevices</key><array>'
+  while read -r udid; do
+    if [ -n "$udid" ]; then echo "<string>$udid</string>"; fi
+  done <"$FAKE/profile-devices"
+  echo '</array></dict></plist>'
+} >"$app/embedded.mobileprovision"
+echo "** BUILD SUCCEEDED **"
+"""
+
+# The Apple TVs named in $FAKE/paired ("udid name" lines) are paired, next to an iPhone; an install works unless the
+# Apple TV is named in $FAKE/install-fails. An install while CoreDevice's kept changes are still there is a violation.
+TV_XCRUN = LOG + r"""
+case "$1 $2 $3" in
+  "devicectl list devices")
+    out=""
+    prev=""
+    for a in "$@"; do
+      if [ "$prev" = --json-output ]; then out=$a; fi
+      prev=$a
+    done
+    {
+      printf '{"result": {"devices": [{"hardwareProperties": {"udid": "00008150-001E68E80A32401C", "platform": "iOS", "reality": "physical"}, "deviceProperties": {"name": "Family iPhone"}}'
+      while read -r udid name; do
+        if [ -n "$udid" ]; then
+          printf ', {"hardwareProperties": {"udid": "%s", "platform": "tvOS", "reality": "physical"}, "deviceProperties": {"name": "%s"}, "connectionProperties": {"pairingState": "paired", "tunnelState": "disconnected"}}' "$udid" "$name"
+        fi
+      done <"$FAKE/paired"
+      printf ']}}\n'
+    } >"$out"
+    ;;
+  "devicectl device install")
+    for a in "$@"; do
+      if grep -q "^$a\$" "$FAKE/install-fails" 2>/dev/null; then echo "ERROR: The device is unavailable."; exit 1; fi
+    done
+    if [ -e "$HOME/Library/Containers/com.apple.CoreDevice.CoreDeviceService/Data/Library/Caches/AppInstallationBinaryDeltas/com.blakew316.woodruff.tv" ]; then
+      echo "VIOLATION installed with the kept changes still there" >>"$FAKE/violations"
+    fi
+    echo "App installed:"
+    ;;
+  "devicectl device process") ;;
+  *) echo "unexpected xcrun $*" >&2; exit 99 ;;
+esac
+"""
+
+
+@unittest.skipUnless(os.path.exists(BASH), "needs " + BASH)
+class AppleTV(DeployHarness):
+    """The Apple TV part: built with Xcode's signing, then kept for the updater (installed nowhere) or installed on
+    every Apple TV the profile lists."""
+
+    def setUp(self):
+        super().setUp()
+        open(os.path.join(self.fake, "has-branch"), "w").close()
+        self.tool("xcodebuild", TV_XCODEBUILD)
+        self.tool("xcrun", TV_XCRUN)
+        self.tool("xcodegen", LOG)
+        self.tool("codesign", LOG)
+        self.tool("ditto", LOG + 'cp -R "$1" "$2"\n')
+        webrtc = os.path.join(self.repo, "scripts", "fetch_webrtc.sh")
+        with open(webrtc, "w") as handle:
+            handle.write('#!/bin/sh\necho "WebRTC already here"\n')
+        os.chmod(webrtc, 0o755)
+        self.results = os.path.join(self.tmp, "results.tsv")
+        self.kept = os.path.join(self.tmp, "kept-tv")
+        self.paired("%s Living Room" % TV1, "%s Extra Apple TV" % TV2)
+        self.listed(TV1, TV2)
+
+    def paired(self, *lines):
+        with open(os.path.join(self.fake, "paired"), "w") as handle:
+            handle.write("".join(line + "\n" for line in lines))
+
+    def listed(self, *udids):
+        with open(os.path.join(self.fake, "profile-devices"), "w") as handle:
+            handle.write("".join(udid + "\n" for udid in udids))
+
+    def tv(self, *more):
+        return self.deploy("--branch", "release", "--xcode-signing", "tv", "--results", self.results, *more)
+
+    def installs(self):
+        return [line for line in self.calls() if line.startswith("xcrun [devicectl] [device] [install]")]
+
+    def launches(self):
+        return [line for line in self.calls() if line.startswith("xcrun [devicectl] [device] [process] [launch]")]
+
+    def kept_build(self):
+        with open(os.path.join(self.kept, "build.json")) as handle:
+            return json.load(handle)
+
+    def test_kept_for_the_updater_and_installed_nowhere(self):
+        status, out = self.tv("--keep-tv", self.kept)
+        self.assertEqual(status, 0, out)
+        rows = self.rows(self.results)
+        self.assertEqual([r[:3] for r in rows], [["tv-build", "ok", HEAD]])
+        self.assertEqual(rows[0][3], "signed by Xcode (team D8D94SXAG6), profile tvOS Team Provisioning Profile: * "
+                                     "(expires 2027-11-04), kept in " + self.kept)
+        self.assertEqual(self.installs(), [])
+        self.assertEqual(self.launches(), [])
+        self.assertTrue(os.path.isfile(os.path.join(self.kept, "Woodruff Family.app", "Info.plist")))
+        meta = self.kept_build()
+        self.assertEqual((meta["commit"], meta["build"]), (HEAD, 412))
+        self.assertEqual(meta["devices"], [{"udid": TV1, "name": "Living Room"},
+                                           {"udid": TV2, "name": "Extra Apple TV"}])
+        self.assertEqual(meta["app_profile_expires"], "2027-11-04T05:00:00Z")
+        # Built for any Apple TV, signed by Xcode's account, with this commit's build number.
+        build = [line for line in self.calls() if line.startswith("xcodebuild ")]
+        self.assertEqual(len(build), 1)
+        for arg in ("[-scheme] [WoodruffFamilyTV]", "[-destination] [generic/platform=tvOS]",
+                    "[-configuration] [Release]", "[DEVELOPMENT_TEAM=D8D94SXAG6]", "[CODE_SIGN_STYLE=Automatic]",
+                    "[-allowProvisioningUpdates]", "[CURRENT_PROJECT_VERSION=412]", "[WOODRUFF_COMMIT=%s]" % HEAD,
+                    "[build]"):
+            self.assertIn(arg, build[0])
+        self.assertIn("Apple TV: built and kept in", out)
+
+    def test_installed_on_each_apple_tv_and_opened(self):
+        deltas = os.path.join(self.tmp, "home", "Library", "Containers", "com.apple.CoreDevice.CoreDeviceService",
+                              "Data", "Library", "Caches", "AppInstallationBinaryDeltas", "com.blakew316.woodruff.tv")
+        os.makedirs(os.path.join(deltas, "22785a11", "Stashed"))
+        other = os.path.join(os.path.dirname(deltas), "com.blakew316.woodruff")
+        os.makedirs(other)
+        status, out = self.tv()
+        self.assertEqual(status, 0, out)
+        rows = self.rows(self.results)
+        self.assertEqual([r[:3] for r in rows], [["tv-build", "ok", HEAD], ["tv", "installed", TV1],
+                                                 ["tv", "installed", TV2]])
+        self.assertEqual(rows[1][3], "Living Room: installed and opened")
+        self.assertEqual(len(self.installs()), 2)
+        self.assertIn("[--device] [%s] [--timeout] [300]" % TV1, self.installs()[0])
+        self.assertTrue(self.installs()[0].endswith("/build/Build/Products/Release-appletvos/Woodruff Family.app]"))
+        self.assertEqual(len(self.launches()), 2)
+        self.assertTrue(self.launches()[1].endswith("[--device] [%s] [--timeout] [45] [com.blakew316.woodruff.tv]"
+                                                     % TV2))
+        # Only what CoreDevice kept of the Apple TV app is removed (the whole app is sent each time).
+        self.assertFalse(os.path.exists(deltas))
+        self.assertTrue(os.path.isdir(other))
+
+    def test_not_opened_with_no_launch(self):
+        status, out = self.tv("--no-launch")
+        self.assertEqual(status, 0, out)
+        self.assertEqual(len(self.installs()), 2)
+        self.assertEqual(self.launches(), [])
+        self.assertEqual(self.rows(self.results)[2][3], "Extra Apple TV: installed")
+
+    def test_an_install_that_fails(self):
+        with open(os.path.join(self.fake, "install-fails"), "w") as handle:
+            handle.write(TV1 + "\n")
+        status, out = self.tv()
+        self.assertEqual(status, 1, out)
+        rows = self.rows(self.results)
+        self.assertEqual([r[:3] for r in rows], [["tv-build", "ok", HEAD], ["tv", "failed", TV1],
+                                                 ["tv", "installed", TV2]])
+        self.assertIn("Living Room: the install failed: ERROR: The device is unavailable.", rows[1][3])
+
+    def test_an_apple_tv_the_profile_doesnt_list(self):
+        self.listed(TV1)
+        status, out = self.tv("--keep-tv", self.kept)
+        self.assertEqual(status, 0, out)
+        rows = self.rows(self.results)
+        self.assertEqual([r[:3] for r in rows], [["tv", "skipped", TV2], ["tv-build", "ok", HEAD]])
+        self.assertEqual(rows[0][3], "Extra Apple TV: not installed, Xcode's profile doesn't list it")
+        self.assertEqual(self.kept_build()["devices"], [{"udid": TV1, "name": "Living Room"}])
+
+    def test_a_profile_that_lists_none_of_them(self):
+        self.listed("00008110-0000000000000000")
+        status, out = self.tv("--keep-tv", self.kept)
+        self.assertEqual(status, 1, out)
+        rows = self.rows(self.results)
+        self.assertEqual([r[:3] for r in rows], [["tv-build", "failed", HEAD]])
+        self.assertIn("lists none of the Apple TVs paired with this Mac", rows[0][3])
+        self.assertFalse(os.path.exists(self.kept))
+
+    def test_no_apple_tv_paired(self):
+        self.paired()
+        status, out = self.tv("--keep-tv", self.kept)
+        rows = self.rows(self.results)
+        self.assertEqual([r[:3] for r in rows], [["tv-build", "skipped", HEAD]])
+        self.assertIn("no Apple TV is paired with this Mac", rows[0][3])
+        self.assertFalse(any(line.startswith("xcodebuild ") for line in self.calls()))   # nothing is built for none
+
+    def test_a_build_that_fails(self):
+        open(os.path.join(self.fake, "tv-fails"), "w").close()
+        status, out = self.tv("--keep-tv", self.kept)
+        self.assertEqual(status, 1, out)
+        rows = self.rows(self.results)
+        self.assertEqual([r[:3] for r in rows], [["tv-build", "failed", HEAD]])
+        self.assertIn("the Apple TV app didn't build: /repo/App/TV/TVFilmScreen.swift:12:8: error: no such module",
+                      rows[0][3])
+        self.assertEqual(self.installs(), [])
+        self.assertFalse(os.path.exists(self.kept))
+
+    def test_another_apps_build_is_refused(self):
+        with open(os.path.join(self.fake, "tv-bundle-id"), "w") as handle:
+            handle.write("com.blakew316.woodruff")
+        status, out = self.tv("--keep-tv", self.kept)
+        self.assertEqual(status, 1, out)
+        rows = self.rows(self.results)
+        self.assertEqual([r[:3] for r in rows], [["tv-build", "failed", HEAD]])
+        self.assertIn("the built app is 'com.blakew316.woodruff', not com.blakew316.woodruff.tv", rows[0][3])
+
+    def test_the_copy_kept_before_is_replaced(self):
+        os.makedirs(os.path.join(self.kept, "Woodruff Family.app", "Old"))
+        with open(os.path.join(self.kept, "build.json"), "w") as handle:
+            handle.write("{}")
+        status, out = self.tv("--keep-tv", self.kept)
+        self.assertEqual(status, 0, out)
+        self.assertFalse(os.path.exists(os.path.join(self.kept, "Woodruff Family.app", "Old")))
+        self.assertTrue(os.path.isfile(os.path.join(self.kept, "Woodruff Family.app", "embedded.mobileprovision")))
+        self.assertEqual(self.kept_build()["build"], 412)
+
+    def test_only_the_apple_tv_app_is_built(self):
+        status, out = self.tv("--keep-tv", self.kept)
+        self.assertEqual(status, 0, out)
+        self.assertEqual([line for line in self.calls()
+                          if line.startswith("xcodebuild ") and "WoodruffFamilyTV" not in line], [])
 
 
 if __name__ == "__main__":

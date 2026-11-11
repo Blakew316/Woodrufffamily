@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
-"""Keep this Mac, and on the hub the iPhones paired with it, on the family's release of Woodruff Family.
+"""Keep this Mac, and on the hub the iPhones and Apple TVs paired with it, on the family's release of Woodruff Family.
 
 The release is the branch "release" on origin. GitHub Actions moves it to a commit whose message says [release]
 once every app built. Installed once per Mac with `install`, this runs as the LaunchAgent
 com.woodruff.family.updater every 5 minutes (and at login), compares origin's release with what's installed,
 and does every build and install with scripts/deploy.sh:
 
-  hub       The Mac Studio the iPhones are paired with. Builds and installs the Mac app and shares that build in
-            iCloud Drive; builds and signs the iPhone app once per release, keeps that signed copy in
+  hub       The Mac Studio the iPhones and Apple TVs are paired with. Builds and installs the Mac app and shares
+            that build in iCloud Drive; builds and signs the iPhone app once per release, keeps that signed copy in
             builds/<commit>/, and installs it on each paired iPhone whenever it's reachable (it never opens the
-            app there), until every iPhone has it.
+            app there), until every iPhone has it. The Apple TV app the same way (tv-builds/<commit>/), over the
+            home network: an install closes the app, so each Apple TV is asked first whether a film is on screen,
+            and is left alone until it isn't.
   follower  Installs the build the hub shared (deploy.sh mac-shared). With --build-fallback (the MacBook) it builds
             here (deploy.sh mac) when no usable shared build arrived within 30 minutes of first seeing the release.
 
@@ -22,17 +24,20 @@ and does every build and install with scripts/deploy.sh:
 It never replaces the Mac app while someone is using it (Woodruff Family frontmost, input in the last 2 minutes),
 for at most 30 minutes after first seeing the release, and a Mac on battery under 30% doesn't build. After a
 failure a part waits 15 min, 30 min, 1 h, 2 h, 4 h, then 8 h between tries; a new release starts over. An iPhone
-that isn't reachable is tried every 10 minutes. A rollback is a release older than what's installed: it's
-installed like any other.
+or Apple TV that isn't reachable is tried every 10 minutes, an Apple TV with a film playing at every check. A
+rollback is a release older than what's installed: it's installed like any other.
 
 Files: ~/Library/LaunchAgents/com.woodruff.family.updater.plist; ~/Library/Application Support/Woodruff Family/
 Updater/ (config.json, status.json for the app, state.json for this script, updater.lock, results.tsv,
-builds/<commit>/); ~/Library/Logs/Woodruff Family/ (updater.log, updater-launchd.log, and deploy-<time>.log for
-each deploy.sh run, the newest 10 kept).
+builds/<commit>/, tv-builds/<commit>/); ~/Library/Logs/Woodruff Family/ (updater.log, updater-launchd.log, and
+deploy-<time>.log for each deploy.sh run, the newest 10 kept).
 
 It signs nothing and never touches a certificate, key, profile or keychain item: deploy.sh does every build and
-signature, and devicectl installs the copy deploy.sh kept. Apple's /usr/bin/python3 (3.9), standard library only.
-Every effect on the world goes through Env, so the tests can replace it.
+signature, and devicectl installs the copy deploy.sh kept. From an Apple TV it reads two things with devicectl:
+which build of the app is there, and the app's own settings file, for the note it keeps while a film is open (the
+copy is read and removed at once). Before an Apple TV install it removes what CoreDevice kept of the app to send
+only the changes (see deploy.sh). Apple's /usr/bin/python3 (3.9), standard library only. Every effect on the world
+goes through Env, so the tests can replace it.
 """
 
 import argparse
@@ -55,6 +60,15 @@ from datetime import datetime, timedelta, timezone
 LABEL = "com.woodruff.family.updater"
 APP_NAME = "Woodruff Family"
 MAC_BUNDLE_ID = "com.woodruff.family.mac"
+TV_BUNDLE_ID = "com.blakew316.woodruff.tv"
+# The Apple TV app's settings, in its own folder on the Apple TV, and the note it keeps there while a film is open
+# (PlayCrumb in App/Shared/PhonePlayer.swift: written as the film opens, again every ten seconds while it's on
+# screen, removed as it closes).
+TV_SETTINGS = "Library/Preferences/%s.plist" % TV_BUNDLE_ID
+TV_FILM_NOTE = "playing.crumb"
+# What CoreDevice keeps of the Apple TV app to send only the changes (under the home folder); see deploy.sh.
+TV_DELTAS = ("Library", "Containers", "com.apple.CoreDevice.CoreDeviceService", "Data", "Library", "Caches",
+             "AppInstallationBinaryDeltas", TV_BUNDLE_ID)
 RELEASE_BRANCH = "release"
 ROLES = ("hub", "follower")
 PYTHON = "/usr/bin/python3"
@@ -69,6 +83,9 @@ QUICK_LOOK_SECONDS = 60
 QUICK_LOOKS = 3
 BACKOFF = (15 * 60, 30 * 60, 60 * 60, 2 * 3600, 4 * 3600, 8 * 3600)   # after the 1st, 2nd, ... failure
 UNREACHABLE_RETRY = 10 * 60
+TV_FILM_FRESH = 90           # seconds: a film's note newer than this means the film is on screen now
+TV_FILM_RETRY = 4 * 60       # a film is playing: asked again at the next check
+NO_TV_WAIT = 6 * 3600        # no Apple TV is paired with this Mac: looked for again this often
 COURTESY_IDLE = 120          # seconds without input before the app counts as not in use
 COURTESY_RUNS = 6             # checks in a row the Mac app is left alone while in use (~30 minutes awake)
 SKIPPED_TESTFLIGHT_WAIT = 6 * 3600   # how long the hub waits to look again when App Store Connect has no app yet
@@ -80,6 +97,7 @@ GIT_TIMEOUT = 60
 DEPLOY_TIMEOUT = 3 * 3600
 INSTALL_TIMEOUT = 300        # for "devicectl device install app --timeout 240"
 DEVICES_TIMEOUT = 240        # signing.py devices waits up to 180 s for devicectl
+TV_ASK_TIMEOUT = 90          # asking an Apple TV for its build, or copying its settings file
 SMALL_TIMEOUT = 20
 LOG_LIMIT = 2 * 1024 * 1024
 DEPLOY_LOGS_KEPT = 10
@@ -252,6 +270,46 @@ def without_name(detail, name):
     return detail.split(": ", 1)[1] if name_in(detail) else detail
 
 
+def tv_app_build(doc, text=""):
+    """What `devicectl device info apps --bundle-id` says of Woodruff Family on an Apple TV: (installed, build).
+    From the JSON it writes (the object naming the app's bundle id), else from the table it prints, whose last
+    column is the build. (False, None) when the app isn't there."""
+    found = []
+
+    def walk(value):
+        if isinstance(value, dict):
+            keys = dict((str(key).lower(), key) for key in value)
+            if value.get(keys.get("bundleidentifier")) == TV_BUNDLE_ID:
+                found.append(value.get(keys.get("bundleversion")))
+            for item in value.values():
+                walk(item)
+        elif isinstance(value, list):
+            for item in value:
+                walk(item)
+
+    walk(doc)
+    if found:
+        version = str(found[0] if found[0] is not None else "").strip()
+        return True, (int(version) if version.isdigit() else None)
+    for line in (text or "").splitlines():
+        fields = line.split()
+        if TV_BUNDLE_ID in fields:
+            return True, (int(fields[-1]) if fields[-1].isdigit() else None)
+    return False, None
+
+
+def film_on_screen(settings, now):
+    """The Apple TV app's settings say a film is on screen now: its note (TV_FILM_NOTE) is there and was written in
+    the last TV_FILM_FRESH seconds. The app writes it as a film opens, again every ten seconds while the film is on
+    screen (playing or stopped), and removes it as the film closes; the note of an app that was put away or ended
+    isn't renewed, so it stops counting. One stamped later than now (the clocks disagree) counts as on screen."""
+    note = settings.get(TV_FILM_NOTE) if isinstance(settings, dict) else None
+    at = note.get("at") if isinstance(note, dict) else None
+    if isinstance(at, bool) or not isinstance(at, (int, float)):
+        return False
+    return now.timestamp() - float(at) < TV_FILM_FRESH
+
+
 # --------------------------------------------------------------------------------------------- the world
 
 
@@ -359,6 +417,7 @@ def paths(env):
         "results": os.path.join(support, "results.tsv"),
         "request": os.path.join(support, "check-now"),   # Check for Updates Now (the Mac app): no courtesy wait
         "builds": os.path.join(support, "builds"),
+        "tv_builds": os.path.join(support, "tv-builds"),
         "log": os.path.join(env.logs, "updater.log"),
         "launchd_log": os.path.join(env.logs, "updater-launchd.log"),
         "plist": os.path.join(env.agents, LABEL + ".plist"),
@@ -488,6 +547,10 @@ def blank_state():
         "testflight": {"commit": None, "state": None, "detail": "", "attempts": 0, "next_try": None},
         # [{"udid", "name", "commit", "updated_at", "state", "detail", "next_try", "attempts", "retry"}]
         "iphones": [],
+        # hub: the Apple TV app built and kept for the release (state ok, skipped: no Apple TV is paired, failed).
+        "tv_build": {"commit": None, "state": None, "detail": "", "attempts": 0, "next_try": None},
+        # The Apple TVs, like the iPhones; state is also "waiting" while a film is playing there.
+        "appletvs": [],
         "busy_runs": 0,   # checks in a row the Mac app was in use
         "last_check": None,
         "last_error": None,
@@ -504,9 +567,10 @@ def load_state(env):
             state[key].update(value)
         elif key in state:
             state[key] = value
-    if not isinstance(state["iphones"], list):
-        state["iphones"] = []
-    state["iphones"] = [d for d in state["iphones"] if isinstance(d, dict) and isinstance(d.get("udid"), str)]
+    for key in ("iphones", "appletvs"):
+        if not isinstance(state[key], list):
+            state[key] = []
+        state[key] = [d for d in state[key] if isinstance(d, dict) and isinstance(d.get("udid"), str)]
     if state["release"] is not None and not (isinstance(state["release"], dict) and
                                              SHA.match(str(state["release"].get("commit") or ""))):
         state["release"] = None
@@ -527,6 +591,8 @@ class Updater(object):
         self.fallback = bool(config.get("build_fallback")) and self.role == "follower"
         # The hub uploads each release to TestFlight unless config.json says "testflight": false.
         self.testflight = self.role == "hub" and config.get("testflight", True) is not False
+        # The hub keeps the Apple TVs paired with it on the release unless config.json says "appletv": false.
+        self.appletv = self.role == "hub" and config.get("appletv", True) is not False
         self.files = paths(env)
         self.deploy_sh = os.path.join(self.repo, "scripts", "deploy.sh")
         self.signing = os.path.join(self.repo, "scripts", "signing.py")
@@ -563,17 +629,18 @@ class Updater(object):
         mac = st["mac"]
         share = st["share"] if self.role == "hub" else {}
         tf = st["testflight"] if self.role == "hub" else {}
-        phones = []
-        for d in st["iphones"]:
-            phones.append({
-                "udid": d["udid"],
-                "name": d.get("name") or d["udid"],
-                "commit": d.get("commit"),
-                "updated_at": d.get("updated_at"),
-                "state": d.get("state") or "pending",
-                "detail": d.get("detail") or "",
-                "next_try": None if d.get("state") == "current" else d.get("next_try"),
-            })
+        phones, tvs = [], []
+        for key, listed in (("iphones", phones), ("appletvs", tvs)):
+            for d in st[key]:
+                listed.append({
+                    "udid": d["udid"],
+                    "name": d.get("name") or d["udid"],
+                    "commit": d.get("commit"),
+                    "updated_at": d.get("updated_at"),
+                    "state": d.get("state") or "pending",
+                    "detail": d.get("detail") or "",
+                    "next_try": None if d.get("state") == "current" else d.get("next_try"),
+                })
         return {
             "format": 1,
             "updated_at": iso(self.env.now()),
@@ -584,6 +651,7 @@ class Updater(object):
             "mac": {"commit": mac.get("commit"), "build": mac.get("build"), "updated_at": mac.get("updated_at"),
                     "state": mac.get("state") or "current", "detail": mac.get("detail") or ""},
             "iphones": phones,
+            "appletvs": tvs,
             "share": {"commit": share.get("commit"), "state": share.get("state"), "detail": share.get("detail") or ""},
             "testflight": {"commit": tf.get("commit"), "state": tf.get("state"), "detail": tf.get("detail") or ""},
             "last_check": st.get("last_check"),
@@ -664,6 +732,11 @@ class Updater(object):
             phone.update(attempts=0, next_try=None, retry=True)
             if phone.get("commit") != commit:
                 phone.update(state="pending", detail="Waiting for the iPhone build.")
+        st["tv_build"] = {"commit": None, "state": None, "detail": "", "attempts": 0, "next_try": None}
+        for tv in st["appletvs"]:
+            tv.update(attempts=0, next_try=None, retry=True)
+            if tv.get("commit") != commit:
+                tv.update(state="pending", detail="Waiting for the Apple TV build.")
 
     def scripts_run(self, commit):
         """The release's updater.py and signing.py started with this Mac's Python (their imports and top level run,
@@ -900,41 +973,42 @@ class Updater(object):
 
     # ---------------------------------------------------------------- iPhones
 
-    def phone(self, udid, name=None):
-        for record in self.state["iphones"]:
+    def phone(self, udid, name=None, key="iphones"):
+        """The record kept of an iPhone (or, with key "appletvs", of an Apple TV), made when there's none."""
+        for record in self.state[key]:
             if record["udid"] == udid:
                 if name and (record.get("name") in (None, "", udid)):
                     record["name"] = name
                 return record
         record = {"udid": udid, "name": name or udid, "commit": None, "updated_at": None, "state": "pending",
                   "detail": "", "next_try": None, "attempts": 0, "retry": True}
-        self.state["iphones"].append(record)
+        self.state[key].append(record)
         return record
 
-    def phone_installed(self, record, release):
+    def phone_installed(self, record, release, kind="iPhone", how="installed"):
         record.update(commit=release, updated_at=iso(self.now), state="current", detail="Up to date.",
                       next_try=None, attempts=0, retry=True)
-        self.log("iPhone %s: installed %s" % (record.get("name"), release[:12]))
+        self.log("%s %s: %s %s" % (kind, record.get("name"), how, release[:12]))
 
-    def phone_failed(self, record, detail):
+    def phone_failed(self, record, detail, kind="iPhone"):
         if UNREACHABLE.search(detail or ""):
             when = self.now + timedelta(seconds=UNREACHABLE_RETRY)
             record.update(state="unreachable", next_try=iso(when),
                           detail="Not reachable from this Mac. Next try at %s." % clock(when))
-            self.log("iPhone %s: not reachable (%s); next try at %s" % (record.get("name"), one_line(detail, 200),
-                                                                        iso(when)))
+            self.log("%s %s: not reachable (%s); next try at %s" % (kind, record.get("name"), one_line(detail, 200),
+                                                                    iso(when)))
             return
         record["attempts"] = int(record.get("attempts") or 0) + 1
         when = self.now + timedelta(seconds=backoff(record["attempts"]))
         record.update(state="failed", next_try=iso(when),
                       detail="%s. Next try at %s." % (sentence(detail).rstrip("."), clock(when)))
-        self.log("iPhone %s: failed (try %d, next at %s): %s" % (record.get("name"), record["attempts"], iso(when),
-                                                                 one_line(detail, 300)))
+        self.log("%s %s: failed (try %d, next at %s): %s" % (kind, record.get("name"), record["attempts"], iso(when),
+                                                             one_line(detail, 300)))
 
-    def kept_build(self, release):
-        """The signed iPhone app deploy.sh kept for this release: {"app", "devices"}; None if there's none, it's for
-        another commit, or its profile has expired."""
-        folder = os.path.join(self.files["builds"], release)
+    def kept_build(self, release, builds=None):
+        """The signed iPhone app deploy.sh kept for this release (or, with the Apple TV builds' folder, the Apple TV
+        app): {"app", "devices"}; None if there's none, it's for another commit, or its profile has expired."""
+        folder = os.path.join(builds or self.files["builds"], release)
         app = os.path.join(folder, APP_NAME + ".app")
         meta = read_json(os.path.join(folder, "build.json"))
         if not isinstance(meta, dict) or str(meta.get("commit") or "").lower() != release or not os.path.isdir(app):
@@ -1005,10 +1079,13 @@ class Updater(object):
             # The iPhones this build saw are the ones paired now: forget the rest.
             st["iphones"] = [p for p in st["iphones"] if p["udid"] in seen or p["udid"] in names]
 
-    def list_devices(self):
-        """({UDID: device}, None) from signing.py devices, or (None, why)."""
-        status, out, err = self.env.run([self.env.python, "-I", self.signing, "devices"], DEVICES_TIMEOUT,
-                                        cwd=self.repo)
+    def list_devices(self, platform="iOS"):
+        """({UDID: device}, None) from signing.py devices (the iPhones and iPads; with tvOS, the Apple TVs), or
+        (None, why)."""
+        argv = [self.env.python, "-I", self.signing, "devices"]
+        if platform != "iOS":
+            argv += ["--platform", platform]
+        status, out, err = self.env.run(argv, DEVICES_TIMEOUT, cwd=self.repo)
         if status != 0:
             return None, one_line(err or out or "signing.py devices exited %d" % status, 200)
         try:
@@ -1093,6 +1170,231 @@ class Updater(object):
                                          folder, "--no-launch"])
         self.apply_iphones(release, rows, status, log)
 
+    # ---------------------------------------------------------------- Apple TVs
+
+    def tv(self, udid, name=None):
+        return self.phone(udid, name, "appletvs")
+
+    def tv_build_there(self, udid):
+        """(installed, build, None): whether Woodruff Family is on that Apple TV and which build of it; (False,
+        None, why) when the Apple TV can't be asked."""
+        tmp = tempfile.mkdtemp(prefix="woodruff-tv.")
+        try:
+            path = os.path.join(tmp, "apps.json")
+            status, out, err = self.env.run(["xcrun", "devicectl", "device", "info", "apps", "--device", udid,
+                                             "--bundle-id", TV_BUNDLE_ID, "--json-output", path], TV_ASK_TIMEOUT)
+            doc = read_json(path)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+        if status == 124:
+            return False, None, "asking it which build it has timed out"
+        if status != 0:
+            return False, None, "couldn't ask it which build it has: %s" % (first_error(out + "\n" + err) or
+                                                                             "devicectl exited %d" % status)
+        installed, build = tv_app_build(doc, out)
+        return installed, build, None
+
+    def tv_film(self, udid):
+        """(True or False, None): whether a film is on screen on that Apple TV now; (None, why) when it can't be
+        told. The app keeps a note in its settings while a film is open (film_on_screen): the settings file is
+        copied off the Apple TV, the note read, and the copy removed."""
+        tmp = tempfile.mkdtemp(prefix="woodruff-tv.")
+        try:
+            path = os.path.join(tmp, "settings.plist")
+            status, out, err = self.env.run(["xcrun", "devicectl", "device", "copy", "from", "--device", udid,
+                                             "--domain-type", "appDataContainer", "--domain-identifier", TV_BUNDLE_ID,
+                                             "--source", TV_SETTINGS, "--destination", path], TV_ASK_TIMEOUT)
+            if status == 124:
+                return None, "asking it whether a film is playing timed out"
+            if status != 0:
+                return None, "couldn't ask it whether a film is playing: %s" % (first_error(out + "\n" + err) or
+                                                                                "devicectl exited %d" % status)
+            # (devicectl has written the file itself, or a folder of that name with the file in it.)
+            copies = [path] if os.path.isfile(path) else sorted(
+                os.path.join(folder, name) for folder, _, names in os.walk(tmp) for name in names
+                if name.endswith(".plist"))
+            try:
+                with open(copies[0], "rb") as handle:
+                    settings = plistlib.load(handle)
+            except Exception:  # noqa: BLE001 - nothing copied, or not a settings file
+                return None, "couldn't read its settings to see whether a film is playing"
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+        return film_on_screen(settings, self.env.now()), None
+
+    def tv_held(self, record, state, detail, seconds):
+        when = self.now + timedelta(seconds=seconds)
+        record.update(state=state, next_try=iso(when), detail=detail)
+        return when
+
+    def apply_tv_build(self, release, rows, status, log):
+        """deploy.sh's tv-build result, and its tv rows for an Apple TV the profile doesn't list."""
+        st, now = self.state, self.now
+        tb = st["tv_build"]
+        row = self.row(rows, "tv-build")
+        kept = self.kept_build(release, self.files["tv_builds"])
+        if row and row["status"] == "ok":
+            tb.update(commit=release, state="ok", detail=sentence(row["detail"]))
+            if kept is None:   # signed, but not kept: don't build again right away
+                tb["attempts"] = int(tb.get("attempts") or 0) + 1
+                tb["next_try"] = iso(now + timedelta(seconds=backoff(tb["attempts"])))
+            else:
+                tb.update(attempts=0, next_try=None)
+                # The Apple TVs this build is for are the ones paired now: forget the rest.
+                udids = [device["udid"] for device in kept["devices"]]
+                st["appletvs"] = [t for t in st["appletvs"] if t["udid"] in udids]
+                for device in kept["devices"]:
+                    self.tv(device["udid"], device["name"])
+        elif row and row["status"] == "skipped":
+            when = now + timedelta(seconds=NO_TV_WAIT)
+            tb.update(commit=release, state="skipped", detail=sentence(row["detail"]), attempts=0, next_try=iso(when))
+            st["appletvs"] = []
+            self.log("Apple TVs: none to update (%s)" % row["detail"])
+        else:
+            detail = row["detail"] if row else self.stopped(status, log)
+            tb["attempts"] = int(tb.get("attempts") or 0) + 1
+            when = now + timedelta(seconds=backoff(tb["attempts"]))
+            tb.update(commit=release, state="failed", detail=sentence(detail), next_try=iso(when))
+            for record in st["appletvs"]:
+                if record.get("commit") != release:
+                    record.update(state="failed", next_try=iso(when),
+                                  detail="The Apple TV build failed: %s Next try at %s." % (sentence(detail),
+                                                                                           clock(when)))
+            self.log("Apple TV build: failed (try %d, next at %s): %s" % (tb["attempts"], iso(when),
+                                                                         one_line(detail, 300)))
+        for row in rows:
+            if row["part"] == "tv" and row["target"] and row["status"] == "skipped":
+                record = self.tv(row["target"], name_in(row["detail"]))
+                record.update(state="failed", retry=False, next_try=None,
+                              detail=sentence(without_name(row["detail"], record.get("name"))))
+                self.log("Apple TV %s: %s" % (record.get("name"), row["detail"]))
+
+    def install_tvs(self, release, kept):
+        """Installs the kept Apple TV app on each Apple TV that doesn't have this release and whose next try is
+        due: one that can be reached, isn't on this build already, and has no film on screen. The app isn't opened
+        afterwards (an Apple TV that's asleep stays asleep)."""
+        now = self.now
+        todo = []
+        for device in kept["devices"]:
+            record = self.tv(device["udid"], device["name"])
+            if record.get("commit") == release and record.get("state") == "current":
+                continue
+            # Check for Updates Now asks every Apple TV at once, whatever its wait (never past a film, though).
+            if not record.get("retry", True) or not (due(record, now) or self.requested_now()):
+                continue
+            todo.append(record)
+        if not todo:
+            return
+        listed, error = self.list_devices("tvOS")
+        if listed is None:
+            self.state["last_error"] = "couldn't list the Apple TVs: %s" % error
+            self.log(self.state["last_error"])
+            for record in todo:
+                record["next_try"] = iso(now + timedelta(seconds=UNREACHABLE_RETRY))
+            return
+        build = self.release_build()
+        for record in todo:
+            name, udid = record.get("name"), record["udid"]
+            info = listed.get(udid)
+            if info is None or info.get("pairing") not in (None, "", "paired"):
+                self.tv_held(record, "pending", "Not paired with this Mac.", UNREACHABLE_RETRY)
+                self.log("Apple TV %s: not paired with this Mac; skipped" % name)
+                continue
+            if info.get("tunnel") == "unavailable":
+                self.phone_failed(record, "tunnel unavailable", "Apple TV")
+                continue
+            installed, there, error = self.tv_build_there(udid)
+            self.tick()
+            if error:
+                self.phone_failed(record, error, "Apple TV")
+                self.save(True)
+                continue
+            if installed and build is not None and there == build:
+                self.phone_installed(record, release, "Apple TV", "already has")   # put there by hand
+                self.save(True)
+                continue
+            if installed:
+                film, error = self.tv_film(udid)
+                self.tick()
+                if film is None:
+                    # Can't tell: left alone rather than risk a film.
+                    self.phone_failed(record, error, "Apple TV")
+                    self.save(True)
+                    continue
+                if film:
+                    when = self.tv_held(record, "waiting", "A film is playing. It installs once the film is over.",
+                                        TV_FILM_RETRY)
+                    self.log("Apple TV %s: a film is playing; asked again at %s" % (name, iso(when)))
+                    self.save(True)
+                    continue
+            record.update(state="pending", detail="Installing.")
+            self.save(True)
+            self.log("Apple TV %s: installing the kept build of %s" % (name, release[:12]))
+            # The whole app each time, never only the changes (see deploy.sh).
+            shutil.rmtree(os.path.join(self.env.home, *TV_DELTAS), ignore_errors=True)
+            status, out, err = self.env.run(["xcrun", "devicectl", "device", "install", "app", "--device", udid,
+                                             "--timeout", "240", kept["app"]], INSTALL_TIMEOUT)
+            self.tick()
+            if status == 0:
+                # Up to date once the Apple TV says so itself (one that can't be asked now is taken at devicectl's
+                # word).
+                _, there, error = self.tv_build_there(udid)
+                self.tick()
+                if error is None and build is not None and there != build:
+                    self.phone_failed(record, "devicectl installed it, but the Apple TV says it has %s" % (
+                        "build %d" % there if there is not None else "no build of it"), "Apple TV")
+                else:
+                    self.phone_installed(record, release, "Apple TV")
+            elif status == 124:
+                self.phone_failed(record, "the install timed out", "Apple TV")
+            else:
+                self.phone_failed(record, "the install failed: %s" % (first_error(out + "\n" + err) or
+                                                                       "devicectl exited %d" % status), "Apple TV")
+            self.save(True)
+
+    def tv_pass(self, release):
+        """The Apple TVs paired with this Mac: the app is built and signed once per release (deploy.sh tv, kept in
+        tv-builds/<commit>/ and installed nowhere), once the Mac app built from that release here, then installed
+        on each Apple TV as it can be (install_tvs)."""
+        if not self.appletv:
+            return
+        st = self.state
+        tb = st["tv_build"]
+        folder = os.path.join(self.files["tv_builds"], release)
+        kept = self.kept_build(release, self.files["tv_builds"])
+        if kept is None:
+            if not self.mac_current(release):
+                return   # what doesn't build here isn't sent to the Apple TVs either
+            if not (due(tb, self.now) or (tb.get("state") == "skipped" and self.requested_now())):
+                return
+            if self.battery_low():
+                return
+            listed, error = self.list_devices("tvOS")
+            if listed is None:
+                st["last_error"] = "couldn't list the Apple TVs: %s" % error
+                self.log(st["last_error"])
+                return
+            if not listed:
+                when = self.now + timedelta(seconds=NO_TV_WAIT)
+                tb.update(commit=release, state="skipped", detail="No Apple TV is paired with this Mac.", attempts=0,
+                          next_try=iso(when))
+                if st["appletvs"]:
+                    self.log("Apple TVs: none is paired with this Mac any more")
+                st["appletvs"] = []
+                return
+            for udid in sorted(listed):
+                record = self.tv(udid, listed[udid].get("name"))
+                if record.get("commit") != release and record.get("retry", True):
+                    record.update(state="pending", detail="Building the Apple TV app.")
+            self.save(True)
+            status, rows, log = self.deploy(["--branch", self.branch, "--expect", release, "--xcode-signing", "tv",
+                                             "--keep-tv", folder])
+            self.apply_tv_build(release, rows, status, log)
+            self.save(True)
+            kept = self.kept_build(release, self.files["tv_builds"])
+        if kept is not None:
+            self.install_tvs(release, kept)
+
     # ---------------------------------------------------------------- roles
 
     def hub(self, release):
@@ -1114,11 +1416,12 @@ class Updater(object):
             else:
                 built = self.hub_deploy(release)
         self.iphone_pass(release, built)
+        self.tv_pass(release)
         self.testflight_pass(release)
         tf = st["testflight"]
         tf_ok = not self.testflight or (tf.get("commit") == release and tf.get("state") in ("ok", "skipped"))
         if mac_ok and share_ok and tf_ok and not any(p.get("commit") != release and p.get("retry", True)
-                                           for p in st["iphones"]):
+                                           for p in st["iphones"] + st["appletvs"]):
             self.log("up to date: %s, build %s" % (release[:12], self.release_build() or "?"))
 
     def hub_deploy(self, release):
@@ -1304,18 +1607,19 @@ class Updater(object):
         return 0
 
     def prune_builds(self, release):
-        """Keeps only builds/<the release>: other folders in builds/, and nothing outside it, are removed."""
-        folder = self.files["builds"]
-        try:
-            names = os.listdir(folder)
-        except OSError:
-            return
-        for name in names:
-            path = os.path.join(folder, name)
-            if name == release or os.path.islink(path) or not os.path.isdir(path):
+        """Keeps only builds/<the release> and tv-builds/<the release>: other folders in those two, and nothing
+        outside them, are removed."""
+        for folder, what in ((self.files["builds"], "build"), (self.files["tv_builds"], "Apple TV build")):
+            try:
+                names = os.listdir(folder)
+            except OSError:
                 continue
-            shutil.rmtree(path, ignore_errors=True)
-            self.log("removed the kept build %s" % name[:12])
+            for name in names:
+                path = os.path.join(folder, name)
+                if name == release or os.path.islink(path) or not os.path.isdir(path):
+                    continue
+                shutil.rmtree(path, ignore_errors=True)
+                self.log("removed the kept %s %s" % (what, name[:12]))
 
     def interrupted(self):
         mac = self.state["mac"]
@@ -1523,6 +1827,10 @@ def describe(doc):
             label = "iPhones:    " if n == 0 else " " * 12
             lines.append("  %s%s: %s. %s" % (label, phone.get("name") or phone.get("udid"), phone.get("state") or "?",
                                               phone.get("detail") or ""))
+        for n, tv in enumerate(doc.get("appletvs") or []):
+            label = "Apple TVs:  " if n == 0 else " " * 12
+            lines.append("  %s%s: %s. %s" % (label, tv.get("name") or tv.get("udid"), tv.get("state") or "?",
+                                              tv.get("detail") or ""))
     lines.append("  Last check: %s" % local_time(doc.get("last_check")))
     lines.append("  Last error: %s" % (doc.get("last_error") or "none"))
     return [line.rstrip() for line in lines]
