@@ -6,7 +6,7 @@ import WoodruffKit
 // The cameras' alerts on Apple TV: a small Liquid Glass pill at the top right ("Person seen", "Front Driveway · now",
 // with a round picture of who or what was seen), for about five seconds. The Mac Studio (the hub) hears Google's
 // camera events and keeps its last few alerts for the Apple TVs (CameraShare's GET /events); the Apple TV asks it
-// every few seconds, at home or through Tailscale, and never listens to Google itself for these. Selecting the pill
+// every second, at home or through Tailscale, and never listens to Google itself for these. Selecting the pill
 // opens that camera with the event's picture; Back puts it away. It never takes the remote's focus by itself, and
 // over a video or an open camera it only shows (nothing there can move to it).
 
@@ -63,10 +63,12 @@ final class TVAlerts {
         guard loop == nil, !Demo.isOn else { return }
         // Earlier alerts' pictures (kept only for opening the camera from the pill) don't pile up.
         Task.detached(priority: .utility) { Self.tidy() }
+        // Every second (a few bytes each time, from a Mac in the same house). It was every three, and an alert
+        // reached the Apple TV up to three seconds after the phones had it, before its picture was even fetched.
         loop = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.poll()
-                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
             }
         }
     }
