@@ -375,6 +375,11 @@ public final class FilmPlayer: @unchecked Sendable {
         }
     }
 
+    /// The sound off, or on again (the Mac's film check plays in silence).
+    public func mute(_ off: Bool) {
+        soundRenderer.isMuted = off
+    }
+
     /// Starts the film from [seconds] in: it plays as soon as enough of it is ready.
     public func start(at seconds: Double) {
         queue.async {

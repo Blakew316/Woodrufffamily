@@ -8,6 +8,9 @@ import WoodruffKit
 /// Several things can be asked for, one after another, with | between them:
 /// - a film's name (or "id:…", a Drive file): it plays with the sound off for a minute, jumps to the middle and plays
 ///   half a minute more, then closes. Nothing is kept for Continue Watching.
+/// - "own:<film>": the same, played by the app's own player (`FilmPlayer`) instead of Apple's: how long its index
+///   took (read from Google, or kept on this Mac from the last time), how long it took to start, how often it
+///   stopped to wait, and what Google was asked for. "ownfresh:<film>" reads the index from Google again first.
 /// - "probe": every film in the library is asked of Google for its first byte, to see which it sends right now and
 ///   which it refuses with its daily limit.
 /// - "ask:<film>": Google is asked for more and more of the film (2 bytes, 64 KB … to the end of the file), by this
@@ -56,6 +59,10 @@ enum FilmCheck {
                     await probe()
                 } else if name == "who" {
                     await who()
+                } else if name.hasPrefix("own:") {
+                    if let film = await find(String(name.dropFirst(4))) { await playOwn(film.id, film.title, fresh: false) }
+                } else if name.hasPrefix("ownfresh:") {
+                    if let film = await find(String(name.dropFirst(9))) { await playOwn(film.id, film.title, fresh: true) }
                 } else if name.hasPrefix("ask:") {
                     await ask(String(name.dropFirst(4)))
                 } else if name == "copytest" {
@@ -219,6 +226,146 @@ enum FilmCheck {
         let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 960, height: 540),
                          styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         w.title = "Film check: \(title)"
+        w.backgroundColor = .black
+        w.isReleasedWhenClosed = false
+        w.contentView = view
+        w.center()
+        w.orderFront(nil)
+        window = w
+    }
+
+    // MARK: The app's own player
+
+    /// Plays Drive file [id] with the app's own player, in silence: from its start, then from its middle, and writes
+    /// down how it went. [fresh]: its index is read from Google again, whatever is kept on this Mac.
+    private static func playOwn(_ id: String, _ title: String, fresh: Bool) async {
+        let play = PhonePlay(source: .drive(id), key: "drive:\(id)", title: title, start: 0)
+        let stream = DriveStream(fileID: id, name: title)
+        func why(_ error: Error?) -> String {
+            stream.refusalNow() ?? PhonePlayback.failure(stream.recentFailure ?? error, play)
+        }
+        let began = Date()
+        let opened: FilmIndex.Opened
+        do {
+            opened = try await FilmIndex.open(stream, id: id, fresh: fresh)
+        } catch {
+            note("\(title), the app’s own player: its index couldn’t be read after \(String(format: "%.1f", Date().timeIntervalSince(began))) s: \(why(error)); asked Google for \(stream.askedNow())")
+            return
+        }
+        let indexed = Date().timeIntervalSince(began)
+        let player = FilmPlayer(asset: opened.asset, bytes: stream)
+        player.mute(true)
+        do {
+            try await player.open()
+        } catch {
+            note("\(title), the app’s own player: nothing in it can be played (\(error)); asked Google for \(stream.askedNow())")
+            return
+        }
+        let film = player.film
+        let layer = AVSampleBufferDisplayLayer()
+        layer.videoGravity = .resizeAspect
+        showOwn(layer, title)
+        defer {
+            player.close()
+            window?.close()
+            window = nil
+        }
+        player.show(on: layer.sampleBufferRenderer)
+
+        // From the start.
+        let asked = Date()
+        player.start(at: 0)
+        guard await moving(player, past: 0.3, within: Double(PhonePlayback.startLimit)) else {
+            note("\(title), the app’s own player: didn’t start (\(player.state)): \(why(player.failure)); asked Google for \(stream.askedNow())")
+            return
+        }
+        let started = Date().timeIntervalSince(asked)
+        // The film Google sends must be the one the kept index was read from.
+        if !FilmIndex.stillRight(opened, stream) {
+            note("\(title), the app’s own player: the film has changed since its index was kept; read again")
+            FilmIndex.forget(id)
+            player.close()
+            window?.close()
+            window = nil
+            if !fresh { await playOwn(id, title, fresh: true) }
+            return
+        }
+        let first = await watchOwn(player, for: fromStart)
+        let index = opened.file == nil ? "read through the stream (it couldn’t be kept)"
+            : opened.fresh ? "read from Google and kept" : "kept on this Mac"
+        note("\(title), the app’s own player (\(aboutOwn(film, stream))): index \(index) in \(String(format: "%.1f", indexed)) s, started in \(String(format: "%.1f", started)) s; \(first); asked Google for \(stream.askedNow())")
+        guard player.state != .failed else {
+            note("\(title), the app’s own player: stopped: \(why(player.failure))")
+            return
+        }
+
+        // From the middle, as after a jump along the bar.
+        guard film.length > 600 else { return }
+        let jumped = Date()
+        player.seek(to: film.length / 2)
+        guard await moving(player, past: film.length / 2 + 0.3, within: 45) else {
+            note("\(title), the app’s own player: didn’t play from the middle (\(player.state)): \(why(player.failure)); asked Google for \(stream.askedNow())")
+            return
+        }
+        let again = Date().timeIntervalSince(jumped)
+        let second = await watchOwn(player, for: fromMiddle)
+        note("\(title), the app’s own player, from the middle: playing again in \(String(format: "%.1f", again)) s; \(second); asked Google for \(stream.askedNow())")
+    }
+
+    /// Waits until the app's own player is playing past [place] (seconds into the film): false when it failed or
+    /// took longer than [limit].
+    private static func moving(_ player: FilmPlayer, past place: Double, within limit: Double) async -> Bool {
+        let began = Date()
+        while Date().timeIntervalSince(began) < limit {
+            if player.state == .failed { return false }
+            if player.state == .playing, player.time >= place { return true }
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+        return false
+    }
+
+    /// Lets the app's own player play for [seconds]: how much of the film went by, how often it stopped to wait and
+    /// for how long, and what it read.
+    private static func watchOwn(_ player: FilmPlayer, for seconds: Double) async -> String {
+        let from = player.time, began = Date(), before = player.notes
+        while Date().timeIntervalSince(began) < seconds, player.state != .failed, player.state != .ended {
+            try? await Task.sleep(nanoseconds: 250_000_000)
+        }
+        let now = player.notes
+        let picture = now.reads[0] - before.reads[0], sound = now.reads[1] - before.reads[1]
+        return String(format: "in %.0f s it played %.1f s, stopped to wait %ld times (%.1f s), read %ld runs of picture and %ld of sound, the slowest in %.2f s, %ld asked again, decoders started afresh %ld times",
+                      Date().timeIntervalSince(began), max(0, player.time - from), now.waits - before.waits,
+                      now.waited - before.waited, picture, sound, now.slowest, now.again - before.again,
+                      now.mended - before.mended)
+    }
+
+    private static func aboutOwn(_ film: FilmPlayer.Film, _ stream: DriveStream) -> String {
+        var bits: [String] = []
+        if let p = film.picture { bits.append(String(format: "picture %@ %ld×%ld %.0f fps", p.codec, p.width, p.height, p.framesASecond)) }
+        for s in film.sounds {
+            bits.append("sound \(s.codec) \(s.channels) channels" + (s.language.map { " \($0)" } ?? "") + (s.playable ? "" : ", can’t be played here")
+                        + (s.id == film.sound ? ", playing" : ""))
+        }
+        if !film.words.isEmpty { bits.append("\(film.words.count) subtitle tracks") }
+        if let bytes = stream.sizeNow() {
+            bits.append(gb(bytes))
+            if film.length > 60 { bits.append(String(format: "needs %.0f Mb/s", Double(bytes) * 8 / film.length / 1_000_000)) }
+        }
+        let fastest = stream.fastestNow()
+        if fastest > 0 { bits.append(String(format: "arrived at up to %.0f Mb/s", fastest)) }
+        return bits.joined(separator: ", ")
+    }
+
+    private static func showOwn(_ layer: AVSampleBufferDisplayLayer, _ title: String) {
+        let view = NSView(frame: NSRect(x: 0, y: 0, width: 960, height: 540))
+        view.wantsLayer = true
+        view.layer?.backgroundColor = NSColor.black.cgColor
+        layer.frame = view.bounds
+        layer.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
+        view.layer?.addSublayer(layer)
+        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 960, height: 540),
+                         styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+        w.title = "Film check, the app’s own player: \(title)"
         w.backgroundColor = .black
         w.isReleasedWhenClosed = false
         w.contentView = view

@@ -434,5 +434,93 @@ final class FilmPlayerTests: XCTestCase {
         r.player.close()
         withExtendedLifetime(r) {}
     }
+
+    // MARK: The index kept on the device
+
+    /// A film's index kept in a file of its own: a file as long as the film that holds everything but the samples
+    /// walks exactly as the film does, and the film plays from it with its bytes coming from elsewhere.
+    func testAFilmPlaysFromItsKeptIndex() async throws {
+        let name = "hevc-hdr-aac51"
+        let data = try Data(contentsOf: fixture(name))
+        let whole = AVURLAsset(url: try fixture(name))
+        let marks = try await FilmIndexFile.marks(of: whole)
+        XCTAssertEqual(marks.count, 2)
+
+        // Every byte that isn't a sample: the index, and the little that goes with it.
+        var sample = [Bool](repeating: false, count: data.count)
+        for track in try await whole.load(.tracks) {
+            let reader = try XCTUnwrap(FilmTrackReader(track: track))
+            while let run = reader.next() {
+                for s in run.samples where s.size > 0 {
+                    for i in Int(s.offset)..<(Int(s.offset) + s.size) { sample[i] = true }
+                }
+            }
+        }
+        var parts: [(offset: Int64, data: Data)] = []
+        var i = 0
+        while i < data.count {
+            if sample[i] {
+                i += 1
+                continue
+            }
+            var j = i
+            while j < data.count, !sample[j] { j += 1 }
+            parts.append((offset: Int64(i), data: data.subdata(in: i..<j)))
+            i = j
+        }
+        let kept = parts.reduce(0) { $0 + $1.data.count }
+        XCTAssertLessThan(kept, data.count / 4)
+        print("FILM kept index: \(kept) of \(data.count) bytes in \(parts.count) parts")
+
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("film-index-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let url = folder.appendingPathComponent("\(name).mp4")
+        try FilmIndexFile.write(total: Int64(data.count), parts: parts, to: url)
+        XCTAssertEqual(FilmIndexFile.length(url), Int64(data.count))
+        let index = try await FilmIndexFile.open(url, matching: marks)
+
+        // A file that's missing a part of the index is refused, not played from.
+        let broken = folder.appendingPathComponent("broken.mp4")
+        try FilmIndexFile.write(total: Int64(data.count), parts: Array(parts.dropLast()), to: broken)
+        do {
+            _ = try await FilmIndexFile.open(broken, matching: marks)
+            XCTFail("opened without its index")
+        } catch {}
+        XCTAssertThrowsError(try FilmIndexFile.write(total: 0, parts: parts, to: broken))
+
+        // Played from it: the index from the file, the film's bytes from elsewhere.
+        let bytes = TestBytes(data: data)
+        let player = FilmPlayer(asset: index, bytes: bytes)
+        let layer = AVSampleBufferDisplayLayer()
+        try await player.open()
+        XCTAssertEqual(player.film.picture?.codec, "hvc1")
+        player.mute(true)
+        player.show(on: layer.sampleBufferRenderer)
+        player.start(at: 0)
+        let ended = await wait(12) { player.state == .ended }
+        XCTAssertTrue(ended, "state \(player.state) at \(player.time), failure \(String(describing: player.failure))")
+        XCTAssertNil(player.failure)
+        XCTAssertFalse(bytes.asked(lane: 0).isEmpty)
+        say("from its kept index", player)
+        player.close()
+        withExtendedLifetime(layer) {}
+    }
+
+    func testKeptIndexesUsedLongestAgoGoFirst() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("film-index-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        var urls: [URL] = []
+        for n in 0..<4 {
+            let url = folder.appendingPathComponent("film\(n).mp4")
+            try FilmIndexFile.write(total: 4096, parts: [(offset: 0, data: Data(repeating: UInt8(n), count: 1024))], to: url)
+            // Used a day apart: film0 longest ago.
+            try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(Double(n - 10) * 86_400)], ofItemAtPath: url.path)
+            urls.append(url)
+        }
+        FilmIndexFile.used(urls[1])
+        FilmIndexFile.prune(folder, count: 2)
+        let left = urls.filter { FileManager.default.fileExists(atPath: $0.path) }.map { $0.lastPathComponent }
+        XCTAssertEqual(left.sorted(), ["film1.mp4", "film3.mp4"])
+    }
 }
 #endif
