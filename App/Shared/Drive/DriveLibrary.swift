@@ -184,6 +184,9 @@ final class DriveLibrary: WatchSource {
     @ObservationIgnored private var unsynced = true
     /// Progress keys from a TV that no film or show here owns (not asked about again until the library is read).
     @ObservationIgnored private var unresolved: Set<String> = []
+    /// Progress keys whose video Drive said it still has, though nothing in the library owns it (asked once each time
+    /// the app runs, and again each day).
+    @ObservationIgnored private var inDrive: Set<String> = []
     /// Each title's names for searching and sorting, worked out once per title.
     @ObservationIgnored private var named: [String: Names] = [:]
     private struct Names { var title: String; var norm: String; var sort: String }
@@ -556,10 +559,78 @@ final class DriveLibrary: WatchSource {
         return p
     }
 
+    // MARK: Places with nothing behind them
+
+    /// The videos the library has now: each film's own, and every one in a collection's folder.
+    private func libraryVideos() -> Set<String> {
+        var out = Set(saved.movies.compactMap { $0.file })
+        for e in saved.movies where e.kind == "collection" {
+            for f in saved.folders[e.id] ?? [] { out.insert(f.id) }
+        }
+        return out
+    }
+
+    /// Whether the library has what [key] is a place in: one of its videos, or an episode of one of its shows.
+    /// A place kept for anything else (a film since taken out of Drive, a copy a TV played from outside the library)
+    /// has nothing behind it here, and isn't listed.
+    private func owned(_ key: String, _ s: Spot, videos: Set<String>) -> Bool {
+        let file = String(key.dropFirst("drive:".count))
+        if videos.contains(file) { return true }
+        guard let t = s.titleId, t != file, let e = entry(t) else { return false }
+        return e.kind == "show"
+    }
+
+    /// Takes out, for every device (the TVs too), each place kept for a video Google Drive no longer has: deleted, or
+    /// in its Bin. Drive is asked about the file itself, because the library not listing it isn't proof. The places
+    /// the library doesn't own are asked about each time the app runs; every other one once a day (an episode deleted
+    /// from a show that's still here). True when something was taken out.
+    private func dropLost() async -> Bool {
+        guard !saved.movies.isEmpty || !saved.shows.isEmpty else { return false }
+        let now = Date().timeIntervalSince1970
+        let all = now - UserDefaults.standard.double(forKey: "watch.placesChecked") > 86_400
+        if all {
+            inDrive = []
+            // Whatever Drive answers, not all of them again for a day (while Drive is busy, least of all).
+            UserDefaults.standard.set(now, forKey: "watch.placesChecked")
+        }
+        let videos = libraryVideos()
+        let ask: [(String, Double)] = saved.spots
+            .filter { !inDrive.contains($0.key) && (all || !owned($0.key, $0.value, videos: videos)) }
+            .map { ($0.key, $0.value.at) }
+        guard !ask.isEmpty else { return false }
+        var answers: [(String, Double, Bool?)] = []
+        await withTaskGroup(of: (String, Double, Bool?).self) { group in
+            for (i, a) in ask.enumerated() {
+                if i >= 6, let done = await group.next() { answers.append(done) }
+                let key = a.0, at = a.1
+                group.addTask { (key, at, await GoogleDrive.has(String(key.dropFirst("drive:".count)))) }
+            }
+            for await done in group { answers.append(done) }
+        }
+        var taken: [String] = []
+        for (key, at, has) in answers {
+            guard let has else { continue }     // Drive couldn't be asked: next time
+            if has { inDrive.insert(key); continue }
+            // Still the place that was asked about (nothing has played it since).
+            guard let spot = saved.spots[key], spot.at == at else { continue }
+            saved.spots[key] = nil
+            saved.gone[key] = nowMS
+            taken.append(spot.name ?? spot.title)
+        }
+        guard !taken.isEmpty else { return false }
+        Diagnostics.shared.notePlayback("Continue Watching: took out \(taken.joined(separator: ", ")), no longer in Google Drive")
+        unsynced = true
+        store()
+        return true
+    }
+
     private func continueItems() -> [[String: Any]] {
         var seen = Set<String>()
         var out: [[String: Any]] = []
-        let live = saved.spots.filter { $0.value.next || resumable($0.value.pos, $0.value.dur) }
+        // Only places in something the library has now. (A film taken out of the library stayed in Continue Watching
+        // under the name it was played by, "Odyssey", with nothing behind it.)
+        let videos = libraryVideos()
+        let live = saved.spots.filter { ($0.value.next || resumable($0.value.pos, $0.value.dur)) && owned($0.key, $0.value, videos: videos) }
         for (key, s) in live.sorted(by: { $0.value.at > $1.value.at }) {
             let group = s.titleId ?? key
             guard seen.insert(group).inserted, let play = continuePlay(key, s) else { continue }
@@ -889,6 +960,12 @@ final class DriveLibrary: WatchSource {
             }
             store()
             await resolveContexts()
+            // What was taken out goes to the TVs at once: this device's file is written again.
+            if await dropLost() {
+                unsynced = false
+                do { saved.syncFile = try await upload(mine) } catch { unsynced = true; throw error }
+                store()
+            }
         } catch {
             // Tried again next time Watch opens or something stops playing.
         }

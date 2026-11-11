@@ -262,6 +262,27 @@ enum GoogleDrive {
         throw Failure("Google Drive refused the sign-in. Sign in again in Settings.")
     }
 
+    /// Whether Drive still has the file [id]: false when Drive says it isn't there (deleted, or no longer this
+    /// account's to see) or it's in the Bin; nil when Drive couldn't be asked (no connection, busy, not signed in).
+    static func has(_ id: String) async -> Bool? {
+        guard let url = URL(string: "\(filesBase)/\(id)?fields=id,trashed&supportsAllDrives=true") else { return nil }
+        for attempt in 0..<2 {
+            guard let bearer = try? await token() else { return nil }
+            var r = URLRequest(url: url)
+            r.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization")
+            r.timeoutInterval = 20
+            guard let got = try? await URLSession.shared.data(for: r) else { return nil }
+            let code = (got.1 as? HTTPURLResponse)?.statusCode ?? 0
+            if code == 401 && attempt == 0 { dropToken(); continue }
+            // Only Drive's own "not found": another 404 (a network box in between) says nothing about the file.
+            if code == 404 { return reason(got.0) == "notFound" ? false : nil }
+            guard code == 200, let j = try? JSONSerialization.jsonObject(with: got.0) as? [String: Any],
+                  j["id"] as? String == id else { return nil }
+            return (j["trashed"] as? Bool) != true
+        }
+        return nil
+    }
+
     /// What a refused Drive request means, in words someone can act on (Drive says why in its answer).
     /// The reason in Google's refusal ("downloadQuotaExceeded", say), or "" when it gave none.
     nonisolated static func reason(_ body: Data?) -> String {
