@@ -972,6 +972,18 @@ final class FilmScreen: UIViewController, UIGestureRecognizerDelegate {
         present(alert, animated: true)
     }
 
+    /// Closes without a word (another player, or another film, takes over): once it has finished coming up, if
+    /// it's still on its way (a screen can't be taken down while it's being put up).
+    func closeQuietly() {
+        if isBeingPresented, let coming = transitionCoordinator {
+            coming.animate(alongsideTransition: nil) { [weak self] _ in
+                self?.dismiss(animated: false)
+            }
+        } else if presentingViewController != nil {
+            dismiss(animated: false)
+        }
+    }
+
     /// Closes the film's screen.
     func close(animated: Bool = true) {
         guard !gone else { return }

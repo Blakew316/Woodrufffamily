@@ -179,7 +179,7 @@ final class OwnPlayer {
         let old = screen
         old?.onGone = nil
         finish()
-        if let old, old.presentingViewController != nil { old.dismiss(animated: false) }
+        old?.closeQuietly()
     }
 
     /// Shows the screen once what it goes over is still: the title's page that asked has closed (presenting while
