@@ -66,6 +66,105 @@ final class EventFocusTests: XCTestCase {
         XCTAssertNil(EventFocus.subject([], changed: nil, width: w, height: h))
     }
 
+    // MARK: Looking closer where the picture changed
+
+    func testAFarOffFigureIsLookedForInASquareRoundWhereItChanged() throws {
+        // Somebody at the end of the drive: two cells by four of a 64 by 36 grid, in a 16:9 picture.
+        let patch = CGRect(x: 40.0 / 64, y: 8.0 / 36, width: 2.0 / 64, height: 4.0 / 36)
+        let part = try XCTUnwrap(EventFocus.closer(patch, aspect: 16.0 / 9))
+        // At least three tenths of the picture's height, and as many pixels across as down.
+        XCTAssertEqual(part.height, 0.3, accuracy: 0.0001)
+        XCTAssertEqual(part.width * 16 / 9, part.height, accuracy: 0.0001)
+        // Round the patch, and all of it inside.
+        XCTAssertEqual(part.midX, patch.midX, accuracy: 0.0001)
+        XCTAssertEqual(part.midY, patch.midY, accuracy: 0.0001)
+        XCTAssertLessThan(part.minX, patch.minX)
+        XCTAssertGreaterThan(part.maxX, patch.maxX)
+        XCTAssertLessThan(part.minY, patch.minY)
+        XCTAssertGreaterThan(part.maxY, patch.maxY)
+    }
+
+    func testThePartLookedAtStaysInsideThePicture() throws {
+        // In the top left corner: the square slides in rather than hanging over the edge.
+        let corner = try XCTUnwrap(EventFocus.closer(CGRect(x: 0, y: 0, width: 0.03, height: 0.1), aspect: 16.0 / 9))
+        XCTAssertEqual(corner.minX, 0, accuracy: 0.0001)
+        XCTAssertEqual(corner.minY, 0, accuracy: 0.0001)
+        // And the bottom right.
+        let far = try XCTUnwrap(EventFocus.closer(CGRect(x: 0.97, y: 0.9, width: 0.03, height: 0.1), aspect: 16.0 / 9))
+        XCTAssertEqual(far.maxX, 1, accuracy: 0.0001)
+        XCTAssertEqual(far.maxY, 1, accuracy: 0.0001)
+        // A doorbell's upright picture (3:4): still a square of it, no wider than the picture.
+        let upright = try XCTUnwrap(EventFocus.closer(CGRect(x: 0.4, y: 0.4, width: 0.1, height: 0.1), aspect: 0.75))
+        XCTAssertEqual(upright.width * 0.75, upright.height, accuracy: 0.0001)
+        XCTAssertLessThanOrEqual(upright.width, 1)
+    }
+
+    func testSomebodyCloseIsLookedForInTheWholePicture() {
+        // They fill most of the picture's height: a closer look would be the picture's whole height anyway.
+        XCTAssertNil(EventFocus.closer(CGRect(x: 0.3, y: 0.1, width: 0.3, height: 0.8), aspect: 16.0 / 9))
+        XCTAssertNil(EventFocus.closer(CGRect(x: 0.3, y: 0.3, width: 0.2, height: 0.4), aspect: 16.0 / 9))
+        // Half its height: still looked at closer.
+        XCTAssertNotNil(EventFocus.closer(CGRect(x: 0.3, y: 0.3, width: 0.1, height: 0.3), aspect: 16.0 / 9))
+        // Nothing to go on.
+        XCTAssertNil(EventFocus.closer(CGRect(x: 0.3, y: 0.1, width: 0, height: 0.2), aspect: 16.0 / 9))
+        XCTAssertNil(EventFocus.closer(CGRect(x: 0.3, y: 0.1, width: 0.1, height: 0.2), aspect: 0))
+    }
+
+    func testABoxFoundInAPartIsPlacedInTheWholePicture() {
+        let part = CGRect(x: 0.5, y: 0.2, width: 0.2, height: 0.3)
+        let box = EventFocus.placed(CGRect(x: 0.25, y: 0.5, width: 0.5, height: 0.4), in: part)
+        XCTAssertEqual(box.minX, 0.55, accuracy: 0.0001)
+        XCTAssertEqual(box.minY, 0.35, accuracy: 0.0001)
+        XCTAssertEqual(box.width, 0.1, accuracy: 0.0001)
+        XCTAssertEqual(box.height, 0.12, accuracy: 0.0001)
+        // The whole of the part is the part.
+        XCTAssertEqual(EventFocus.placed(CGRect(x: 0, y: 0, width: 1, height: 1), in: part), part)
+    }
+
+    // MARK: The sharpest of the frames that show it
+
+    /// A grey picture, 40 by 20: flat grey, with a figure in the box of [edge]-sharp stripes (255 and 0 side by side
+    /// when [crisp]; the same stripes smeared into their neighbours when not).
+    private func striped(crisp: Bool) -> [UInt8] {
+        let gw = 40, gh = 20
+        var g = [UInt8](repeating: 120, count: gw * gh)
+        for y in 5..<15 {
+            for x in 10..<20 {
+                let hard: UInt8 = x % 2 == 0 ? 255 : 0
+                g[y * gw + x] = crisp ? hard : (x % 2 == 0 ? 150 : 105)
+            }
+        }
+        return g
+    }
+
+    func testACrispFigureIsSharperThanASmearedOne() {
+        let box = CGRect(x: 0.25, y: 0.25, width: 0.25, height: 0.5)
+        let crisp = EventFocus.sharpness(striped(crisp: true), width: 40, height: 20, in: box)
+        let smeared = EventFocus.sharpness(striped(crisp: false), width: 40, height: 20, in: box)
+        XCTAssertGreaterThan(crisp, smeared * 4)
+        XCTAssertGreaterThan(smeared, 0)
+        // A flat wall has nothing sharp in it; a box off the picture, or a picture of the wrong size, measures 0.
+        XCTAssertEqual(EventFocus.sharpness([UInt8](repeating: 90, count: 800), width: 40, height: 20, in: box), 0)
+        XCTAssertEqual(EventFocus.sharpness(striped(crisp: true), width: 40, height: 20, in: CGRect(x: 2, y: 2, width: 0.1, height: 0.1)), 0)
+        XCTAssertEqual(EventFocus.sharpness([1, 2, 3], width: 40, height: 20, in: box), 0)
+    }
+
+    func testOfFramesThatShowItAsWellTheSharpest() throws {
+        // The same person the same size in three frames: smeared, crisp, smeared.
+        XCTAssertEqual(EventFocus.clearest([(shows: 0.05, sharp: 8), (shows: 0.05, sharp: 30), (shows: 0.05, sharp: 11)]), 1)
+        // Twice as large in the picture beats sharper.
+        XCTAssertEqual(EventFocus.clearest([(shows: 0.10, sharp: 12), (shows: 0.05, sharp: 30)]), 0)
+        // A little larger but badly smeared loses to nearly as large and crisp.
+        XCTAssertEqual(EventFocus.clearest([(shows: 0.055, sharp: 6), (shows: 0.05, sharp: 30)]), 1)
+        // Frames that don't show it at all never win; none at all is nil; no sharpness known is just the largest.
+        XCTAssertEqual(EventFocus.clearest([(shows: 0, sharp: 99), (shows: 0.01, sharp: 1)]), 1)
+        XCTAssertNil(EventFocus.clearest([]))
+        XCTAssertNil(EventFocus.clearest([(shows: 0, sharp: 5)]))
+        XCTAssertEqual(EventFocus.clearest([(shows: 0.02, sharp: 0), (shows: 0.03, sharp: 0)]), 1)
+        // Equal in every way: the earliest.
+        XCTAssertEqual(EventFocus.clearest([(shows: 0.02, sharp: 5), (shows: 0.02, sharp: 5)]), 0)
+    }
+
     // MARK: The moment in a clip
 
     func testTheSceneIsWhatStaysTheSameThroughAClip() {

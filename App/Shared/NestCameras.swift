@@ -620,8 +620,10 @@ final class CameraStreams {
     #endif
 
     /// A live picture from [id]'s stream: kept for its tile, and on disk for next time. [image]: the same picture
-    /// already decoded (Apple TV's), so the tile doesn't decode it again on the main thread.
-    func keepStill(_ cam: NestCameras.Camera, _ jpeg: Data, image: PlatformImage? = nil) {
+    /// already decoded (Apple TV's), so the tile doesn't decode it again on the main thread. [large]: a larger copy
+    /// of it for the disk (the Mac's: when nothing better comes, an alert's picture is the one kept there, and at
+    /// 480 pixels across it was a fog).
+    func keepStill(_ cam: NestCameras.Camera, _ jpeg: Data, image: PlatformImage? = nil, large: Data? = nil) {
         let id = cam.id
         guard let img = image ?? PlatformImage(data: jpeg) else { return }
         #if os(macOS)
@@ -637,7 +639,8 @@ final class CameraStreams {
         stillAt[id] = Date()
         stills[id] = img
         let file = Self.stillFile(id)
-        DispatchQueue.global(qos: .utility).async { try? jpeg.write(to: file, options: .atomic) }
+        let kept = large ?? jpeg
+        DispatchQueue.global(qos: .utility).async { try? kept.write(to: file, options: .atomic) }
     }
 
     /// The camera's latest live picture as kept on disk (a JPEG), nil when there's none: an alert's picture when
@@ -741,7 +744,11 @@ final class CameraStreams {
         return await p.frameJPEG(maxSide: maxSide)
     }
 
-    func grabFrame(_ cam: NestCameras.Camera, timeout: Double = 20) async -> Data? {
+    /// [maxSide]: how large a picture is wanted. A large one (an alert's, which is cut close on its subject) isn't
+    /// taken in the stream's first second: a stream starts small and coarse and takes a few seconds to reach the
+    /// camera's full size, so it's waited for until it's at least 1280 pixels across, three and a half seconds at
+    /// most.
+    func grabFrame(_ cam: NestCameras.Camera, timeout: Double = 20, maxSide: Int = 480) async -> Data? {
         let p = player(cam)
         // Kept running but not live for a while (dropped and never came back): started again for this picture,
         // rather than waited on.
@@ -764,14 +771,17 @@ final class CameraStreams {
         }
         let end = Date().addingTimeInterval(timeout)
         // Already playing (on screen, or Vehicle Alerts keeping it): its picture now, no settling needed.
-        if !started, p.isLive, let jpeg = await p.frameJPEG() { return jpeg }
+        if !started, p.isLive, let jpeg = await p.frameJPEG(maxSide: maxSide) { return jpeg }
         var firstLive: Date?
         while Date() < end {
             try? await Task.sleep(nanoseconds: 200_000_000)
             guard p.isLive else { continue }
             if firstLive == nil { firstLive = Date() }
             // A second in, past the first frames (often grey while the picture settles).
-            if let f = firstLive, Date().timeIntervalSince(f) > 1, let jpeg = await p.frameJPEG() { return jpeg }
+            guard let f = firstLive, Date().timeIntervalSince(f) > 1, let jpeg = await p.frameJPEG(maxSide: maxSide) else { continue }
+            if maxSide > 1280, Date().timeIntervalSince(f) < 3.5, let size = CameraEventMedia.pixelSize(jpeg),
+               max(size.width, size.height) < 1280 { continue }
+            return jpeg
         }
         return nil
     }
@@ -1735,7 +1745,11 @@ final class LivePlayer: NSObject, WKNavigationDelegate {
         let cam = camera
         Task { @MainActor in
             guard let jpeg = await frameJPEG() else { return }
+            #if os(macOS)
+            CameraStreams.shared.keepStill(cam, jpeg, large: await frameJPEG(maxSide: 1280))
+            #else
             CameraStreams.shared.keepStill(cam, jpeg)
+            #endif
             #if os(iOS) || os(tvOS)
             // The camera widgets reload now if they haven't for a minute, otherwise a moment later (so the latest
             // picture always gets there).

@@ -3,6 +3,9 @@ import UserNotifications
 import AVFoundation
 import ImageIO
 import UniformTypeIdentifiers
+#if os(macOS)
+import CoreImage
+#endif
 
 /// What a camera saw for an alert, from Google: the event's short clip (newer Nest cameras and doorbells send one) or
 /// a snapshot of the moment (the older ones; Google makes it only within 30 seconds of the event). Fetched the moment
@@ -128,7 +131,10 @@ enum CameraEventMedia {
     /// The event's picture the Mac Studio kept for [key] (full size, the moment it alerted for), from whichever of its
     /// addresses answers first; asked again until [deadline] (the Mac may still be making it, or the network is
     /// changing). Saved as the event's snapshot, nil when it can't be had.
-    static func fromMac(key: String, deadline: Date) async -> URL? {
+    /// [close]: the Mac's close-up of who or what was seen instead (cut from its full-size frame, a small file that
+    /// comes quickly even far from home), saved beside the snapshot. Asked for once: with none, the caller cuts its
+    /// own from the whole picture.
+    static func fromMac(key: String, deadline: Date, close: Bool = false) async -> URL? {
         guard let s = store, let token = s.string(forKey: "cam.shareToken"), !token.isEmpty, let f = folder else { return nil }
         let hosts = (s.string(forKey: "cam.shareHosts") ?? "").split(separator: ",").map(String.init).filter { !$0.isEmpty }
         guard !hosts.isEmpty, key.allSatisfy(\.isHexDigit) else { return nil }
@@ -137,21 +143,22 @@ enum CameraEventMedia {
             let left = deadline.timeIntervalSinceNow
             guard left > 0.3 else { return nil }
             let wait = min(left, 4)
-            let jobs: [@Sendable () async -> Data?] = hosts.map { h in { await macEvent(h, key: key, token: token, timeout: wait) } }
+            let jobs: [@Sendable () async -> Data?] = hosts.map { h in { await macEvent(h, key: key, token: token, timeout: wait, close: close) } }
             if let d = await FirstOf<Data>(jobs.count).run(jobs, deadline: Date().addingTimeInterval(wait + 0.2)) {
-                let file = f.appendingPathComponent("\(key).jpg")
+                let file = f.appendingPathComponent(close ? "close-\(key).jpg" : "\(key).jpg")
                 if (try? d.write(to: file, options: .atomic)) != nil { return file }
                 return nil
             }
+            if close { return nil }
             try? await Task.sleep(nanoseconds: UInt64(min(pause, max(0, deadline.timeIntervalSinceNow - 0.3)) * 1_000_000_000))
             pause = min(pause * 2, 3)
         }
         return nil
     }
 
-    private static func macEvent(_ host: String, key: String, token: String, timeout: Double) async -> Data? {
+    private static func macEvent(_ host: String, key: String, token: String, timeout: Double, close: Bool = false) async -> Data? {
         var c = URLComponents()
-        c.scheme = "http"; c.host = host; c.port = sharePort; c.path = "/event"
+        c.scheme = "http"; c.host = host; c.port = sharePort; c.path = close ? "/close" : "/event"
         c.queryItems = [URLQueryItem(name: "id", value: key), URLQueryItem(name: "k", value: token)]
         guard let url = c.url else { return nil }
         var r = URLRequest(url: url, timeoutInterval: timeout)
@@ -347,15 +354,86 @@ enum CameraEventMedia {
         return try? UNNotificationAttachment(identifier: identifier, url: copy, options: options.isEmpty ? nil : options)
     }
 
+    /// The most pixels across a picture is looked at or cut from: a camera's stream at its full size.
+    static let fullSide = 1920
+
     /// The alert's picture close on its subject, as Google Home's is: [file] (a picture, or a clip's frame [time]
     /// seconds in) cut to [focus] (a unit rectangle from the top left) at the picture's full size, written beside
     /// it; nil when it can't be made or would be tiny (the alert then shows the picture whole).
+    /// The Mac makes a small cut larger (`enlarged`): opened on an iPhone, a cut 300 pixels across is shown over a
+    /// thousand across, and stretched there it's a blur.
     static func closeUp(_ file: URL, focus: CGRect, at time: Double? = nil) async -> URL? {
-        guard let image = await picture(file, maxSide: 1600, at: time ?? 1),
-              let cut = SubjectCrop.crop(image, unit: focus), cut.width >= 64, cut.height >= 64,
-              let data = jpeg(cut, quality: 0.88), let f = folder else { return nil }
+        #if os(iOS)
+        // (An iPhone's notification step has little memory: a clip's frame is made a little smaller there, as it
+        // always was. A picture is decoded once at its own size, which takes less than making a smaller copy of it.)
+        let side = file.pathExtension == "mp4" ? 1600 : fullSide
+        #else
+        let side = fullSide
+        #endif
+        guard let image = await picture(file, maxSide: side, at: time ?? 1),
+              let cut = SubjectCrop.crop(image, unit: focus), cut.width >= 64, cut.height >= 64, let f = folder else { return nil }
+        #if os(macOS)
+        let shown = enlarged(cut) ?? cut
+        #else
+        let shown = cut
+        #endif
+        guard let data = jpeg(shown, quality: 0.9) else { return nil }
         let out = f.appendingPathComponent("close-" + file.deletingPathExtension().lastPathComponent + ".jpg")
         return (try? data.write(to: out, options: .atomic)) != nil ? out : nil
+    }
+
+    #if os(macOS)
+    private static let ci = CIContext(options: [.cacheIntermediates: false])
+
+    /// [cut] made larger, when it's under [least] pixels across: up to two and a half times, by the method that keeps
+    /// edges (Lanczos), then sharpened a little. No detail is added (there's none to add), but the phone no longer
+    /// stretches a small picture four times with its own soft filter. nil when it's large enough as it is.
+    static func enlarged(_ cut: CGImage, least: Int = 640) -> CGImage? {
+        let long = max(cut.width, cut.height)
+        guard long > 0, long < least, let scale = CIFilter(name: "CILanczosScaleTransform") else { return nil }
+        let k = min(2.5, Double(least) / Double(long))
+        scale.setValue(CIImage(cgImage: cut), forKey: kCIInputImageKey)
+        scale.setValue(k, forKey: kCIInputScaleKey)
+        scale.setValue(1.0, forKey: kCIInputAspectRatioKey)
+        guard let larger = scale.outputImage else { return nil }
+        let whole = CGRect(x: 0, y: 0, width: (Double(cut.width) * k).rounded(.down), height: (Double(cut.height) * k).rounded(.down))
+        guard whole.width >= 1, whole.height >= 1 else { return nil }
+        var out = larger
+        // (Its edges repeated outwards first, so sharpening doesn't darken the picture's border.)
+        if let sharpen = CIFilter(name: "CIUnsharpMask") {
+            sharpen.setValue(larger.clampedToExtent(), forKey: kCIInputImageKey)
+            sharpen.setValue(1.1 * k, forKey: kCIInputRadiusKey)
+            sharpen.setValue(0.4, forKey: kCIInputIntensityKey)
+            if let sharper = sharpen.outputImage { out = sharper }
+        }
+        return ci.createCGImage(out, from: whole)
+    }
+
+    /// The Mac's close-up of [key]'s event, while it's fresh (CameraShare's GET /close): the iPhones attach it as it
+    /// is, with no full-size picture to decode in their little memory.
+    static func closeImage(_ key: String) -> Data? {
+        guard key.allSatisfy(\.isHexDigit), !key.isEmpty, let u = folder?.appendingPathComponent("close-event-\(key).jpg"),
+              let d = (try? u.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate,
+              d.timeIntervalSinceNow > -eventKeptFor else { return nil }
+        return try? Data(contentsOf: u)
+    }
+    #endif
+
+    /// How many pixels across and down the picture in [file] is, read from its header (nothing is decoded).
+    static func pixelSize(_ file: URL) -> (width: Int, height: Int)? {
+        guard let src = CGImageSourceCreateWithURL(file as CFURL, nil) else { return nil }
+        return pixelSize(src)
+    }
+
+    static func pixelSize(_ data: Data) -> (width: Int, height: Int)? {
+        guard let src = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        return pixelSize(src)
+    }
+
+    private static func pixelSize(_ src: CGImageSource) -> (width: Int, height: Int)? {
+        guard let p = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any],
+              let w = p[kCGImagePropertyPixelWidth] as? Int, let h = p[kCGImagePropertyPixelHeight] as? Int, w > 0, h > 0 else { return nil }
+        return (w, h)
     }
 
     /// A JPEG of the moment for the widget (as `still`), and where the alert's subject is in the file (a snapshot, or
@@ -391,13 +469,17 @@ enum CameraEventMedia {
     /// A clip isn't looked at a second in whatever it shows there: the frame that shows what the alert is about is
     /// found in it (`ClipMoment`), and how far in that is comes back as [clipTime] (nil for a picture, or a clip that
     /// couldn't be looked through).
-    static func keepEventPicture(_ file: URL, key: String, title: String, moved: SubjectCrop.Moved? = nil) async -> (file: URL, focus: CGRect?, image: CGImage, still: Data?, clipTime: Double?)? {
+    /// [subject]: where the person is in the picture, when whoever picked it already knows (a frame of the stream:
+    /// `StreamMoment`), in shares of the picture from its top left: the framing is put round that, and nobody is
+    /// looked for again.
+    static func keepEventPicture(_ file: URL, key: String, title: String, moved: SubjectCrop.Moved? = nil,
+                                 subject: CGRect? = nil) async -> (file: URL, focus: CGRect?, image: CGImage, still: Data?, clipTime: Double?)? {
         let kind = SubjectCrop.kind(title)
         var moved = moved
         var clipTime: Double?
         var found: CGImage?
         #if os(macOS)
-        if file.pathExtension == "mp4", let pick = await ClipMoment.best(file, person: kind == .person, maxSide: 1600) {
+        if file.pathExtension == "mp4", let pick = await ClipMoment.best(file, person: kind == .person, maxSide: fullSide) {
             found = pick.image
             clipTime = pick.time
             // Where the clip's own picture changed in that frame says where its subject is better than the stream's
@@ -406,13 +488,27 @@ enum CameraEventMedia {
             PushRelay.log.notice("clip for \(title, privacy: .public): \(pick.why, privacy: .public), the frame \(String(format: "%.1f", pick.time), privacy: .public) s in")
         }
         #endif
-        if found == nil { found = await picture(file, maxSide: 1600) }
-        guard let image = found, let out = eventFile(key),
-              let full = jpeg(image, quality: 0.85), (try? full.write(to: out, options: .atomic)) != nil else { return nil }
-        let look = max(image.width, image.height) > 1280 ? (scaled(image, maxSide: 1280) ?? image) : image
-        // (The looking takes a moment with the Mac's detector: off the main thread.)
-        let changed = moved
-        let focus = await Task.detached(priority: .userInitiated) { SubjectCrop.unitFocus(in: look, kind: kind, moved: changed) }.value
+        if found == nil { found = await picture(file, maxSide: fullSide) }
+        guard let image = found, let out = eventFile(key) else { return nil }
+        // A picture that's already a JPEG no larger than that is kept as it came (a frame of the stream, Google's
+        // snapshot): made into a JPEG a second time it only loses.
+        var kept = false
+        if clipTime == nil, file.pathExtension.lowercased() == "jpg", let size = pixelSize(file), max(size.width, size.height) <= fullSide,
+           let bytes = try? Data(contentsOf: file) {
+            kept = (try? bytes.write(to: out, options: .atomic)) != nil
+        }
+        if !kept {
+            guard let full = jpeg(image, quality: 0.9), (try? full.write(to: out, options: .atomic)) != nil else { return nil }
+        }
+        var focus: CGRect?
+        if kind != .whole, let subject {
+            focus = SubjectCrop.unitFocus(around: subject, width: image.width, height: image.height)
+        } else {
+            let look = max(image.width, image.height) > 1280 ? (scaled(image, maxSide: 1280) ?? image) : image
+            // (The looking takes a moment with the Mac's detector: off the main thread.)
+            let changed = moved
+            focus = await Task.detached(priority: .userInitiated) { SubjectCrop.unitFocus(in: look, kind: kind, moved: changed) }.value
+        }
         let still = scaled(image, maxSide: 480).flatMap { jpeg($0, quality: 0.75) }
         return (out, focus, image, still, clipTime)
     }
@@ -566,11 +662,12 @@ enum CameraEventMedia {
     }
 
     /// Clips and snapshots older than ten minutes are let go, and anything left from the alerts' attachments; the
-    /// Mac's pictures of its events after an hour.
+    /// Mac's pictures of its events, and its close-ups of them, after an hour.
     private static func prune(_ f: URL) {
         let now = Date()
         for u in (try? FileManager.default.contentsOfDirectory(at: f, includingPropertiesForKeys: [.contentModificationDateKey])) ?? [] {
-            let life = u.lastPathComponent.hasPrefix("event-") ? eventKeptFor : keptFor
+            let name = u.lastPathComponent
+            let life = name.hasPrefix("event-") || name.hasPrefix("close-event-") ? eventKeptFor : keptFor
             if let d = (try? u.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate, d < now.addingTimeInterval(-life) {
                 try? FileManager.default.removeItem(at: u)
             }

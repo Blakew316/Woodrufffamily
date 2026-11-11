@@ -386,6 +386,9 @@ final class NestAlerts {
         if !quiet, MacCameraShare.save(id: camera, name: macCam?.name ?? body, doorbell: macCam?.doorbell ?? false, event: macTag) {
             WidgetCenter.shared.reloadTimelines(ofKind: MacCameraShare.kind); WidgetCenter.shared.reloadTimelines(ofKind: "com.woodruff.family.widget.tvs")
         }
+        // Apple's object detector, where this Mac has it, ready before the picture is picked: it finds the person
+        // in the stream's frames when Vision's own finder doesn't.
+        if VehicleWatch.watchesHere { VehicleDetector.shared.prepare() }
         let race = EventPicture(camera: camera, event: event, clip: clip, key: short, happened: happened, title: title)
         if let session { racing[session] = race }
         race.start(given: picture)
@@ -399,12 +402,15 @@ final class NestAlerts {
             var focus: CGRect?
             var shown: URL?
             var made: (file: URL, focus: CGRect?, image: CGImage, still: Data?, clipTime: Double?)?
-            // Where the camera's picture changed around the event (the stream's last few seconds, on the Mac that
-            // keeps them), and Apple's object detector where this Mac has it: the small picture zooms in on who or
-            // what was there, as Google Home's does.
-            if VehicleWatch.watchesHere { VehicleDetector.shared.prepare() }
-            let moved = StreamMoment.moved(camera: camera, happened: happened ?? received)
-            if let got { made = await CameraEventMedia.keepEventPicture(got.file, key: short, title: title, moved: moved) }
+            // Where who or what was seen is, so the small picture zooms in there as Google Home's does. A frame
+            // picked from the stream says itself: where the person is in it, or where it differs from the scene.
+            // Any other picture: where the camera's picture changed around the event (the stream's last few seconds,
+            // on the Mac that keeps them), and Apple's object detector where this Mac has it.
+            let picked = got?.source == .moment ? race.momentPick : nil
+            let moved = picked?.moved ?? StreamMoment.moved(camera: camera, happened: happened ?? received)
+            if let got {
+                made = await CameraEventMedia.keepEventPicture(got.file, key: short, title: title, moved: moved, subject: picked?.subject)
+            }
             // What came couldn't be read (a clip cut short): the camera's latest picture instead.
             if made == nil, let jpeg = CameraStreams.shared.latestStill(camera), let u = CameraEventMedia.jpegFile(jpeg, name: "frame-kept-\(short)") {
                 made = await CameraEventMedia.keepEventPicture(u, key: short, title: title, moved: moved)
@@ -430,15 +436,21 @@ final class NestAlerts {
             // The latest event, for Send Test Camera Alert.
             Saved.save(LastCameraEvent.savedKey, LastCameraEvent(title: title, body: body, camera: camera, key: short, happened: happened,
                                                                  event: event ?? "", clip: race.clip ?? clip ?? "", at: received, thumb: thumb))
-            let waited = String(format: "%.1f", Date().timeIntervalSince(received))
-            PushRelay.log.notice("picture for \(body, privacy: .public) after \(waited, privacy: .public) s: \(got.map { race.text($0.source) } ?? "none (no picture from Google, the live stream or before)", privacy: .public)\(thumb.map { ", \($0.count) characters in the push" } ?? ", none in the push", privacy: .public)\(focus != nil ? ", on its subject" : "", privacy: .public)")
             if let thumb { c.userInfo["thumb"] = thumb }
-            // This Mac's own alert: its picture close on who or what was seen, cut from the full one.
+            // The picture close on who or what was seen, cut from the full one: this Mac's own alert shows it, and
+            // the iPhones fetch it for theirs (the camera share's GET /close).
+            var close: URL?
             if let shown {
-                var pictured = shown
-                if let focus, let close = await CameraEventMedia.closeUp(shown, focus: focus) { pictured = close }
-                if let a = CameraEventMedia.attachment(pictured) { c.attachments = [a] }
+                if let focus { close = await CameraEventMedia.closeUp(shown, focus: focus) }
+                if let a = CameraEventMedia.attachment(close ?? shown) { c.attachments = [a] }
             }
+            // In the log: what the picture is, how large, and how large the close-up cut from it (a small one is a
+            // fog on the alert, and the log is where that shows).
+            let waited = String(format: "%.1f", Date().timeIntervalSince(received))
+            let whole = made.map { ", \($0.image.width)x\($0.image.height)" } ?? ""
+            let cut = close.flatMap { CameraEventMedia.pixelSize($0) }.map { ", its close-up \($0.width)x\($0.height)" }
+                ?? (focus != nil ? ", on its subject" : "")
+            PushRelay.log.notice("picture for \(body, privacy: .public) after \(waited, privacy: .public) s: \(got.map { race.text($0.source) } ?? "none (no picture from Google, the live stream or before)", privacy: .public)\(whole, privacy: .public)\(cut, privacy: .public)\(thumb.map { ", \($0.count) characters in the push" } ?? ", none in the push", privacy: .public)")
             // The Apple TVs' own alert for it (the hub only; its picture is kept above for them to fetch).
             if !quiet {
                 CameraShare.shared.noteEvent(key: short, camera: camera, name: body, title: title, focus: focus,
@@ -540,6 +552,8 @@ private final class EventPicture {
     private var findingMoment = false
     /// Why that frame was picked ("person found"), for the log.
     private var momentWhy: String?
+    /// The frame picked from the stream, with where its subject is in it.
+    private(set) var momentPick: StreamMoment.Pick?
 
     init(camera: String, event: String?, clip: String?, key: String, happened: Date? = nil, title: String = "") {
         self.camera = camera; self.event = event; self.clip = clip.flatMap { $0.isEmpty ? nil : $0 }; self.key = key
@@ -552,13 +566,15 @@ private final class EventPicture {
         moment()
         Task { [weak self] in
             guard let self else { return }
-            if let jpeg = await CameraStreams.shared.liveFrame(self.camera, maxSide: 1600), let u = self.write(jpeg, "live") {
+            if let jpeg = await CameraStreams.shared.liveFrame(self.camera, maxSide: CameraEventMedia.fullSide), let u = self.write(jpeg, "live") {
                 self.take(u, .live)
                 return
             }
             // Not live: its stream started for this one picture.
             guard let cam = NestCameras.shared.cameras.first(where: { $0.id == self.camera }), cam.webRTC, cam.online else { return }
-            if let jpeg = await CameraStreams.shared.grabFrame(cam, timeout: 15), let u = self.write(jpeg, "grab") { self.take(u, .grabbed) }
+            if let jpeg = await CameraStreams.shared.grabFrame(cam, timeout: 15, maxSide: CameraEventMedia.fullSide), let u = self.write(jpeg, "grab") {
+                self.take(u, .grabbed)
+            }
         }
     }
 
@@ -574,6 +590,7 @@ private final class EventPicture {
             self.findingMoment = false
             if let got {
                 self.momentWhy = got.why
+                self.momentPick = got
                 self.take(got.file, .moment)
             }
         }

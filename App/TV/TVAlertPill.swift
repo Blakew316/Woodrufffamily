@@ -174,11 +174,13 @@ final class TVAlerts {
                       picture: file, event: e.event, clip: e.clip))
     }
 
-    /// A square of the picture on its subject (the Mac's framing, else found here), small enough for the pill.
+    /// A square of the picture on its subject (the Mac's framing, else found here), small enough for the pill. Cut
+    /// from the picture at its full size when the Mac says where the subject is (somebody across a room is a small
+    /// part of it); looked for here in a smaller copy.
     nonisolated private static func roundThumb(_ data: Data, focus: CGRect?, kind: SubjectCrop.Kind) -> UIImage? {
         guard let src = CGImageSourceCreateWithData(data as CFData, nil),
               let image = CGImageSourceCreateThumbnailAtIndex(src, 0, [kCGImageSourceCreateThumbnailFromImageAlways: true,
-                                                                       kCGImageSourceThumbnailMaxPixelSize: 1280,
+                                                                       kCGImageSourceThumbnailMaxPixelSize: focus != nil ? CameraEventMedia.fullSide : 1280,
                                                                        kCGImageSourceCreateThumbnailWithTransform: true] as CFDictionary)
         else { return nil }
         let w = CGFloat(image.width), h = CGFloat(image.height)

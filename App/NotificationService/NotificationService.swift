@@ -5,8 +5,9 @@ import WidgetKit
 /// Runs the moment a camera or doorbell push arrives (Woodruff can be closed): puts the picture of the event in the
 /// notification, as Google Home does. The small picture the Mac sent in the push goes in at once, so the alert always
 /// has one; then, at the same time, Google's clip or snapshot and the Mac Studio's full-size picture of the event are
-/// asked for, and the first to come replaces it. Four seconds at most for that when the alert has the Mac's small
-/// picture (twenty when it has none): the alert never waits longer than that.
+/// asked for, and the first to come replaces it; the Mac Studio's own close-up of who or what was seen, when it comes,
+/// is the alert's picture. Four seconds at most for that when the alert has the Mac's small picture (twenty when it
+/// has none): the alert never waits longer than that.
 final class NotificationService: UNNotificationServiceExtension, @unchecked Sendable {
     private let lock = NSLock()
     private var handler: ((UNNotificationContent) -> Void)?
@@ -69,11 +70,24 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
         lock.lock(); widget = line; lock.unlock()
 
         Task {
+            // The Mac Studio's own close-up of who or what was seen, asked for at the same time as its whole picture:
+            // cut there from the camera's full-size frame, and a small file, so it comes quickly even far from home
+            // and nothing large is decoded here (this step has little memory).
+            let fromMacClose: Task<URL?, Never>? = thumb != nil && macFocus != nil ? Task {
+                await CameraEventMedia.fromMac(key: key, deadline: min(deadline, Date().addingTimeInterval(2)), close: true)
+            } : nil
             // The Mac Studio's full picture of the event (the moment it picked, with where its subject is), else
             // Google's clip or snapshot. With no picture from the Mac in the push, whichever comes first.
             let got = await CameraEventMedia.firstPicture(camera: camera, eventID: event, clipURL: clip, key: key, deadline: deadline,
                                                           prefersMac: thumb != nil)
-            if let got {
+            let macClose = await fromMacClose?.value
+            if let macClose, let a = CameraEventMedia.attachment(macClose) {
+                // The Mac's close-up is the alert's picture; the whole picture, when it came too, is the widgets'
+                // still (and what opening the alert replays).
+                let size = CameraEventMedia.pixelSize(macClose).map { " (\($0.width)x\($0.height))" } ?? ""
+                self.set([a], "The Mac’s close-up of its subject attached\(size)")
+                if let whole = got?.file, let still = await CameraEventMedia.still(whole, at: clipTime ?? 1) { self.keep(still: still) }
+            } else if let got {
                 let file = got.file
                 let isClip = file.pathExtension == "mp4"
                 // Where who or what was seen is (the Mac says for its own picture, and for the frame of Google's clip

@@ -97,6 +97,70 @@ public enum EventFocus {
         return chosen.dropFirst().reduce(first) { $0.union($1) }
     }
 
+    // MARK: Looking closer where the picture changed
+
+    /// The part of a picture to look for a far-off figure in: [patch] (where the picture changed, in shares of the
+    /// picture from its top left) with room round it, a square of the picture ([aspect]: the picture's width over its
+    /// height) at least three tenths of its height, kept inside it. Somebody across the drive is a few dozen pixels
+    /// of the whole picture, which the finders miss; in this part they're a good share of it. nil when that would be
+    /// nearly the picture's whole height anyway (the whole picture is looked at then).
+    public static func closer(_ patch: CGRect, aspect: Double) -> CGRect? {
+        guard patch.width > 0, patch.height > 0, aspect > 0 else { return nil }
+        let a = CGFloat(aspect)
+        // Measured in the picture's height, so a square is a square.
+        let side = max(patch.width * a * 2.4, patch.height * 2, 0.3)
+        guard side < 0.8 else { return nil }
+        let w = min(side / a, 1), h = side
+        let x = min(max(0, patch.midX - w / 2), 1 - w), y = min(max(0, patch.midY - h / 2), 1 - h)
+        return CGRect(x: x, y: y, width: w, height: h)
+    }
+
+    /// A box found in a part of the picture ([box] in shares of [part], [part] in shares of the picture, both from
+    /// the top left) as a box in the whole picture.
+    public static func placed(_ box: CGRect, in part: CGRect) -> CGRect {
+        CGRect(x: part.minX + box.minX * part.width, y: part.minY + box.minY * part.height,
+               width: box.width * part.width, height: box.height * part.height)
+    }
+
+    // MARK: The sharpest of the frames that show it
+
+    /// How sharp a grey picture ([width] by [height], brightness 0 to 255, row by row from the top) is inside [box]
+    /// (shares of the picture, across from its left and down from its top): how much each cell differs from the
+    /// four beside it, on average. Somebody walking is smeared in one frame and crisp in the next; this tells them
+    /// apart. 0 for a box too small to measure.
+    public static func sharpness(_ grey: [UInt8], width: Int, height: Int, in box: CGRect) -> Double {
+        guard width > 2, height > 2, grey.count == width * height else { return 0 }
+        let x0 = max(1, Int((box.minX * CGFloat(width)).rounded(.down)))
+        let x1 = min(width - 2, Int((box.maxX * CGFloat(width)).rounded(.up)) - 1)
+        let y0 = max(1, Int((box.minY * CGFloat(height)).rounded(.down)))
+        let y1 = min(height - 2, Int((box.maxY * CGFloat(height)).rounded(.up)) - 1)
+        guard x1 >= x0, y1 >= y0 else { return 0 }
+        var total = 0
+        for y in y0...y1 {
+            let row = y * width
+            for x in x0...x1 {
+                let c = Int(grey[row + x]) * 4
+                total += abs(c - Int(grey[row + x - 1]) - Int(grey[row + x + 1]) - Int(grey[row - width + x]) - Int(grey[row + width + x]))
+            }
+        }
+        return Double(total) / Double((x1 - x0 + 1) * (y1 - y0 + 1))
+    }
+
+    /// Of the frames that show the alert's subject, which to alert with: each has how well the subject shows (the
+    /// share of the picture it fills times how sure the finder is) and how sharp it is there. How well it shows
+    /// counts most; of frames that show it about as well, the sharpest wins (a frame half as sharp as the sharpest
+    /// counts as showing it a fifth less well). nil for none.
+    public static func clearest(_ frames: [(shows: Double, sharp: Double)]) -> Int? {
+        let top = frames.map { $0.sharp }.max() ?? 0
+        var best: (index: Int, score: Double)?
+        for (i, f) in frames.enumerated() where f.shows > 0 {
+            let score = f.shows * (0.6 + 0.4 * (top > 0 ? f.sharp / top : 1))
+            if let b = best, b.score >= score { continue }
+            best = (i, score)
+        }
+        return best?.index
+    }
+
     // MARK: The moment in a clip
 
     /// How a scene looks through a clip: each cell's middle value over the clip's frames (grey copies, all the same

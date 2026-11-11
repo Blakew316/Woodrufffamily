@@ -354,27 +354,32 @@ final class VehicleDetector {
     /// four overlapping parts of it (which finds the small ones at the street, and more at night).
     func vehicles(in image: CGImage) async -> [VehicleSighting]? {
         guard let model else { return nil }
-        return await Task.detached(priority: .utility) { VehicleDetector.find(in: image, with: model, kinds: VehicleDetector.kinds, fine: false) }.value
+        return await Task.detached(priority: .utility) { VehicleDetector.find(in: image, with: model, kinds: VehicleDetector.kinds, depth: 1) }.value
     }
 
     /// The people in [image], each with how sure the detector is, in Vision's own measure (shares of the picture, up
     /// from its bottom left); nil when the detector isn't ready on this Mac. For a camera alert's picture
     /// (`SubjectCrop`): it makes out the small, far-off figures Vision's own person finder misses. Looked for in the
     /// whole picture, in four parts of it and in nine smaller ones (a child across the street is a few pixels tall).
-    nonisolated static func people(in image: CGImage) -> [(box: CGRect, confidence: Float)]? {
+    /// [depth] 0: the whole picture only, one look (a frame of the stream already cut to where the picture changed,
+    /// of which a dozen are looked at for one alert: `StreamMoment`).
+    nonisolated static func people(in image: CGImage, depth: Int = 2) -> [(box: CGRect, confidence: Float)]? {
         guard let model = ready else { return nil }
-        let found = VehicleSighting.merged(find(in: image, with: model, kinds: ["person"], fine: true).filter { $0.confidence >= 0.35 })
+        let found = VehicleSighting.merged(find(in: image, with: model, kinds: ["person"], depth: depth).filter { $0.confidence >= 0.35 })
         return found.map { s in
             let fromBottom: CGFloat = 1 - s.box.maxY
             return (box: CGRect(x: s.box.minX, y: fromBottom, width: s.box.width, height: s.box.height), confidence: Float(s.confidence))
         }
     }
 
-    private nonisolated static func find(in image: CGImage, with model: Model, kinds: Set<String>, fine: Bool) -> [VehicleSighting] {
+    /// [depth]: 0 looks at the whole picture, 1 also at four overlapping parts of it, 2 also at nine smaller ones.
+    private nonisolated static func find(in image: CGImage, with model: Model, kinds: Set<String>, depth: Int) -> [VehicleSighting] {
         let w = CGFloat(image.width), h = CGFloat(image.height)
         var parts = [CGRect(x: 0, y: 0, width: 1, height: 1)]
-        for (x, y) in [(0.0, 0.0), (0.4, 0.0), (0.0, 0.4), (0.4, 0.4)] { parts.append(CGRect(x: x, y: y, width: 0.6, height: 0.6)) }
-        if fine {
+        if depth >= 1 {
+            for (x, y) in [(0.0, 0.0), (0.4, 0.0), (0.0, 0.4), (0.4, 0.4)] { parts.append(CGRect(x: x, y: y, width: 0.6, height: 0.6)) }
+        }
+        if depth >= 2 {
             for y in [0.0, 0.3, 0.6] { for x in [0.0, 0.3, 0.6] { parts.append(CGRect(x: x, y: y, width: 0.4, height: 0.4)) } }
         }
         var found: [VehicleSighting] = []

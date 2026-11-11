@@ -42,6 +42,17 @@ enum SubjectCrop {
         return CGRect(x: f.minX / w, y: f.minY / h, width: f.width / w, height: f.height / h)
     }
 
+    /// The framing of a subject already found at [box] (shares of the picture, from its top left; the picture
+    /// [width] by [height] pixels), as `unitFocus` gives it: the Mac that picked the alert's frame from its stream
+    /// knows where the person is in it (`StreamMoment`), and doesn't look for them a second time.
+    static func unitFocus(around box: CGRect, width: Int, height: Int) -> CGRect? {
+        let w = CGFloat(width), h = CGFloat(height)
+        guard w > 0, h > 0,
+              let f = frame(CGRect(x: box.minX * w, y: box.minY * h, width: box.width * w, height: box.height * h),
+                            in: CGSize(width: w, height: h)) else { return nil }
+        return CGRect(x: f.minX / w, y: f.minY / h, width: f.width / w, height: f.height / h)
+    }
+
     /// [image] cropped to [unit] (a `unitFocus`).
     static func crop(_ image: CGImage, unit: CGRect) -> CGImage? {
         let w = CGFloat(image.width), h = CGFloat(image.height)
@@ -140,13 +151,21 @@ enum SubjectCrop {
     /// their figures; else their faces, with head and shoulders round them. The Mac also uses it to pick, of a
     /// stream's last few seconds, the frame that shows the person best (`StreamMoment`).
     static func people(_ handler: VNImageRequestHandler) -> [(box: CGRect, confidence: Float)] {
+        let found = bodies(handler)
+        // No figure found (half hidden, or very close to a doorbell): the face, with head and shoulders round it.
+        return found.isEmpty ? faces(handler) : found
+    }
+
+    /// The figures Vision finds in [handler]'s picture (it wants them whole, head to foot).
+    static func bodies(_ handler: VNImageRequestHandler) -> [(box: CGRect, confidence: Float)] {
         let humans = VNDetectHumanRectanglesRequest()
         humans.upperBodyOnly = false
-        if (try? handler.perform([humans])) != nil {
-            let found = (humans.results ?? []).filter { $0.confidence >= 0.3 }.map { (box: $0.boundingBox, confidence: $0.confidence) }
-            if !found.isEmpty { return found }
-        }
-        // No figure found (half hidden, or very close to a doorbell): the face, with head and shoulders round it.
+        guard (try? handler.perform([humans])) != nil else { return [] }
+        return (humans.results ?? []).filter { $0.confidence >= 0.3 }.map { (box: $0.boundingBox, confidence: $0.confidence) }
+    }
+
+    /// The faces Vision finds in [handler]'s picture, each with head and shoulders round it.
+    static func faces(_ handler: VNImageRequestHandler) -> [(box: CGRect, confidence: Float)] {
         let faces = VNDetectFaceRectanglesRequest()
         guard (try? handler.perform([faces])) != nil else { return [] }
         return (faces.results ?? []).map { f in

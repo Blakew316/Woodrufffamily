@@ -315,12 +315,15 @@ final class FrameGrabber: NSObject, RTCVideoRenderer, @unchecked Sendable {
     #if os(macOS)
     // MARK: The last few seconds (the Mac that sends the family's alerts)
 
-    /// One picture of the stream as it came: a JPEG about 1280 pixels across, and a 64 × 36 grey copy of it to tell
-    /// how much changed between two of them.
+    /// One picture of the stream as it came: a JPEG at the stream's own size (1920 pixels across from a camera
+    /// with a good connection; an alert's close-up is cut from it, so every pixel the camera sent counts), that size,
+    /// and a 64 × 36 grey copy of it to tell how much changed between two of them.
     struct Moment: Sendable {
         let at: Date
         let jpeg: Data
         let grey: [UInt8]
+        let width: Int
+        let height: Int
     }
 
     /// Whether the last few seconds are kept: on the Mac that sends the family's alerts, so an alert's picture can be
@@ -334,13 +337,17 @@ final class FrameGrabber: NSObject, RTCVideoRenderer, @unchecked Sendable {
 
     /// How far back they go.
     static let momentSpan: TimeInterval = 12
-    /// About two a second, at most about 8 MB per camera.
-    private static let momentEvery: TimeInterval = 0.5
-    private static let momentBytes = 8_000_000
-    private static let momentSide = 1280
+    /// Five every two seconds (of somebody walking past, one of them is crisp and shows them whole), at most about
+    /// 24 MB per camera. They were 1280 pixels across, two a second, and the close-up of somebody across a room came
+    /// out about 200 pixels across: a fog on the alert.
+    private static let momentEvery: TimeInterval = 0.4
+    private static let momentBytes = 24_000_000
+    static let momentSide = 1920
+    private static let momentQuality = 0.82
     static let greyWidth = 64, greyHeight = 36
-    /// Made one at a time, in the background, for every camera.
-    private static let momentQueue = DispatchQueue(label: "com.woodruff.family.camera-moments", qos: .utility)
+    /// Made in the background, one at a time for each camera (several cameras' at once: a full-size picture takes
+    /// a few times longer to make than the smaller ones did, and one queue for every camera would fall behind).
+    private static let momentQueue = DispatchQueue(label: "com.woodruff.family.camera-moments", qos: .utility, attributes: .concurrent)
 
     private var moments: [Moment] = []
     private var lastMoment = Date.distantPast
@@ -379,8 +386,8 @@ final class FrameGrabber: NSObject, RTCVideoRenderer, @unchecked Sendable {
 
     private static func moment(_ frame: RTCVideoFrame, at: Date) -> Moment? {
         guard let full = decoded(frame, maxSide: momentSide), let image = fitted(full, maxSide: momentSide),
-              let jpeg = encoded(image, quality: 0.7), let grey = grey(image) else { return nil }
-        return Moment(at: at, jpeg: jpeg, grey: grey)
+              let jpeg = encoded(image, quality: momentQuality), let grey = grey(image) else { return nil }
+        return Moment(at: at, jpeg: jpeg, grey: grey, width: image.width, height: image.height)
     }
 
     /// [image] as 64 × 36 brightness values (0–255).
@@ -397,7 +404,7 @@ final class FrameGrabber: NSObject, RTCVideoRenderer, @unchecked Sendable {
         return drawn ? px : nil
     }
 
-    /// Only the last twelve seconds, and at most about 8 MB of them (with the lock held).
+    /// Only the last twelve seconds, and at most about 24 MB of them (with the lock held).
     private func trim() {
         let oldest = Date().addingTimeInterval(-Self.momentSpan)
         var bytes = moments.reduce(0) { $0 + $1.jpeg.count }

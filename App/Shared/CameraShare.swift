@@ -190,12 +190,12 @@ final class CameraShare {
 
     /// GET /still?id=<camera>&k=<key>: the camera's current picture as a JPEG.
     /// GET /event?id=<event's short id>&k=<key>: the picture this Mac alerted with for that event (full size, for the
-    /// iPhones' alerts: their push carries only a small one).
+    /// iPhones' alerts: their push carries only a small one). GET /close: its close-up.
     private func answer(_ request: String, _ c: NWConnection) async {
         let line = request.components(separatedBy: "\r\n").first ?? ""
         let parts = line.split(separator: " ")
         guard parts.count >= 2, let url = URLComponents(string: "http://x" + parts[1]),
-              ["/still", "/event", "/events", "/history", "/clip", "/diag", "/drivetoken"].contains(url.path) else {
+              ["/still", "/event", "/close", "/events", "/history", "/clip", "/diag", "/drivetoken"].contains(url.path) else {
             return reply(c, "404 Not Found", nil)
         }
         let q = Dictionary((url.queryItems ?? []).map { ($0.name, $0.value ?? "") }, uniquingKeysWith: { a, _ in a })
@@ -221,10 +221,17 @@ final class CameraShare {
             return reply(c, "200 OK", (try? JSONEncoder().encode(feed)) ?? Data("{}".utf8), type: "application/json")
         }
         guard let id = q["id"], !id.isEmpty else { return reply(c, "403 Forbidden", nil) }
-        if url.path == "/event" {
+        // GET /close?id=<event's short id>&k=<key>: this Mac's close-up of who or what that event's alert is about,
+        // cut from its full-size picture (an iPhone's alert shows it as it is).
+        if url.path == "/event" || url.path == "/close" {
             guard id.count <= 32, id.allSatisfy(\.isHexDigit) else { return reply(c, "403 Forbidden", nil) }
+            let close = url.path == "/close"
             // (An older event's picture is in the camera's history.)
-            if let jpeg = CameraEventMedia.eventImage(id) ?? CameraHistory.picture(id) { return reply(c, "200 OK", jpeg) }
+            let jpeg = close ? CameraEventMedia.closeImage(id) : CameraEventMedia.eventImage(id) ?? CameraHistory.picture(id)
+            // In the log, which device took which picture of an alert: an iPhone's alert shows this Mac's close-up
+            // only when this says its notification step fetched it.
+            PushRelay.log.notice("event \(id, privacy: .public): its \(close ? "close-up" : "picture", privacy: .public) asked for by \(Self.asker(request), privacy: .public), \(jpeg.map { "\($0.count / 1024) KB sent" } ?? "none kept", privacy: .public)")
+            if let jpeg { return reply(c, "200 OK", jpeg) }
             return reply(c, "404 Not Found", nil)
         }
         // GET /history?id=<camera>&k=<key>: the camera's last events, newest first (its page lists them).
@@ -244,6 +251,17 @@ final class CameraShare {
         // Not live yet (its stream is starting now): the latest picture kept, at once, with its age.
         if let kept = latest[id] { return replyFrame(c, kept.jpeg, age: Date().timeIntervalSince(kept.at)) }
         reply(c, "503 Service Unavailable", nil)
+    }
+
+    /// Who asked, for the log: the app or the step of it named in the request ("NotificationService" is an iPhone's
+    /// notification step, "Woodruff Family" the app itself on an iPhone, iPad or Apple TV).
+    private static func asker(_ request: String) -> String {
+        for line in request.components(separatedBy: "\r\n") where line.lowercased().hasPrefix("user-agent:") {
+            let agent = line.dropFirst("user-agent:".count).trimmingCharacters(in: .whitespaces)
+            let name = agent.split(separator: "/").first.map(String.init) ?? agent
+            return String((name.removingPercentEncoding ?? name).prefix(40))
+        }
+        return "a device"
     }
 
     /// The camera's picture now, taken once however many ask at the same moment.
