@@ -5,19 +5,24 @@ import CoreMedia
 /// Plain samples a decoder made of one packet of a film's sound.
 public struct FilmDecodedSound {
     /// 32-bit floats, one frame after another, [channels] to a frame, always in this order: front left, front right,
-    /// centre, low, surround left, surround right, rear left, rear right (two channels: left, right; one: by
-    /// itself). Good until the decoder is next asked.
+    /// centre, low, surround left, surround right, rear left, rear right, then the four overhead: top front left,
+    /// top front right, top rear left, top rear right (two channels: left, right; one: by itself). Good until the
+    /// decoder is next asked.
     public let samples: UnsafeBufferPointer<Float>
     public let frames: Int
-    /// One, two, six or eight.
+    /// One, two, six, eight, or twelve (7.1 with four overhead: Atmos and DTS:X with their heights).
     public let channels: Int
     public let rate: Int
+    /// The first frame given belongs this many frames before the packet's own time. A decoder that works on a
+    /// stretch of sound at once (the one that places the overhead sounds does) hands each stretch over late.
+    public let early: Int
 
-    public init(samples: UnsafeBufferPointer<Float>, frames: Int, channels: Int, rate: Int) {
+    public init(samples: UnsafeBufferPointer<Float>, frames: Int, channels: Int, rate: Int, early: Int = 0) {
         self.samples = samples
         self.frames = frames
         self.channels = channels
         self.rate = rate
+        self.early = early
     }
 }
 
@@ -127,6 +132,8 @@ enum FilmDecodedBuffers {
         case 6: tag = kAudioChannelLayoutTag_MPEG_5_1_A
         // The same, then rear left surround and rear right surround.
         case 8: tag = kAudioChannelLayoutTag_MPEG_7_1_C
+        // Those eight, then four overhead: top front left and right, top rear left and right.
+        case 12: tag = kAudioChannelLayoutTag_Atmos_7_1_4
         default: return nil
         }
         guard rate > 0 else { return nil }
@@ -240,7 +247,8 @@ final class FilmSoundDecoding {
                     rate = sound.rate
                     format = FilmDecodedBuffers.format(channels: channels, rate: rate)
                 }
-                var time = s.shown
+                // (A decoder that hands sound over late says by how much: its first frame is that much earlier.)
+                var time = sound.early > 0 ? CMTimeSubtract(s.shown, CMTime(value: CMTimeValue(sound.early), timescale: CMTimeScale(rate))) : s.shown
                 var skip = 0
                 if from.isValid, time.isValid, CMTimeCompare(time, from) < 0 {
                     skip = Int((CMTimeSubtract(from, time).seconds * Double(rate)).rounded())

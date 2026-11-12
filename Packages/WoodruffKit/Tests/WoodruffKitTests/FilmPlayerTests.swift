@@ -538,21 +538,24 @@ private final class FakeSound: FilmSoundDecoder {
     private let growAfter: Int?
     private let growTo: Int
     private let rate: Int
+    /// The sound it gives belongs this many frames before the packet (a decoder that hands sound over late).
+    private let early: Int
     private let samples: UnsafeMutableBufferPointer<Float>
     private let lock = NSLock()
     private var packets = 0
     private var starts: [Data] = []
     private var flushes = 0
 
-    init(frames: Int, channels: Int = 6, rate: Int = 48000, gives: Bool = true, growAfter: Int? = nil, growTo: Int = 6) {
+    init(frames: Int, channels: Int = 6, rate: Int = 48000, early: Int = 0, gives: Bool = true, growAfter: Int? = nil, growTo: Int = 6) {
         self.frames = frames
         self.channels = channels
         self.rate = rate
+        self.early = early
         self.gives = gives
         self.growAfter = growAfter
         self.growTo = growTo
-        samples = UnsafeMutableBufferPointer<Float>.allocate(capacity: frames * 8)
-        for i in 0..<(frames * 8) { samples[i] = Float(i % 17) * 0.0001 }
+        samples = UnsafeMutableBufferPointer<Float>.allocate(capacity: frames * 12)
+        for i in 0..<(frames * 12) { samples[i] = Float(i % 17) * 0.0001 }
     }
 
     deinit {
@@ -567,7 +570,7 @@ private final class FakeSound: FilmSoundDecoder {
         lock.unlock()
         guard gives else { return nil }
         let now = growAfter.map { nth > $0 ? growTo : channels } ?? channels
-        return FilmDecodedSound(samples: UnsafeBufferPointer(rebasing: samples[0..<(frames * now)]), frames: frames, channels: now, rate: rate)
+        return FilmDecodedSound(samples: UnsafeBufferPointer(rebasing: samples[0..<(frames * now)]), frames: frames, channels: now, rate: rate, early: early)
     }
 
     func flush() {
@@ -697,6 +700,19 @@ extension FilmPlayerTests {
         }
         XCTAssertEqual(growing.channels, 6)
 
+        // A decoder that hands its sound over late (by half a packet here): each buffer is stamped that much earlier,
+        // and what then falls before where the film is wanted from is left out.
+        let late = FilmSoundDecoding(kind: "truehd", decoder: FakeSound(frames: 480, channels: 12, early: 240))
+        let held = try late.buffers(of: run, bytes: Data(count: 400), from: .invalid)
+        XCTAssertEqual(CMSampleBufferGetPresentationTimeStamp(try XCTUnwrap(held.first)).seconds, -0.005, accuracy: 0.0001)
+        XCTAssertEqual(held.reduce(0) { $0 + CMSampleBufferGetNumSamples($1) }, 100 * 480)
+        let wanted = FilmSoundDecoding(kind: "truehd", decoder: FakeSound(frames: 480, channels: 12, early: 240))
+        let kept = try wanted.buffers(of: run, bytes: Data(count: 400), from: .zero)
+        XCTAssertEqual(CMSampleBufferGetPresentationTimeStamp(try XCTUnwrap(kept.first)).seconds, 0, accuracy: 0.0001)
+        XCTAssertEqual(kept.reduce(0) { $0 + CMSampleBufferGetNumSamples($1) }, 100 * 480 - 240)
+        let twelve = try XCTUnwrap(kept.first.flatMap { CMSampleBufferGetFormatDescription($0) }.flatMap { CMAudioFormatDescriptionGetStreamBasicDescription($0)?.pointee })
+        XCTAssertEqual(twelve.mChannelsPerFrame, 12)
+
         // Packets nothing comes of: counted, and the seconds of the film they were.
         let deaf = FilmSoundDecoding(kind: "truehd", decoder: FakeSound(frames: 480, gives: false))
         XCTAssertTrue(try deaf.buffers(of: run, bytes: Data(count: 400), from: .invalid).isEmpty)
@@ -708,7 +724,7 @@ extension FilmPlayerTests {
     /// The formats plain samples are handed to the renderer in: one for each shape a decoder gives.
     func testTheFormatsOfDecodedSound() throws {
         for (channels, tag) in [(1, kAudioChannelLayoutTag_Mono), (2, kAudioChannelLayoutTag_Stereo), (6, kAudioChannelLayoutTag_MPEG_5_1_A),
-                                (8, kAudioChannelLayoutTag_MPEG_7_1_C)] {
+                                (8, kAudioChannelLayoutTag_MPEG_7_1_C), (12, kAudioChannelLayoutTag_Atmos_7_1_4)] {
             let format = try XCTUnwrap(FilmDecodedBuffers.format(channels: channels, rate: 96000), "\(channels) channels")
             let basic = try XCTUnwrap(CMAudioFormatDescriptionGetStreamBasicDescription(format)?.pointee)
             XCTAssertEqual(basic.mSampleRate, 96000)
@@ -846,6 +862,27 @@ extension FilmPlayerTests {
         print("FILM eight channels: \(n.decodedPackets) packets, \(n.decodedFrames) frames, \(n.decodedChannels) channels at \(n.decodedRate); mended \(n.mended) \(n.mendWhy ?? "")")
         XCTAssertEqual(n.decodedChannels, 8)
         XCTAssertEqual(n.decodedRate, 96000)
+        XCTAssertEqual(n.mended, 0)
+        XCTAssertGreaterThan(r.player.time, 0.4)
+        XCTAssertNil(r.player.failure)
+        r.player.close()
+    }
+
+    /// Twelve channels (7.1 with four overhead, as Atmos and DTS:X give with their heights) go to the sound renderer
+    /// too, and play.
+    func testTwelveChannelsWithHeightsPlay() async throws {
+        FilmSoundDecoders.make = { _ in FakeSound(frames: 40, channels: 12) }
+        defer { FilmSoundDecoders.make = nil }
+        let r = try rig("dts-truehd-aac")
+        try await r.player.open()
+        r.player.show(on: r.layer.sampleBufferRenderer)
+        r.player.start(at: 0)
+        let playing = await wait(6) { r.player.state == .playing }
+        XCTAssertTrue(playing, "state \(r.player.state), failure \(String(describing: r.player.failure))")
+        await pause(1)
+        let n = r.player.notes
+        print("FILM twelve channels: \(n.decodedPackets) packets, \(n.decodedFrames) frames, \(n.decodedChannels) channels at \(n.decodedRate); mended \(n.mended) \(n.mendWhy ?? "")")
+        XCTAssertEqual(n.decodedChannels, 12)
         XCTAssertEqual(n.mended, 0)
         XCTAssertGreaterThan(r.player.time, 0.4)
         XCTAssertNil(r.player.failure)
