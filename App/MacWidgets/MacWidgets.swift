@@ -202,8 +202,9 @@ struct TVsProvider: TimelineProvider {
     static func posters(for tvs: [WidgetTV]) async -> [String: Data] {
         var byHub: [String: [WidgetTV]] = [:]
         for tv in tvs where tv.playing != nil { byHub[tv.hub.id, default: []].append(tv) }
+        let groups = Array(byHub.values)
         return await withTaskGroup(of: [String: Data].self, returning: [String: Data].self) { g in
-            for group in byHub.values {
+            for group in groups {
                 g.addTask {
                     await within(5) { () async -> [String: Data]? in
                         guard let hub = group.first?.hub else { return nil }
