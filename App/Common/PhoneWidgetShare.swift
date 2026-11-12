@@ -35,7 +35,7 @@ enum PhoneWidgetShare {
         var tvs: [TVLine]? = nil
         /// When the app last checked all this (nil: written by an older build). Not part of "what changed".
         var savedAt: Date? = nil
-        /// The TV the remote is on.
+        /// The TV the remote is on. No widget marks it any more, so it isn't part of "what changed" either.
         var selectedTV: String? = nil
 
         static func == (a: Snapshot, b: Snapshot) -> Bool { a.sameTVs(b) && a.sameHome(b) }
@@ -48,7 +48,7 @@ enum PhoneWidgetShare {
         func sameTVsButTimes(_ o: Snapshot) -> Bool {
             func untimed(_ lines: [TVLine]?) -> [TVLine]? { lines?.map { var t = $0; t.progress = nil; t.left = nil; return t } }
             return tvName == o.tvName && title == o.title && detail == o.detail && isPlaying == o.isPlaying && art == o.art
-                && untimed(tvs) == untimed(o.tvs) && selectedTV == o.selectedTV
+                && untimed(tvs) == untimed(o.tvs)
         }
 
         /// What the Home widget shows of it (the weather and the thermostat) is the same.

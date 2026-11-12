@@ -223,6 +223,59 @@ enum CameraEventMedia {
         return await FirstOf<(file: URL, fromMac: Bool)>(2).run([fromGoogle, mac], deadline: deadline)
     }
 
+    // MARK: What each alert brought, kept for the camera's page (iPhone and iPad)
+
+    #if os(iOS)
+    /// Where this device keeps each camera's last events (`CameraHistoryStore`): in the family's app group, so the
+    /// notification step keeps there what each alert brings as it arrives, with the app closed. (They were kept in the
+    /// app's own folder, which that step can't write to: an event's full picture was on the iPhone for ten minutes
+    /// and then gone, and the camera's page had only the alert's small close-up when the Mac Studio couldn't be asked.)
+    static var historyFolder: URL? {
+        let manager = FileManager.default
+        guard let base = manager.containerURL(forSecurityApplicationGroupIdentifier: group)
+            ?? manager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return nil }
+        let f = base.appendingPathComponent("CameraHistory", isDirectory: true)
+        do { try manager.createDirectory(at: f, withIntermediateDirectories: true) } catch { return nil }
+        return f
+    }
+
+    private static func historyFile(_ key: String, _ ext: String) -> URL? {
+        guard !key.isEmpty, key.count <= 32, key.allSatisfy(\.isHexDigit) else { return nil }
+        return historyFolder?.appendingPathComponent("\(key).\(ext)")
+    }
+
+    /// An alert for [camera] arrived: noted beside its pictures (as `CameraHistoryEvent` reads it), so the camera's
+    /// list has the event whatever becomes of the notification, and when the Mac Studio can't be asked.
+    static func noteAlert(key: String, camera: String, title: String, at: Date = Date()) {
+        guard !camera.isEmpty, let out = historyFile(key, "json"), !FileManager.default.fileExists(atPath: out.path) else { return }
+        let plain = title.hasPrefix("Test: ") ? String(title.dropFirst(6)) : title
+        let note: [String: Any] = ["key": key, "camera": camera, "title": plain.isEmpty ? "Event" : plain,
+                                   "at": at.timeIntervalSince1970, "clip": false]
+        guard let d = try? JSONSerialization.data(withJSONObject: note) else { return }
+        try? d.write(to: out, options: .atomic)
+    }
+
+    /// What an alert fetched of its event, kept for the camera's page: the whole picture ([file] a JPEG: the Mac
+    /// Studio's full-size one, or Google's snapshot) or Google's clip of it (an mp4). The first of each stays.
+    static func keepAlertFile(_ file: URL, key: String) {
+        let ext = file.pathExtension.lowercased()
+        guard ext == "jpg" || ext == "mp4", let out = historyFile(key, ext),
+              !FileManager.default.fileExists(atPath: out.path) else { return }
+        try? FileManager.default.copyItem(at: file, to: out)
+    }
+
+    /// The picture the alert itself showed ([file], or [jpeg]): what the camera's page has of the event when nothing
+    /// fuller could be fetched (with the whole picture kept, it isn't needed).
+    static func keepAlertPicture(_ file: URL?, jpeg: Data? = nil, key: String) {
+        let manager = FileManager.default
+        guard let out = historyFile(key, "alert.jpg"), !manager.fileExists(atPath: out.path),
+              let whole = historyFile(key, "jpg"), !manager.fileExists(atPath: whole.path) else { return }
+        if let file, ["jpg", "jpeg"].contains(file.pathExtension.lowercased()),
+           (try? FileManager.default.copyItem(at: file, to: out)) != nil { return }
+        if let jpeg, jpeg.count > 200 { try? jpeg.write(to: out, options: .atomic) }
+    }
+    #endif
+
     // MARK: The clip or snapshot
 
     /// How long a replay is kept: long enough to tap the alert and watch it, short enough that nothing piles up.

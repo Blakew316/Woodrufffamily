@@ -354,6 +354,10 @@ struct WoodruffApp: App {
         .backgroundTask(.appRefresh(AlertsRefresh.id)) {
             await NestAlerts.shared.pullOnce(timeout: 15)
             await AlertsRefresh.schedule()
+            #if os(iOS)
+            // And each camera's last events, with their pictures and clips, while the Mac Studio can be reached.
+            await CameraHistoryStore.warm(cameras: await MainActor.run { NestCameras.shared.cameras.map(\.id) })
+            #endif
         }
         // Now and then: the cameras' latest pictures and the TVs' state, for the widgets.
         .backgroundTask(.appRefresh(WidgetRefresh.id)) {

@@ -70,6 +70,8 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
         lock.lock(); widget = line; lock.unlock()
 
         Task {
+            // Noted for the camera's page on this device: its list has the event whatever becomes of this alert.
+            CameraEventMedia.noteAlert(key: key, camera: camera, title: title)
             // The Mac Studio's own close-up of who or what was seen, asked for at the same time as its whole picture:
             // cut there from the camera's full-size frame, and a small file, so it comes quickly even far from home
             // and nothing large is decoded here (this step has little memory).
@@ -98,6 +100,11 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
             }
             closeTask?.cancel(); wholeTask.cancel()
             let macClose = closeUp.state.value, got = whole.state.value
+            // The whole picture (the Mac Studio's full-size one, or Google's snapshot or clip) is kept for the
+            // camera's page as well: an event there opens full size, with the Mac Studio out of reach. And the
+            // picture this alert shows, for when the whole one didn't come.
+            if let file = got?.file { CameraEventMedia.keepAlertFile(file, key: key) }
+            var alertPicture: URL? = macClose
             if let macClose, let a = CameraEventMedia.attachment(macClose) {
                 // The Mac's close-up is the alert's picture. The widgets' still is the whole picture when it came
                 // too (it's also what opening the alert replays), else the close-up itself: either is far better
@@ -127,6 +134,7 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
                 var shown = file
                 if let focus = look.focus, let close = await CameraEventMedia.closeUp(file, focus: focus, at: at) { shown = close }
                 let showsClip = shown.pathExtension == "mp4"
+                if !showsClip { alertPicture = shown }
                 let source = got.fromMac ? "The Mac’s full picture" : isClip ? "Google’s clip" : "Google’s snapshot"
                 if let a = CameraEventMedia.attachment(shown, at: at) {
                     var all = [a]
@@ -146,6 +154,7 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
             if !self.hasPicture, let latest = Self.latestPicture(camera: camera), let a = CameraEventMedia.attachment(latest) {
                 self.set([a], "The camera’s latest picture attached")
             }
+            CameraEventMedia.keepAlertPicture(alertPicture, jpeg: thumbStill, key: key)
             self.finish()
         }
     }

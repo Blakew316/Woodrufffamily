@@ -165,9 +165,9 @@ enum CameraHistoryClient {
     /// home), pictures and clips come from what this device kept, without waiting on the network for each.
     nonisolated(unsafe) private(set) static var reached = false
 
-    /// [camera]'s last events, newest first; none when the Mac Studio can't be reached.
-    static func events(camera: String) async -> [CameraHistoryEvent] {
-        guard let d = await get("/history", id: camera, timeout: 6),
+    /// [camera]'s last events, newest first; none when the Mac Studio can't be reached (within [timeout] seconds).
+    static func events(camera: String, timeout: Double = 6) async -> [CameraHistoryEvent] {
+        guard let d = await get("/history", id: camera, timeout: timeout),
               let list = try? JSONDecoder().decode([CameraHistoryEvent].self, from: d) else {
             reached = false
             return []
@@ -215,16 +215,24 @@ enum CameraHistoryClient {
 
 #if os(iOS)
 /// What this device knows of each camera's last events, kept on it: the list the Mac Studio last gave, each event's
-/// picture and clip once fetched, and the alerts this device has had since. The camera's page shows these at once,
-/// and they're all there is while the Mac Studio can't be reached (a phone away from home: the list came up empty).
+/// picture and clip once fetched, and the alerts this device has had since, each noted with its full picture by the
+/// notification step as it arrived (`CameraEventMedia.noteAlert`). The camera's page shows these at once, and they're
+/// all there is while the Mac Studio can't be reached (away from home, or the Mac restarting: the list came up empty).
 enum CameraHistoryStore {
     /// How many of a camera's events are kept here.
     static let perCamera = 6
 
+    /// In the family's app group, where the notification step keeps what each alert brings. What was kept in the
+    /// app's own folder before comes along once.
     private static let folder: URL? = {
-        guard let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return nil }
-        let f = base.appendingPathComponent("CameraHistory", isDirectory: true)
-        do { try FileManager.default.createDirectory(at: f, withIntermediateDirectories: true) } catch { return nil }
+        guard let f = CameraEventMedia.historyFolder else { return nil }
+        let manager = FileManager.default
+        if let old = manager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?.appendingPathComponent("CameraHistory", isDirectory: true),
+           old.standardizedFileURL.path != f.standardizedFileURL.path,
+           let files = try? manager.contentsOfDirectory(at: old, includingPropertiesForKeys: nil) {
+            for file in files { try? manager.moveItem(at: file, to: f.appendingPathComponent(file.lastPathComponent)) }
+            try? manager.removeItem(at: old)
+        }
         return f
     }()
 
@@ -259,11 +267,28 @@ enum CameraHistoryStore {
         try? d.write(to: f, options: .atomic)
     }
 
-    /// The kept list with the alerts this device has had for [camera] since (those still in Notification Centre),
-    /// newest first. Each such alert's own picture is kept for its row.
+    /// The alerts the notification step noted as they arrived, for every camera. One whose clip is here says so.
+    private static func noted() -> [CameraHistoryEvent] {
+        guard let folder, let files = try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil) else { return [] }
+        var out: [CameraHistoryEvent] = []
+        for f in files where f.pathExtension == "json" && !f.lastPathComponent.hasPrefix("list-") {
+            guard let d = try? Data(contentsOf: f), var e = try? JSONDecoder().decode(CameraHistoryEvent.self, from: d),
+                  file(e.key, "jpg") != nil else { continue }
+            e.clip = has(e.key, "mp4") != nil
+            out.append(e)
+        }
+        return out
+    }
+
+    /// The kept list with the alerts this device has had for [camera] since (those the notification step noted, and
+    /// those still in Notification Centre), newest first. Each such alert's own picture is kept for its row.
     static func known(camera: String) async -> [CameraHistoryEvent] {
         var all = events(camera: camera)
         var added = false
+        for e in noted() where e.camera == camera && !all.contains(where: { $0.key == e.key }) {
+            all.append(e)
+            added = true
+        }
         for n in await UNUserNotificationCenter.current().deliveredNotifications() {
             let content = n.request.content
             guard content.userInfo["camera"] as? String == camera, let key = content.userInfo["key"] as? String,
@@ -304,9 +329,10 @@ enum CameraHistoryStore {
 
     @MainActor private static var warming = false
 
-    /// Every camera's list, with its last three events' pictures and its newest event's clip, fetched while the Mac
-    /// Studio can be reached (as the app opens), so they're on this device when it can't be. What no list holds any
-    /// more is let go of.
+    /// Every camera's list, with its last three events' pictures and clips, fetched while the Mac Studio can be
+    /// reached (as the app opens, and when iOS wakes it in the background), so they're on this device when it can't
+    /// be. (Only each camera's newest clip was fetched ahead: the other two were there only once their camera's page
+    /// had been open with the Mac Studio answering.) What no list holds any more is let go of.
     @MainActor static func warm(cameras: [String]) async {
         guard !warming, !cameras.isEmpty else { return }
         warming = true
@@ -315,21 +341,53 @@ enum CameraHistoryStore {
             let list = await CameraHistoryClient.events(camera: camera)
             // Out of reach: nothing to fetch from anywhere.
             if list.isEmpty && !CameraHistoryClient.reached { return }
-            for (i, event) in list.prefix(3).enumerated() {
+            for event in list.prefix(3) {
+                if Task.isCancelled { return }
                 _ = await CameraHistoryClient.picture(event)
-                if i == 0 { await CameraHistoryClient.keepClip(event) }
+                await CameraHistoryClient.keepClip(event)
             }
         }
         prune()
     }
 
-    /// Pictures and clips of events no camera's list holds any more go.
+    /// A camera's alert just reached this device and woke the app for it (its push asks for that): the event's full
+    /// picture now, and its clip once the Mac Studio has it (it makes one from its stream about eight seconds after
+    /// the event), kept here, so the camera's page has both without being opened first. Whether anything came.
+    static func keepArriving(camera: String, key: String) async -> Bool {
+        guard file(key, "jpg") != nil else { return false }
+        let until = Date().addingTimeInterval(18)
+        var got = false
+        var first = true
+        while Date() < until, !Task.isCancelled {
+            let list = await CameraHistoryClient.events(camera: camera, timeout: first ? 3 : 5)
+            first = false
+            // Out of the Mac Studio's reach (away from home): nothing to wait for.
+            if list.isEmpty && !CameraHistoryClient.reached { return got }
+            if let event = list.first(where: { $0.key == key }) {
+                if has(key, "jpg") == nil, await CameraHistoryClient.picture(event) != nil { got = true }
+                if has(key, "mp4") != nil { return got }
+                if event.clip { return await CameraHistoryClient.keepClip(event) != nil || got }
+            }
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+        }
+        return got
+    }
+
+    /// Each camera's newest few stay (those its list holds, and the alerts noted since); the pictures, clips and
+    /// notes of every other event go.
     private static func prune() {
         guard let folder, let files = try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil) else { return }
-        var kept = Set<String>()
+        var byCamera: [String: [CameraHistoryEvent]] = [:]
         for f in files where f.lastPathComponent.hasPrefix("list-") {
             guard let d = try? Data(contentsOf: f), let list = try? JSONDecoder().decode([CameraHistoryEvent].self, from: d) else { continue }
-            for e in list { kept.insert(e.key) }
+            for e in list { byCamera[e.camera, default: []].append(e) }
+        }
+        for e in noted() where !(byCamera[e.camera] ?? []).contains(where: { $0.key == e.key }) {
+            byCamera[e.camera, default: []].append(e)
+        }
+        var kept = Set<String>()
+        for list in byCamera.values {
+            for e in list.sorted(by: { $0.at > $1.at }).prefix(perCamera) { kept.insert(e.key) }
         }
         for f in files where !f.lastPathComponent.hasPrefix("list-") {
             let key = f.lastPathComponent.split(separator: ".").first.map(String.init) ?? ""

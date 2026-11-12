@@ -293,8 +293,13 @@ final class PushRelay {
         var aps: [String: Any] = ["alert": ["title": title, "body": body], "thread-id": userInfo["tv"] ?? id.components(separatedBy: "-").first ?? "woodruff"]
         if sound { aps["sound"] = "default" }
         if let category { aps["category"] = category }
-        // A camera's alert: the iPhone's notification extension fetches its clip or snapshot before it shows.
-        if userInfo["camera"] != nil { aps["mutable-content"] = 1 }
+        // A camera's alert: the iPhone's notification extension fetches its clip or snapshot before it shows, and the
+        // app itself is woken for a few seconds (when iOS allows) to keep the event's full picture and its clip for
+        // the camera's page (`PushAppDelegate`).
+        if userInfo["camera"] != nil {
+            aps["mutable-content"] = 1
+            aps["content-available"] = 1
+        }
         var payload: [String: Any] = ["aps": aps]
         for (k, v) in userInfo { payload[k] = v }
         return payload
@@ -730,7 +735,51 @@ final class PushAppDelegate: NSObject, UIApplicationDelegate {
     func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
         MainActor.assumeIsolated { PushRelay.shared.didFail(error) }
     }
+
+    #if os(iOS)
+    /// A camera's alert also wakes the app for a few seconds, in the background or in front: the event's full picture
+    /// and its clip are fetched from the Mac Studio and kept on this device, so the camera's page has its last events
+    /// as videos without having been opened first, and when the Mac Studio can't be asked. (They were fetched only
+    /// while the camera's page was open with the Mac Studio answering.) Never longer than twenty-four seconds: iOS
+    /// allows about thirty.
+    func application(_ application: UIApplication, didReceiveRemoteNotification userInfo: [AnyHashable: Any],
+                     fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void) {
+        guard let camera = userInfo["camera"] as? String, !camera.isEmpty,
+              let key = userInfo["key"] as? String, !key.isEmpty else {
+            completionHandler(.noData)
+            return
+        }
+        let done = WakeDone(completionHandler)
+        let work = Task {
+            let kept = await CameraHistoryStore.keepArriving(camera: camera, key: key)
+            done.call(kept ? .newData : .noData)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 24) {
+            work.cancel()
+            done.call(.noData)
+        }
+    }
+    #endif
 }
+
+#if os(iOS)
+/// iOS is told once that a background wake's work is over, whichever of the work and its time limit ends first.
+private final class WakeDone: @unchecked Sendable {
+    private let lock = NSLock()
+    private var handler: ((UIBackgroundFetchResult) -> Void)?
+
+    init(_ handler: @escaping (UIBackgroundFetchResult) -> Void) { self.handler = handler }
+
+    func call(_ result: UIBackgroundFetchResult) {
+        lock.lock()
+        let h = handler
+        handler = nil
+        lock.unlock()
+        guard let h else { return }
+        DispatchQueue.main.async { h(result) }
+    }
+}
+#endif
 #endif
 
 /// Settings → Notifications (→ Instant iPhone Alerts on the Mac): instant alerts on the iPhones.

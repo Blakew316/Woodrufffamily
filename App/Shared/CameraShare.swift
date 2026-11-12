@@ -244,7 +244,12 @@ final class CameraShare {
         // GET /clip?id=<event's short id>&k=<key>: the event's clip, when Google sent one.
         if url.path == "/clip" {
             guard id.count <= 32, id.allSatisfy(\.isHexDigit) else { return reply(c, "403 Forbidden", nil) }
-            if let clip = CameraHistory.clip(id) { return reply(c, "200 OK", clip, type: "video/mp4") }
+            let clip = CameraHistory.clip(id)
+            // In the log, as an event's picture is: which device took its clip (the app itself on an iPhone, as its
+            // alert arrives or its camera's page is opened).
+            let sent = clip.map { "\($0.count / 1024) KB sent" } ?? "none kept"
+            PushRelay.log.notice("event \(id, privacy: .public): its clip asked for by \(Self.asker(request), privacy: .public), \(sent, privacy: .public)")
+            if let clip { return reply(c, "200 OK", clip, type: "video/mp4") }
             return reply(c, "404 Not Found", nil)
         }
         watched(id)

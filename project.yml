@@ -81,7 +81,8 @@ targets:
         NSLocationWhenInUseUsageDescription: Your city sets the weather shown on your TVs' Home screens.
         NSHomeKitUsageDescription: Show and control your Apple Home lights, thermostat, locks, plugs and sensors next to your TVs.
         WoodruffHomeKit: $(WOODRUFF_HOMEKIT)
-        UIBackgroundModes: [fetch, audio]
+        # remote-notification: a camera's alert wakes the app for a few seconds to keep the event's picture and clip.
+        UIBackgroundModes: [fetch, audio, remote-notification]
         BGTaskSchedulerPermittedIdentifiers: [com.woodruff.family.alerts, com.woodruff.family.widgets]
         NSSupportsLiveActivities: true
         NSUserActivityTypes: [com.woodruff.family.remote]

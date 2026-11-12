@@ -4,8 +4,8 @@ import ActivityKit
 import ImageIO
 
 // The TVs & Cameras widget (medium): Master Bedroom, Living Room and Kyler's Room down the left, with what each is
-// playing and the remote's TV lit; the Doorbell and Front Driveway's latest pictures on the right. A TV opens the
-// remote on it, a camera opens it live.
+// playing (none is marked as the remote's: a tap on any opens the remote on it); the Doorbell and Front Driveway's
+// latest pictures on the right. A camera opens it live.
 
 struct TVsCamerasWidget: Widget {
     var body: some WidgetConfiguration {
@@ -87,8 +87,7 @@ struct TVsCamerasView: View {
     // MARK: A TV
 
     private func row(_ tv: PhoneWidgetShare.TVLine) -> some View {
-        let selected = tv.id == s?.selectedTV
-        return HStack(spacing: 8) {
+        HStack(spacing: 8) {
             artwork(tv)
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 5) {
@@ -99,7 +98,7 @@ struct TVsCamerasView: View {
                     }
                 }
                 Text(tv.title ?? (tv.online ? "On" : "Off"))
-                    .font(.system(size: 12.5, weight: selected ? .bold : .semibold, design: .rounded))
+                    .font(.system(size: 12.5, weight: .semibold, design: .rounded))
                     .foregroundStyle(WidgetPalette.frost)
                     .lineLimit(1)
                 if tv.title != nil, let p = tv.progress {
@@ -114,13 +113,6 @@ struct TVsCamerasView: View {
         }
         .padding(.vertical, 4).padding(.leading, 4).padding(.trailing, 6)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-        .background {
-            if selected {
-                RoundedRectangle(cornerRadius: 12, style: .continuous).fill(WidgetPalette.cyan.opacity(0.13))
-                    .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(WidgetPalette.cyan.opacity(0.9), lineWidth: 1))
-                    .shadow(color: WidgetPalette.cyan.opacity(0.35), radius: 6)
-            }
-        }
     }
 
     @ViewBuilder private func artwork(_ tv: PhoneWidgetShare.TVLine) -> some View {

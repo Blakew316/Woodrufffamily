@@ -277,9 +277,20 @@ final class NestAlerts {
     /// A vehicle the Mac saw itself on a camera's stream (Google sends no vehicle events): the same alert as Google's
     /// events, with that frame as its picture.
     func postVehicle(camera: NestCameras.Camera, jpeg: Data) {
-        eventHappened = Date()
+        let now = Date()
+        eventHappened = now
+        // The frame the vehicle was found in is smaller than the camera sends (looking through full-size frames all
+        // day would cost too much), and the alert's picture, its close-up and the event's photo on the camera's page
+        // were all cut from it: half the detail of every other alert's. The stream's own full-size picture of the
+        // same moment is the alert's picture instead, when this Mac keeps the last few seconds.
+        var picture = jpeg
+        let given = CameraEventMedia.pixelSize(jpeg)?.width ?? 0
+        if let full = CameraStreams.shared.moments(camera.id, since: now.addingTimeInterval(-1.5)).max(by: { $0.at < $1.at }),
+           full.width > given {
+            picture = full.jpeg
+        }
         post(title: "Vehicle seen", body: camera.name, camera: camera.id,
-             key: "vehicle|\(camera.id)|\(Int(Date().timeIntervalSince1970))", event: nil, clip: nil, picture: jpeg)
+             key: "vehicle|\(camera.id)|\(Int(now.timeIntervalSince1970))", event: nil, clip: nil, picture: picture)
     }
     #endif
 
