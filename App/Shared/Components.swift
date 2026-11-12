@@ -306,6 +306,9 @@ struct TVPicker: View {
     /// In the Mac window's toolbar: the same type and the same room round its name as the pills beside it there
     /// (Home | Watch | Settings, Movies | TV Shows), so it's exactly as tall as they are.
     var bar = false
+    /// Between two buttons in a bar with little room (Now Playing on iPhone): the name shortens to fit instead of
+    /// keeping its full width and sliding under them.
+    var squeezes = false
 
     #if os(iOS)
     /// The menu's choice for every TV at once (no TV has this id).
@@ -362,6 +365,7 @@ struct TVPicker: View {
                 Text(allowAll && fleet.remoteAll ? "All TVs" : (fleet.selected?.name ?? "TV"))
                     .font(bar ? .title3.weight(.semibold) : .headline)
                     .lineLimit(1)
+                    .minimumScaleFactor(squeezes ? 0.8 : 1)
                 Image(systemName: "chevron.down").font(.caption.weight(.bold)).foregroundStyle(.secondary)
             }
             .foregroundStyle(.primary)
@@ -372,7 +376,7 @@ struct TVPicker: View {
         }
         .menuStyle(.button)
         .buttonStyle(.plain)
-        .fixedSize()
+        .fixedSize(horizontal: !squeezes, vertical: true)
     }
 
     private var dotColor: Color {

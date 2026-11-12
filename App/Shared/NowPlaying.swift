@@ -430,9 +430,11 @@ struct NowPlayingDropdown: View {
     }
 }
 
-/// Now Playing, full screen: the picture of what's playing (16:9) over a deep blur of it, the title, a thin
-/// progress bar, three transport controls and three matching volume buttons. (Android) the corner button shows
-/// the TV's own screen instead of the picture.
+/// Now Playing, full screen: the picture of what's playing over a deep blur of it, the title, a thin progress bar,
+/// three transport controls and three matching volume buttons. On iPhone and iPad the picture is a film's poster,
+/// tall, in all the room above the controls (16:9 for anything without one), the controls are one block at the
+/// bottom, and one More button moves the title to another TV or (Android) shows the TV's own screen in place of the
+/// picture. On the Mac the picture is 16:9 and those are two buttons.
 struct NowPlayingSheet: View {
     @Environment(Fleet.self) private var fleet
     @Environment(\.dismiss) private var dismiss
@@ -474,7 +476,7 @@ struct NowPlayingSheet: View {
                     let w: CGFloat = max(120, min(half - 48, (geo.size.height - 32) * 16 / 9))
                     let side: CGFloat = min(half - 48, 420)
                     HStack(spacing: 0) {
-                        framed(art, playing: p?.isPlaying, width: w)
+                        framed(art, playing: p?.isPlaying, size: CGSize(width: w, height: w * 9 / 16))
                             .frame(width: half, height: geo.size.height)
                         VStack(spacing: 0) {
                             Spacer(minLength: 8)
@@ -496,9 +498,37 @@ struct NowPlayingSheet: View {
                     }
                 } else {
                     let w = min(geo.size.width, 560) - 48
+                    #if os(iOS)
+                    // The picture takes all the room above the controls, as large as fits there: a film's poster tall,
+                    // anything else wide. The title and every control are one block at the bottom, with the same
+                    // gaps on every iPhone. (Five flexible gaps used to share the spare height: the picture hung well
+                    // below the bar and the controls were strung down the page.)
+                    let tall = hasPoster(art)
+                    VStack(spacing: 0) {
+                        GeometryReader { room in
+                            framed(art, playing: p?.isPlaying, size: Self.pictureSize(tall: tall, in: room.size, width: w), tall: tall)
+                                .frame(width: room.size.width, height: room.size.height)
+                        }
+                        .padding(.top, 8)
+                        .padding(.bottom, 22)
+                        words(p).frame(width: w, alignment: .leading)
+                        if let p {
+                            LiveProgress(playing: p, tint: .white)
+                                .frame(width: w)
+                                .padding(.top, 16)
+                        }
+                        if let tv, let p {
+                            Transport(tv: tv, playing: p)
+                                .padding(.top, 22)
+                        }
+                        if let tv { volume(tv).padding(.top, 24) }
+                    }
+                    .padding(.bottom, 14)
+                    .frame(width: geo.size.width, height: geo.size.height)
+                    #else
                     VStack(spacing: 0) {
                         Spacer(minLength: 12)
-                        framed(art, playing: p?.isPlaying, width: w)
+                        framed(art, playing: p?.isPlaying, size: CGSize(width: w, height: w * 9 / 16))
                         Spacer(minLength: 28)
                         words(p).frame(width: w, alignment: .leading)
                         if let p {
@@ -515,6 +545,7 @@ struct NowPlayingSheet: View {
                         Spacer(minLength: 16)
                     }
                     .frame(width: geo.size.width, height: geo.size.height)
+                    #endif
                 }
                 #endif
             }
@@ -528,9 +559,38 @@ struct NowPlayingSheet: View {
                 }
                 #if os(tvOS)
                 if tvID == nil { ToolbarItem(placement: .principal) { TVPicker() } }
+                #elseif os(iOS)
+                // The TV's name gives way (shortens) rather than sliding under the buttons beside it.
+                if tvID == nil { ToolbarItem(placement: .principal) { TVPicker(squeezes: true) }.sharedBackgroundVisibility(.hidden) }
                 #else
                 if tvID == nil { ToolbarItem(placement: .principal) { TVPicker() }.sharedBackgroundVisibility(.hidden) }
                 #endif
+                #if os(iOS)
+                // iPhone and iPad: one More button with what it does in words. Two buttons took the room the TV's name
+                // needs (at larger text sizes its pill slid under them and under Close), and neither said what it did.
+                if canMove(tv) || showsScreen(tv) {
+                    ToolbarItem(placement: .primaryAction) {
+                        Menu {
+                            // Carry on in another room: the same title, from the same spot, on another TV (this one pauses).
+                            if let tv, let now = tv.nowPlaying, let key = now.key, canMove(tv) {
+                                Section("Move to") {
+                                    ForEach(otherTVs(than: tv)) { other in
+                                        Button(other.name) { move(now, key: key, from: tv, to: other) }
+                                    }
+                                }
+                            }
+                            if showsScreen(tv) {
+                                Button(showScreen ? "Show the Picture" : "Show the TV’s Screen") {
+                                    withAnimation(.smooth) { showScreen.toggle() }
+                                }
+                            }
+                        } label: {
+                            Image(systemName: "ellipsis")
+                        }
+                        .accessibilityLabel("More")
+                    }
+                }
+                #else
                 // Carry on in another room: the same title, from the same spot, on another TV (this one pauses).
                 if let tv, let now = tv.nowPlaying, let key = now.key, !key.isEmpty, !otherTVs(than: tv).isEmpty {
                     ToolbarItem(placement: .primaryAction) {
@@ -554,6 +614,7 @@ struct NowPlayingSheet: View {
                         .accessibilityLabel(showScreen ? "Show the Picture" : "Show the TV’s Screen")
                     }
                 }
+                #endif
             }
             .task(id: "\(tv?.id ?? "")-\(showScreen)") { await screenLoop(tv) }
         }
@@ -586,6 +647,36 @@ struct NowPlayingSheet: View {
         fleet.tvs.filter { $0.id != tv.id && !$0.isUnpaired }
     }
 
+    /// Whether what [tv] is playing can carry on in another room: one of the family's own titles, with another TV to
+    /// move it to.
+    private func canMove(_ tv: FleetTV?) -> Bool {
+        guard let tv, let key = tv.nowPlaying?.key, !key.isEmpty else { return false }
+        return !otherTVs(than: tv).isEmpty
+    }
+
+    /// Whether [tv]'s own screen can be shown here in place of the picture (Woodruff is on screen there; not on LG).
+    private func showsScreen(_ tv: FleetTV?) -> Bool {
+        tv.map { fleet.platform(of: $0) != .webOS && $0.onScreen } ?? false
+    }
+
+    /// Whether the picture is a poster (tall): the title has one, and the TV's own screen isn't being shown.
+    private func hasPoster(_ p: NowPlaying?) -> Bool {
+        guard !showScreen, let p else { return false }
+        return fleet.artwork(for: p)?.poster != nil
+    }
+
+    /// The picture's size in the [room] it has: a poster (2:3) as tall as fits, anything else 16:9 as wide as fits,
+    /// neither wider than [width].
+    static func pictureSize(tall: Bool, in room: CGSize, width: CGFloat) -> CGSize {
+        let most = max(0, min(width, room.width))
+        if tall {
+            let h = max(0, min(room.height, most * 3 / 2))
+            return CGSize(width: h * 2 / 3, height: h)
+        }
+        let w = max(0, min(most, room.height * 16 / 9))
+        return CGSize(width: w, height: w * 9 / 16)
+    }
+
     /// Starts [now] on [other] where it is right now, pauses it here, and follows it there.
     private func move(_ now: NowPlaying, key: String, from tv: FleetTV, to other: FleetTV) {
         #if os(iOS) || os(tvOS)
@@ -600,10 +691,10 @@ struct NowPlayingSheet: View {
         if tvID == nil { fleet.selectedID = other.id } else { dismiss() }
     }
 
-    /// The picture in its frame, [w] wide (16:9), a little smaller while paused.
-    private func framed(_ art: NowPlaying?, playing: Bool?, width w: CGFloat) -> some View {
-        picture(art)
-            .frame(width: w, height: w * 9 / 16)
+    /// The picture in its frame of [size] ([tall]: the title's poster, not its wide picture), a little smaller while paused.
+    private func framed(_ art: NowPlaying?, playing: Bool?, size: CGSize, tall: Bool = false) -> some View {
+        picture(art, tall: tall)
+            .frame(width: size.width, height: size.height)
             .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).strokeBorder(.white.opacity(0.08)))
             .shadow(color: .black.opacity(0.5), radius: 30, y: 16)
@@ -626,14 +717,14 @@ struct NowPlayingSheet: View {
 
     /// The picture: the video's thumbnail, the title's backdrop, or the TV's screen (Woodruff's own menus). Plain black
     /// when nothing is playing now.
-    @ViewBuilder private func picture(_ p: NowPlaying?) -> some View {
+    @ViewBuilder private func picture(_ p: NowPlaying?, tall: Bool = false) -> some View {
         ZStack {
             Color.black
             if showScreen {
                 if let screen { Image(platformImage: screen).resizable().aspectRatio(contentMode: .fit) }
                 else { Text(screenNote ?? "Loading the TV’s screen…").font(.footnote).foregroundStyle(.white.opacity(0.6)).padding() }
             } else if let p {
-                NowPlayingArt(playing: p, backdrop: true, maxPixel: 1800)
+                NowPlayingArt(playing: p, backdrop: !tall, maxPixel: 1800)
             }
         }
     }
