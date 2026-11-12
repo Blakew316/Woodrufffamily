@@ -446,6 +446,24 @@ final class RealtimeTests: XCTestCase {
         XCTAssertNil(tv.nowPlaying)
     }
 
+    func testAnInputOnScreenIsNotSomethingPlaying() {
+        // What an Android TV says while its HDMI 4 input shows the Apple TV: the TV's own input app, "playing" for as
+        // long as the input is on, with no length.
+        let input = NowPlaying(title: "Apple TV HDMI 4", app: "TV", playing: true, position: 0, duration: 0)
+        XCTAssertTrue(input.isInput)
+        XCTAssertTrue(NowPlaying(title: "Cable Box", app: "TV", playing: true).isInput, "the TV's input app, whatever the input is called")
+        XCTAssertTrue(NowPlaying(title: "HDMI 2", app: "Inputs", playing: true).isInput)
+        // Things that are playing: a film from the library, another app's title with a length, another app's live stream.
+        XCTAssertFalse(show(at: 1_000).isInput)
+        XCTAssertFalse(NowPlaying(title: "Stranger Things", app: "Netflix", playing: true, position: 5_000, duration: 3_000_000).isInput)
+        XCTAssertFalse(NowPlaying(title: "Live: Rocket Launch", app: "YouTube", playing: true).isInput)
+        // The merged list has such a TV on, playing nothing.
+        let tvs = merge([hubA], ["tv-a": .answered([entry("this", "Living Room", playing: input)])])
+        XCTAssertEqual(tvs["tv-a"]?.online, true)
+        XCTAssertNil(tvs["tv-a"]?.playing)
+        XCTAssertNil(tvs["tv-a"]?.nowPlaying)
+    }
+
     // MARK: Addresses
 
     func testHomeAddresses() {

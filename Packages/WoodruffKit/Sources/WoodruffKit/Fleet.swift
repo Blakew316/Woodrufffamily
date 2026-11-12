@@ -59,10 +59,11 @@ public struct FleetTV: Identifiable, Hashable, Sendable, Codable {
     public var pausedLong = false
 
     /// What the TV is playing right now, the one thing every picture, title and player goes by: nothing while it's
-    /// off or not paired, and nothing once a pause has gone on too long (`pausedLong`). `playing` is what the TV
-    /// last said, for its controls.
+    /// off or not paired, nothing once a pause has gone on too long (`pausedLong`), and nothing while it only shows
+    /// one of its inputs (`NowPlaying.isInput`: an HDMI box isn't something playing). `playing` is what the TV last
+    /// said, for its controls.
     public var nowPlaying: NowPlaying? {
-        guard online, !isUnpaired, let p = playing, p.isPlaying || !pausedLong else { return nil }
+        guard online, !isUnpaired, let p = playing, !p.isInput, p.isPlaying || !pausedLong else { return nil }
         return p
     }
 
@@ -1475,8 +1476,11 @@ enum FleetMerge {
             for e in list {
                 let realID = e.id == "this" ? hub.id : e.id
                 let believed = e.online && fresh && (e.id == "this" || !staleRelays.contains(relayKey(hub.id, e.id)))
+                // One of the TV's inputs on screen (an HDMI box) isn't something playing (`NowPlaying.isInput`): left
+                // out here, so the bar, the remote, the widgets and the Lock Screen all show the TV as on, playing nothing.
+                let playing = believed ? e.playing.flatMap { $0.isInput ? nil : $0 } : nil
                 let tv = FleetTV(id: realID, name: e.name, online: e.online, onScreen: e.online && (e.onScreen ?? false),
-                                 playing: believed ? e.playing : nil, version: e.version, seen: e.seen, link: e.link ?? "ok",
+                                 playing: playing, version: e.version, seen: e.seen, link: e.link ?? "ok",
                                  health: e.health, hubID: hub.id, routeID: e.id, platform: platforms[realID])
                 // Two hubs passing on the same TV: the one that has heard from it lately, and answered lately, wins.
                 let r = tv.isHub ? 4 : (tv.online ? (believed ? 3 : 2) : 1)

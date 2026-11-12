@@ -23,6 +23,19 @@ public struct NowPlaying: Codable, Hashable, Sendable {
 
     public var isPlaying: Bool { playing ?? false }
     public func can(_ action: String) -> Bool { can?.contains(action) ?? false }
+
+    /// The names a TV's own input app goes by (the app that shows an HDMI box or the aerial).
+    static let inputApps: Set<String> = ["tv", "live tv", "live channels", "tv input", "input", "inputs", "source", "sources"]
+
+    /// What the TV calls playing is only one of its inputs on screen: an HDMI box such as the Apple TV, shown by the
+    /// TV's own input app. Android says such an input "plays" for as long as it's on, under the input's name ("Apple
+    /// TV HDMI 4"), with no length and nothing of its own to tell; the TV can't see what the box itself is doing. It
+    /// isn't something playing: the app showed it as a film that never stopped.
+    public var isInput: Bool {
+        guard (key ?? "").isEmpty, (duration ?? 0) <= 0 else { return false }
+        if title.range(of: "hdmi", options: .caseInsensitive) != nil { return true }
+        return Self.inputApps.contains((app ?? "").trimmingCharacters(in: .whitespaces).lowercased())
+    }
     public var progress: Double? {
         guard let d = duration, d > 0, let p = position else { return nil }
         return min(1, max(0, p / d))
