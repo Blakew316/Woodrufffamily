@@ -11,6 +11,8 @@ import FilmSound
 /// TrueHD with Atmos keeps its overhead sounds: LibTrueHD reads the Atmos part and AetherEngine's regression turns
 /// the film's own 7.1 into 7.1 with four overhead channels (Packages/FilmHeights), which the Apple TV sends on as
 /// Dolby Atmos. Where that can't be done (not Atmos, another rate, nothing comes of it) the film's 7.1 plays.
+/// DTS:X keeps its four overhead channels the same way: the DTS decoder here reads them (FFmpegBuild's patch), and
+/// the same regression moves them out of the 7.1 they are mixed into and up to their own speakers.
 ///
 /// The app's own player asks for one through `FilmSoundDecoders` when a film's sound is one of those. The framework
 /// is linked weakly: a build without it still starts, and such sound then can't be played, as before there was a
@@ -35,20 +37,47 @@ final class TVFilmSound: FilmSoundDecoder {
     /// quarter of a second at most.
     private static let atmosPatience = 600
 
+    /// (DTS) what moves DTS:X's overhead channels to their own speakers, from the first packet that has them, and
+    /// the gain they are mixed into the 7.1 at.
+    private var dtsx: DTSXHeights?
+    private var dtsxGain: Float = 0
+    private var dtsxSaid = false
+    /// (DTS) packets still to be decoded without being played: the first ones after the film is moved come out
+    /// distorted (`DTSXHeights.primingPackets`).
+    private var priming = DTSXHeights.primingPackets
+    /// The frames in the last DTS packet that decoded, for a packet nothing comes of.
+    private var lastFrames = 512
+    /// Eight of twelve channels, for DTS:X whose overhead channels aren't placed.
+    private var bed: UnsafeMutablePointer<Float>?
+    private var bedFrames = 0
+
     private init?(kind: String) {
-        let number: Int32
+        guard Self.ready else { return nil }
+        let made: OpaquePointer?
         switch kind {
-        case "dts": number = Int32(WFSOUND_DTS)
-        case "truehd": number = Int32(WFSOUND_TRUEHD)
-        default: return nil
+        case "dts":
+            // With DTS:X's overhead channels, where they're wanted and this build's decoder reads them.
+            if Self.heightsWanted, Self.has("wfsound_open_dtsx"), let wide = wfsound_open_dtsx() {
+                made = wide
+            } else {
+                made = wfsound_open(Int32(WFSOUND_DTS))
+            }
+        case "truehd": made = wfsound_open(Int32(WFSOUND_TRUEHD))
+        default: made = nil
         }
-        guard Self.ready, let made = wfsound_open(number) else { return nil }
+        guard let made else { return nil }
         sound = made
         self.kind = kind
     }
 
     deinit {
         wfsound_close(sound)
+        bed?.deallocate()
+    }
+
+    /// The framework has the function [name] (an older one wouldn't).
+    private static func has(_ name: String) -> Bool {
+        dlsym(UnsafeMutableRawPointer(bitPattern: -2), name) != nil
     }
 
     func decode(_ packet: UnsafeRawBufferPointer, at seconds: Double) -> FilmDecodedSound? {
@@ -58,10 +87,60 @@ final class TVFilmSound: FilmSoundDecoder {
         var channels: Int32 = 0
         var rate: Int32 = 0
         let frames = wfsound_decode(sound, base, Int32(packet.count), &samples, &channels, &rate)
+        if kind == "dts" { return dts(Int(frames), samples, Int(channels), Int(rate), at: seconds) }
         guard frames >= 0 else { return nil }
         guard frames > 0, channels > 0, let samples else { return Self.nothingYet }
         return FilmDecodedSound(samples: UnsafeBufferPointer(start: samples, count: Int(frames) * Int(channels)),
                                 frames: Int(frames), channels: Int(channels), rate: Int(rate))
+    }
+
+    /// What a DTS packet decoded to, on its way out: left unplayed while the decoder gets going, with DTS:X's
+    /// overhead channels moved to their own speakers, or as it is.
+    private func dts(_ frames: Int, _ samples: UnsafePointer<Float>?, _ channels: Int, _ rate: Int, at seconds: Double) -> FilmDecodedSound? {
+        guard frames >= 0 else {
+            // Nothing came of the packet: it still counts on the sound's own clock.
+            dtsx?.skip(frames: lastFrames, at: seconds)
+            return nil
+        }
+        guard frames > 0, channels > 0, let samples else { return Self.nothingYet }
+        lastFrames = frames
+        if priming > 0 {
+            priming -= 1
+            dtsx?.skip(frames: frames, at: seconds)
+            return Self.nothingYet
+        }
+        guard channels == 12 else {
+            return FilmDecodedSound(samples: UnsafeBufferPointer(start: samples, count: frames * channels), frames: frames, channels: channels, rate: rate)
+        }
+        // Twelve channels: DTS:X, its four overhead channels beside the 7.1 they are also mixed into.
+        let gain = DTSXHeights.foldGain(presentation: Int(wfsound_overhead(sound)))
+        if dtsx == nil, rate == 48_000, let gain {
+            dtsx = DTSXHeights()
+            dtsxGain = gain
+            Self.note("DTS:X: played with its overhead sounds, as 7.1 with four overhead channels")
+        }
+        if let dtsx, rate == 48_000 {
+            // (A packet whose frames had no overhead channels keeps the gain of the last that had.)
+            if let gain { dtsxGain = gain }
+            guard let ready = dtsx.render(samples, frames: frames, foldGain: dtsxGain, at: seconds) else { return Self.nothingYet }
+            return FilmDecodedSound(samples: ready.samples, frames: ready.frames, channels: 12, rate: 48_000, starts: ready.starts)
+        }
+        // Overhead channels that can't be placed here (a kind of DTS:X nobody has measured, or sound not at 48,000
+        // a second): the 7.1 plays as it is, which has them mixed in.
+        if !dtsxSaid {
+            dtsxSaid = true
+            Self.note("DTS:X: its overhead channels can’t be placed (\(rate == 48_000 ? "a kind not measured" : "\(rate) a second")), so its 7.1 plays")
+        }
+        if frames > bedFrames {
+            bed?.deallocate()
+            bedFrames = max(frames, 4_096)
+            bed = UnsafeMutablePointer<Float>.allocate(capacity: bedFrames * 8)
+        }
+        guard let bed else { return nil }
+        for frame in 0..<frames {
+            (bed + frame * 8).update(from: samples + frame * 12, count: 8)
+        }
+        return FilmDecodedSound(samples: UnsafeBufferPointer(start: bed, count: frames * 8), frames: frames, channels: 8, rate: rate)
     }
 
     /// Nothing yet: the decoder wants more first.
@@ -99,6 +178,8 @@ final class TVFilmSound: FilmSoundDecoder {
         wfsound_flush(sound)
         atmos?.reset()
         atmosQuiet = 0
+        dtsx?.reset()
+        priming = DTSXHeights.primingPackets
     }
 
     /// The framework loaded with the app (it's linked weakly, so the app starts without it too).
