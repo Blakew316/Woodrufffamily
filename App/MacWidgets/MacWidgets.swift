@@ -34,6 +34,19 @@ struct TVsEntry: TimelineEntry {
     let paired: Bool
     /// A button here that didn't work a moment ago, said in the widget (it has no other way to say so).
     let problem: String?
+    /// The poster of what each TV is playing, by the TV's id (the TVs that TVs & Cameras lists, and the remote's).
+    var arts: [String: Data] = [:]
+    /// When the TVs said what `tvs` holds, where that isn't `date`: a look is drawn again for each of the minutes
+    /// after it, so the bars and the times left keep up without asking the TVs again.
+    var seenAt: Date? = nil
+
+    /// When the TVs were asked.
+    var seen: Date { seenAt ?? date }
+
+    /// The same look, drawn at [later].
+    func drawn(at later: Date) -> TVsEntry {
+        TVsEntry(date: later, tvs: tvs, selected: selected, art: art, paired: paired, problem: problem, arts: arts, seenAt: seen)
+    }
 }
 
 /// What a widget button that didn't work says, for a minute and a half (by widget: "tvs" or "home").
@@ -88,7 +101,13 @@ struct TVsProvider: TimelineProvider {
             // didn't work is showing, so it goes once it's old.
             let playing = e.tvs.contains { $0.playing?.isPlaying == true }
             let next: TimeInterval = e.problem != nil ? WidgetProblem.lasts + 5 : (playing ? 300 : 600)
-            completion(Timeline(entries: [e], policy: .after(.now.addingTimeInterval(next))))
+            // While something plays, the same look is drawn again each minute until the next one: the times left and
+            // the bars in TVs & Cameras are worked out from when the TVs were asked.
+            var entries = [e]
+            if playing, e.problem == nil {
+                for minute in 1...4 { entries.append(e.drawn(at: e.date.addingTimeInterval(Double(minute) * 60))) }
+            }
+            completion(Timeline(entries: entries, policy: .after(.now.addingTimeInterval(next))))
         }
     }
 
@@ -167,19 +186,45 @@ struct TVsProvider: TimelineProvider {
         }
         let list = tvs.values.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
         let selected = list.first { $0.id == snap.selectedID } ?? list.first { $0.playing != nil } ?? list.first
-        var art: Data?
-        // A poster only for what's actually playing (not something paused, or left behind).
-        if let s = selected, let p = s.playing, p.isPlaying {
-            let hub = s.hub
-            art = await within(5) { await TVsProvider.poster(for: p, hub: hub) }
-        }
-        return TVsEntry(date: .now, tvs: list, selected: selected, art: art, paired: true, problem: WidgetProblem.current("tvs"))
+        // Posters: for each TV that TVs & Cameras lists with something on it (as the iPhone's widget shows them), and
+        // for the remote's TV when it's actually playing (Now Playing's backdrop: not something paused, or left behind).
+        var wanted = MacTVsCamerasView.shown(list).filter { $0.playing != nil }
+        let remote = selected.flatMap { $0.playing?.isPlaying == true ? $0 : nil }
+        if let remote, !wanted.contains(where: { $0.id == remote.id }) { wanted.append(remote) }
+        var arts: [String: Data] = [:]
+        if !wanted.isEmpty { arts = await TVsProvider.posters(for: wanted) }
+        return TVsEntry(date: .now, tvs: list, selected: selected, art: remote.flatMap { arts[$0.id] }, paired: true,
+                        problem: WidgetProblem.current("tvs"), arts: arts)
     }
 
-    /// The title's poster from the hub's library (by its Drive key, else its name), made small enough for a widget.
-    static func poster(for p: NowPlaying, hub: SharedStore.HubLink) async -> Data? {
-        let c = TVClient(hub: Hub(id: hub.id, name: hub.name, connection: TVConnection(base: hub.base, key: hub.key)), routeID: "this")
-        guard let home = try? await c.watchHome() else { return nil }
+    /// The posters of what [tvs] are playing, by TV id. Each hub's library is read once, every hub at the same time,
+    /// and none is waited on for more than five seconds (a widget has only a few to draw).
+    static func posters(for tvs: [WidgetTV]) async -> [String: Data] {
+        var byHub: [String: [WidgetTV]] = [:]
+        for tv in tvs where tv.playing != nil { byHub[tv.hub.id, default: []].append(tv) }
+        return await withTaskGroup(of: [String: Data].self, returning: [String: Data].self) { g in
+            for group in byHub.values {
+                g.addTask {
+                    await within(5) { () async -> [String: Data]? in
+                        guard let hub = group.first?.hub else { return nil }
+                        let c = TVClient(hub: Hub(id: hub.id, name: hub.name, connection: TVConnection(base: hub.base, key: hub.key)), routeID: "this")
+                        guard let home = try? await c.watchHome() else { return nil }
+                        var out: [String: Data] = [:]
+                        for tv in group {
+                            if let p = tv.playing, let data = await TVsProvider.poster(for: p, in: home, client: c) { out[tv.id] = data }
+                        }
+                        return out
+                    } ?? [:]
+                }
+            }
+            var all: [String: Data] = [:]
+            for await found in g { all.merge(found) { first, _ in first } }
+            return all
+        }
+    }
+
+    /// The title's poster from the hub's library [home] (by its Drive key, else its name), made small enough for a widget.
+    static func poster(for p: NowPlaying, in home: WatchHome, client c: TVClient) async -> Data? {
         let simple: (String) -> String = { $0.lowercased().filter { $0.isLetter || $0.isNumber } }
         let titles = (home.featured ?? []) + (home.recent ?? []) + (home.movies?.items ?? []) + (home.shows?.items ?? [])
         var path: String?
@@ -338,7 +383,7 @@ struct NowPlayingWidgetView: View {
             Spacer(minLength: 0)
             Text(p?.title ?? idleWords(tv)).font(family == .systemSmall ? .headline : .title3.bold()).lineLimit(2)
             if let a = p?.app { Text(a).font(.caption).foregroundStyle(WidgetPalette.sky).lineLimit(1) }
-            if let p { WidgetProgress(playing: p, at: entry.date, tint: WidgetPalette.cyan).padding(.top, 4) }
+            if let p { WidgetProgress(playing: p, at: entry.seen, tint: WidgetPalette.cyan).padding(.top, 4) }
             if let problem = entry.problem {
                 Text(problem).font(.caption2).foregroundStyle(.yellow).lineLimit(2)
             }
@@ -440,7 +485,7 @@ struct AllTVsWidgetView: View {
                 Text(tv.name).font(compact ? Font.caption.weight(.semibold) : Font.subheadline.weight(.semibold)).lineLimit(1)
                 Text(status(tv)).font(compact ? Font.caption2 : Font.caption).foregroundStyle(.secondary).lineLimit(1)
                 if !compact, let p = tv.playing {
-                    WidgetProgress(playing: p, at: entry.date, tint: WidgetPalette.cyan).padding(.top, 2)
+                    WidgetProgress(playing: p, at: entry.seen, tint: WidgetPalette.cyan).padding(.top, 2)
                 }
             }
             Spacer(minLength: 0)
@@ -682,13 +727,17 @@ struct MacTVsCamerasView: View {
     var entry: TVsEntry
     var cameras: [MacCameraShare.Line]
 
-    private var tvs: [WidgetTV] {
+    private var tvs: [WidgetTV] { Self.shown(entry.tvs) }
+
+    /// The three TVs this widget lists, of [all]: Master Bedroom, Living Room and Kyler's Room, then any others to fill
+    /// three rows. (The provider fetches these TVs' posters.)
+    static func shown(_ all: [WidgetTV]) -> [WidgetTV] {
         func key(_ n: String) -> String { n.lowercased().replacingOccurrences(of: "\u{2019}", with: "'") }
         var out: [WidgetTV] = []
         for name in ["master bedroom", "living room", "kyler's room"] {
-            if let t = entry.tvs.first(where: { key($0.name) == name }) { out.append(t) }
+            if let t = all.first(where: { key($0.name) == name }) { out.append(t) }
         }
-        for t in entry.tvs where out.count < 3 && !out.contains(where: { $0.id == t.id }) { out.append(t) }
+        for t in all where out.count < 3 && !out.contains(where: { $0.id == t.id }) { out.append(t) }
         return out
     }
 
@@ -738,49 +787,75 @@ struct MacTVsCamerasView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    // A TV's row, as on the iPhone's widget: its poster (or the TV mark), its name with the time left beside it, what
+    // it's playing and a thin bar for how far through. None is marked as the remote's: a click on any opens the
+    // remote on it.
     private func row(_ tv: WidgetTV) -> some View {
-        let selected = tv.id == entry.selected?.id
         let playing = tv.online ? tv.playing : nil
         return HStack(spacing: 8) {
-            Group {
-                if selected, playing != nil, let data = entry.art, let img = TVsProvider.image(data, pixels: 120) {
-                    Image(nsImage: img).resizable().scaledToFill()
-                } else {
-                    RoundedRectangle(cornerRadius: 8, style: .continuous).fill(WidgetPalette.cyan.opacity(0.14))
-                        .overlay(Image(systemName: "tv").font(.system(size: 14, weight: .semibold)).foregroundStyle(WidgetPalette.cyan))
-                .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(WidgetPalette.cyan.opacity(0.45), lineWidth: 0.75))
-                }
-            }
-            .frame(width: 34, height: 34)
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            artwork(tv, playing)
             VStack(alignment: .leading, spacing: 1) {
-                Text(tv.name).font(.system(size: 10, weight: .bold)).foregroundStyle(WidgetPalette.ice).lineLimit(1)
+                HStack(spacing: 5) {
+                    Text(tv.name).font(.system(size: 10, weight: .bold)).foregroundStyle(WidgetPalette.ice).lineLimit(1)
+                    Spacer(minLength: 2)
+                    if let p = playing, let left = leftWords(p) {
+                        Text(left).font(.system(size: 10, weight: .medium)).monospacedDigit().foregroundStyle(WidgetPalette.sky)
+                    }
+                }
                 Text(playing?.title ?? (tv.online ? "On" : "Off"))
-                    .font(.system(size: 12.5, weight: selected ? .bold : .semibold, design: .rounded))
+                    .font(.system(size: 12.5, weight: .semibold, design: .rounded))
                     .foregroundStyle(WidgetPalette.frost)
                     .lineLimit(1)
-                if let p = playing {
-                    WidgetProgress(playing: p, at: entry.date, tint: WidgetPalette.cyan).padding(.top, 3)
+                if let p = playing, let done = fraction(p) {
+                    GeometryReader { g in
+                        Capsule().fill(WidgetPalette.cyan.opacity(0.25))
+                            .overlay(alignment: .leading) { Capsule().fill(WidgetPalette.cyan).frame(width: g.size.width * done) }
+                    }
+                    .frame(height: 3)
+                    .padding(.top, 3)
                 }
             }
-            Spacer(minLength: 0)
         }
         .padding(.vertical, 4).padding(.leading, 4).padding(.trailing, 6)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-        .background {
-            if selected {
-                RoundedRectangle(cornerRadius: 12, style: .continuous).fill(WidgetPalette.cyan.opacity(0.13))
-                    .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(WidgetPalette.cyan.opacity(0.9), lineWidth: 1))
-                    .shadow(color: WidgetPalette.cyan.opacity(0.35), radius: 6)
-            }
+    }
+
+    @ViewBuilder private func artwork(_ tv: WidgetTV, _ playing: NowPlaying?) -> some View {
+        if playing != nil, let data = entry.arts[tv.id], let image = TVsProvider.image(data, pixels: 120) {
+            Image(nsImage: image).resizable().scaledToFill()
+                .frame(width: 34, height: 34).clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        } else {
+            RoundedRectangle(cornerRadius: 8, style: .continuous).fill(WidgetPalette.cyan.opacity(0.14))
+                .frame(width: 34, height: 34)
+                .overlay(Image(systemName: "tv").font(.system(size: 14, weight: .semibold)).foregroundStyle(WidgetPalette.cyan))
+                .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(WidgetPalette.cyan.opacity(0.45), lineWidth: 0.75))
         }
+    }
+
+    /// Where [p] is when this is drawn, in milliseconds: what the TV said, moved on by the time since while it plays.
+    private func placeNow(_ p: NowPlaying) -> Double {
+        let said = max(0, p.position ?? 0)
+        return p.isPlaying ? said + max(0, entry.date.timeIntervalSince(entry.seen)) * 1000 : said
+    }
+
+    /// How far through [p] is (0–1); nil when its length isn't known.
+    private func fraction(_ p: NowPlaying) -> Double? {
+        guard let d = p.duration, d > 0 else { return nil }
+        return min(1, max(0, placeNow(p) / d))
+    }
+
+    /// The time left in [p], worded as on the iPhone's widget ("14m", "1h 34m"); nil when its length isn't known.
+    private func leftWords(_ p: NowPlaying) -> String? {
+        guard let d = p.duration, d > 0 else { return nil }
+        let minutes = Int(max(0, d - placeNow(p)) / 60000)
+        return minutes >= 60 ? String(format: "%dh %02dm", minutes / 60, minutes % 60) : "\(minutes)m"
     }
 
     private func camera(_ c: MacCameraShare.Line) -> some View {
         let fresh = c.eventAt.map { entry.date.timeIntervalSince($0) < 600 } ?? false
         return WidgetPalette.cyan.opacity(0.1)
             .overlay {
-                if let data = MacCameraShare.picture(c), let image = TVsProvider.image(data, pixels: 420) {
+                if let data = MacCameraShare.picture(c), let image = TVsProvider.image(data, pixels: 480) {
                     Image(nsImage: image).resizable().scaledToFill()
                 }
             }
