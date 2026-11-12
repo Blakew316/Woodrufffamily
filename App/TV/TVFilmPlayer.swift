@@ -65,8 +65,10 @@ final class OwnPlayer {
     private var ticks = 0
     /// A film whose sound comes out with overhead channels (TrueHD Atmos, DTS:X): the Apple TV's HDMI output is
     /// kept in Dolby Atmos while it plays, which is the only way overhead channels travel to the sound system.
-    private let heightsKeeper = HeightsOutputKeeper()
+    private lazy var heightsKeeper = HeightsOutputKeeper()
     private var heightsFollowed = false
+    /// The sound session was told this film's sound is multichannel (sound the app decodes itself).
+    private var saidMultichannel = false
     private var checkedIndex = false
     /// Why it can't go on has been said.
     private var said = false
@@ -164,6 +166,14 @@ final class OwnPlayer {
             self.index = index
             self.player = player
             indexTook = Date().timeIntervalSince(began)
+            // Sound the app decodes itself (DTS, TrueHD) reaches the Apple TV as plain samples of six, eight or
+            // twelve channels: the sound session is told so before the film starts, as AetherEngine tells it.
+            // Films whose sound Apple decodes are left as they were.
+            let film = player.film
+            if film.sounds.first(where: { $0.id == film.sound })?.decodedHere == true {
+                saidMultichannel = true
+                Self.soundQueue.async { try? AVAudioSession.sharedInstance().setSupportsMultichannelContent(true) }
+            }
             screen.attach(player)
             player.seek(to: play.start > 5 ? play.start : 0)
             let waited = await screen.matchDisplay(to: player.film.picture)
@@ -326,10 +336,9 @@ final class OwnPlayer {
             startedTick = ticks
             noteOutput(play)
         }
-        // Its sound has overhead channels: said to the sound session, and the output kept in Atmos from here on.
+        // Its sound has overhead channels: the output is kept in Atmos from here on.
         if !heightsFollowed, player.notes.decodedChannels == 12 {
             heightsFollowed = true
-            Self.soundQueue.async { try? AVAudioSession.sharedInstance().setSupportsMultichannelContent(true) }
             heightsKeeper.follow { [weak self] in
                 guard let state = self?.player?.state, self?.current != nil else { return nil }
                 return state == .playing || state == .waiting
@@ -562,6 +571,10 @@ final class OwnPlayer {
         if heightsFollowed {
             heightsFollowed = false
             heightsKeeper.stop()
+        }
+        if saidMultichannel {
+            saidMultichannel = false
+            Self.soundQueue.async { try? AVAudioSession.sharedInstance().setSupportsMultichannelContent(false) }
         }
         opening?.cancel()
         opening = nil

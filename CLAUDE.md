@@ -62,6 +62,10 @@ Every feature request or bug fix ends with exactly one release:
   `Packages/FilmSound/Sources`, push, wait for "Build FilmSound" to go green, then copy the framework,
   `BUILD-INFO.txt` and `COPYING.LGPLv2.1` from the branch `filmsound-built` into `Packages/FilmSound` and commit them.
   It stays linked weakly (`project.yml`): the app must start without it.
+- `Packages/FilmHeights` (overhead sound for TrueHD Atmos and DTS:X on the Apple TV) is mostly other people's work
+  under their own licences: AetherEngine's code, LibTrueHD's library and, in `Packages/FilmSound/patches`,
+  FFmpegBuild's patch. The owner approved those three by name. Its `README.md` says what comes from where: keep it
+  true, keep the licence files with it, and bring in nothing else from outside without the owner saying so.
 - A Mac-only request doesn't change the iOS app.
 - No decorative icons in menus or rows. Keep UI text plain and short.
 - Don't ask the user to review screenshots.

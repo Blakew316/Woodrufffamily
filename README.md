@@ -262,10 +262,18 @@ summary of what was installed where, and names the temporary folder its logs are
     the way a file names DTS outright (four bytes, in the kept copy only), so it's a track again. A track the decoder
     can make nothing of gives way to the film's next sound. The Macs' log says which sound was decoded here. iPhone and
     Mac are unchanged: they have no decoder, and such sound isn't played there.
+- `Packages/FilmHeights`: the overhead sounds of Dolby TrueHD Atmos and DTS:X in that player. A TrueHD track with Atmos
+  is decoded by LibTrueHD, which also reads where each sound sits; a DTS:X track by the DTS decoder below, which also
+  reads its four overhead channels. AetherEngine's regression then builds 7.1 with four overhead channels (7.1.4) out
+  of the film's own 7.1, and the Apple TV sends that on as Dolby Atmos (a silent Atmos clip is played beside the film
+  so the sound system stays in Atmos). Where it can't be done for a film, its 7.1 plays. Settings, Watch on the Apple
+  TV has the switch. Nearly all of the package is other people's work under their own licences, which the owner
+  approved by name: its `README.md` says what comes from where. `swift test` there runs AetherEngine's tests of the
+  regression and the app's of its glue.
 - `Packages/FilmSound`: `FilmSound.xcframework`, FFmpeg's DTS, TrueHD and MLP decoders (nothing else of FFmpeg) behind
   a small C bridge, `Sources/wfsound.h`. `scripts/build_filmsound.sh` builds it from FFmpeg's source (the version and
-  its checksum are in the script) and first checks on the Mac that a tone put in every channel comes out of the right
-  one. GitHub runs it when the script or the bridge change (`.github/workflows/filmsound.yml`) and keeps what it built
+  its checksum are in the script, with FFmpegBuild's patch for DTS:X's overhead channels from `patches/`) and first
+  checks on the Mac that a tone put in every channel comes out of the right one. GitHub runs it when the script or the bridge change (`.github/workflows/filmsound.yml`) and keeps what it built
   on the branch `filmsound-built`; the copy in this folder is the one the Apple TV app is built with, linked weakly so
   the app starts without it too. FFmpeg is under the LGPL 2.1 or later: its text, where the source is and how it was
   built are beside the framework (`COPYING.LGPLv2.1`, `BUILD-INFO.txt`).
