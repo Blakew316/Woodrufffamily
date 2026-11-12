@@ -51,9 +51,10 @@ struct WatchSettingsView: View {
             } header: {
                 Text("Player")
             } footer: {
-                Text(handedOff > 0
-                     ? "A film that stutters in Apple’s player plays in Woodruff’s own from then on: \(handedOff) so far. Turn this on to play every film that way."
-                     : "A film that stutters in Apple’s player plays in Woodruff’s own from then on. Turn this on to play every film that way.")
+                Text((handedOff > 0
+                      ? "A film that stutters in Apple’s player plays in Woodruff’s own from then on: \(handedOff) so far. Turn this on to play every film that way."
+                      : "A film that stutters in Apple’s player plays in Woodruff’s own from then on. Turn this on to play every film that way.")
+                     + " A film with surround sound always plays in Apple’s player.")
             }
             // The TV this Apple TV is plugged into: a film neither player here can play is played by that TV's own
             // player (`TVHandOff`). Each Apple TV keeps its own choice.
