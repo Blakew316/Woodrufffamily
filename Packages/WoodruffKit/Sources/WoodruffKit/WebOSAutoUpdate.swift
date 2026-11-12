@@ -15,15 +15,16 @@ public enum WebOSAutoUpdate {
         public init(tag: String, tries: Int, at: Date) { self.tag = tag; self.tries = tries; self.at = at }
     }
 
-    /// A build that didn't go on is tried again after an hour, four times in all: a TV that was only off or busy
-    /// gets it, and one that refuses it isn't asked for ever. A newer build starts afresh.
+    /// A build that didn't go on is tried again after an hour, and after four tries twice a day: it never gives up,
+    /// so a TV whose way in is put right gets the build without anyone pressing anything. A newer build starts afresh.
     static let again: TimeInterval = 3600
+    static let later: TimeInterval = 12 * 3600
     static let most = 4
 
     /// Whether to try the build [tag] on a TV now, given what was tried there before.
     public static func due(_ tried: Tried?, tag: String, now: Date) -> Bool {
         guard let tried, tried.tag == tag else { return true }
-        return tried.tries < most && now.timeIntervalSince(tried.at) >= again
+        return now.timeIntervalSince(tried.at) >= (tried.tries < most ? again : later)
     }
 
     /// The ways in to try, in order: the one saved for the TV, then each address it's known at, as a rooted TV and as
@@ -47,6 +48,8 @@ extension WebOSAutoUpdate {
     static let key = "webos.autoUpdate"
     @MainActor static var running = false
     @MainActor static var saidNoReleases = false
+    /// What was said once already since the app opened (a TV that's off, or whose address isn't known).
+    @MainActor static var saidOnce: Set<String> = []
 
     /// A line for this Mac's log of LG updates.
     static func say(_ line: String) {
@@ -79,30 +82,39 @@ extension Fleet {
             }
             return
         }
+        let tag = release.tag_name
+        for tv in lg where !tv.online && isBehind(tv) && WebOSAutoUpdate.saidOnce.insert("off " + tv.id + tag).inserted {
+            WebOSAutoUpdate.say("\(tv.name): \(tag) is waiting for it. It's off or out of reach now, and gets it within ten minutes of being on.")
+        }
         let waiting = lg.filter { $0.online && $0.playing == nil && isBehind($0) }
         guard !waiting.isEmpty,
               let asset = release.assets.first(where: { $0.name == "woodruff-family.ipk" }) ?? release.assets.first(where: { $0.name.hasSuffix(".ipk") }) else { return }
         WebOSAutoUpdate.running = true
         defer { WebOSAutoUpdate.running = false }
-        let tag = release.tag_name
         var tried: [String: WebOSAutoUpdate.Tried] = Saved.load(WebOSAutoUpdate.key) ?? [:]
         var ipk: URL?
         var installed = false
         for tv in waiting {
+            guard WebOSAutoUpdate.due(tried[tv.id], tag: tag, now: Date()) else { continue }
+            let name = tv.name
+            let known = extras[tv.id]
+            var ways = waysIn(to: tv)
+            if ways.isEmpty {
+                // Its address isn't known here yet (a TV another TV passes on): the home network is asked for it now.
+                await scanNetwork()
+                ways = waysIn(to: tv)
+            }
+            guard !ways.isEmpty else {
+                // Not counted as a try: it's looked for again at the next look, ten minutes on.
+                if WebOSAutoUpdate.saidOnce.insert("address " + tv.id + tag).inserted {
+                    WebOSAutoUpdate.say("\(name): \(tag) is waiting, but this Mac can't find the TV's address. Save it on the TV's page here (Install Updates from This Mac).")
+                }
+                continue
+            }
             let now = Date()
-            guard WebOSAutoUpdate.due(tried[tv.id], tag: tag, now: now) else { continue }
             let before = tried[tv.id].flatMap { $0.tag == tag ? $0.tries : nil } ?? 0
             tried[tv.id] = WebOSAutoUpdate.Tried(tag: tag, tries: before + 1, at: now)
             Saved.save(WebOSAutoUpdate.key, tried)
-            let name = tv.name
-            let known = extras[tv.id]
-            let hosts: [String?] = [known?.ssh?.host, known?.lgHost, hub(tv.id)?.connection.base.host, known?.lastHost, tv.foundAt?.host,
-                                    lanFound.first(where: { $0.id == tv.id })?.host]
-            let ways = WebOSAutoUpdate.ways(saved: known?.ssh, hosts: hosts)
-            guard !ways.isEmpty else {
-                WebOSAutoUpdate.say("\(name): \(tag) is waiting, but this Mac doesn't know the TV's address. Save it on the TV's page here (Install Updates from This Mac).")
-                continue
-            }
             var way: WebOSSSH?
             var refused: [String] = []
             for w in ways {
@@ -131,6 +143,15 @@ extension Fleet {
             try? await Task.sleep(nanoseconds: 8_000_000_000)
             await refresh()
         }
+    }
+
+    /// The ways in to [tv] from here: the one saved for it, then every address it's known at (its remote's, its own
+    /// where it's paired here, where it last answered, and where the search of the home network found it).
+    private func waysIn(to tv: FleetTV) -> [WebOSSSH] {
+        let known = extras[tv.id]
+        let found = lanFound.first(where: { $0.id == tv.id }) ?? lanFound.first(where: { $0.name == tv.name })
+        let hosts: [String?] = [known?.ssh?.host, known?.lgHost, hub(tv.id)?.connection.base.host, known?.lastHost, tv.foundAt?.host, found?.host]
+        return WebOSAutoUpdate.ways(saved: known?.ssh, hosts: hosts)
     }
 }
 #endif

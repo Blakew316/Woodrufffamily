@@ -2,7 +2,7 @@ import XCTest
 @testable import WoodruffKit
 
 final class WebOSAutoUpdateTests: XCTestCase {
-    func testABuildIsTriedAtOnceThenHourlyFourTimesInAll() {
+    func testABuildIsTriedAtOnceThenHourlyThenTwiceADayForEver() {
         let now = Date(timeIntervalSince1970: 1_000_000)
         XCTAssertTrue(WebOSAutoUpdate.due(nil, tag: "webos-33", now: now))
         let once = WebOSAutoUpdate.Tried(tag: "webos-33", tries: 1, at: now)
@@ -11,7 +11,8 @@ final class WebOSAutoUpdateTests: XCTestCase {
         // A newer build starts afresh.
         XCTAssertTrue(WebOSAutoUpdate.due(once, tag: "webos-34", now: now.addingTimeInterval(60)))
         let spent = WebOSAutoUpdate.Tried(tag: "webos-33", tries: 4, at: now)
-        XCTAssertFalse(WebOSAutoUpdate.due(spent, tag: "webos-33", now: now.addingTimeInterval(86_400)))
+        XCTAssertFalse(WebOSAutoUpdate.due(spent, tag: "webos-33", now: now.addingTimeInterval(3600)))
+        XCTAssertTrue(WebOSAutoUpdate.due(spent, tag: "webos-33", now: now.addingTimeInterval(12 * 3600)))
     }
 
     func testTheSavedWayInComesFirstThenEachAddressBothWays() {
