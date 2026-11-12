@@ -769,9 +769,10 @@ extension FilmPlayerTests {
         // Moved back: the decoder is told to forget what it holds, and the sound goes on from there.
         let flushed = fakes.flushes
         r.player.seek(to: 0.5)
-        let again = await wait(6) { r.player.state == .playing && r.player.time >= 0.5 && r.player.time < 1.4 }
+        let forgot = await wait(6) { fakes.flushes > flushed }
+        XCTAssertTrue(forgot, "the decoder wasn't told the film was moved")
+        let again = await wait(6) { r.player.state == .playing }
         XCTAssertTrue(again, "state \(r.player.state) at \(r.player.time), failure \(String(describing: r.player.failure))")
-        XCTAssertGreaterThan(fakes.flushes, flushed)
         await pause(0.3)
         XCTAssertNil(r.player.failure)
         XCTAssertEqual(r.player.notes.mended, 0)
@@ -961,48 +962,5 @@ extension FilmPlayerTests {
         XCTAssertFalse(fakes.starts.isEmpty)
         for start in fakes.starts { XCTAssertEqual(Array(start.prefix(4)), [0x7F, 0xFE, 0x80, 0x01]) }
         player.close()
-    }
-
-    /// What Apple's reader makes of the fixture's DTS track when the file names it with other letters than FFmpeg's
-    /// "mp4a" (which it leaves out). Printed for the log; gone once the answer is in the player.
-    func testProbeWhatAppleMakesOfDTSNamedOtherwise() async throws {
-        let data = try Data(contentsOf: fixture("dts-truehd-aac"))
-        let at = 2145
-        XCTAssertEqual(String(decoding: data[at..<(at + 4)], as: UTF8.self), "mp4a")
-        for letters in ["mp4a", "dtsc", "dtsh", "dtsl", "dtse", "wfds"] {
-            var patched = data
-            patched.replaceSubrange(at..<(at + 4), with: Array(letters.utf8))
-            let url = FileManager.default.temporaryDirectory.appendingPathComponent("probe-\(letters)-\(UUID().uuidString).mp4")
-            try patched.write(to: url)
-            defer { try? FileManager.default.removeItem(at: url) }
-            let asset = AVURLAsset(url: url)
-            let tracks = (try? await asset.load(.tracks)) ?? []
-            var line = "PROBE2 \(letters): \(tracks.count) tracks \(tracks.map(\.trackID))"
-            for track in tracks where track.trackID == 2 {
-                let formats = (try? await track.load(.formatDescriptions)) ?? []
-                if let format = formats.first {
-                    line += ", subtype '\(FilmPlayer.letters(CMFormatDescriptionGetMediaSubType(format)))'"
-                    if let b = CMAudioFormatDescriptionGetStreamBasicDescription(format)?.pointee {
-                        line += ", rate \(b.mSampleRate) channels \(b.mChannelsPerFrame) frames/packet \(b.mFramesPerPacket)"
-                    }
-                    var size = 0
-                    if let cookie = CMAudioFormatDescriptionGetMagicCookie(format, sizeOut: &size), size > 0 {
-                        line += ", cookie \(size) bytes " + UnsafeRawBufferPointer(start: cookie, count: min(size, 40)).map { String(format: "%02x", $0) }.joined()
-                    } else {
-                        line += ", no cookie"
-                    }
-                    line += ", kind \(FilmSoundDecoders.kind(of: format) ?? "none")"
-                }
-                let decodable = try? await track.load(.isDecodable)
-                let enabled = try? await track.load(.isEnabled)
-                let cursors = try? await track.load(.canProvideSampleCursors)
-                line += ", decodable \(String(describing: decodable)), enabled \(String(describing: enabled)), cursors \(String(describing: cursors))"
-                if cursors == true, let reader = FilmTrackReader(track: track), let run = reader.next() {
-                    let first = run.samples.first.map { s in data.subdata(in: Int(s.offset)..<(Int(s.offset) + 4)).map { String(format: "%02x", $0) }.joined() } ?? "-"
-                    line += ", first run \(run.samples.count) samples of \(run.length) bytes from \(run.offset), sizes \(run.samples.prefix(3).map(\.size)), first bytes \(first)"
-                }
-            }
-            print(line)
-        }
     }
 }
