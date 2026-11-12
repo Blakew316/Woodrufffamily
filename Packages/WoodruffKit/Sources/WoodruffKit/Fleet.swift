@@ -165,6 +165,10 @@ public final class Fleet {
     public private(set) var healthErrors: [String: String] = [:]
     /// Events for notifications: a TV went offline, came back, needs attention.
     public var onChange: ((FleetEvent) -> Void)?
+    /// A film began playing on a TV's own player, with how long it took from the player opening (`FilmStartWatch`):
+    /// the TV's name and the start. For the family's log, where a slow start can then be read from.
+    @ObservationIgnored public var onFilmStart: ((String, FilmStartWatch.Start) -> Void)?
+    @ObservationIgnored private var filmStarts = FilmStartWatch()
 
     public var phone = PhoneIdentity.load() { didSet { phone.save() } }
     public var githubToken: String? {
@@ -809,6 +813,13 @@ public final class Fleet {
             failures[id] = nil
             answers[id] = .answered(list)
             answeredAt[id] = now
+            // How long a film takes to start there, from the TVs' own word about their players: a TV's about itself,
+            // and a linked TV's through its hub when it has no answer of its own here.
+            for e in list where e.online {
+                let tv = e.id == "this" ? id : e.id
+                if e.id != "this", hubs.contains(where: { $0.id == tv }) { continue }
+                if let start = filmStarts.note(tv: tv, playing: e.playing, at: now) { onFilmStart?(e.name, start) }
+            }
             if let me = list.first(where: { $0.id == "this" }), me.name != hubs[i].name {
                 hubs[i].name = me.name
                 saveHubs()

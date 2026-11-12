@@ -28,6 +28,13 @@ final class Diagnostics: NSObject {
     func start() {
         guard !started, !Demo.isOn else { return }
         started = true
+        // How long each film takes to start on a TV's own player, as the TVs' answers show it: a slow start is in
+        // the family's log from then on, with which part of it was slow.
+        Fleet.shared.onFilmStart = { tv, start in
+            let length = start.lengthKnown.map { String(format: "its length was known after %.0f s", $0) } ?? "its length was never said"
+            Diagnostics.shared.notePlayback(String(format: "%@: %@ began playing %.0f s after its player opened; %@ (asked every %.0f s)",
+                                                   tv, start.title, start.seconds, length, start.within))
+        }
         // A film the app was ended in the middle of last time (the Apple TV reports that nowhere else).
         PlayCrumb.reportLast()
         #if !os(tvOS)

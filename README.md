@@ -242,6 +242,9 @@ summary of what was installed where, and names the temporary folder its logs are
   - `Fleet.swift`: the observable state: paired hubs, every TV merged from all hubs, polling, health, inbox, releases, LG remotes.
   - `Discovery.swift`: Bonjour browsing and Wake-on-LAN. `LGRemote.swift`: LG's SSAP WebSocket remote.
   - `Releases.swift`: GitHub releases and version numbers. `WebOSInstaller.swift`: SSH install on LG TVs (Mac).
+  - `FilmStartWatch.swift`: how long each film takes to start on a TV's own player, worked out from the TV's answers
+    (when its player opened, when it knew the film's length, when it began to play). Each start is a "Playback" line
+    in `~/Library/Logs/Woodruff Family/diagnostics.log` on the Macs: the TV app times its starts only in Android's log.
   - `FilmRuns.swift`, `FilmTrack.swift`, `FilmPlayer.swift`, `FilmIndexFile.swift`: the app's own film player (Apple TV).
     Apple's player can't play a film whose sound and picture are stored far apart: it hops between the two hundreds of
     times a second and stops every twenty seconds or so. This one has Apple's reader say where each sample is, reads each

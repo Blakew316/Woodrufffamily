@@ -446,6 +446,46 @@ final class RealtimeTests: XCTestCase {
         XCTAssertNil(tv.nowPlaying)
     }
 
+    func testAFilmsStartIsTimedFromTheTVsAnswers() {
+        var watch = FilmStartWatch()
+        func film(_ position: Double, length: Double = 0, playing: Bool = true) -> NowPlaying {
+            NowPlaying(title: "Sinners", app: "Woodruff Family", playing: playing, position: position, duration: length, key: "drive:s1")
+        }
+        func at(_ seconds: Double) -> Date { t0.addingTimeInterval(seconds) }
+        // Nothing playing, asked every 4 s; then the player opens at its place, still loading.
+        XCTAssertNil(watch.note(tv: "tv-a", playing: nil, at: at(0)))
+        XCTAssertNil(watch.note(tv: "tv-a", playing: nil, at: at(4)))
+        XCTAssertNil(watch.note(tv: "tv-a", playing: film(600_000), at: at(8)))
+        XCTAssertNil(watch.note(tv: "tv-a", playing: film(600_000), at: at(12)))
+        // The film's length arrives 16 s after the player opened; its place is still where it was.
+        XCTAssertNil(watch.note(tv: "tv-a", playing: film(600_000, length: 7_200_000), at: at(24)))
+        // Playing: a second into it when asked 20 s after the opening, so it began 19 s after.
+        let start = watch.note(tv: "tv-a", playing: film(601_000, length: 7_200_000), at: at(28))
+        XCTAssertEqual(start?.title, "Sinners")
+        XCTAssertEqual(start?.seconds ?? -1, 19, accuracy: 0.01)
+        XCTAssertEqual(start?.lengthKnown ?? -1, 16, accuracy: 0.01)
+        XCTAssertEqual(start?.within ?? -1, 4, accuracy: 0.01)
+        // Said once.
+        XCTAssertNil(watch.note(tv: "tv-a", playing: film(605_000, length: 7_200_000), at: at(32)))
+
+        // A jump to where the film was left off isn't the film playing.
+        var jump = FilmStartWatch()
+        XCTAssertNil(jump.note(tv: "tv-a", playing: nil, at: at(0)))
+        XCTAssertNil(jump.note(tv: "tv-a", playing: film(0), at: at(2)))
+        XCTAssertNil(jump.note(tv: "tv-a", playing: film(3_000_000, length: 7_200_000), at: at(4)))
+        XCTAssertEqual(jump.note(tv: "tv-a", playing: film(3_001_500, length: 7_200_000), at: at(6))?.seconds ?? -1, 2.5, accuracy: 0.01)
+
+        // A film come upon part-way through (the TV not asked just before), or another app's title, isn't timed.
+        var late = FilmStartWatch()
+        XCTAssertNil(late.note(tv: "tv-a", playing: film(600_000, length: 7_200_000), at: at(0)))
+        XCTAssertNil(late.note(tv: "tv-a", playing: film(604_000, length: 7_200_000), at: at(4)))
+        var other = FilmStartWatch()
+        let netflix = NowPlaying(title: "Stranger Things", app: "Netflix", playing: true, position: 5_000, duration: 3_000_000)
+        XCTAssertNil(other.note(tv: "tv-a", playing: nil, at: at(0)))
+        XCTAssertNil(other.note(tv: "tv-a", playing: netflix, at: at(2)))
+        XCTAssertNil(other.note(tv: "tv-a", playing: NowPlaying(title: "Stranger Things", app: "Netflix", playing: true, position: 7_000, duration: 3_000_000), at: at(4)))
+    }
+
     func testAnInputOnScreenIsNotSomethingPlaying() {
         // What an Android TV says while its HDMI 4 input shows the Apple TV: the TV's own input app, "playing" for as
         // long as the input is on, with no length.
