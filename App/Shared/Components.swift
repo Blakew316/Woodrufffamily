@@ -377,6 +377,9 @@ struct TVPicker: View {
         .menuStyle(.button)
         .buttonStyle(.plain)
         .fixedSize(horizontal: !squeezes, vertical: true)
+        // Between Close and More on the narrowest iPhone there are about 239 points: never wider than that, whatever
+        // the bar offers, so a long name at a large text size shrinks, then shortens, and never reaches the buttons.
+        .frame(maxWidth: squeezes ? 230 : nil)
     }
 
     private var dotColor: Color {
