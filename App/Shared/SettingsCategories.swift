@@ -233,18 +233,10 @@ struct WoodruffFamilySection: View {
         Section {
             LabeledContent("Version", value: AppBuild.label)
             SpeedRows()
-            #if os(iOS)
-            // The newest build as the Mac Studio published it on GitHub: installed from here, anywhere.
-            InstallLinkRows()
-            #endif
         } header: {
             Text("Woodruff Family")
         } footer: {
-            #if os(iOS)
-            Text("New versions come from the family’s Mac on home Wi‑Fi, or from TestFlight anywhere. The install link has the newest one too, without either.")
-            #else
             Text("New versions come from TestFlight, on Wi‑Fi or cellular, or from the family’s Mac on home Wi‑Fi.")
-            #endif
         }
         #endif
     }
