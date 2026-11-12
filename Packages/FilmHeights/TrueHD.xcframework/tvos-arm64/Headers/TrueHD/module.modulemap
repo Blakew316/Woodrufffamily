@@ -1,0 +1,4 @@
+module TrueHD {
+    header "truehd_atmos.h"
+    export *
+}

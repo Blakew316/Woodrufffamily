@@ -44,6 +44,11 @@ jobs:
           ls -d /Applications/Xcode*.app
           sudo xcode-select -s "$(ls -d /Applications/Xcode_*.app | grep -v -i beta | sort -V | tail -1)"
           xcodebuild -version
+      - name: FilmHeights tests
+        # The overhead sounds of TrueHD Atmos and DTS:X (Packages/FilmHeights): AetherEngine's own tests of its
+        # regression, and the app's of its glue around it.
+        working-directory: Packages/FilmHeights
+        run: swift test
       - name: WoodruffKit tests
         working-directory: Packages/WoodruffKit
         run: swift test
