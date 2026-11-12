@@ -71,6 +71,13 @@ final class OwnPlayer {
     private var watches: [NSObjectProtocol] = []
     private var commands: [(command: MPRemoteCommand, target: Any)] = []
     private var artwork: MPMediaItemArtwork?
+    /// How many channels the sound going out was last asked to have (the film's own count).
+    private var speakers = 0
+    /// What the sound session preferred before this player asked for more channels: put back when the film closes, so
+    /// Apple's player finds things as it always did.
+    private var outputBefore: Int?
+    /// The sound session's work, one thing after another and never on the main thread (activating can take a moment).
+    private static let soundQueue = DispatchQueue(label: "woodruff.film-sound", qos: .userInitiated)
 
     // MARK: Starting
 
@@ -87,7 +94,8 @@ final class OwnPlayer {
         // Sound mixed for more than two speakers goes out that way (Apple's player says so for itself).
         try? audio.setSupportsMultichannelContent(true)
         // Activating can take a moment; not on the main thread, where the screen is being shown.
-        DispatchQueue.global(qos: .userInitiated).async { try? audio.setActive(true) }
+        Self.soundQueue.async { try? audio.setActive(true) }
+        speakers = 0
 
         let stream = DriveStream(fileID: id, name: play.title)
         let screen = FilmScreen()
@@ -144,6 +152,8 @@ final class OwnPlayer {
             self.index = index
             self.player = player
             indexTook = Date().timeIntervalSince(began)
+            // Before it plays: the sound goes out to as many speakers as it's mixed for.
+            send(toSpeakers: Self.channels(player.film), play)
             screen.attach(player)
             player.seek(to: play.start > 5 ? play.start : 0)
             let waited = await screen.matchDisplay(to: player.film.picture)
@@ -243,6 +253,42 @@ final class OwnPlayer {
         }
     }
 
+    /// How many channels the sound track playing is mixed for (0: no sound).
+    private static func channels(_ film: FilmPlayer.Film) -> Int {
+        film.sounds.first { $0.id == film.sound }?.channels ?? 0
+    }
+
+    /// The sound goes out to as many speakers as the film's sound is mixed for, up to what's connected: a 5.1 film as
+    /// 5.1. An app's sound goes out as two channels unless it asks for more. Apple's player asks for itself; this one
+    /// never did, so a surround film came out as two channels (a receiver set to Dolby Digital 5.1 got only the front
+    /// pair). What the Apple TV's output takes, what was asked for and what it then gave go in the Macs' log.
+    private func send(toSpeakers channels: Int, _ play: PhonePlay) {
+        guard channels > 0, channels != speakers else { return }
+        speakers = channels
+        let title = play.title
+        Self.soundQueue.async { [weak self] in
+            let audio = AVAudioSession.sharedInstance()
+            let before = audio.preferredOutputNumberOfChannels
+            let most = audio.maximumOutputNumberOfChannels
+            let want = max(2, min(channels, most))
+            let refused: String
+            do {
+                try audio.setPreferredOutputNumberOfChannels(want)
+                refused = ""
+            } catch {
+                let ns = error as NSError
+                refused = " (refused: \(ns.domain) \(ns.code))"
+            }
+            // (The output follows a moment after it's asked.)
+            Thread.sleep(forTimeInterval: 0.3)
+            let now = audio.outputNumberOfChannels
+            Task { @MainActor in
+                if let self, self.outputBefore == nil { self.outputBefore = before }
+                Diagnostics.shared.notePlayback("\(title): its sound is mixed for \(channels) channels; the Apple TV’s output takes up to \(most), asked for \(want), now \(now)\(refused)")
+            }
+        }
+    }
+
     /// The film's picture and sound, for the Macs' log.
     private func noteFormats(_ film: FilmPlayer.Film, _ play: PhonePlay, matches: Bool?) {
         var words: [String] = []
@@ -269,6 +315,8 @@ final class OwnPlayer {
         ticks += 1
         let state = player.state
         if state == .playing { started = true }
+        // Another sound track chosen meanwhile may be mixed for more speakers, or fewer.
+        send(toSpeakers: Self.channels(player.film), play)
         if state == .ended {
             // Played to its end: the screen closes, back to the page it was started from.
             screen.close()
@@ -449,7 +497,10 @@ final class OwnPlayer {
         words += String(format: ", %ld stops to wait (%.1f s), %ld moves", n.waits, n.waited, max(0, n.jumps - 1))
         words += String(format: ", read %ld runs of picture and %ld of sound, the slowest in %.2f s", n.reads[0], n.reads[1], n.slowest)
         if n.again > 0 { words += ", \(n.again) asked again" }
-        if n.mended > 0 { words += ", decoders started afresh \(n.mended) times" }
+        if n.mended > 0 {
+            words += ", decoders started afresh \(n.mended) times (the picture’s \(n.mendedPicture), the sound’s \(n.mendedSound)"
+                + (n.mendWhy.map { ": \($0)" } ?? "") + ")"
+        }
         words += ", asked Google for \(stream.askedNow())"
         if let size = stream.sizeNow(), player.length > 60 {
             words += String(format: ", the film needs %.0f Mb/s", Double(size) * 8 / player.length / 1_000_000)
@@ -476,6 +527,16 @@ final class OwnPlayer {
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
         player?.close()
         player = nil
+        // The sound session goes back to what it preferred before this film asked for more channels.
+        speakers = 0
+        if let before = outputBefore {
+            outputBefore = nil
+            Self.soundQueue.async {
+                let audio = AVAudioSession.sharedInstance()
+                // (No preference, where that was so and can be said; else two channels, as an app's sound goes out anyway.)
+                do { try audio.setPreferredOutputNumberOfChannels(before) } catch { try? audio.setPreferredOutputNumberOfChannels(2) }
+            }
+        }
         stream = nil
         index = nil
         current = nil

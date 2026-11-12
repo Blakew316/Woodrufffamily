@@ -100,6 +100,11 @@ public final class FilmPlayer: @unchecked Sendable {
         /// Reads asked for again after the connection failed, and times a decoder was started afresh.
         public var again = 0
         public var mended = 0
+        /// Of those, the picture's decoder and the sound's, and what the last one to give up said (its error, or that
+        /// it had let go of what it held).
+        public var mendedPicture = 0
+        public var mendedSound = 0
+        public var mendWhy: String?
     }
 
     /// What the film is, once it's open.
@@ -763,15 +768,26 @@ public final class FilmPlayer: @unchecked Sendable {
     private func mend(_ now: CMTime) {
         guard Date().timeIntervalSince(lastMend) > 2 else { return }
         var broken: [Pipe] = []
+        var picture = 0, sound = 0
+        var said: String?
         if let renderer = pictureRenderer, let pipe = picturePipe,
            renderer.requiresFlushToResumeDecoding || renderer.status == .failed {
             broken.append(pipe)
+            picture = 1
+            said = "the picture’s " + (renderer.status == .failed ? Self.words(renderer.error) : "let go of what it held")
         }
-        if let pipe = soundPipe, soundRenderer.status == .failed { broken.append(pipe) }
+        if let pipe = soundPipe, soundRenderer.status == .failed {
+            broken.append(pipe)
+            sound = 1
+            said = "the sound’s " + Self.words(soundRenderer.error)
+        }
         guard !broken.isEmpty else { return }
         lastMend = Date()
         lock.lock()
         sharedNotes.mended += 1
+        sharedNotes.mendedPicture += picture
+        sharedNotes.mendedSound += sound
+        if let said { sharedNotes.mendWhy = said }
         let times = sharedNotes.mended
         lock.unlock()
         guard times <= 5 else {
@@ -782,6 +798,13 @@ public final class FilmPlayer: @unchecked Sendable {
             reset(pipe, to: now)
             fill(pipe)
         }
+    }
+
+    /// An error in a few words for the log: where it's from and its number ("AVFoundationErrorDomain -11821").
+    private static func words(_ error: Error?) -> String {
+        guard let error else { return "gave up without saying why" }
+        let ns = error as NSError
+        return "gave up (\(ns.domain) \(ns.code))"
     }
 
     /// The sound renderer let go of what it held from [at] on (the output changed): the sound is read again from there.
