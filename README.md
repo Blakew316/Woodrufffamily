@@ -189,6 +189,25 @@ General and is tried again every 6 hours (or at Check for Updates Now). To turn 
 updater's `config.json`. TestFlight builds use Apple's production push service, so Instant iPhone Alerts need a push
 key enabled for Sandbox & Production.
 
+### The install link (no TestFlight, no home network)
+
+A third way for an iPhone or iPad to get the newest build, for when it's away from home and TestFlight can't be
+used. After each release the Mac Studio's updater publishes the iPhone app it has just built as the files of one
+GitHub release, `install-link`, on this repository: `WoodruffFamily.ipa`, `manifest.plist` (what iOS reads to install
+an app from a web address) and `latest.json` (which build it is). In the app, Settings → General → Woodruff Family
+shows Install Link: when the published build is newer than the one running, Install Build N hands it to iOS, which
+asks before installing it.
+
+- It needs GitHub's command-line tool on the Mac Studio, signed in with an account that can write to this repository
+  (`brew install gh`, then `gh auth login`). Without it nothing is published and nothing else changes.
+- The app is the one the Mac Studio installs at home: signed for the devices registered with the team, and it
+  installs on no other. The repository is public, so the file can be downloaded by anyone; it carries the team's name
+  and the registered devices' identifiers, as every such build does.
+- `python3 scripts/updater.py status` says how the last publishing went (Link), and the updater's log has a line
+  for each. To turn it off, add `"install_link": false` to the updater's `config.json`.
+- With the app deleted, the link itself, opened in Safari on the device, installs it:
+  `itms-services://?action=download-manifest&url=https://github.com/Blakew316/Woodrufffamily/releases/download/install-link/manifest.plist`
+
 ### By hand
 
 `scripts/deploy.sh` is what the updater runs. It also works by hand, in Terminal from the repository folder:
