@@ -19,7 +19,7 @@ struct WatchSettingsView: View {
     @AppStorage("watch.screenTV") private var screenTV = ""
     @State private var handedOff = 0
     /// Every Drive film plays in the app's own player (`OwnPlayer.everyKey`).
-    @AppStorage("watch.ownPlayerEvery") private var ownEvery = false
+    @AppStorage("watch.ownPlayerEvery") private var ownEvery = true
     #endif
     private let library = DriveLibrary.shared
 
@@ -38,11 +38,11 @@ struct WatchSettingsView: View {
     var body: some View {
         Form {
             #if os(tvOS)
-            // The app's own player (`OwnPlayer`): it has the films Apple's player stutters on, and every film when
-            // this is on. Each Apple TV keeps its own choice.
+            // The app's own player (`OwnPlayer`): every film, unless this is switched off; then only the films Apple's
+            // player stutters on. Each Apple TV keeps its own choice.
             Section {
                 Toggle("Woodruff’s Player for Every Film", isOn: $ownEvery)
-                if handedOff > 0 {
+                if !ownEvery, handedOff > 0 {
                     Button("Try Apple’s Player Again") {
                         TVHandOff.forgetAll()
                         handedOff = 0
@@ -51,9 +51,11 @@ struct WatchSettingsView: View {
             } header: {
                 Text("Player")
             } footer: {
-                Text(handedOff > 0
-                     ? "A film that stutters in Apple’s player plays in Woodruff’s own from then on: \(handedOff) so far. Turn this on to play every film that way."
-                     : "A film that stutters in Apple’s player plays in Woodruff’s own from then on. Turn this on to play every film that way.")
+                Text(ownEvery
+                     ? "Every film plays in Woodruff’s own player. A film it can’t open plays in Apple’s."
+                     : (handedOff > 0
+                        ? "Films play in Apple’s player. One that stutters there plays in Woodruff’s own from then on: \(handedOff) so far."
+                        : "Films play in Apple’s player. One that stutters there plays in Woodruff’s own from then on."))
             }
             // The TV this Apple TV is plugged into: a film neither player here can play is played by that TV's own
             // player (`TVHandOff`). Each Apple TV keeps its own choice.

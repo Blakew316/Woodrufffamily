@@ -21,7 +21,9 @@ final class OwnPlayer {
     /// Settings → Watch on Apple TV: every Drive film plays in the app's own player, not only the ones Apple's
     /// player stutters on.
     static let everyKey = "watch.ownPlayerEvery"
-    static var forEvery: Bool { UserDefaults.standard.bool(forKey: everyKey) }
+    /// On unless it's been switched off in Settings (the owner's choice, build 635): with it off, only the films
+    /// Apple's player stutters on play here.
+    static var forEvery: Bool { UserDefaults.standard.object(forKey: everyKey) as? Bool ?? true }
 
     /// Films the app's own player couldn't open since the app started: Apple's player has them.
     private static var gaveUp: Set<String> = []
