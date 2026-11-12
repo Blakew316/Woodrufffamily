@@ -71,11 +71,6 @@ final class OwnPlayer {
     private var watches: [NSObjectProtocol] = []
     private var commands: [(command: MPRemoteCommand, target: Any)] = []
     private var artwork: MPMediaItemArtwork?
-    /// How many channels the sound going out was last asked to have (the film's own count).
-    private var speakers = 0
-    /// What the sound session preferred before this player asked for more channels: put back when the film closes, so
-    /// Apple's player finds things as it always did.
-    private var outputBefore: Int?
     /// The sound session's work, one thing after another and never on the main thread (activating can take a moment).
     private static let soundQueue = DispatchQueue(label: "woodruff.film-sound", qos: .userInitiated)
 
@@ -91,11 +86,14 @@ final class OwnPlayer {
         CameraStreams.shared.filmStarting()
         let audio = AVAudioSession.sharedInstance()
         try? audio.setCategory(.playback, mode: .moviePlayback)
-        // Sound mixed for more than two speakers goes out that way (Apple's player says so for itself).
-        try? audio.setSupportsMultichannelContent(true)
+        // Nothing else is asked of the sound session. How many channels go out, and how a film mixed for six
+        // speakers is fitted to what's connected, is the Apple TV's to decide: Apple's player, where such a film
+        // sounds right, sets only the line above, and the Android TVs' player likewise hands the TV the film's
+        // sound and leaves the output to it. This player used to say its sound was multichannel, and build 626
+        // also asked for the film's six channels: the Apple TV's output went to 32 channels and the film sounded
+        // wrong.
         // Activating can take a moment; not on the main thread, where the screen is being shown.
         Self.soundQueue.async { try? audio.setActive(true) }
-        speakers = 0
 
         let stream = DriveStream(fileID: id, name: play.title)
         let screen = FilmScreen()
@@ -152,8 +150,6 @@ final class OwnPlayer {
             self.index = index
             self.player = player
             indexTook = Date().timeIntervalSince(began)
-            // Before it plays: the sound goes out to as many speakers as it's mixed for.
-            send(toSpeakers: Self.channels(player.film), play)
             screen.attach(player)
             player.seek(to: play.start > 5 ? play.start : 0)
             let waited = await screen.matchDisplay(to: player.film.picture)
@@ -253,39 +249,16 @@ final class OwnPlayer {
         }
     }
 
-    /// How many channels the sound track playing is mixed for (0: no sound).
-    private static func channels(_ film: FilmPlayer.Film) -> Int {
-        film.sounds.first { $0.id == film.sound }?.channels ?? 0
-    }
-
-    /// The sound goes out to as many speakers as the film's sound is mixed for, up to what's connected: a 5.1 film as
-    /// 5.1. An app's sound goes out as two channels unless it asks for more. Apple's player asks for itself; this one
-    /// never did, so a surround film came out as two channels (a receiver set to Dolby Digital 5.1 got only the front
-    /// pair). What the Apple TV's output takes, what was asked for and what it then gave go in the Macs' log.
-    private func send(toSpeakers channels: Int, _ play: PhonePlay) {
-        guard channels > 0, channels != speakers else { return }
-        speakers = channels
+    /// What the sound is going out through and in how many channels, for the Macs' log. Read only: nothing is asked
+    /// of the sound session (see `present`). Said once the film is playing, when the output has settled on it.
+    private func noteOutput(_ play: PhonePlay) {
         let title = play.title
-        Self.soundQueue.async { [weak self] in
+        Self.soundQueue.async {
             let audio = AVAudioSession.sharedInstance()
-            let before = audio.preferredOutputNumberOfChannels
-            let most = audio.maximumOutputNumberOfChannels
-            let want = max(2, min(channels, most))
-            let refused: String
-            do {
-                try audio.setPreferredOutputNumberOfChannels(want)
-                refused = ""
-            } catch {
-                let ns = error as NSError
-                refused = " (refused: \(ns.domain) \(ns.code))"
-            }
-            // (The output follows a moment after it's asked.)
-            Thread.sleep(forTimeInterval: 0.3)
-            let now = audio.outputNumberOfChannels
-            Task { @MainActor in
-                if let self, self.outputBefore == nil { self.outputBefore = before }
-                Diagnostics.shared.notePlayback("\(title): its sound is mixed for \(channels) channels; the Apple TV’s output takes up to \(most), asked for \(want), now \(now)\(refused)")
-            }
+            let outputs = audio.currentRoute.outputs.map { "\($0.portType.rawValue) (\($0.channels?.count ?? 0) channels)" }
+            let through = outputs.isEmpty ? "no output" : outputs.joined(separator: ", ")
+            let line = "\(title): its sound goes out through \(through); the output has \(audio.outputNumberOfChannels) channels of up to \(audio.maximumOutputNumberOfChannels)"
+            Task { @MainActor in Diagnostics.shared.notePlayback(line) }
         }
     }
 
@@ -314,9 +287,10 @@ final class OwnPlayer {
         guard let player, let play = current, let screen else { return }
         ticks += 1
         let state = player.state
-        if state == .playing { started = true }
-        // Another sound track chosen meanwhile may be mixed for more speakers, or fewer.
-        send(toSpeakers: Self.channels(player.film), play)
+        if state == .playing, !started {
+            started = true
+            noteOutput(play)
+        }
         if state == .ended {
             // Played to its end: the screen closes, back to the page it was started from.
             screen.close()
@@ -527,16 +501,6 @@ final class OwnPlayer {
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
         player?.close()
         player = nil
-        // The sound session goes back to what it preferred before this film asked for more channels.
-        speakers = 0
-        if let before = outputBefore {
-            outputBefore = nil
-            Self.soundQueue.async {
-                let audio = AVAudioSession.sharedInstance()
-                // (No preference, where that was so and can be said; else two channels, as an app's sound goes out anyway.)
-                do { try audio.setPreferredOutputNumberOfChannels(before) } catch { try? audio.setPreferredOutputNumberOfChannels(2) }
-            }
-        }
         stream = nil
         index = nil
         current = nil
