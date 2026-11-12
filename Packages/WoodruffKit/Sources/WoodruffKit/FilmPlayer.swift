@@ -67,8 +67,10 @@ public final class FilmPlayer: @unchecked Sendable {
         public let language: String?
         public let codec: String
         public let channels: Int
-        /// Apple's decoders can play it.
+        /// It can be played here: by Apple's decoders, or by one the app has given (`FilmSoundDecoders`).
         public let playable: Bool
+        /// Apple has no decoder for it: the app's own decodes it (DTS, Dolby TrueHD).
+        public let decodedHere: Bool
     }
 
     /// A subtitle track of the film's own.
@@ -109,6 +111,16 @@ public final class FilmPlayer: @unchecked Sendable {
         /// (`joined`), and the furthest any was out, in seconds.
         public var joined = 0
         public var joinedBy = 0.0
+        /// Sound decoded by the app's own decoder (`FilmSoundDecoders`): its kind ("dts", "truehd"), the packets
+        /// given to the decoder and those nothing could be made of, the frames that came out and their shape; and
+        /// whether a track was given up on because nothing came of it at all.
+        public var decodedKind: String?
+        public var decodedPackets = 0
+        public var decodedLost = 0
+        public var decodedFrames = 0
+        public var decodedChannels = 0
+        public var decodedRate = 0
+        public var decodingGaveUp = false
     }
 
     /// What the film is, once it's open.
@@ -146,6 +158,8 @@ public final class FilmPlayer: @unchecked Sendable {
         let shift: CMTime
         let format: CMFormatDescription?
         let playable: Bool
+        /// (Sound) the kind the app's own decoder is asked for ("dts", "truehd"); nil for sound Apple decodes.
+        var ours: String? = nil
     }
 
     /// One track being played: its reader, and what has been read of it and not yet handed to its decoder.
@@ -168,6 +182,8 @@ public final class FilmPlayer: @unchecked Sendable {
         var tries = 0
         /// (Sound) where the sound handed over so far ends, counted from the sound itself: the next piece starts here.
         var soundEnd = CMTime.invalid
+        /// (Sound Apple has no decoder for) the app's own decoder for this track, and what it has made of it.
+        var decoding: FilmSoundDecoding?
 
         init(lane: Int, sound: Bool, reader: FilmTrackReader, format: CMFormatDescription?) {
             self.lane = lane
@@ -294,11 +310,22 @@ public final class FilmPlayer: @unchecked Sendable {
                 film.picture = Picture(format: format, codec: kind, width: Int(size.width), height: Int(size.height), framesASecond: rate)
                 picture = Loaded(track: track, shift: shift, format: format, playable: true)
             } else if track.mediaType == .audio {
-                let playable = (try? await track.load(.isDecodable)) ?? true
+                // DTS and Dolby TrueHD: Apple has no decoder for them (whatever it says of an "mp4a" track that
+                // holds DTS), so they play when the app has given one, and not otherwise.
+                let ours = FilmSoundDecoders.kind(of: format)
+                let playable: Bool
+                if let ours {
+                    playable = FilmSoundDecoders.make?(ours) != nil
+                } else {
+                    playable = (try? await track.load(.isDecodable)) ?? true
+                }
                 let channels = CMAudioFormatDescriptionGetStreamBasicDescription(format)?.pointee.mChannelsPerFrame ?? 0
                 let language = try? await track.load(.languageCode)
-                film.sounds.append(Sound(id: track.trackID, language: language, codec: kind, channels: Int(channels), playable: playable))
-                sounds[track.trackID] = Loaded(track: track, shift: shift, format: format, playable: playable)
+                // (A track that names its kind with a number is told by the kind: "dts", not "mp4a".)
+                let named = ours.map { kind.hasPrefix("dts") || kind == "mlpa" ? kind : $0 } ?? kind
+                film.sounds.append(Sound(id: track.trackID, language: language, codec: named, channels: Int(channels),
+                                         playable: playable, decodedHere: playable && ours != nil))
+                sounds[track.trackID] = Loaded(track: track, shift: shift, format: format, playable: playable, ours: playable ? ours : nil)
                 if firstEnabled == nil, playable, (try? await track.load(.isEnabled)) ?? true { firstEnabled = track.trackID }
             } else if track.mediaType == .subtitle, CMFormatDescriptionGetMediaSubType(format) == Self.subtitleKind {
                 let language = try? await track.load(.languageCode)
@@ -329,7 +356,9 @@ public final class FilmPlayer: @unchecked Sendable {
             }
             if let chosen {
                 guard let reader = FilmTrackReader(track: chosen.track, shift: chosen.shift) else { throw Failure.noIndex }
-                soundPipe = Pipe(lane: 1, sound: true, reader: reader, format: chosen.format)
+                let pipe = Pipe(lane: 1, sound: true, reader: reader, format: chosen.format)
+                pipe.decoding = decoding(for: chosen)
+                soundPipe = pipe
             }
             soundTracks = sounds
             wordTracks = words
@@ -478,18 +507,66 @@ public final class FilmPlayer: @unchecked Sendable {
     /// Plays the sound track [id].
     public func choose(sound id: CMPersistentTrackID) {
         queue.async {
-            guard self.opened, !self.closed, let loaded = self.soundTracks[id], loaded.playable,
-                  let reader = FilmTrackReader(track: loaded.track, shift: loaded.shift) else { return }
-            if let old = self.soundPipe, old.requesting { self.soundRenderer.stopRequestingMediaData() }
-            let pipe = Pipe(lane: 1, sound: true, reader: reader, format: loaded.format)
-            self.soundPipe = pipe
-            self.reset(pipe, to: self.clock.currentTime())
-            self.lock.lock()
-            self.sharedFilm.sound = id
-            self.lock.unlock()
-            self.fill(pipe)
-            self.publish()
+            guard self.opened, !self.closed else { return }
+            self.take(sound: id)
         }
+    }
+
+    /// The sound track [id] plays from where the film is. False when it can't be played.
+    @discardableResult
+    private func take(sound id: CMPersistentTrackID) -> Bool {
+        guard let loaded = soundTracks[id], loaded.playable,
+              let reader = FilmTrackReader(track: loaded.track, shift: loaded.shift) else { return false }
+        let pipe = Pipe(lane: 1, sound: true, reader: reader, format: loaded.format)
+        pipe.decoding = decoding(for: loaded)
+        // (Sound Apple can't decode never goes to its decoder: with no decoder of the app's, it isn't taken.)
+        guard loaded.ours == nil || pipe.decoding != nil else { return false }
+        if let old = soundPipe, old.requesting { soundRenderer.stopRequestingMediaData() }
+        soundPipe = pipe
+        reset(pipe, to: clock.currentTime())
+        lock.lock()
+        sharedFilm.sound = id
+        lock.unlock()
+        fill(pipe)
+        publish()
+        return true
+    }
+
+    /// The app's own decoder for [loaded]'s sound, when it's sound Apple has none for.
+    private func decoding(for loaded: Loaded) -> FilmSoundDecoding? {
+        guard let kind = loaded.ours, let decoder = FilmSoundDecoders.make?(kind) else { return nil }
+        return FilmSoundDecoding(kind: kind, decoder: decoder)
+    }
+
+    /// This many seconds of the film's sound have been through the app's own decoder and nothing came of any of it.
+    /// (After a film is moved a decoder may give nothing until the sound next starts afresh: a fraction of a second.)
+    private static let giveUpDecodingAfter = 1.5
+
+    /// The sound track being decoded here can't be decoded after all (nothing came of `giveUpDecodingAfter` seconds
+    /// of it). It's marked as sound that can't be played, and the film's first sound that can takes over, as it did
+    /// before there was a decoder for this one; with none, the film goes on without sound.
+    private func giveUpDecoding(_ pipe: Pipe) {
+        guard pipe === soundPipe else { return }
+        lock.lock()
+        let id = sharedFilm.sound
+        lock.unlock()
+        guard let id, let loaded = soundTracks[id] else { return }
+        soundTracks[id] = Loaded(track: loaded.track, shift: loaded.shift, format: loaded.format, playable: false, ours: nil)
+        lock.lock()
+        sharedFilm.sounds = sharedFilm.sounds.map {
+            $0.id == id ? Sound(id: $0.id, language: $0.language, codec: $0.codec, channels: $0.channels, playable: false, decodedHere: false) : $0
+        }
+        let others = sharedFilm.sounds.filter { $0.playable }.map(\.id)
+        sharedNotes.decodingGaveUp = true
+        lock.unlock()
+        for other in others where take(sound: other) { return }
+        if pipe.requesting { soundRenderer.stopRequestingMediaData() }
+        soundRenderer.flush()
+        soundPipe = nil
+        lock.lock()
+        sharedFilm.sound = nil
+        lock.unlock()
+        publish()
     }
 
     /// Shows the subtitle track [id], or none.
@@ -566,6 +643,7 @@ public final class FilmPlayer: @unchecked Sendable {
         pipe.madeUpTo = .invalid
         pipe.tries = 0
         pipe.soundEnd = .invalid
+        pipe.decoding?.flush()
         pipe.showFrom = target
         pipe.dropBefore = .invalid
         if target.seconds <= 0.05 {
@@ -592,7 +670,9 @@ public final class FilmPlayer: @unchecked Sendable {
         guard pipe.sound || pictureRenderer != nil else { return }
         let want = max(keep, waiting ? (hasWaited ? enoughAfterWaiting : enough) : 0)
         if pipe.madeUpTo.isValid, CMTimeSubtract(pipe.madeUpTo, clock.currentTime()).seconds >= want { return }
-        guard let run = pipe.reader.next(most: pipe.sound ? 1 << 20 : 4 << 20, gap: 256 << 10, limit: 480, seconds: 2) else { return }
+        // (TrueHD comes 1,200 packets to the second: a run of sound decoded here may hold more packets, not more time.)
+        guard let run = pipe.reader.next(most: pipe.sound ? 1 << 20 : 4 << 20, gap: 256 << 10,
+                                         limit: pipe.decoding == nil ? 480 : 4096, seconds: 2) else { return }
         pipe.reading = true
         ask(run, for: pipe)
     }
@@ -638,7 +718,21 @@ public final class FilmPlayer: @unchecked Sendable {
             sharedNotes.slowest = max(sharedNotes.slowest, took)
             lock.unlock()
             do {
-                if pipe.sound {
+                if let decoding = pipe.decoding {
+                    pipe.ready.append(contentsOf: joined(try decoding.buffers(of: run, bytes: data, from: pipe.showFrom), on: pipe))
+                    lock.lock()
+                    sharedNotes.decodedKind = decoding.kind
+                    sharedNotes.decodedPackets = decoding.packets
+                    sharedNotes.decodedLost = decoding.lost
+                    sharedNotes.decodedFrames = decoding.frames
+                    sharedNotes.decodedChannels = decoding.channels
+                    sharedNotes.decodedRate = decoding.rate
+                    lock.unlock()
+                    if decoding.frames == 0, decoding.silent >= Self.giveUpDecodingAfter {
+                        giveUpDecoding(pipe)
+                        return
+                    }
+                } else if pipe.sound {
                     pipe.ready.append(contentsOf: joined(try FilmSampleBuffers.together(run, bytes: data, format: pipe.format, from: pipe.showFrom), on: pipe))
                 } else {
                     let all = try FilmSampleBuffers.each(of: run, bytes: data, format: pipe.format)

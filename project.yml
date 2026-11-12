@@ -177,6 +177,12 @@ targets:
       - path: App/Resources/Demo
     dependencies:
       - package: WoodruffKit
+      # The decoders for DTS and Dolby TrueHD sound, which the Apple TV has none for (Packages/FilmSound, built by
+      # scripts/build_filmsound.sh from FFmpeg's; App/TV/TVFilmSound.swift). Linked weakly: a build it's missing
+      # from would still start, and such sound then can't be played, as before there was a decoder.
+      - framework: Packages/FilmSound/FilmSound.xcframework
+        embed: true
+        weak: true
       # The Top Shelf slideshow (the iCloud album picked in Settings).
       - target: WoodruffFamilyTVTopShelf
         embed: true
@@ -192,6 +198,8 @@ targets:
         PRODUCT_NAME: Woodruff Family
         TARGETED_DEVICE_FAMILY: "3"
         ASSETCATALOG_COMPILER_APPICON_NAME: App Icon & Top Shelf Image
+        # Where the app finds FilmSound.framework when it starts.
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/Frameworks"
     info:
       path: App/TV/Info.plist
       properties:

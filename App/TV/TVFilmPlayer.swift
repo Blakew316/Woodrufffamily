@@ -148,6 +148,8 @@ final class OwnPlayer {
         do {
             let index = try await FilmIndex.open(stream, id: id)
             guard current?.id == play.id, self.screen === screen else { return }
+            // DTS and Dolby TrueHD sound: the app's own decoder, for the player to ask for.
+            TVFilmSound.install()
             let player = FilmPlayer(asset: index.asset, bytes: stream)
             try await player.open()
             guard current?.id == play.id, self.screen === screen else {
@@ -279,13 +281,31 @@ final class OwnPlayer {
             words.append(line)
         }
         for s in film.sounds {
-            words.append("sound \(s.codec) \(s.channels) channels" + (s.playable ? "" : ", can’t be played here") + (s.id == film.sound ? ", playing" : ""))
+            words.append("sound \(s.codec) \(s.channels) channels" + (s.playable ? (s.decodedHere ? ", decoded here" : "") : ", can’t be played here")
+                + (s.id == film.sound ? ", playing" : ""))
         }
         if !film.words.isEmpty { words.append(film.words.count == 1 ? "1 subtitle track" : "\(film.words.count) subtitle tracks") }
         let hdr = AVPlayer.eligibleForHDRPlayback ? "HDR can be shown here" : "HDR can’t be shown here"
         let also = matches == nil ? "" : matches == true ? "; the Apple TV matches the film’s picture mode"
             : "; the Apple TV keeps its own picture mode (Match Content is off)"
         Diagnostics.shared.notePlayback("\(play.title), the app’s own player: " + words.joined(separator: "; ") + "; \(hdr)\(also)")
+        // Once after the app starts: whether this build decodes DTS and Dolby TrueHD (`TVFilmSound`).
+        if !Self.saidDecoder {
+            Self.saidDecoder = true
+            Diagnostics.shared.notePlayback("The app’s own player: " + TVFilmSound.said)
+        }
+    }
+
+    private static var saidDecoder = false
+
+    /// How the film's sound is being decoded by the app's own decoder, for the log; nil when Apple's decodes it.
+    private static func decodedWords(_ n: FilmPlayer.Notes) -> String? {
+        guard let kind = n.decodedKind else { return nil }
+        var words = "its \(kind) sound is decoded here: \(n.decodedPackets) packets"
+        words += n.decodedLost > 0 ? " (\(n.decodedLost) gave nothing)" : ""
+        words += n.decodedFrames > 0 ? ", \(n.decodedChannels) channels at \(n.decodedRate)" : ", no sound has come of them"
+        if n.decodingGaveUp { words += "; a track nothing came of was given up on" }
+        return words
     }
 
     // MARK: While it plays
@@ -303,9 +323,10 @@ final class OwnPlayer {
         if started, !soundSaid, ticks - startedTick >= 20 {
             soundSaid = true
             let n = player.notes
-            Diagnostics.shared.notePlayback(n.joined > 0
+            let decoded = Self.decodedWords(n).map { "; " + $0 } ?? (n.decodingGaveUp ? "; a sound track the app’s decoder could make nothing of was given up on" : "")
+            Diagnostics.shared.notePlayback((n.joined > 0
                 ? String(format: "%@: 20 s in, %ld pieces of its sound were set end to end (up to %.2f ms out)", play.title, n.joined, n.joinedBy * 1000)
-                : "\(play.title): 20 s in, every piece of its sound met the one before")
+                : "\(play.title): 20 s in, every piece of its sound met the one before") + decoded)
         }
         if state == .ended {
             // Played to its end: the screen closes, back to the page it was started from.
@@ -496,6 +517,11 @@ final class OwnPlayer {
         words += n.joined > 0
             ? String(format: ", %ld pieces of sound set end to end (up to %.2f ms out)", n.joined, n.joinedBy * 1000)
             : ", every piece of sound met the one before"
+        if let decoded = Self.decodedWords(n) {
+            words += ", " + decoded
+        } else if n.decodingGaveUp {
+            words += ", a sound track the app’s decoder could make nothing of was given up on"
+        }
         words += ", asked Google for \(stream.askedNow())"
         if let size = stream.sizeNow(), player.length > 60 {
             words += String(format: ", the film needs %.0f Mb/s", Double(size) * 8 / player.length / 1_000_000)

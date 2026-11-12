@@ -525,3 +525,337 @@ final class FilmPlayerTests: XCTestCase {
     }
 }
 #endif
+
+// MARK: Sound Apple has no decoder for
+
+/// A decoder for the tests: for every packet it's given it hands back [frames] frames of a quiet tone, or nothing
+/// at all, and keeps the start of the first packets it saw.
+private final class FakeSound: FilmSoundDecoder {
+    private let frames: Int
+    private let channels: Int
+    private let gives: Bool
+    /// After this many packets the sound has [growTo] channels (a track that starts with its plainer core).
+    private let growAfter: Int?
+    private let growTo: Int
+    private let samples: UnsafeMutableBufferPointer<Float>
+    private let lock = NSLock()
+    private var packets = 0
+    private var starts: [Data] = []
+    private var flushes = 0
+
+    init(frames: Int, channels: Int = 6, gives: Bool = true, growAfter: Int? = nil, growTo: Int = 6) {
+        self.frames = frames
+        self.channels = channels
+        self.gives = gives
+        self.growAfter = growAfter
+        self.growTo = growTo
+        samples = UnsafeMutableBufferPointer<Float>.allocate(capacity: frames * 8)
+        for i in 0..<(frames * 8) { samples[i] = Float(i % 17) * 0.0001 }
+    }
+
+    deinit {
+        samples.deallocate()
+    }
+
+    func decode(_ packet: UnsafeRawBufferPointer) -> FilmDecodedSound? {
+        lock.lock()
+        packets += 1
+        let nth = packets
+        if starts.count < 4 { starts.append(Data(packet.prefix(8))) }
+        lock.unlock()
+        guard gives else { return nil }
+        let now = growAfter.map { nth > $0 ? growTo : channels } ?? channels
+        return FilmDecodedSound(samples: UnsafeBufferPointer(rebasing: samples[0..<(frames * now)]), frames: frames, channels: now, rate: 48000)
+    }
+
+    func flush() {
+        lock.lock(); flushes += 1; lock.unlock()
+    }
+
+    var seen: (packets: Int, starts: [Data], flushes: Int) {
+        lock.lock(); defer { lock.unlock() }
+        return (packets, starts, flushes)
+    }
+}
+
+/// The decoders a test handed the player.
+private final class FakeSounds {
+    private let lock = NSLock()
+    private var all: [(kind: String, sound: FakeSound)] = []
+
+    func make(_ kind: String, _ sound: FakeSound) -> FakeSound {
+        lock.lock(); all.append((kind, sound)); lock.unlock()
+        return sound
+    }
+
+    var kinds: [String] { lock.lock(); defer { lock.unlock() }; return all.map(\.kind) }
+    var packets: Int { lock.lock(); defer { lock.unlock() }; return all.reduce(0) { $0 + $1.sound.seen.packets } }
+    var starts: [Data] { lock.lock(); defer { lock.unlock() }; return all.flatMap { $0.sound.seen.starts } }
+}
+
+extension FilmPlayerTests {
+    private func fourLetters(_ letters: String) -> UInt32 {
+        letters.utf8.reduce(0) { $0 << 8 | UInt32($1) }
+    }
+
+    /// A sound format a file would name with [letters].
+    private func soundFormat(_ letters: String) -> CMAudioFormatDescription? {
+        var basic = AudioStreamBasicDescription(mSampleRate: 48000, mFormatID: fourLetters(letters), mFormatFlags: 0, mBytesPerPacket: 0,
+                                                mFramesPerPacket: 0, mBytesPerFrame: 0, mChannelsPerFrame: 6, mBitsPerChannel: 0, mReserved: 0)
+        var made: CMAudioFormatDescription?
+        let status = CMAudioFormatDescriptionCreate(allocator: kCFAllocatorDefault, asbd: &basic, layoutSize: 0, layout: nil, magicCookieSize: 0,
+                                                    magicCookie: nil, extensions: nil, formatDescriptionOut: &made)
+        return status == noErr ? made : nil
+    }
+
+    /// Which sound the app's decoders are for: told by a track's four letters, or by the number in the settings of
+    /// an "mp4a" track (as FFmpeg and HandBrake write DTS).
+    func testTheKindsOfSoundAnAppsDecoderIsFor() throws {
+        for (letters, kind) in [("dtsc", "dts"), ("dtsh", "dts"), ("dtsl", "dts"), ("dtse", "dts"), ("mlpa", "truehd")] {
+            let format = try XCTUnwrap(soundFormat(letters), letters)
+            XCTAssertEqual(FilmSoundDecoders.kind(of: format), kind, letters)
+        }
+        for letters in ["ac-3", "ec-3", "alac", "fLaC"] {
+            let format = try XCTUnwrap(soundFormat(letters), letters)
+            XCTAssertNil(FilmSoundDecoders.kind(of: format), letters)
+        }
+        // The settings FFmpeg writes for DTS, and for AAC (the fixture's own).
+        let dts: [UInt8] = [0x03, 0x80, 0x80, 0x80, 0x1b, 0x00, 0x02, 0x00, 0x04, 0x80, 0x80, 0x80, 0x0d, 0xa9, 0x15, 0x00, 0x00, 0x00,
+                            0x00, 0x0b, 0xc0, 0x00, 0x00, 0x0b, 0xc0, 0x00, 0x06, 0x80, 0x80, 0x80, 0x01, 0x02]
+        let aac: [UInt8] = [0x03, 0x80, 0x80, 0x80, 0x25, 0x00, 0x04, 0x00, 0x04, 0x80, 0x80, 0x80, 0x17, 0x40, 0x15, 0x00, 0x00, 0x00,
+                            0x00, 0x00, 0xa6, 0x93, 0x00, 0x00, 0xa6, 0x93, 0x05, 0x80, 0x80, 0x80, 0x05, 0x11, 0x90, 0x56, 0xe5, 0x00,
+                            0x06, 0x80, 0x80, 0x80, 0x01, 0x02]
+        XCTAssertEqual(dts.withUnsafeBytes { FilmSoundDecoders.objectType(inSettings: $0) }, 0xA9)
+        XCTAssertEqual(aac.withUnsafeBytes { FilmSoundDecoders.objectType(inSettings: $0) }, 0x40)
+        // With four bytes of version before them, with lengths of one byte, and the decoder's settings alone.
+        XCTAssertEqual(([0, 0, 0, 0] + dts).withUnsafeBytes { FilmSoundDecoders.objectType(inSettings: $0) }, 0xA9)
+        let short: [UInt8] = [0x03, 0x19, 0x00, 0x01, 0x00, 0x04, 0x11, 0xab, 0x15, 0x00, 0x00, 0x00]
+        XCTAssertEqual(short.withUnsafeBytes { FilmSoundDecoders.objectType(inSettings: $0) }, 0xAB)
+        let alone: [UInt8] = [0x04, 0x11, 0xac, 0x15]
+        XCTAssertEqual(alone.withUnsafeBytes { FilmSoundDecoders.objectType(inSettings: $0) }, 0xAC)
+        // A stream that says it depends on another, has an address and a clock of its own: the fields before the decoder's.
+        let long: [UInt8] = [0x03, 0x20, 0x00, 0x01, 0xe0, 0x00, 0x07, 0x02, 0x41, 0x42, 0x00, 0x09, 0x04, 0x11, 0xa9, 0x15]
+        XCTAssertEqual(long.withUnsafeBytes { FilmSoundDecoders.objectType(inSettings: $0) }, 0xA9)
+        for nothing in [[UInt8](), [0x03], [0x03, 0x80], [0x05, 0x02, 0x11, 0x90], [0x03, 0x04, 0x00, 0x01, 0x00, 0x05]] {
+            XCTAssertNil(nothing.withUnsafeBytes { FilmSoundDecoders.objectType(inSettings: $0) }, "\(nothing)")
+        }
+    }
+
+    /// What a decoder gives for a run's packets becomes buffers of a tenth of a second or more, nothing from before
+    /// where the film is wanted from, a new buffer at a real gap in the file's times, and only the larger shape when
+    /// the sound's shape grows.
+    func testDecodedSoundIsGatheredTrimmedAndSplitAtRealGaps() throws {
+        func packet(_ i: Int, at seconds: Double) -> FilmSample {
+            let time = CMTime(seconds: seconds, preferredTimescale: 48000)
+            return FilmSample(offset: 1000 + Int64(i) * 4, size: 4, shown: time, decoded: time, lasts: CMTime(value: 480, timescale: 48000),
+                              sync: true, attachments: nil, format: nil)
+        }
+        // A hundred packets of a hundredth of a second each, two channels.
+        let decoding = FilmSoundDecoding(kind: "dts", decoder: FakeSound(frames: 480, channels: 2))
+        let run = FilmRun(offset: 1000, length: 400, samples: (0..<100).map { packet($0, at: Double($0) * 0.01) })
+        let buffers = try decoding.buffers(of: run, bytes: Data(count: 400), from: CMTime(seconds: 0.255, preferredTimescale: 48000))
+        // Packets 0 to 24 end before 0.255 s; half of packet 25 is before it.
+        XCTAssertEqual(buffers.reduce(0) { $0 + CMSampleBufferGetNumSamples($1) }, 240 + 74 * 480)
+        XCTAssertEqual(CMSampleBufferGetPresentationTimeStamp(try XCTUnwrap(buffers.first)).seconds, 0.255, accuracy: 0.0001)
+        XCTAssertGreaterThan(buffers.count, 1)
+        var end = CMTime.invalid
+        for (i, buffer) in buffers.enumerated() {
+            let count = CMSampleBufferGetNumSamples(buffer)
+            if i < buffers.count - 1 { XCTAssertGreaterThanOrEqual(count, 4800, "buffer \(i)") }
+            let starts = CMSampleBufferGetPresentationTimeStamp(buffer)
+            if end.isValid { XCTAssertEqual(starts.seconds, end.seconds, accuracy: 0.0001, "buffer \(i) starts where the one before ended") }
+            end = CMTimeAdd(starts, CMTime(value: CMTimeValue(count), timescale: 48000))
+            XCTAssertEqual(CMSampleBufferGetDuration(buffer).seconds, Double(count) / 48000, accuracy: 0.0001)
+            let basic = try XCTUnwrap(CMSampleBufferGetFormatDescription(buffer).flatMap { CMAudioFormatDescriptionGetStreamBasicDescription($0)?.pointee })
+            XCTAssertEqual(basic.mFormatID, kAudioFormatLinearPCM)
+            XCTAssertEqual(basic.mChannelsPerFrame, 2)
+            XCTAssertEqual(basic.mSampleRate, 48000)
+            XCTAssertEqual(basic.mBytesPerFrame, 8)
+            XCTAssertEqual(CMSampleBufferGetTotalSampleSize(buffer), count * 8)
+        }
+        XCTAssertEqual(end.seconds, 1.0, accuracy: 0.0001)
+        XCTAssertEqual(decoding.packets, 100)
+        XCTAssertEqual(decoding.frames, 240 + 74 * 480)
+
+        // Half a second missing in the file's times: the sound after it starts at the file's time, in a buffer of its own.
+        let gapped = FilmRun(offset: 1000, length: 400, samples: (0..<15).map { packet($0, at: 2 + Double($0) * 0.01 + ($0 >= 7 ? 0.5 : 0)) })
+        let after = try decoding.buffers(of: gapped, bytes: Data(count: 400), from: .invalid)
+        XCTAssertEqual(after.map { CMSampleBufferGetNumSamples($0) }, [7 * 480, 8 * 480])
+        XCTAssertEqual(after.map { CMSampleBufferGetPresentationTimeStamp($0).seconds }.last ?? 0, 2.57, accuracy: 0.0001)
+
+        // Six channels after three packets of two (a track's plainer core first): the run gives only the six.
+        let growing = FilmSoundDecoding(kind: "dts", decoder: FakeSound(frames: 480, channels: 2, growAfter: 3, growTo: 6))
+        let grown = try growing.buffers(of: run, bytes: Data(count: 400), from: .invalid)
+        XCTAssertEqual(grown.reduce(0) { $0 + CMSampleBufferGetNumSamples($1) }, 97 * 480)
+        XCTAssertEqual(CMSampleBufferGetPresentationTimeStamp(try XCTUnwrap(grown.first)).seconds, 0.03, accuracy: 0.0001)
+        for buffer in grown {
+            let basic = try XCTUnwrap(CMSampleBufferGetFormatDescription(buffer).flatMap { CMAudioFormatDescriptionGetStreamBasicDescription($0)?.pointee })
+            XCTAssertEqual(basic.mChannelsPerFrame, 6)
+        }
+        XCTAssertEqual(growing.channels, 6)
+
+        // Packets nothing comes of: counted, and the seconds of the film they were.
+        let deaf = FilmSoundDecoding(kind: "truehd", decoder: FakeSound(frames: 480, gives: false))
+        XCTAssertTrue(try deaf.buffers(of: run, bytes: Data(count: 400), from: .invalid).isEmpty)
+        XCTAssertEqual(deaf.lost, 100)
+        XCTAssertEqual(deaf.frames, 0)
+        XCTAssertEqual(deaf.silent, 1.0, accuracy: 0.001)
+    }
+
+    /// The formats plain samples are handed to the renderer in: one for each shape a decoder gives.
+    func testTheFormatsOfDecodedSound() throws {
+        for (channels, tag) in [(1, kAudioChannelLayoutTag_Mono), (2, kAudioChannelLayoutTag_Stereo), (6, kAudioChannelLayoutTag_MPEG_5_1_A),
+                                (8, kAudioChannelLayoutTag_MPEG_7_1_C)] {
+            let format = try XCTUnwrap(FilmDecodedBuffers.format(channels: channels, rate: 96000), "\(channels) channels")
+            let basic = try XCTUnwrap(CMAudioFormatDescriptionGetStreamBasicDescription(format)?.pointee)
+            XCTAssertEqual(basic.mSampleRate, 96000)
+            XCTAssertEqual(Int(basic.mChannelsPerFrame), channels)
+            XCTAssertEqual(basic.mFormatFlags & kAudioFormatFlagIsFloat, kAudioFormatFlagIsFloat)
+            var size = 0
+            let layout = try XCTUnwrap(CMAudioFormatDescriptionGetChannelLayout(format, sizeOut: &size))
+            XCTAssertEqual(layout.pointee.mChannelLayoutTag, tag)
+        }
+        XCTAssertNil(FilmDecodedBuffers.format(channels: 5, rate: 48000))
+        XCTAssertNil(FilmDecodedBuffers.format(channels: 6, rate: 0))
+    }
+
+    /// A film whose sound Apple has no decoder for (the fixture's Dolby TrueHD track) plays it through the decoder
+    /// the app gives: the track counts as playable, the decoder is handed the file's packets whole and in order,
+    /// and what it gives goes to the sound renderer, which plays it without being started afresh.
+    func testSoundAppleHasNoDecoderForIsDecodedByTheApps() async throws {
+        let fakes = FakeSounds()
+        FilmSoundDecoders.make = { kind in fakes.make(kind, FakeSound(frames: 40)) }
+        defer { FilmSoundDecoders.make = nil }
+        let r = try rig("dts-truehd-aac")
+        try await r.player.open()
+        let film = r.player.film
+        print("FILM dts-truehd-aac sounds: \(film.sounds)")
+        let truehd = try XCTUnwrap(film.sounds.first { $0.codec == "mlpa" }, "\(film.sounds)")
+        let aac = try XCTUnwrap(film.sounds.first { $0.codec == "aac" }, "\(film.sounds)")
+        XCTAssertEqual(truehd.channels, 6)
+        XCTAssertTrue(truehd.playable)
+        XCTAssertTrue(truehd.decodedHere)
+        XCTAssertTrue(aac.playable)
+        XCTAssertFalse(aac.decodedHere)
+        XCTAssertEqual(film.sound, truehd.id)
+
+        r.player.show(on: r.layer.sampleBufferRenderer)
+        r.player.start(at: 0)
+        let playing = await wait(6) { r.player.state == .playing }
+        XCTAssertTrue(playing, "state \(r.player.state), failure \(String(describing: r.player.failure))")
+        await pause(1)
+        XCTAssertGreaterThan(r.player.time, 0.4)
+        let n = r.player.notes
+        print("FILM decoded: \(n.decodedKind ?? "-") \(n.decodedPackets) packets, \(n.decodedLost) lost, \(n.decodedFrames) frames, \(n.decodedChannels) channels at \(n.decodedRate); joined \(n.joined) by \(n.joinedBy); mended \(n.mended) (sound \(n.mendedSound)) \(n.mendWhy ?? "")")
+        XCTAssertEqual(n.decodedKind, "truehd")
+        XCTAssertGreaterThanOrEqual(n.decodedPackets, 1200)
+        XCTAssertEqual(n.decodedLost, 0)
+        XCTAssertEqual(n.decodedFrames, n.decodedPackets * 40)
+        XCTAssertEqual(n.decodedChannels, 6)
+        XCTAssertEqual(n.decodedRate, 48000)
+        XCTAssertFalse(n.decodingGaveUp)
+        XCTAssertEqual(n.mended, 0)
+        XCTAssertNil(r.player.failure)
+        XCTAssertEqual(Set(fakes.kinds), ["truehd"])
+        XCTAssertGreaterThanOrEqual(fakes.packets, n.decodedPackets)
+        // The first packet is the file's first: a TrueHD access unit that starts the sound afresh (its sync word).
+        let first = try XCTUnwrap(fakes.starts.first { $0.count == 8 })
+        XCTAssertEqual(Array(first[4..<8]), [0xF8, 0x72, 0x6F, 0xBA])
+        say("sound decoded by the app", r.player)
+
+        // The AAC track mid-film, and back: each goes on from where the film is.
+        r.player.choose(sound: aac.id)
+        let other = await wait(2) { r.player.film.sound == aac.id }
+        XCTAssertTrue(other)
+        await pause(0.4)
+        r.player.choose(sound: truehd.id)
+        let back = await wait(2) { r.player.film.sound == truehd.id }
+        XCTAssertTrue(back)
+        await pause(0.4)
+        XCTAssertNil(r.player.failure)
+        r.player.close()
+    }
+
+    /// With no decoder given (the iPhone and Mac apps), such sound isn't played, and the film's first sound that can
+    /// be is the one that plays.
+    func testWithNoDecoderGivenSuchSoundIsntPlayed() async throws {
+        FilmSoundDecoders.make = nil
+        let r = try rig("dts-truehd-aac")
+        try await r.player.open()
+        let film = r.player.film
+        let truehd = try XCTUnwrap(film.sounds.first { $0.codec == "mlpa" }, "\(film.sounds)")
+        let aac = try XCTUnwrap(film.sounds.first { $0.codec == "aac" }, "\(film.sounds)")
+        XCTAssertFalse(truehd.playable)
+        XCTAssertFalse(truehd.decodedHere)
+        XCTAssertEqual(film.sound, aac.id)
+        r.player.close()
+    }
+
+    /// A track the app's decoder can make nothing of gives way to the film's first sound that plays, as before
+    /// there was a decoder, and is marked as sound that can't be played.
+    func testSoundTheAppsDecoderMakesNothingOfGivesWay() async throws {
+        FilmSoundDecoders.make = { _ in FakeSound(frames: 40, gives: false) }
+        defer { FilmSoundDecoders.make = nil }
+        let r = try rig("dts-truehd-aac")
+        try await r.player.open()
+        let film = r.player.film
+        let truehd = try XCTUnwrap(film.sounds.first { $0.codec == "mlpa" }, "\(film.sounds)")
+        let aac = try XCTUnwrap(film.sounds.first { $0.codec == "aac" }, "\(film.sounds)")
+        XCTAssertEqual(film.sound, truehd.id)
+        r.player.show(on: r.layer.sampleBufferRenderer)
+        r.player.start(at: 0)
+        let gaveWay = await wait(6) { r.player.film.sound == aac.id }
+        XCTAssertTrue(gaveWay, "sound \(String(describing: r.player.film.sound)), notes \(r.player.notes)")
+        XCTAssertTrue(r.player.notes.decodingGaveUp)
+        XCTAssertEqual(r.player.film.sounds.first { $0.id == truehd.id }?.playable, false)
+        let playing = await wait(6) { r.player.state == .playing }
+        XCTAssertTrue(playing, "state \(r.player.state), failure \(String(describing: r.player.failure))")
+        await pause(0.5)
+        XCTAssertNil(r.player.failure)
+        XCTAssertGreaterThan(r.player.time, 0.2)
+        r.player.close()
+    }
+
+    /// What Apple's reader makes of the fixture's DTS track when the file names it with other letters than FFmpeg's
+    /// "mp4a" (which it leaves out). Printed for the log; gone once the answer is in the player.
+    func testProbeWhatAppleMakesOfDTSNamedOtherwise() async throws {
+        let data = try Data(contentsOf: fixture("dts-truehd-aac"))
+        let at = 2145
+        XCTAssertEqual(String(decoding: data[at..<(at + 4)], as: UTF8.self), "mp4a")
+        for letters in ["mp4a", "dtsc", "dtsh", "dtsl", "dtse", "wfds"] {
+            var patched = data
+            patched.replaceSubrange(at..<(at + 4), with: Array(letters.utf8))
+            let url = FileManager.default.temporaryDirectory.appendingPathComponent("probe-\(letters)-\(UUID().uuidString).mp4")
+            try patched.write(to: url)
+            defer { try? FileManager.default.removeItem(at: url) }
+            let asset = AVURLAsset(url: url)
+            let tracks = (try? await asset.load(.tracks)) ?? []
+            var line = "PROBE2 \(letters): \(tracks.count) tracks \(tracks.map(\.trackID))"
+            for track in tracks where track.trackID == 2 {
+                let formats = (try? await track.load(.formatDescriptions)) ?? []
+                if let format = formats.first {
+                    line += ", subtype '\(FilmPlayer.letters(CMFormatDescriptionGetMediaSubType(format)))'"
+                    if let b = CMAudioFormatDescriptionGetStreamBasicDescription(format)?.pointee {
+                        line += ", rate \(b.mSampleRate) channels \(b.mChannelsPerFrame) frames/packet \(b.mFramesPerPacket)"
+                    }
+                    var size = 0
+                    if let cookie = CMAudioFormatDescriptionGetMagicCookie(format, sizeOut: &size), size > 0 {
+                        line += ", cookie \(size) bytes " + UnsafeRawBufferPointer(start: cookie, count: min(size, 40)).map { String(format: "%02x", $0) }.joined()
+                    } else {
+                        line += ", no cookie"
+                    }
+                    line += ", kind \(FilmSoundDecoders.kind(of: format) ?? "none")"
+                }
+                let decodable = try? await track.load(.isDecodable)
+                let enabled = try? await track.load(.isEnabled)
+                let cursors = try? await track.load(.canProvideSampleCursors)
+                line += ", decodable \(String(describing: decodable)), enabled \(String(describing: enabled)), cursors \(String(describing: cursors))"
+                if cursors == true, let reader = FilmTrackReader(track: track), let run = reader.next() {
+                    let first = run.samples.first.map { s in data.subdata(in: Int(s.offset)..<(Int(s.offset) + 4)).map { String(format: "%02x", $0) }.joined() } ?? "-"
+                    line += ", first run \(run.samples.count) samples of \(run.length) bytes from \(run.offset), sizes \(run.samples.prefix(3).map(\.size)), first bytes \(first)"
+                }
+            }
+            print(line)
+        }
+    }
+}

@@ -79,6 +79,13 @@ jobs:
           xcodebuild -project WoodruffFamily.xcodeproj -scheme WoodruffFamilyTV \
             -destination 'generic/platform=tvOS Simulator' -configuration Debug \
             -derivedDataPath build-tv CODE_SIGNING_ALLOWED=NO build | xcbeautify
+          # The DTS and Dolby TrueHD decoder is in the app, where the app looks for it, and linked weakly (the app
+          # must start without it too).
+          app="build-tv/Build/Products/Debug-appletvsimulator/Woodruff Family.app"
+          test -f "$app/Frameworks/FilmSound.framework/FilmSound"
+          loads="$(for f in "$app"/*; do if [ -f "$f" ] && file "$f" | grep -q Mach-O; then otool -l "$f"; fi; done)"
+          echo "$loads" | grep -A2 LC_LOAD_WEAK_DYLIB | grep FilmSound
+          echo "$loads" | grep -A2 LC_RPATH | grep "@executable_path/Frameworks"
       - name: Build Mac Apple Home helper (Mac Catalyst)
         run: |
           set -o pipefail
