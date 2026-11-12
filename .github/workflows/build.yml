@@ -57,6 +57,23 @@ jobs:
           brew install xcodegen
           scripts/fetch_webrtc.sh
           xcodegen generate
+      # The Apple TV app first: it's the one with the film player's decoders in it, and what breaks there shows soonest.
+      - name: Build Apple TV app (simulator)
+        run: |
+          set -o pipefail
+          xcodebuild -project WoodruffFamily.xcodeproj -scheme WoodruffFamilyTV \
+            -destination 'generic/platform=tvOS Simulator' -configuration Debug \
+            -derivedDataPath build-tv CODE_SIGNING_ALLOWED=NO EXCLUDED_ARCHS=x86_64 build | xcbeautify
+          # The DTS and Dolby TrueHD decoder is in the app, linked weakly, and used by it.
+          /bin/bash scripts/check_filmsound.sh "build-tv/Build/Products/Debug-appletvsimulator/Woodruff Family.app"
+      - name: Build Apple TV app (device, unsigned)
+        # What the Mac Studio builds for the Apple TVs, without the signing: the decoder's Apple TV half links here.
+        run: |
+          set -o pipefail
+          xcodebuild -project WoodruffFamily.xcodeproj -scheme WoodruffFamilyTV \
+            -destination 'generic/platform=tvOS' -configuration Release \
+            -derivedDataPath build-tv CODE_SIGNING_ALLOWED=NO build | xcbeautify
+          /bin/bash scripts/check_filmsound.sh "build-tv/Build/Products/Release-appletvos/Woodruff Family.app"
       - name: Build iOS app (simulator)
         run: |
           set -o pipefail
@@ -78,22 +95,6 @@ jobs:
             -destination 'platform=macOS' -configuration Release \
             -derivedDataPath build CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=NO build | xcbeautify
           (cd build/Build/Products/Release && ditto -c -k --keepParent "Woodruff Family.app" "$GITHUB_WORKSPACE/out/WoodruffFamily-mac.zip")
-      - name: Build Apple TV app (simulator)
-        run: |
-          set -o pipefail
-          xcodebuild -project WoodruffFamily.xcodeproj -scheme WoodruffFamilyTV \
-            -destination 'generic/platform=tvOS Simulator' -configuration Debug \
-            -derivedDataPath build-tv CODE_SIGNING_ALLOWED=NO EXCLUDED_ARCHS=x86_64 build | xcbeautify
-          # The DTS and Dolby TrueHD decoder is in the app, linked weakly, and used by it.
-          /bin/bash scripts/check_filmsound.sh "build-tv/Build/Products/Debug-appletvsimulator/Woodruff Family.app"
-      - name: Build Apple TV app (device, unsigned)
-        # What the Mac Studio builds for the Apple TVs, without the signing: the decoder's Apple TV half links here.
-        run: |
-          set -o pipefail
-          xcodebuild -project WoodruffFamily.xcodeproj -scheme WoodruffFamilyTV \
-            -destination 'generic/platform=tvOS' -configuration Release \
-            -derivedDataPath build-tv CODE_SIGNING_ALLOWED=NO build | xcbeautify
-          /bin/bash scripts/check_filmsound.sh "build-tv/Build/Products/Release-appletvos/Woodruff Family.app"
       - name: Build Mac Apple Home helper (Mac Catalyst)
         run: |
           set -o pipefail
