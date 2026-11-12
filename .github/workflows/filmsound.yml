@@ -1,7 +1,7 @@
 name: Build FilmSound
 
 # Builds the decoders for sound the Apple TV has none for (scripts/build_filmsound.sh) whenever they change, checks
-# every channel on this Mac, and keeps the built framework on the branch filmsound-build. Nothing here ships to any
+# every channel on this Mac, and keeps the built framework on the branch filmsound-built. Nothing here ships to any
 # device: the app is built with the copy of the framework that is in Packages/FilmSound on its own branch.
 on:
   push:
@@ -34,10 +34,19 @@ jobs:
       - name: Build and check
         run: /bin/bash scripts/build_filmsound.sh
       - name: Keep it on its own branch
+        # Only what was built, on a branch that holds nothing else: GitHub's own token may not push a branch whose
+        # workflow files differ from the ones it had.
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
+          keep="$RUNNER_TEMP/filmsound-built"
+          rm -rf "$keep"
+          mkdir -p "$keep/Packages/FilmSound"
+          cp -R Packages/FilmSound/FilmSound.xcframework Packages/FilmSound/BUILD-INFO.txt Packages/FilmSound/COPYING.LGPLv2.1 "$keep/Packages/FilmSound/"
+          cd "$keep"
+          git init -q -b filmsound-built
           git config user.name "filmsound-build"
           git config user.email "noreply@github.com"
-          git checkout -q -b filmsound-build
-          git add -f Packages/FilmSound/FilmSound.xcframework Packages/FilmSound/BUILD-INFO.txt Packages/FilmSound/COPYING.LGPLv2.1
+          git add -A
           git commit -q -m "FilmSound.xcframework as GitHub built it from $GITHUB_SHA (nothing ships from this branch)"
-          git push -q -f origin filmsound-build
+          git push -q -f "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" filmsound-built

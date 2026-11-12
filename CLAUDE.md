@@ -60,7 +60,7 @@ Every feature request or bug fix ends with exactly one release:
 - The Apple TV's DTS and Dolby TrueHD decoder is `Packages/FilmSound/FilmSound.xcframework` (FFmpeg's decoders, LGPL;
   README, "How it's built"). GitHub builds it, never the family's Macs: change `scripts/build_filmsound.sh` or
   `Packages/FilmSound/Sources`, push, wait for "Build FilmSound" to go green, then copy the framework,
-  `BUILD-INFO.txt` and `COPYING.LGPLv2.1` from the branch `filmsound-build` into `Packages/FilmSound` and commit them.
+  `BUILD-INFO.txt` and `COPYING.LGPLv2.1` from the branch `filmsound-built` into `Packages/FilmSound` and commit them.
   It stays linked weakly (`project.yml`): the app must start without it.
 - A Mac-only request doesn't change the iOS app.
 - No decorative icons in menus or rows. Keep UI text plain and short.

@@ -266,7 +266,7 @@ summary of what was installed where, and names the temporary folder its logs are
   a small C bridge, `Sources/wfsound.h`. `scripts/build_filmsound.sh` builds it from FFmpeg's source (the version and
   its checksum are in the script) and first checks on the Mac that a tone put in every channel comes out of the right
   one. GitHub runs it when the script or the bridge change (`.github/workflows/filmsound.yml`) and keeps what it built
-  on the branch `filmsound-build`; the copy in this folder is the one the Apple TV app is built with, linked weakly so
+  on the branch `filmsound-built`; the copy in this folder is the one the Apple TV app is built with, linked weakly so
   the app starts without it too. FFmpeg is under the LGPL 2.1 or later: its text, where the source is and how it was
   built are beside the framework (`COPYING.LGPLv2.1`, `BUILD-INFO.txt`).
 - `App/Shared`: the SwiftUI screens, the same on iPhone (tabs), iPad and Mac (sidebar). `AndroidTVRemote.swift` is Android's

@@ -6,7 +6,7 @@
 # (Packages/FilmSound/patches; without the option the patch adds, every stream decodes as before).
 #
 # Run on a Mac with Xcode. GitHub runs it (.github/workflows/filmsound.yml) whenever this script or the sources
-# change and keeps what it built on the branch filmsound-build; the framework the app is built with is the copy
+# change and keeps what it built on the branch filmsound-built; the framework the app is built with is the copy
 # of that in this folder. deploy.sh never runs this. Before anything is built for the Apple TV, the same code is
 # built for this Mac and checked: a tone in every channel must come out of the channel wfsound.h says
 # (Packages/FilmSound/Tests/selftest.c).
