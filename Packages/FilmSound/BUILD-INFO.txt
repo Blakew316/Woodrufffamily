@@ -1,0 +1,9 @@
+FilmSound.xcframework: wfsound (Packages/FilmSound/Sources) with FFmpeg's DTS, Dolby TrueHD and MLP decoders.
+FFmpeg 7.1.5, licensed under the GNU Lesser General Public License, version 2.1 or later
+(COPYING.LGPLv2.1 beside this file). wfsound is under the same licence.
+Source: https://ffmpeg.org/releases/ffmpeg-7.1.5.tar.xz
+SHA-256: de668509caf9e35e3cd162473441fdb29538c6d96ed080292b3cf9e6fc5d558f
+With FFmpegBuild's patch for the overhead channels of DTS:X (Packages/FilmSound/patches/dca-xll-x-heights.patch,
+SHA-256 7231af5c58e70f4ac9004dcc838e7894466a1d794bfefdfb9ea2facd7384a6f2; LGPL as FFmpeg).
+Built by scripts/build_filmsound.sh, FFmpeg configured with:
+  --disable-everything --disable-programs --disable-doc --disable-autodetect --disable-network --disable-avdevice --disable-avformat --disable-avfilter --disable-swscale --enable-avcodec --enable-swresample --enable-decoder=dca --enable-decoder=truehd --enable-decoder=mlp --disable-asm --enable-pic --enable-static --disable-shared --disable-debug

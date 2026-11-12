@@ -1,0 +1,4 @@
+framework module FilmSound {
+    header "wfsound.h"
+    export *
+}
