@@ -2,6 +2,8 @@
 # Builds Packages/FilmSound/FilmSound.xcframework: FFmpeg's decoders for the sound the Apple TV has none for (DTS,
 # DTS-HD, Dolby TrueHD, MLP) behind Packages/FilmSound/Sources/wfsound.h, for the Apple TV and its simulator.
 # Only those decoders and FFmpeg's sample converter are built in (LGPL 2.1 or later: no GPL parts, nothing else).
+# FFmpeg's DTS decoder is built with FFmpegBuild's patch that also reads the four overhead channels of DTS:X
+# (Packages/FilmSound/patches; without the option the patch adds, every stream decodes as before).
 #
 # Run on a Mac with Xcode. GitHub runs it (.github/workflows/filmsound.yml) whenever this script or the sources
 # change and keeps what it built on the branch filmsound-build; the framework the app is built with is the copy
@@ -44,6 +46,19 @@ fi
 rm -rf "$work/src"
 mkdir -p "$work/src"
 tar -xJf "$tarball" -C "$work/src" --strip-components 1
+
+# FFmpegBuild's patch for DTS:X's overhead channels (github.com/superuser404notfound/FFmpegBuild, patches/, at
+# commit 2ff2238). It has to go on whole and clean, or nothing is built.
+PATCH_SHA256="7231af5c58e70f4ac9004dcc838e7894466a1d794bfefdfb9ea2facd7384a6f2"
+patch_file="$pkg/patches/dca-xll-x-heights.patch"
+if [ "$(shasum -a 256 "$patch_file" | cut -d' ' -f1)" != "$PATCH_SHA256" ]; then
+  echo "The DTS:X patch isn't the expected file, so nothing was built."
+  exit 1
+fi
+if ! ( cd "$work/src" && patch -p1 --forward --fuzz=0 < "$patch_file" ); then
+  echo "The DTS:X patch didn't go onto FFmpeg $FFMPEG_VERSION cleanly, so nothing was built."
+  exit 1
+fi
 
 # ffmpeg_for <name> <sdk> <arch> <minimum-version flag> [more configure flags…]: FFmpeg's libraries for one
 # platform, in $work/<name>/prefix.
@@ -135,13 +150,13 @@ PLIST
   local shown
   shown="$(nm -gU "$fw/FilmSound" | awk '{print $NF}' | sort -u | tr '\n' ' ')"
   echo "  shows: $shown"
-  if [ "$shown" != "_wfsound_about _wfsound_close _wfsound_decode _wfsound_flush _wfsound_open " ]; then
-    echo "  That isn't wfsound's five functions and nothing else, so nothing was kept."
+  if [ "$shown" != "_wfsound_about _wfsound_close _wfsound_decode _wfsound_flush _wfsound_open _wfsound_open_dtsx _wfsound_overhead " ]; then
+    echo "  That isn't wfsound's seven functions and nothing else, so nothing was kept."
     exit 1
   fi
 }
 
-printf '_wfsound_open\n_wfsound_decode\n_wfsound_flush\n_wfsound_close\n_wfsound_about\n' > "$work/exports.txt"
+printf '_wfsound_open\n_wfsound_open_dtsx\n_wfsound_overhead\n_wfsound_decode\n_wfsound_flush\n_wfsound_close\n_wfsound_about\n' > "$work/exports.txt"
 
 # 1. On this Mac, with FFmpeg's own DTS and TrueHD encoders beside the decoders: every channel is checked.
 host="$(uname -m)"
@@ -149,7 +164,7 @@ ffmpeg_for host macosx "$host" "-mmacosx-version-min=$MIN_MACOS" \
   --enable-encoder=dca --enable-encoder=truehd --enable-decoder=pcm_s16le
 # shellcheck disable=SC2046
 "$(xcrun --sdk macosx -f clang)" -arch "$host" -isysroot "$(xcrun --sdk macosx --show-sdk-path)" \
-  "-mmacosx-version-min=$MIN_MACOS" -O2 -Wall -DWFSOUND_SELFTEST -Wno-deprecated-declarations \
+  "-mmacosx-version-min=$MIN_MACOS" -O2 -Wall -DWFSOUND_SELFTEST -DWFSOUND_EXPECT_DTSX -Wno-deprecated-declarations \
   -I"$work/host/prefix/include" -I"$pkg/Sources" "$pkg/Sources/wfsound.c" "$pkg/Tests/selftest.c" \
   "$work/host/prefix/lib/libavcodec.a" "$work/host/prefix/lib/libswresample.a" "$work/host/prefix/lib/libavutil.a" \
   $(others_of "$work/host") -o "$work/host/selftest"
@@ -182,6 +197,8 @@ cp "$work/src/COPYING.LGPLv2.1" "$pkg/COPYING.LGPLv2.1"
   echo "(COPYING.LGPLv2.1 beside this file). wfsound is under the same licence."
   echo "Source: $url"
   echo "SHA-256: $got"
+  echo "With FFmpegBuild's patch for the overhead channels of DTS:X (Packages/FilmSound/patches/dca-xll-x-heights.patch,"
+  echo "SHA-256 $PATCH_SHA256; LGPL as FFmpeg)."
   echo "Built by scripts/build_filmsound.sh, FFmpeg configured with:"
   echo "  ${common[*]}"
 } > "$pkg/BUILD-INFO.txt"

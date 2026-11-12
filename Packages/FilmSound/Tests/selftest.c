@@ -264,6 +264,34 @@ static int coded(const char *name, int kind, enum AVCodecID id, int together) {
         wfsound_close(again);
     }
 
+    /* A DTS decoder that also reads DTS:X's overhead channels gives sound without them exactly as the plain one
+     * does, and says the packets had none. (Built with the patch for them: WFSOUND_EXPECT_DTSX.) */
+    if (!failed && id == AV_CODEC_ID_DTS) {
+        WFSound *wide = wfsound_open_dtsx();
+#ifdef WFSOUND_EXPECT_DTSX
+        struct heard same = {0};
+        snprintf(label, sizeof(label), "%s through the decoder for DTS:X", name);
+        if (!wide || through(wide, pieces, 0, count, 1, &same) < 0) failed = 1;
+        if (!failed) failed = six(label, &same, RATE, RATE / 2);
+        if (!failed && (same.frames != alone.frames || memcmp(same.samples, alone.samples, (size_t)alone.frames * 6 * sizeof(float)) != 0)) {
+            printf("%s: the sound isn't the same as from the plain decoder  <-- WRONG\n", label);
+            failed = 1;
+        }
+        if (!failed && wfsound_overhead(wide) != 0) {
+            printf("%s: it says the last packet had overhead channels  <-- WRONG\n", label);
+            failed = 1;
+        }
+        if (!wide) printf("%s: no such decoder in this build  <-- WRONG\n", label);
+        free(same.samples);
+#else
+        if (wide) {
+            printf("%s: a decoder for DTS:X opened in a build without the patch for it  <-- WRONG\n", name);
+            failed = 1;
+        }
+#endif
+        wfsound_close(wide);
+    }
+
     if (failed) printf("%s: FAILED\n", name);
     free(alone.samples);
     for (int n = 0; n < count; n++) free(pieces[n].data);

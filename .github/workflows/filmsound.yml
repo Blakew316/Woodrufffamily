@@ -10,6 +10,7 @@ on:
       - scripts/build_filmsound.sh
       - Packages/FilmSound/Sources/**
       - Packages/FilmSound/Tests/**
+      - Packages/FilmSound/patches/**
       - .github/workflows/filmsound.yml
   workflow_dispatch:
 

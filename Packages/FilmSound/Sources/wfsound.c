@@ -24,7 +24,7 @@ struct WFSound {
     AVChannelLayout from;
     int from_format;
     int from_rate;
-    int natural; /* the channels the converter gives for those frames: 1, 2, 6 or 8 */
+    int natural; /* the channels the converter gives for those frames: 1, 2, 6, 8 or 12 */
     int to_rate; /* the rate the converter gives */
     /* What comes out. Both only ever grow while the decoder lives: a film moved to another place can give a few
      * frames of its plainer core (fewer channels, a lower rate) before the whole sound is back, and those are
@@ -34,6 +34,9 @@ struct WFSound {
     /* The samples of the packet just decoded. */
     float *samples;
     size_t capacity; /* in floats */
+    /* Made by wfsound_open_dtsx: DTS:X's overhead channels are asked for; and the kind the last packet's came from. */
+    int overhead_asked;
+    int overhead;
 };
 
 static void drop_convert(WFSound *sound) {
@@ -45,7 +48,7 @@ static void drop_convert(WFSound *sound) {
     sound->to_rate = 0;
 }
 
-WFSound *wfsound_open(int kind) {
+static WFSound *open_decoder(int kind, int overhead) {
     enum AVCodecID id = kind == WFSOUND_DTS ? AV_CODEC_ID_DTS
                       : kind == WFSOUND_TRUEHD ? AV_CODEC_ID_TRUEHD
                       : kind == WFSOUND_MLP ? AV_CODEC_ID_MLP : AV_CODEC_ID_NONE;
@@ -63,6 +66,7 @@ WFSound *wfsound_open(int kind) {
     WFSound *sound = calloc(1, sizeof(*sound));
     if (!sound) return NULL;
     sound->from_format = -1;
+    sound->overhead_asked = overhead;
     sound->codec = avcodec_alloc_context3(codec);
     sound->packet = av_packet_alloc();
     sound->frame = av_frame_alloc();
@@ -72,11 +76,30 @@ WFSound *wfsound_open(int kind) {
         sound->codec->ch_layout = (AVChannelLayout)AV_CHANNEL_LAYOUT_7POINT1;
     }
 #endif
-    if (!sound->codec || !sound->packet || !sound->frame || avcodec_open2(sound->codec, codec, NULL) < 0) {
+    /* The overhead channels are an option of the patched DTS decoder. A decoder without the patch leaves the
+     * option untaken, and then this isn't the decoder that was asked for. */
+    AVDictionary *options = NULL;
+    if (overhead) av_dict_set(&options, "x_heights", "1", 0);
+    int opened = sound->codec && sound->packet && sound->frame ? avcodec_open2(sound->codec, codec, &options) : -1;
+    int untaken = overhead && av_dict_get(options, "x_heights", NULL, 0) != NULL;
+    av_dict_free(&options);
+    if (opened < 0 || untaken) {
         wfsound_close(sound);
         return NULL;
     }
     return sound;
+}
+
+WFSound *wfsound_open(int kind) {
+    return open_decoder(kind, 0);
+}
+
+WFSound *wfsound_open_dtsx(void) {
+    return open_decoder(WFSOUND_DTS, 1);
+}
+
+int wfsound_overhead(WFSound *sound) {
+    return sound ? sound->overhead : 0;
 }
 
 void wfsound_close(WFSound *sound) {
@@ -100,6 +123,12 @@ static int natural_for(int count) {
     return count <= 1 ? 1 : count == 2 ? 2 : count <= 6 ? 6 : 8;
 }
 
+/* [layout] is 7.1 with the four overhead channels of DTS:X and nothing else. */
+static int is_overhead(const AVChannelLayout *layout) {
+    static const AVChannelLayout whole = AV_CHANNEL_LAYOUT_7POINT1POINT4_BACK;
+    return layout->nb_channels == 12 && av_channel_layout_subset(layout, whole.u.mask) == whole.u.mask;
+}
+
 /* The converter for [frame]'s layout, format and rate, giving sound->rate: kept while they stay the same. */
 static int ready_convert(WFSound *sound, const AVFrame *frame) {
     if (sound->convert && sound->from_format == frame->format && sound->from_rate == frame->sample_rate &&
@@ -109,8 +138,10 @@ static int ready_convert(WFSound *sound, const AVFrame *frame) {
     drop_convert(sound);
     AVChannelLayout to;
     int count = frame->ch_layout.nb_channels;
-    int natural = natural_for(count);
-    if (natural == 1) {
+    int natural = sound->overhead_asked && is_overhead(&frame->ch_layout) ? 12 : natural_for(count);
+    if (natural == 12) {
+        to = (AVChannelLayout)AV_CHANNEL_LAYOUT_7POINT1POINT4_BACK;
+    } else if (natural == 1) {
         to = (AVChannelLayout)AV_CHANNEL_LAYOUT_MONO;
     } else if (natural == 2) {
         to = (AVChannelLayout)AV_CHANNEL_LAYOUT_STEREO;
@@ -149,7 +180,7 @@ static int ready_convert(WFSound *sound, const AVFrame *frame) {
  * speakers of two, the centre of more. */
 static void spread(float *at, int made, int natural, int channels) {
     for (int i = made - 1; i >= 0; i--) {
-        float one[8];
+        float one[12];
         memcpy(one, at + (size_t)i * (size_t)natural, (size_t)natural * sizeof(float));
         float *to = at + (size_t)i * (size_t)channels;
         memset(to, 0, (size_t)channels * sizeof(float));
@@ -177,13 +208,20 @@ int wfsound_decode(WFSound *sound, const uint8_t *packet, int size, const float 
      * it gives is taken. One that can't be decoded ends the packet; what came before it is still given. */
     int frames = 0;
     int failed = 0;
+    sound->overhead = 0;
     for (;;) {
         int got = avcodec_receive_frame(sound->codec, sound->frame);
         if (got == AVERROR(EAGAIN) || got == AVERROR_EOF) break;
         if (got < 0) { failed = 1; break; }
         AVFrame *frame = sound->frame;
         int more = frame->nb_samples;
-        int natural = natural_for(frame->ch_layout.nb_channels);
+        int natural = sound->overhead_asked && is_overhead(&frame->ch_layout) ? 12 : natural_for(frame->ch_layout.nb_channels);
+        if (natural == 12) {
+            /* Which kind of DTS:X these overhead channels came from, as the patched decoder says it. */
+            int64_t kind = 1;
+            if (av_opt_get_int(sound->codec->priv_data, "x_presentation", 0, &kind) < 0) kind = 1;
+            sound->overhead = (int)kind;
+        }
         if (more <= 0 || frame->sample_rate <= 0) {
             av_frame_unref(frame);
             continue;
@@ -219,10 +257,10 @@ int wfsound_decode(WFSound *sound, const uint8_t *packet, int size, const float 
         av_frame_unref(frame);
         if (made < 0) { failed = 1; break; }
         /* Eight channels come from FFmpeg as ... rear left, rear right, side left, side right: the sides go
-         * first here. */
-        if (natural == 8) {
+         * first here. So do twelve, whose four overhead channels follow in the order wfsound.h gives. */
+        if (natural == 8 || natural == 12) {
             float *each = at;
-            for (int i = 0; i < made; i++, each += 8) {
+            for (int i = 0; i < made; i++, each += natural) {
                 float left = each[4], right = each[5];
                 each[4] = each[6];
                 each[5] = each[7];
