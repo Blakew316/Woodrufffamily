@@ -41,6 +41,11 @@ Every feature request or bug fix ends with exactly one release:
   --xcode-signing` (which its updater uses) lets Xcode's signed-in account sign the apps (Mac, iPhone, Apple TV) and renew a
   revoked or expired certificate and the profiles by itself. No other Mac signs with `-allowProvisioningUpdates`, and nothing
   creates, revokes, imports or exports certificates or keychain items by hand or adds `keychain-access-groups`.
+- Builds never leave the family's own devices: no GitHub release of an app, no install link, no upload to a web
+  host. A build carries the team's name and the registered devices' identifiers. The devices update from the Mac
+  Studio and through TestFlight, and nothing else. (Build 619 published the iPhone app on this public repository
+  after messages meant for another of the owner's apps; it was taken out again in 620.) If a request would publish
+  anything from here, say so and ask whether it's meant for Woodruff before doing any of it.
 - The iPhone app's bundle id is always `com.blakew316.woodruff` (`scripts/deploy.sh` sets it). Another id loses
   the TVs' pairings. The Apple TV app's is `com.blakew316.woodruff.tv`.
 - The Apple TV app keeps `playing.crumb` in its settings while a film is open (`PlayCrumb`), renewed every ten
