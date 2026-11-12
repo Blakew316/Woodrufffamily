@@ -41,7 +41,7 @@ public enum WebOSInstaller {
     }
 
     /// Runs ssh with [command], [stdin] fed from a file. Returns (exit code, output).
-    static func run(_ ssh: WebOSSSH, _ command: String, stdin: URL? = nil) async throws -> (Int32, String) {
+    static func run(_ ssh: WebOSSSH, _ command: String, stdin: URL? = nil, limit: TimeInterval = 120) async throws -> (Int32, String) {
         try await withCheckedThrowingContinuation { cont in
             let p = Process()
             p.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
@@ -60,6 +60,8 @@ public enum WebOSInstaller {
                 cont.resume(throwing: error)
                 return
             }
+            // An ssh that never ends (a TV that stopped answering half-way) is ended here: nothing waits on it for ever.
+            DispatchQueue.global().asyncAfter(deadline: .now() + limit) { if p.isRunning { p.terminate() } }
             // The output is read while ssh runs, not after: one that filled the pipe (64 KB) waited for ever to
             // write the rest, and never exited. The package file is closed once it's done (it used to stay open).
             let handle = input
@@ -80,7 +82,8 @@ public enum WebOSInstaller {
         } catch { return error.localizedDescription }
     }
 
-    /// Installs [ipk] and, with [launch], opens Woodruff. [progress] gets one line per step.
+    /// Installs [ipk] and, with [launch], opens Woodruff. [progress] gets one line per step. Throws unless the TV
+    /// itself said the package was installed (it used to count a TV that said nothing as done).
     public static func install(_ ipk: URL, on ssh: WebOSSSH, launch: Bool = true, progress: @escaping @Sendable (String) -> Void) async throws {
         let dest = ssh.destination
         progress("Copying \(ipk.lastPathComponent) to \(ssh.host)…")
@@ -88,13 +91,56 @@ public enum WebOSInstaller {
         var (code, out) = try await run(ssh, "mkdir -p \(dir) && cat > \(dest)", stdin: ipk)
         guard code == 0 else { throw TVError.badAnswer("Copy failed: \(out.trimmingCharacters(in: .whitespacesAndNewlines))") }
         progress("Installing…")
+        (code, out) = try await run(ssh, installScript(dest: dest, launch: launch), limit: 300)
+        let said = out.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard said.contains("WOODRUFF-INSTALLED") else {
+            let why = said.replacingOccurrences(of: "WOODRUFF-NOT-INSTALLED", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
+            throw TVError.badAnswer("The TV didn’t install the package: " + (why.isEmpty ? "it said nothing (ssh ended with \(code))" : String(why.suffix(700))))
+        }
+        progress(launch ? "Installed. Woodruff is opening on the TV." : "Installed.")
+    }
+
+    /// What runs on the TV: the install with each of the TV's two luna tools in turn (a rooted TV and one in Developer
+    /// Mode don't have the same one), waiting for the TV to say "installed"; then Woodruff's service there is ended
+    /// and started again, since one that's running keeps the old build until it stops; then Woodruff is opened, or
+    /// its service woken. It prints what the TV said, and WOODRUFF-INSTALLED only when the TV said so.
+    static func installScript(dest: String, launch: Bool) -> String {
+        let dir = (dest as NSString).deletingLastPathComponent
         let payload = #"{"id":"com.ares.defaultName","ipkUrl":"\#(dest)","subscribe":true}"#
         let open = #"{"id":"\#(appId)"}"#
-        let cmd = "luna-send-pub -w 30000 -i luna://com.webos.appInstallService/dev/install '\(payload)' 2>/dev/null | grep -m1 -E 'installed|failed|errorText'; rm -f \(dest)" + (launch ? "; luna-send-pub -n 1 luna://com.webos.applicationManager/launch '\(open)' >/dev/null" : "")
-        (code, out) = try await run(ssh, cmd)
-        let said = out.trimmingCharacters(in: .whitespacesAndNewlines)
-        if said.contains("failed") || said.contains("errorText") { throw TVError.badAnswer("The TV refused the package: \(said)") }
-        progress(said.contains("installed") ? (launch ? "Installed. Woodruff is opening on the TV." : "Installed.") : "Sent. \(said)")
+        let after = launch
+            ? "$T -n 1 luna://com.webos.applicationManager/launch '\(open)' >/dev/null 2>&1"
+            : "($T -n 1 luna://$S/ping '{}' >/dev/null 2>&1 & Q=$!; sleep 4; kill $Q 2>/dev/null)"
+        // The service's name is put together on the TV, so this script's own shell isn't taken for the service.
+        return """
+        L=\(dir)/woodruff-install.log; ok=0; T=
+        for C in luna-send-pub luna-send; do
+          command -v $C >/dev/null 2>&1 || continue
+          T=$C; rm -f $L
+          $C -i luna://com.webos.appInstallService/dev/install '\(payload)' >$L 2>&1 &
+          P=$!; i=0
+          while [ $i -lt 120 ]; do
+            grep -q -e '"installed"' -e errorText -e ailed -e AILED $L 2>/dev/null && break
+            kill -0 $P 2>/dev/null || break
+            sleep 1; i=$((i+1))
+          done
+          kill $P 2>/dev/null
+          echo "[$C] $(tail -c 400 $L 2>/dev/null | tr '\\n' ' ')"
+          if grep -q '"installed"' $L 2>/dev/null; then ok=1; break; fi
+        done
+        [ -n "$T" ] || echo "this TV has neither luna-send-pub nor luna-send"
+        rm -f $L \(dest)
+        if [ $ok != 1 ]; then echo WOODRUFF-NOT-INSTALLED; exit 1; fi
+        S=\(appId).servic; S=${S}e
+        for d in /proc/[0-9]*; do
+          p=${d#/proc/}; [ "$p" = "$$" ] && continue
+          c=$(tr '\\000' ' ' < $d/cmdline 2>/dev/null)
+          case "$c" in *home-watch*) ;; *"$S"*) kill $p 2>/dev/null ;; esac
+        done
+        sleep 1
+        \(after)
+        echo WOODRUFF-INSTALLED
+        """
     }
 }
 #endif

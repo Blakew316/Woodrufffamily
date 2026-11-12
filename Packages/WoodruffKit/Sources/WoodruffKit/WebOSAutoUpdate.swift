@@ -12,7 +12,9 @@ public enum WebOSAutoUpdate {
         public var tag: String
         public var tries: Int
         public var at: Date
-        public init(tag: String, tries: Int, at: Date) { self.tag = tag; self.tries = tries; self.at = at }
+        /// The TV said this build was installed: it isn't put on again, whatever version the TV goes on reporting.
+        public var done: Bool?
+        public init(tag: String, tries: Int, at: Date, done: Bool? = nil) { self.tag = tag; self.tries = tries; self.at = at; self.done = done }
     }
 
     /// A build that didn't go on is tried again after an hour, and after four tries twice a day: it never gives up,
@@ -24,6 +26,7 @@ public enum WebOSAutoUpdate {
     /// Whether to try the build [tag] on a TV now, given what was tried there before.
     public static func due(_ tried: Tried?, tag: String, now: Date) -> Bool {
         guard let tried, tried.tag == tag else { return true }
+        if tried.done == true { return false }
         return now.timeIntervalSince(tried.at) >= (tried.tries < most ? again : later)
     }
 
@@ -45,7 +48,7 @@ public enum WebOSAutoUpdate {
 
 #if os(macOS)
 extension WebOSAutoUpdate {
-    static let key = "webos.autoUpdate"
+    static let key = "webos.autoUpdate.2"
     @MainActor static var running = false
     @MainActor static var saidNoReleases = false
     /// What was said once already since the app opened (a TV that's off, or whose address isn't known).
@@ -133,6 +136,8 @@ extension Fleet {
                 // Woodruff is opened again only where it was in front: nobody is taken off another app or input.
                 try await WebOSInstaller.install(ipk, on: way, launch: fresh.onScreen) { line in WebOSAutoUpdate.say("\(name): \(line)") }
                 if known?.ssh != way { extras[tv.id, default: TVExtras()].ssh = way }
+                tried[tv.id]?.done = true
+                Saved.save(WebOSAutoUpdate.key, tried)
                 WebOSAutoUpdate.say("\(name): \(tag) went on by itself (\(way.user)@\(way.host)).")
                 installed = true
             } catch {

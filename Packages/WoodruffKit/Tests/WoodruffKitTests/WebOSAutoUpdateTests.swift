@@ -13,6 +13,10 @@ final class WebOSAutoUpdateTests: XCTestCase {
         let spent = WebOSAutoUpdate.Tried(tag: "webos-33", tries: 4, at: now)
         XCTAssertFalse(WebOSAutoUpdate.due(spent, tag: "webos-33", now: now.addingTimeInterval(3600)))
         XCTAssertTrue(WebOSAutoUpdate.due(spent, tag: "webos-33", now: now.addingTimeInterval(12 * 3600)))
+        // One the TV said it installed isn't put on again, whatever version the TV goes on reporting.
+        let done = WebOSAutoUpdate.Tried(tag: "webos-33", tries: 1, at: now, done: true)
+        XCTAssertFalse(WebOSAutoUpdate.due(done, tag: "webos-33", now: now.addingTimeInterval(7 * 86_400)))
+        XCTAssertTrue(WebOSAutoUpdate.due(done, tag: "webos-34", now: now))
     }
 
     func testTheSavedWayInComesFirstThenEachAddressBothWays() {
