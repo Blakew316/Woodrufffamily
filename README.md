@@ -189,6 +189,28 @@ General and is tried again every 6 hours (or at Check for Updates Now). To turn 
 updater's `config.json`. TestFlight builds use Apple's production push service, so Instant iPhone Alerts need a push
 key enabled for Sandbox & Production.
 
+### The install link (no TestFlight, no home network)
+
+A third way for an iPhone or iPad to get the newest build, for when it's away from home and TestFlight can't be
+used. On the device, open <https://blakew316.github.io/Woodrufffamily/> in Safari and tap Install; iOS asks, then
+puts the newest build in the app's place.
+
+- After each release the Mac Studio's updater publishes the iPhone app it has just built as the files of one GitHub
+  release, `install-link`, on this repository: `WoodruffFamily.ipa`, `manifest.plist` (what iOS reads to install an
+  app from a web address) and `latest.json` (which build it is). The page is the `gh-pages` branch: one button whose
+  address is `itms-services://?action=download-manifest&url=` followed by the manifest's address. (That address
+  can't be tapped in a chat or a note, which is why there's a page.)
+- It needs GitHub's command-line tool on the Mac Studio, signed in with an account that can write to this repository
+  (`brew install gh`, then `gh auth login`). Without it nothing is published and nothing else changes.
+- The app is the one the Mac Studio installs at home: signed for the devices registered with the team, and it
+  installs on no other. The repository is public, so the file can be downloaded by anyone; it carries the team's name
+  and the registered devices' identifiers, as every such build does. The owner chose this.
+- The .ipa is written by `updater.py` itself, file by file (`make_ipa`). A zip made with `ditto` or Archive Utility
+  carries each file's extended attributes as `._` files; iOS unpacks them as files the app's signature doesn't cover
+  and throws the install away, with nothing said: the phone just stays on the build it had.
+- `python3 scripts/updater.py status` says how the last publishing went (Link), and the updater's log has a line
+  for each. To turn it off, add `"install_link": false` to the updater's `config.json`.
+
 ### By hand
 
 `scripts/deploy.sh` is what the updater runs. It also works by hand, in Terminal from the repository folder:

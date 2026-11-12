@@ -49,11 +49,13 @@ import plistlib
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
 import time
 import traceback
+import zipfile
 from datetime import datetime, timedelta, timezone
 
 LABEL = "com.woodruff.family.updater"
@@ -70,6 +72,19 @@ ROLES = ("hub", "follower")
 PYTHON = "/usr/bin/python3"
 LAUNCHD_PATH = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 TESTING = "WOODRUFF_UPDATER_TESTING"   # set by the tests: install works off macOS, launchctl comes from PATH
+
+# The install link: each release's iPhone app, published by the hub as the files of one GitHub release, so an iPhone or
+# iPad the app is signed for can install it from anywhere, without this Mac, the home network or TestFlight. The app's
+# Settings looks at LINK_LATEST for a newer build and opens
+# itms-services://?action=download-manifest&url=<LINK_MANIFEST's address>, which is how iOS installs from a web address.
+LINK_TAG = "install-link"
+LINK_IPA = "WoodruffFamily.ipa"
+LINK_MANIFEST = "manifest.plist"
+LINK_LATEST = "latest.json"
+LINK_NOTES = ("The newest build of the Woodruff Family iPhone and iPad app, for the family's own devices (it is signed "
+              "for them and installs on no other). The app's Settings installs it from here.")
+LINK_UPLOAD_TIMEOUT = 900
+GH_PLACES = ("/opt/homebrew/bin/gh", "/usr/local/bin/gh")   # GitHub's command-line tool, where Homebrew puts it
 BUSY = "An update is running right now; run this again once it has finished (python3 scripts/updater.py status)."
 
 DEFAULT_INTERVAL = 300
@@ -311,6 +326,85 @@ def film_on_screen(settings, now):
 # --------------------------------------------------------------------------------------------- the world
 
 
+def repo_slug(url):
+    """owner/name of a GitHub repository's address (https or ssh); None if it isn't one."""
+    match = re.search(r"github\.com[:/]+([^/\s:]+)/([^/\s]+?)(?:\.git)?/?\s*$", url or "")
+    return "%s/%s" % (match.group(1), match.group(2)) if match else None
+
+
+def make_ipa(app, ipa):
+    """The app as an .ipa: a zip of Payload/<the app> holding exactly the app's own files, with their modes and
+    symbolic links kept. Written here, file by file: ditto (and Archive Utility) also put each file's extended
+    attributes into a zip, as "._" files beside it, and iOS unpacks those as files the app's signature doesn't cover
+    and throws the install away (build 620's did: it looked as if it installed, and the phone stayed where it was)."""
+    base = os.path.basename(os.path.normpath(app))
+
+    def entry(name, mode, when):
+        info = zipfile.ZipInfo(name, date_time=max(time.localtime(when)[:6], (1980, 1, 1, 0, 0, 0)))
+        info.create_system = 3   # Unix: the mode below is the file's own
+        info.external_attr = (mode & 0xFFFF) << 16
+        return info
+
+    with zipfile.ZipFile(ipa, "w", zipfile.ZIP_DEFLATED) as archive:
+        for folder, folders, files in os.walk(app):
+            folders.sort()
+            files.sort()
+            rel = os.path.relpath(folder, app)
+            inside = "Payload/%s" % base if rel == "." else "Payload/%s/%s" % (base, rel.replace(os.sep, "/"))
+            made = entry(inside + "/", stat.S_IFDIR | 0o755, os.lstat(folder).st_mtime)
+            made.external_attr |= 0x10   # a folder, for unzippers that go by the DOS flag
+            archive.writestr(made, b"")
+            # A link to a folder is kept as the link it is (os.walk lists it with the folders, and doesn't go in).
+            for name in list(folders) + files:
+                path = os.path.join(folder, name)
+                st = os.lstat(path)
+                if stat.S_ISLNK(st.st_mode):
+                    archive.writestr(entry("%s/%s" % (inside, name), stat.S_IFLNK | 0o755, st.st_mtime),
+                                     os.readlink(path).encode("utf-8"))
+                elif stat.S_ISREG(st.st_mode):
+                    info = entry("%s/%s" % (inside, name), stat.S_IFREG | stat.S_IMODE(st.st_mode), st.st_mtime)
+                    info.compress_type = zipfile.ZIP_DEFLATED
+                    with open(path, "rb") as handle:
+                        archive.writestr(info, handle.read())
+
+
+def ipa_problem(ipa):
+    """Why iOS wouldn't install this .ipa, as far as can be told from here; None when nothing shows. It must hold one
+    app under Payload, and none of the "._" files or __MACOSX folders a Mac's own zipping adds (files the app's
+    signature doesn't cover)."""
+    try:
+        with zipfile.ZipFile(ipa) as archive:
+            names = archive.namelist()
+    except (OSError, zipfile.BadZipFile) as exc:
+        return "the .ipa can't be read: %s" % exc
+    strays = [n for n in names if n.rstrip("/").split("/")[-1].startswith("._") or "__MACOSX" in n.split("/")]
+    if strays:
+        return "the .ipa holds %d files the app's signature doesn't cover (%s)" % (len(strays), strays[0])
+    apps = set(n.split("/")[1] for n in names if n.startswith("Payload/") and n.count("/") >= 2)
+    if len(apps) != 1 or not ("Payload/%s/Info.plist" % next(iter(apps))) in names:
+        return "the .ipa doesn't hold one app under Payload"
+    return None
+
+
+def link_address(slug, name):
+    """Where a file of the install link's release is downloaded from."""
+    return "https://github.com/%s/releases/download/%s/%s" % (slug, LINK_TAG, name)
+
+
+def link_manifest(slug, bundle_id, version, title):
+    """What iOS reads to install an app from a web address."""
+    return {"items": [{
+        "assets": [{"kind": "software-package", "url": link_address(slug, LINK_IPA)}],
+        "metadata": {"bundle-identifier": bundle_id, "bundle-version": version, "kind": "software", "title": title},
+    }]}
+
+
+def link_latest(slug, release, build, version, subject, when):
+    """What the app reads to know a newer build is there."""
+    return {"build": build, "version": version, "commit": release, "subject": subject or "", "published": iso(when),
+            "manifest": link_address(slug, LINK_MANIFEST)}
+
+
 class Env(object):
     """Every effect on the world: commands, the clock, sleeping and where files are. The tests replace it."""
 
@@ -324,6 +418,8 @@ class Env(object):
         self.environ = dict(os.environ if environ is None else environ)
         self.launchctl = launchctl or ("launchctl" if testing(self.environ) else "/bin/launchctl")
         self.python = sys.executable or PYTHON
+        # GitHub's command-line tool, if this Mac has it (the hub publishes the install link with it).
+        self.gh = next((place for place in GH_PLACES if os.path.isfile(place)), None)
         self.child = None
         self.support = os.path.join(self.home, "Library", "Application Support", "Woodruff Family", "Updater")
         self.logs = os.path.join(self.home, "Library", "Logs", "Woodruff Family")
@@ -543,6 +639,8 @@ def blank_state():
         # hub: the release uploaded to TestFlight (state ok, uploading, skipped, failed), so the iPhones and iPads
         # update on Wi-Fi or cellular, away from home too.
         "testflight": {"commit": None, "state": None, "detail": "", "attempts": 0, "next_try": None},
+        # hub: the release's iPhone app published for the install link (state ok, publishing, failed).
+        "link": {"commit": None, "state": None, "detail": "", "attempts": 0, "next_try": None},
         # [{"udid", "name", "commit", "updated_at", "state", "detail", "next_try", "attempts", "retry"}]
         "iphones": [],
         # hub: the Apple TV app built and kept for the release (state ok, skipped: no Apple TV is paired, failed).
@@ -589,6 +687,9 @@ class Updater(object):
         self.fallback = bool(config.get("build_fallback")) and self.role == "follower"
         # The hub uploads each release to TestFlight unless config.json says "testflight": false.
         self.testflight = self.role == "hub" and config.get("testflight", True) is not False
+        # The hub publishes each release's iPhone app for the install link unless config.json says "install_link": false
+        # (and only on a Mac that has GitHub's command-line tool, signed in).
+        self.install_link = self.role == "hub" and config.get("install_link", True) is not False
         # The hub keeps the Apple TVs paired with it on the release unless config.json says "appletv": false.
         self.appletv = self.role == "hub" and config.get("appletv", True) is not False
         self.files = paths(env)
@@ -639,7 +740,7 @@ class Updater(object):
                     "detail": d.get("detail") or "",
                     "next_try": None if d.get("state") == "current" else d.get("next_try"),
                 })
-        return {
+        doc = {
             "format": 1,
             "updated_at": iso(self.env.now()),
             "role": self.role,
@@ -655,6 +756,11 @@ class Updater(object):
             "last_check": st.get("last_check"),
             "last_error": st.get("last_error"),
         }
+        # The install link, once this hub has published (or tried to publish) one.
+        link = st.get("link") or {}
+        if self.role == "hub" and link.get("state"):
+            doc["link"] = {"commit": link.get("commit"), "state": link.get("state"), "detail": link.get("detail") or ""}
+        return doc
 
     def set_mac(self, state, detail):
         self.state["mac"]["state"] = state
@@ -1439,6 +1545,7 @@ class Updater(object):
                 built = self.hub_deploy(release)
         self.iphone_pass(release, built)
         self.tv_pass(release)
+        self.link_pass(release)
         self.testflight_pass(release)
         tf = st["testflight"]
         tf_ok = not self.testflight or (tf.get("commit") == release and tf.get("state") in ("ok", "skipped"))
@@ -1473,6 +1580,89 @@ class Updater(object):
             self.apply_iphones(release, rows, status, log)
         self.save(True)
         return with_iphone
+
+    def link_pass(self, release):
+        """Publishes the release's kept iPhone app for the install link, once it's built. Never the updater's own
+        failure: whatever goes wrong is noted and tried again later."""
+        link = self.state["link"]
+        if not self.install_link or not getattr(self.env, "gh", None):
+            return
+        if link.get("commit") == release and link.get("state") == "ok":
+            return
+        kept = self.kept_build(release)
+        if kept is None:
+            return   # no iPhone app built for this release yet (or no iPhone is paired): looked at again next time
+        if not (link.get("commit") != release or due(link, self.now) or self.requested_now()):
+            return
+        link.update(commit=release, state="publishing", detail="Publishing %s for the install link." % self.build_words())
+        self.save(True)
+        try:
+            problem = self.publish_link(release, kept["app"])
+        except Exception as exc:  # noqa: BLE001 - publishing is an extra: it never stops an update
+            problem = "%s: %s" % (type(exc).__name__, exc)
+        if problem is None:
+            link.update(state="ok", detail="Published.", attempts=0, next_try=None)
+            self.log("install link: published %s" % self.build_words())
+        else:
+            link["attempts"] = int(link.get("attempts") or 0) + 1
+            when = self.now + timedelta(seconds=backoff(link["attempts"]))
+            link.update(state="failed", next_try=iso(when),
+                        detail="%s. Next try at %s." % (sentence(problem).rstrip("."), clock(when)))
+            self.log("install link: failed (next at %s): %s" % (iso(when), one_line(problem, 300)))
+        self.save(True)
+
+    def publish_link(self, release, app):
+        """The kept iPhone app as an .ipa, what iOS reads to install it, and the note the app looks at, uploaded as the
+        files of the install link's GitHub release (made the first time). None when it's done, else what went wrong."""
+        gh = self.env.gh
+        quiet = {"GH_PROMPT_DISABLED": "1", "GH_NO_UPDATE_NOTIFIER": "1"}
+        status, out, err = self.git(["remote", "get-url", "origin"])
+        slug = repo_slug(out) if status == 0 else None
+        if not slug:
+            return "this checkout's origin isn't a GitHub repository"
+        try:
+            with open(os.path.join(app, "Info.plist"), "rb") as handle:
+                info = plistlib.load(handle)
+        except Exception as exc:  # noqa: BLE001 - missing or unreadable
+            return "couldn't read the kept iPhone app: %s" % exc
+        build = str(info.get("CFBundleVersion") or "").strip()
+        version = str(info.get("CFBundleShortVersionString") or "").strip() or "1.0"
+        bundle_id = str(info.get("CFBundleIdentifier") or "").strip()
+        if not build.isdigit() or not bundle_id:
+            return "the kept iPhone app doesn't say which build it is"
+        subject = (self.state.get("release") or {}).get("subject")
+        work = tempfile.mkdtemp(prefix="woodruff-link-")
+        try:
+            ipa = os.path.join(work, LINK_IPA)
+            try:
+                make_ipa(app, ipa)
+            except OSError as exc:
+                return "couldn't make the .ipa: %s" % exc
+            problem = ipa_problem(ipa)
+            if problem:
+                return problem
+            manifest = os.path.join(work, LINK_MANIFEST)
+            with open(manifest, "wb") as handle:
+                plistlib.dump(link_manifest(slug, bundle_id, version, APP_NAME), handle)
+            latest = os.path.join(work, LINK_LATEST)
+            with open(latest, "w") as handle:
+                json.dump(link_latest(slug, release, int(build), version, subject, self.now), handle, indent=1)
+            status, out, err = self.env.run([gh, "release", "view", LINK_TAG, "--repo", slug], 120, env=quiet)
+            if status != 0:
+                status, out, err = self.env.run([gh, "release", "create", LINK_TAG, "--repo", slug, "--title",
+                                                 "Install link", "--notes", LINK_NOTES, "--latest=false"], 120, env=quiet)
+                if status != 0:
+                    return "couldn't make the GitHub release: %s" % (first_error(err or out) or "gh exited %d" % status)
+            # The app first, then what points at it, and last the note that says a newer build is there.
+            for path in (ipa, manifest, latest):
+                status, out, err = self.env.run([gh, "release", "upload", LINK_TAG, path, "--clobber", "--repo", slug],
+                                                LINK_UPLOAD_TIMEOUT, env=quiet)
+                if status != 0:
+                    return "couldn't upload %s: %s" % (os.path.basename(path),
+                                                        first_error(err or out) or "gh exited %d" % status)
+            return None
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
 
     def testflight_pass(self, release):
         """Uploads the release to TestFlight once the Mac app built from it here (so it compiles)."""
@@ -1853,6 +2043,9 @@ def describe(doc):
             label = "Apple TVs:  " if n == 0 else " " * 12
             lines.append("  %s%s: %s. %s" % (label, tv.get("name") or tv.get("udid"), tv.get("state") or "?",
                                               tv.get("detail") or ""))
+    link = doc.get("link") or {}
+    if doc.get("role") == "hub" and link.get("state"):
+        lines.append("  Link:       %s (%s). %s" % (link.get("state"), short(link.get("commit")), link.get("detail") or ""))
     lines.append("  Last check: %s" % local_time(doc.get("last_check")))
     lines.append("  Last error: %s" % (doc.get("last_error") or "none"))
     return [line.rstrip() for line in lines]

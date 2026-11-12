@@ -14,9 +14,11 @@ import subprocess
 import plistlib
 import re
 import shutil
+import stat
 import sys
 import tempfile
 import unittest
+import zipfile
 from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime, timedelta, timezone
 
@@ -100,6 +102,10 @@ class FakeEnv(updater.Env):
         updater.Env.__init__(self, home=home, applications=apps, platform=platform, uid=501,
                              script=os.path.join(self.repo, "scripts", "updater.py"),
                              environ={"PATH": "/usr/bin:/bin", "HOME": home}, launchctl="/bin/launchctl")
+        self.gh = None                   # no GitHub tool unless a test gives one (the install link's)
+        self.gh_view = 0                 # gh release view's status (not 0: the release isn't there yet)
+        self.gh_fail = {}                # "create" or an uploaded file's name -> (status, output) to fail it
+        self.gh_uploads = []             # each uploaded file's name and what was in it, in order
         self.clock = T0
         self.calls = []
         self.deploys = []
@@ -211,6 +217,24 @@ class FakeEnv(updater.Env):
                 if status == 0:
                     self.tv_has[argv[6]] = build
             return status, out, ""
+        if self.gh and argv[0] == self.gh:
+            assert argv[1] == "release" and argv[argv.index("--repo") + 1] == "Blakew316/Woodrufffamily", argv
+            assert env == {"GH_PROMPT_DISABLED": "1", "GH_NO_UPDATE_NOTIFIER": "1"}, env
+            if argv[2] == "view":
+                assert argv[3] == updater.LINK_TAG, argv
+                return self.gh_view, "", "" if self.gh_view == 0 else "release not found"
+            if argv[2] == "create":
+                assert argv[3] == updater.LINK_TAG and "--latest=false" in argv, argv
+                failing = self.gh_fail.get("create")
+                return (failing[0], "", failing[1]) if failing else (0, "", "")
+            assert argv[2:4] == ["upload", updater.LINK_TAG] and argv[5] == "--clobber", argv
+            base = os.path.basename(argv[4])
+            failing = self.gh_fail.get(base)
+            if failing:
+                return failing[0], "", failing[1]
+            with open(argv[4], "rb") as handle:
+                self.gh_uploads.append((base, handle.read()))
+            return 0, "", ""
         if name == "lsappinfo":
             if self.lsappinfo_status:
                 return self.lsappinfo_status, "", "lsappinfo: no connection"
@@ -843,6 +867,96 @@ class Hub(UpdaterTest):
         doc = self.run_once(5)
         self.assertEqual(self.env.deploys[-1], self.hub_args(iphone=False))
         self.assertEqual(doc["mac"]["state"], "current")
+
+    # ------------------------------------------------------------------ the install link
+
+    def link_ready(self):
+        """A hub with GitHub's tool, whose deploy.sh keeps an iPhone app that says which build it is."""
+        self.configure("hub")
+        self.env.gh = "/opt/homebrew/bin/gh"
+
+        def deploy(env, opts):
+            rows = all_ok(env, opts)
+            if opts["keep"]:
+                with open(os.path.join(opts["keep"], "Woodruff Family.app", "Info.plist"), "wb") as handle:
+                    plistlib.dump({"CFBundleIdentifier": "com.blakew316.woodruff", "CFBundleVersion": "1234",
+                                   "CFBundleShortVersionString": "1.0"}, handle)
+            return rows
+        self.env.deploy = deploy
+
+    def gh_calls(self):
+        return [c["argv"][2] for c in self.env.calls if c["argv"][0] == self.env.gh]
+
+    def test_install_link_published(self):
+        self.link_ready()
+        self.env.gh_view = 1                      # its GitHub release isn't there yet: made first
+        doc = self.run_once()
+        self.assertEqual(doc["mac"]["state"], "current")
+        self.assertEqual(doc["link"], {"commit": NEW, "state": "ok", "detail": "Published."})
+        # The app first, then what points at it, and last the note that says a newer build is there.
+        self.assertEqual([name for name, _ in self.env.gh_uploads],
+                         ["WoodruffFamily.ipa", "manifest.plist", "latest.json"])
+        # The .ipa is the kept app under Payload and nothing else.
+        with zipfile.ZipFile(io.BytesIO(self.env.gh_uploads[0][1])) as archive:
+            self.assertEqual(sorted(archive.namelist()), ["Payload/Woodruff Family.app/",
+                                                          "Payload/Woodruff Family.app/Info.plist"])
+        self.assertEqual(self.gh_calls(), ["view", "create", "upload", "upload", "upload"])
+        item = plistlib.loads(self.env.gh_uploads[1][1])["items"][0]
+        self.assertEqual(item["assets"], [{
+            "kind": "software-package",
+            "url": "https://github.com/Blakew316/Woodrufffamily/releases/download/install-link/WoodruffFamily.ipa"}])
+        self.assertEqual(item["metadata"], {"bundle-identifier": "com.blakew316.woodruff", "bundle-version": "1.0",
+                                            "kind": "software", "title": "Woodruff Family"})
+        latest = json.loads(self.env.gh_uploads[2][1].decode("utf-8"))
+        self.assertEqual((latest["build"], latest["commit"], latest["subject"]), (1234, NEW, "Pictures load once"))
+        self.assertEqual(latest["manifest"],
+                         "https://github.com/Blakew316/Woodrufffamily/releases/download/install-link/manifest.plist")
+        self.assertRegex(latest["published"], STAMP)
+        self.assertIn("install link: published", self.log_text())
+        self.assertIn("  Link:       ok", "\n".join(updater.describe(doc)))
+        # Published once for a release: not again at the next check.
+        self.run_once(5)
+        self.assertEqual(len(self.env.gh_uploads), 3)
+
+    def test_install_link_release_already_there(self):
+        self.link_ready()
+        self.run_once()
+        self.assertEqual(self.gh_calls(), ["view", "upload", "upload", "upload"])
+
+    def test_install_link_failure_doesnt_stop_the_update(self):
+        self.link_ready()
+        self.env.gh_fail["WoodruffFamily.ipa"] = (1, "HTTP 502: Bad Gateway")
+        doc = self.run_once()
+        self.assertEqual(doc["mac"]["state"], "current")
+        self.assertEqual(self.phone(doc, P1)["state"], "current")
+        self.assertEqual(doc["link"]["state"], "failed")
+        self.assertIn("Couldn't upload WoodruffFamily.ipa: HTTP 502", doc["link"]["detail"])
+        self.assertIn("Next try at", doc["link"]["detail"])
+        self.assertEqual(self.env.gh_uploads, [])
+        self.assertIn("install link: failed", self.log_text())
+        # Tried again once it's due, and published then.
+        self.env.gh_fail = {}
+        doc = self.run_once(120)
+        self.assertEqual(doc["link"]["state"], "ok")
+        self.assertEqual(len(self.env.gh_uploads), 3)
+
+    def test_no_install_link_without_githubs_tool_or_when_turned_off(self):
+        self.configure("hub")                     # no GitHub tool on this Mac
+        doc = self.run_once()
+        self.assertNotIn("link", doc)
+        self.assertEqual(self.gh_calls(), [])
+        self.assertNotIn("  Link:", "\n".join(updater.describe(doc)))
+
+    def test_install_link_turned_off_in_config(self):
+        self.link_ready()
+        config = os.path.join(self.support, "config.json")
+        with open(config) as handle:
+            kept = json.load(handle)
+        kept["install_link"] = False
+        updater.write_json(config, kept)
+        doc = self.run_once()
+        self.assertNotIn("link", doc)
+        self.assertEqual(self.gh_calls(), [])
 
     def test_battery_postpones_hub_builds(self):
         self.configure("hub")
@@ -1919,7 +2033,66 @@ class AppleTVAnswers(unittest.TestCase):
         self.assertFalse(updater.film_on_screen({"playing.crumb": "playing"}, T0))
 
 
+class InstallLinkIpa(unittest.TestCase):
+    def setUp(self):
+        self.tmp = os.path.realpath(tempfile.mkdtemp(prefix="updater-ipa."))
+        self.app = os.path.join(self.tmp, "Woodruff Family.app")
+        os.makedirs(os.path.join(self.app, "PlugIns", "Widgets.appex"))
+        os.makedirs(os.path.join(self.app, "Empty"))
+        for name, text in (("Info.plist", "info"), ("Woodruff Family", "the program"), ("PlugIns/Widgets.appex/Info.plist", "w")):
+            with open(os.path.join(self.app, name), "w") as handle:
+                handle.write(text)
+        os.chmod(os.path.join(self.app, "Woodruff Family"), 0o755)
+        os.chmod(os.path.join(self.app, "Info.plist"), 0o644)
+        os.symlink("Info.plist", os.path.join(self.app, "Link"))
+        self.ipa = os.path.join(self.tmp, "app.ipa")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_the_ipa_is_the_app_and_nothing_else(self):
+        updater.make_ipa(self.app, self.ipa)
+        self.assertIsNone(updater.ipa_problem(self.ipa))
+        with zipfile.ZipFile(self.ipa) as archive:
+            self.assertIsNone(archive.testzip())
+            infos = dict((i.filename, i) for i in archive.infolist())
+            base = "Payload/Woodruff Family.app/"
+            self.assertEqual(sorted(infos), sorted([
+                base, base + "Empty/", base + "Info.plist", base + "Link", base + "PlugIns/",
+                base + "PlugIns/Widgets.appex/", base + "PlugIns/Widgets.appex/Info.plist", base + "Woodruff Family"]))
+            self.assertEqual(archive.read(base + "Woodruff Family"), b"the program")
+            # The program stays a program, a link stays a link, and every entry says it's a Unix file.
+            self.assertEqual(infos[base + "Woodruff Family"].external_attr >> 16, stat.S_IFREG | 0o755)
+            self.assertEqual(infos[base + "Info.plist"].external_attr >> 16, stat.S_IFREG | 0o644)
+            self.assertEqual(stat.S_IFMT(infos[base + "Link"].external_attr >> 16), stat.S_IFLNK)
+            self.assertEqual(archive.read(base + "Link"), b"Info.plist")
+            self.assertTrue(all(i.create_system == 3 for i in infos.values()))
+
+    def test_a_macs_stray_files_are_refused(self):
+        # What ditto and Archive Utility add: iOS unpacks them as files the app's signature doesn't cover.
+        for stray in ("Payload/Woodruff Family.app/._Info.plist", "__MACOSX/Payload/._Woodruff Family.app"):
+            with zipfile.ZipFile(self.ipa, "w") as archive:
+                archive.writestr("Payload/Woodruff Family.app/Info.plist", "info")
+                archive.writestr(stray, "x")
+            self.assertIn("signature doesn't cover", updater.ipa_problem(self.ipa))
+
+    def test_not_an_app(self):
+        with zipfile.ZipFile(self.ipa, "w") as archive:
+            archive.writestr("Woodruff Family.app/Info.plist", "info")
+        self.assertIn("one app under Payload", updater.ipa_problem(self.ipa))
+        with open(self.ipa, "w") as handle:
+            handle.write("not a zip")
+        self.assertIn("can't be read", updater.ipa_problem(self.ipa))
+
+
 class Helpers(unittest.TestCase):
+    def test_repo_slug(self):
+        self.assertEqual(updater.repo_slug("https://github.com/Blakew316/Woodrufffamily.git\n"), "Blakew316/Woodrufffamily")
+        self.assertEqual(updater.repo_slug("https://github.com/Blakew316/Woodrufffamily"), "Blakew316/Woodrufffamily")
+        self.assertEqual(updater.repo_slug("git@github.com:Blakew316/Woodrufffamily.git"), "Blakew316/Woodrufffamily")
+        self.assertIsNone(updater.repo_slug("https://example.com/a/b.git"))
+        self.assertIsNone(updater.repo_slug(""))
+
     def test_parse_results(self):
         rows = updater.parse_results("mac\tinstalled\t%s\tinstalled and running\n\nnonsense\n"
                                      "iphone\tfailed\t%s\tMia's iPhone: the install failed: x\ty\n"
