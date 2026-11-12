@@ -71,6 +71,9 @@ final class OwnPlayer {
     private var watches: [NSObjectProtocol] = []
     private var commands: [(command: MPRemoteCommand, target: Any)] = []
     private var artwork: MPMediaItemArtwork?
+    /// The tick the film began playing at, and whether its sound's pieces have been reported yet (`tick`).
+    private var startedTick = 0
+    private var soundSaid = false
     /// The sound session's work, one thing after another and never on the main thread (activating can take a moment).
     private static let soundQueue = DispatchQueue(label: "woodruff.film-sound", qos: .userInitiated)
 
@@ -110,6 +113,8 @@ final class OwnPlayer {
         begun = false
         started = false
         ticks = 0
+        startedTick = 0
+        soundSaid = false
         checkedIndex = false
         said = false
         nextUp = nil
@@ -289,7 +294,16 @@ final class OwnPlayer {
         let state = player.state
         if state == .playing, !started {
             started = true
+            startedTick = ticks
             noteOutput(play)
+        }
+        // Twenty seconds in: how the film's sound is coming (said once, so it's in the Macs' log while it still plays).
+        if started, !soundSaid, ticks - startedTick >= 20 {
+            soundSaid = true
+            let n = player.notes
+            Diagnostics.shared.notePlayback(n.joined > 0
+                ? String(format: "%@: 20 s in, %ld pieces of its sound were set end to end (up to %.2f ms out)", play.title, n.joined, n.joinedBy * 1000)
+                : "\(play.title): 20 s in, every piece of its sound met the one before")
         }
         if state == .ended {
             // Played to its end: the screen closes, back to the page it was started from.
@@ -475,6 +489,11 @@ final class OwnPlayer {
             words += ", decoders started afresh \(n.mended) times (the picture’s \(n.mendedPicture), the sound’s \(n.mendedSound)"
                 + (n.mendWhy.map { ": \($0)" } ?? "") + ")"
         }
+        // The film's sound comes in pieces; how many didn't start exactly where the one before ended and were set end
+        // to end (`FilmPlayer.joined`): a film whose sound came out broken up shows a large number here.
+        words += n.joined > 0
+            ? String(format: ", %ld pieces of sound set end to end (up to %.2f ms out)", n.joined, n.joinedBy * 1000)
+            : ", every piece of sound met the one before"
         words += ", asked Google for \(stream.askedNow())"
         if let size = stream.sizeNow(), player.length > 60 {
             words += String(format: ", the film needs %.0f Mb/s", Double(size) * 8 / player.length / 1_000_000)

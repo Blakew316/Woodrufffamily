@@ -105,6 +105,10 @@ public final class FilmPlayer: @unchecked Sendable {
         public var mendedPicture = 0
         public var mendedSound = 0
         public var mendWhy: String?
+        /// Pieces of sound whose time in the file wasn't exactly where the piece before them ended, set end to end
+        /// (`joined`), and the furthest any was out, in seconds.
+        public var joined = 0
+        public var joinedBy = 0.0
     }
 
     /// What the film is, once it's open.
@@ -162,6 +166,8 @@ public final class FilmPlayer: @unchecked Sendable {
         var dropBefore = CMTime.invalid
         /// Times the run being fetched has been asked for again.
         var tries = 0
+        /// (Sound) where the sound handed over so far ends, counted from the sound itself: the next piece starts here.
+        var soundEnd = CMTime.invalid
 
         init(lane: Int, sound: Bool, reader: FilmTrackReader, format: CMFormatDescription?) {
             self.lane = lane
@@ -559,6 +565,7 @@ public final class FilmPlayer: @unchecked Sendable {
         pipe.reading = false
         pipe.madeUpTo = .invalid
         pipe.tries = 0
+        pipe.soundEnd = .invalid
         pipe.showFrom = target
         pipe.dropBefore = .invalid
         if target.seconds <= 0.05 {
@@ -632,7 +639,7 @@ public final class FilmPlayer: @unchecked Sendable {
             lock.unlock()
             do {
                 if pipe.sound {
-                    pipe.ready.append(contentsOf: try FilmSampleBuffers.together(run, bytes: data, format: pipe.format, from: pipe.showFrom))
+                    pipe.ready.append(contentsOf: joined(try FilmSampleBuffers.together(run, bytes: data, format: pipe.format, from: pipe.showFrom), on: pipe))
                 } else {
                     let all = try FilmSampleBuffers.each(of: run, bytes: data, format: pipe.format)
                     for (sample, buffer) in zip(run.samples, all) {
@@ -653,6 +660,61 @@ public final class FilmPlayer: @unchecked Sendable {
             fill(pipe)
             judge()
         }
+    }
+
+    /// A piece of sound whose time in the file is within this of where the piece before it ended is set to start
+    /// exactly there; further out than this is a real break in the sound, and is left as the file has it.
+    private static let joinWithin = 0.05
+
+    /// [pieces] of sound, each starting exactly where the one before it ended.
+    ///
+    /// A film can keep its sound in many small pieces (The Odyssey: twelve a second, four packets each). Each piece is
+    /// handed over with the time the file gives it. Where that time is a hair off where the piece before really ends
+    /// (the file's times are rounded), the sound is taken up afresh at every piece, and comes out broken up: on, off,
+    /// on, off. The Android TVs' player plays such pieces end to end and only heeds the file's times when they jump;
+    /// so does this. How long a piece lasts is counted from the sound itself (its packets, the frames in each, its
+    /// rate). The pieces set this way are counted for the log.
+    private func joined(_ pieces: [CMSampleBuffer], on pipe: Pipe) -> [CMSampleBuffer] {
+        var out: [CMSampleBuffer] = []
+        out.reserveCapacity(pieces.count)
+        for piece in pieces {
+            let count = CMSampleBufferGetNumSamples(piece)
+            let stamped = CMSampleBufferGetPresentationTimeStamp(piece)
+            guard count > 0, stamped.isValid, let format = CMSampleBufferGetFormatDescription(piece),
+                  let basic = CMAudioFormatDescriptionGetStreamBasicDescription(format)?.pointee,
+                  basic.mSampleRate >= 1, basic.mFramesPerPacket > 0 else {
+                // Its length can't be counted: left as it is, and the next piece starts the count again.
+                pipe.soundEnd = .invalid
+                out.append(piece)
+                continue
+            }
+            let each = CMTime(value: CMTimeValue(basic.mFramesPerPacket), timescale: CMTimeScale(basic.mSampleRate.rounded()))
+            let length = CMTimeMultiply(each, multiplier: Int32(count))
+            // (One cut at its start, the first after the film was moved, keeps the time it was cut for.)
+            let cut = CMGetAttachment(piece, key: kCMSampleBufferAttachmentKey_TrimDurationAtStart, attachmentModeOut: nil) != nil
+            var start = stamped
+            var kept = piece
+            if pipe.soundEnd.isValid, !cut {
+                let off = CMTimeSubtract(stamped, pipe.soundEnd).seconds
+                if off != 0, off.isFinite, abs(off) < Self.joinWithin {
+                    var timing = CMSampleTimingInfo(duration: each, presentationTimeStamp: pipe.soundEnd, decodeTimeStamp: .invalid)
+                    var copy: CMSampleBuffer?
+                    if CMSampleBufferCreateCopyWithNewTiming(allocator: kCFAllocatorDefault, sampleBuffer: piece,
+                                                             sampleTimingEntryCount: 1, sampleTimingArray: &timing,
+                                                             sampleBufferOut: &copy) == noErr, let copy {
+                        kept = copy
+                        start = pipe.soundEnd
+                        lock.lock()
+                        sharedNotes.joined += 1
+                        sharedNotes.joinedBy = max(sharedNotes.joinedBy, abs(off))
+                        lock.unlock()
+                    }
+                }
+            }
+            pipe.soundEnd = CMTimeAdd(start, length)
+            out.append(kept)
+        }
+        return out
     }
 
     /// Has [pipe]'s decoder ask for what's ready whenever it wants more.
