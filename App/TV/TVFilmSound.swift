@@ -29,7 +29,7 @@ final class TVFilmSound: FilmSoundDecoder {
         wfsound_close(sound)
     }
 
-    func decode(_ packet: UnsafeRawBufferPointer) -> FilmDecodedSound? {
+    func decode(_ packet: UnsafeRawBufferPointer, at seconds: Double) -> FilmDecodedSound? {
         guard packet.count > 0, let base = packet.bindMemory(to: UInt8.self).baseAddress else { return nil }
         var samples: UnsafePointer<Float>?
         var channels: Int32 = 0
@@ -61,7 +61,7 @@ final class TVFilmSound: FilmSoundDecoder {
         return nil
     }
 
-    func decode(_ packet: UnsafeRawBufferPointer) -> FilmDecodedSound? {
+    func decode(_ packet: UnsafeRawBufferPointer, at seconds: Double) -> FilmDecodedSound? {
         nil
     }
 

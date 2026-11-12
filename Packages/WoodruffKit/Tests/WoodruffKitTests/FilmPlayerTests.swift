@@ -562,7 +562,7 @@ private final class FakeSound: FilmSoundDecoder {
         samples.deallocate()
     }
 
-    func decode(_ packet: UnsafeRawBufferPointer) -> FilmDecodedSound? {
+    func decode(_ packet: UnsafeRawBufferPointer, at seconds: Double) -> FilmDecodedSound? {
         lock.lock()
         packets += 1
         let nth = packets
@@ -570,7 +570,8 @@ private final class FakeSound: FilmSoundDecoder {
         lock.unlock()
         guard gives else { return nil }
         let now = growAfter.map { nth > $0 ? growTo : channels } ?? channels
-        return FilmDecodedSound(samples: UnsafeBufferPointer(rebasing: samples[0..<(frames * now)]), frames: frames, channels: now, rate: rate, early: early)
+        return FilmDecodedSound(samples: UnsafeBufferPointer(rebasing: samples[0..<(frames * now)]), frames: frames, channels: now, rate: rate,
+                                starts: early > 0 ? seconds - Double(early) / Double(rate) : nil)
     }
 
     func flush() {

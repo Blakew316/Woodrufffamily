@@ -13,24 +13,26 @@ public struct FilmDecodedSound {
     /// One, two, six, eight, or twelve (7.1 with four overhead: Atmos and DTS:X with their heights).
     public let channels: Int
     public let rate: Int
-    /// The first frame given belongs this many frames before the packet's own time. A decoder that works on a
-    /// stretch of sound at once (the one that places the overhead sounds does) hands each stretch over late.
-    public let early: Int
+    /// When the first frame plays, in seconds on the film's clock, where that isn't the packet's own time. A
+    /// decoder that works on a stretch of sound at once (the one that places the overhead sounds does) hands
+    /// each stretch over later than the packet it came in with, and says where it belongs.
+    public let starts: Double?
 
-    public init(samples: UnsafeBufferPointer<Float>, frames: Int, channels: Int, rate: Int, early: Int = 0) {
+    public init(samples: UnsafeBufferPointer<Float>, frames: Int, channels: Int, rate: Int, starts: Double? = nil) {
         self.samples = samples
         self.frames = frames
         self.channels = channels
         self.rate = rate
-        self.early = early
+        self.starts = starts
     }
 }
 
 /// Decodes a film's sound that Apple has no decoder for to plain samples, a packet at a time. Used from one thread.
 public protocol FilmSoundDecoder: AnyObject {
-    /// One packet as the file holds it. Nil when nothing in it could be decoded; no frames when the decoder needs
-    /// more before it gives any (after the film is moved, until the sound next starts afresh).
-    func decode(_ packet: UnsafeRawBufferPointer) -> FilmDecodedSound?
+    /// One packet as the file holds it, and when it plays (seconds on the film's clock). Nil when nothing in it
+    /// could be decoded; no frames when the decoder needs more before it gives any (after the film is moved,
+    /// until the sound next starts afresh).
+    func decode(_ packet: UnsafeRawBufferPointer, at seconds: Double) -> FilmDecodedSound?
     /// The film was moved to another place: what the decoder holds is forgotten.
     func flush()
 }
@@ -234,7 +236,7 @@ final class FilmSoundDecoding {
                 let at = Int(s.offset - run.offset)
                 guard at >= 0, s.size > 0, at + s.size <= raw.count else { continue }
                 packets += 1
-                guard let sound = decoder.decode(UnsafeRawBufferPointer(rebasing: raw[at..<(at + s.size)])) else {
+                guard let sound = decoder.decode(UnsafeRawBufferPointer(rebasing: raw[at..<(at + s.size)]), at: s.shown.seconds) else {
                     lost += 1
                     continue
                 }
@@ -247,8 +249,8 @@ final class FilmSoundDecoding {
                     rate = sound.rate
                     format = FilmDecodedBuffers.format(channels: channels, rate: rate)
                 }
-                // (A decoder that hands sound over late says by how much: its first frame is that much earlier.)
-                var time = sound.early > 0 ? CMTimeSubtract(s.shown, CMTime(value: CMTimeValue(sound.early), timescale: CMTimeScale(rate))) : s.shown
+                // (A decoder that hands sound over late says where it belongs.)
+                var time = sound.starts.map { CMTime(seconds: $0, preferredTimescale: CMTimeScale(rate)) } ?? s.shown
                 var skip = 0
                 if from.isValid, time.isValid, CMTimeCompare(time, from) < 0 {
                     skip = Int((CMTimeSubtract(from, time).seconds * Double(rate)).rounded())
