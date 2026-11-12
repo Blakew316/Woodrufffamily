@@ -537,15 +537,17 @@ private final class FakeSound: FilmSoundDecoder {
     /// After this many packets the sound has [growTo] channels (a track that starts with its plainer core).
     private let growAfter: Int?
     private let growTo: Int
+    private let rate: Int
     private let samples: UnsafeMutableBufferPointer<Float>
     private let lock = NSLock()
     private var packets = 0
     private var starts: [Data] = []
     private var flushes = 0
 
-    init(frames: Int, channels: Int = 6, gives: Bool = true, growAfter: Int? = nil, growTo: Int = 6) {
+    init(frames: Int, channels: Int = 6, rate: Int = 48000, gives: Bool = true, growAfter: Int? = nil, growTo: Int = 6) {
         self.frames = frames
         self.channels = channels
+        self.rate = rate
         self.gives = gives
         self.growAfter = growAfter
         self.growTo = growTo
@@ -565,7 +567,7 @@ private final class FakeSound: FilmSoundDecoder {
         lock.unlock()
         guard gives else { return nil }
         let now = growAfter.map { nth > $0 ? growTo : channels } ?? channels
-        return FilmDecodedSound(samples: UnsafeBufferPointer(rebasing: samples[0..<(frames * now)]), frames: frames, channels: now, rate: 48000)
+        return FilmDecodedSound(samples: UnsafeBufferPointer(rebasing: samples[0..<(frames * now)]), frames: frames, channels: now, rate: rate)
     }
 
     func flush() {
@@ -591,6 +593,7 @@ private final class FakeSounds {
     var kinds: [String] { lock.lock(); defer { lock.unlock() }; return all.map(\.kind) }
     var packets: Int { lock.lock(); defer { lock.unlock() }; return all.reduce(0) { $0 + $1.sound.seen.packets } }
     var starts: [Data] { lock.lock(); defer { lock.unlock() }; return all.flatMap { $0.sound.seen.starts } }
+    var flushes: Int { lock.lock(); defer { lock.unlock() }; return all.reduce(0) { $0 + $1.sound.seen.flushes } }
 }
 
 extension FilmPlayerTests {
@@ -763,6 +766,16 @@ extension FilmPlayerTests {
         XCTAssertEqual(Array(first[4..<8]), [0xF8, 0x72, 0x6F, 0xBA])
         say("sound decoded by the app", r.player)
 
+        // Moved back: the decoder is told to forget what it holds, and the sound goes on from there.
+        let flushed = fakes.flushes
+        r.player.seek(to: 0.5)
+        let again = await wait(6) { r.player.state == .playing && r.player.time >= 0.5 && r.player.time < 1.4 }
+        XCTAssertTrue(again, "state \(r.player.state) at \(r.player.time), failure \(String(describing: r.player.failure))")
+        XCTAssertGreaterThan(fakes.flushes, flushed)
+        await pause(0.3)
+        XCTAssertNil(r.player.failure)
+        XCTAssertEqual(r.player.notes.mended, 0)
+
         // The AAC track mid-film, and back: each goes on from where the film is.
         r.player.choose(sound: aac.id)
         let other = await wait(2) { r.player.film.sound == aac.id }
@@ -814,6 +827,140 @@ extension FilmPlayerTests {
         XCTAssertNil(r.player.failure)
         XCTAssertGreaterThan(r.player.time, 0.2)
         r.player.close()
+    }
+
+    /// Eight channels at twice the rate (as a TrueHD or DTS-HD track with rear surrounds gives) go to the sound
+    /// renderer too, and play.
+    func testEightChannelsAtTwiceTheRatePlay() async throws {
+        FilmSoundDecoders.make = { _ in FakeSound(frames: 80, channels: 8, rate: 96000) }
+        defer { FilmSoundDecoders.make = nil }
+        let r = try rig("dts-truehd-aac")
+        try await r.player.open()
+        r.player.show(on: r.layer.sampleBufferRenderer)
+        r.player.start(at: 0)
+        let playing = await wait(6) { r.player.state == .playing }
+        XCTAssertTrue(playing, "state \(r.player.state), failure \(String(describing: r.player.failure))")
+        await pause(1)
+        let n = r.player.notes
+        print("FILM eight channels: \(n.decodedPackets) packets, \(n.decodedFrames) frames, \(n.decodedChannels) channels at \(n.decodedRate); mended \(n.mended) \(n.mendWhy ?? "")")
+        XCTAssertEqual(n.decodedChannels, 8)
+        XCTAssertEqual(n.decodedRate, 96000)
+        XCTAssertEqual(n.mended, 0)
+        XCTAssertGreaterThan(r.player.time, 0.4)
+        XCTAssertNil(r.player.failure)
+        r.player.close()
+    }
+
+    /// Where the fixture's index box is in the file, and what it holds.
+    private func indexOf(_ data: Data) throws -> (start: Int, bytes: [UInt8]) {
+        // The fixture starts with a box of 36 bytes ("ftyp"); its index box ("moov") follows.
+        XCTAssertEqual(String(decoding: data[40..<44], as: UTF8.self), "moov")
+        let size = Int(data[36]) << 24 | Int(data[37]) << 16 | Int(data[38]) << 8 | Int(data[39])
+        return (44, [UInt8](data[44..<(36 + size)]))
+    }
+
+    /// DTS as FFmpeg and HandBrake write it ("mp4a" sound whose settings give its kind as a number), which Apple's
+    /// reader leaves out of the film's tracks, is found in a film's index: the fixture's second track, and no other.
+    func testHiddenDTSIsFoundInAFilmsIndex() throws {
+        let data = try Data(contentsOf: fixture("dts-truehd-aac"))
+        let index = try indexOf(data)
+        let start = Int64(index.start)
+        XCTAssertEqual(FilmHiddenSound.find(inIndex: index.bytes, at: start), [FilmHiddenSound.Found(track: 2, at: 2145, letters: "dtsc")])
+        // The number in the track's settings (2,202 bytes into the file) says which DTS it is.
+        for (number, letters) in [(UInt8(0xAA), "dtsh"), (0xAB, "dtsl"), (0xAC, "dtse")] {
+            var other = index.bytes
+            other[2202 - index.start] = number
+            XCTAssertEqual(FilmHiddenSound.find(inIndex: other, at: start).map(\.letters), [letters])
+        }
+        // AAC's own number, or any other, leaves the track be.
+        for number in [UInt8(0x40), 0xA5, 0xAD, 0x00] {
+            var other = index.bytes
+            other[2202 - index.start] = number
+            XCTAssertTrue(FilmHiddenSound.find(inIndex: other, at: start).isEmpty, "\(number)")
+        }
+        // A track whose tables aren't all there (a hole in the kept index where they are) stays hidden.
+        var holed = index.bytes
+        for i in 2617..<3613 { holed[i - index.start] = 0 }
+        XCTAssertTrue(FilmHiddenSound.find(inIndex: holed, at: start).isEmpty)
+        // An index cut short, or none at all.
+        XCTAssertTrue(FilmHiddenSound.find(inIndex: Array(index.bytes.prefix(1000)), at: start).isEmpty)
+        XCTAssertTrue(FilmHiddenSound.find(inIndex: [], at: 0).isEmpty)
+    }
+
+    /// In a kept index the hidden DTS track is named with the letters a file gives DTS outright: four bytes, once,
+    /// wherever in the file the index is. Apple's reader then lists the track, and the app's decoder plays it: it's
+    /// the sound the file puts first.
+    func testAFilmsHiddenDTSIsNamedAndPlaysThroughTheAppsDecoder() async throws {
+        let fakes = FakeSounds()
+        FilmSoundDecoders.make = { kind in fakes.make(kind, FakeSound(frames: 512)) }
+        defer { FilmSoundDecoders.make = nil }
+        let data = try Data(contentsOf: fixture("dts-truehd-aac"))
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("hidden-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        // The film's index as the app keeps it: a file as long as the film (here the film itself).
+        let url = folder.appendingPathComponent("kept.mp4")
+        try data.write(to: url)
+        let before = try await FilmIndexFile.marks(of: AVURLAsset(url: url))
+        XCTAssertEqual(before.map(\.track), [1, 3, 4], "Apple's reader leaves the DTS track out")
+        XCTAssertEqual(FilmHiddenSound.name(inIndexAt: url), [2])
+        XCTAssertEqual(FilmHiddenSound.name(inIndexAt: url), [], "named already")
+        var kept = try Data(contentsOf: url)
+        XCTAssertEqual(String(decoding: kept[2145..<2149], as: UTF8.self), "dtsc")
+        kept.replaceSubrange(2145..<2149, with: Array("mp4a".utf8))
+        XCTAssertEqual(kept, data, "nothing else of the file changed")
+
+        // The index after the film's pictures and sound, as many files have it: found there too.
+        let moved = folder.appendingPathComponent("moved.mp4")
+        try (data[0..<36] + data[19447...] + data[36..<19447]).write(to: moved)
+        XCTAssertEqual(FilmHiddenSound.name(inIndexAt: moved), [2])
+        let at = 2145 + (data.count - 19447)
+        XCTAssertEqual(String(decoding: try Data(contentsOf: moved)[at..<(at + 4)], as: UTF8.self), "dtsc")
+        // A file with no index in it (nothing but a hole), and no file at all.
+        let empty = folder.appendingPathComponent("empty.mp4")
+        try Data(count: 4096).write(to: empty)
+        XCTAssertEqual(FilmHiddenSound.name(inIndexAt: empty), [])
+        XCTAssertEqual(FilmHiddenSound.name(inIndexAt: folder.appendingPathComponent("none.mp4")), [])
+
+        // The kept index walks as the film does, the named track aside; without saying which track was named it
+        // wouldn't count as the same.
+        let asset = try await FilmIndexFile.open(url, matching: before, besides: [2])
+        do {
+            _ = try await FilmIndexFile.open(url, matching: before)
+            XCTFail("a kept index with one track more passed for the film's own")
+        } catch {
+            XCTAssertEqual(error as? FilmIndexFile.Failure, .incomplete)
+        }
+
+        let player = FilmPlayer(asset: asset, bytes: TestBytes(data: data))
+        try await player.open()
+        let film = player.film
+        print("FILM hidden dts sounds: \(film.sounds)")
+        let dts = try XCTUnwrap(film.sounds.first { $0.codec == "dtsc" }, "\(film.sounds)")
+        XCTAssertEqual(dts.channels, 6)
+        XCTAssertTrue(dts.playable)
+        XCTAssertTrue(dts.decodedHere)
+        XCTAssertEqual(film.sound, dts.id)
+        let layer = AVSampleBufferDisplayLayer()
+        player.show(on: layer.sampleBufferRenderer)
+        player.start(at: 0)
+        let playing = await wait(6) { player.state == .playing }
+        XCTAssertTrue(playing, "state \(player.state), failure \(String(describing: player.failure))")
+        await pause(1)
+        let n = player.notes
+        print("FILM hidden dts: \(n.decodedKind ?? "-") \(n.decodedPackets) packets, \(n.decodedLost) lost, \(n.decodedFrames) frames, \(n.decodedChannels) channels at \(n.decodedRate); joined \(n.joined) by \(n.joinedBy); mended \(n.mended) \(n.mendWhy ?? "")")
+        XCTAssertEqual(n.decodedKind, "dts")
+        XCTAssertGreaterThanOrEqual(n.decodedPackets, 94)
+        XCTAssertEqual(n.decodedLost, 0)
+        XCTAssertEqual(n.decodedFrames, n.decodedPackets * 512)
+        XCTAssertEqual(n.decodedChannels, 6)
+        XCTAssertEqual(n.mended, 0)
+        XCTAssertGreaterThan(player.time, 0.4)
+        XCTAssertNil(player.failure)
+        // Each packet the decoder was handed is a whole DTS frame: it starts with DTS's sync word.
+        XCTAssertFalse(fakes.starts.isEmpty)
+        for start in fakes.starts { XCTAssertEqual(Array(start.prefix(4)), [0x7F, 0xFE, 0x80, 0x01]) }
+        player.close()
     }
 
     /// What Apple's reader makes of the fixture's DTS track when the file names it with other letters than FFmpeg's

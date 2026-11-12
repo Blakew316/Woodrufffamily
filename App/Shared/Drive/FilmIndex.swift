@@ -25,9 +25,13 @@ enum FilmIndex {
     /// The index of Drive file [id], whose stream is [stream]. [fresh]: read from Google again whatever is kept.
     static func open(_ stream: DriveStream, id: String, fresh: Bool = false) async throws -> Opened {
         let url = file(id)
-        if let url, !fresh, FileManager.default.fileExists(atPath: url.path), let asset = try? await FilmIndexFile.open(url) {
-            FilmIndexFile.used(url)
-            return Opened(asset: asset, file: url, fresh: false)
+        if let url, !fresh, FileManager.default.fileExists(atPath: url.path) {
+            // (An index kept before the app had a decoder for DTS: its hidden DTS sound is named now, as below.)
+            if FilmSoundDecoders.make != nil { FilmHiddenSound.name(inIndexAt: url) }
+            if let asset = try? await FilmIndexFile.open(url) {
+                FilmIndexFile.used(url)
+                return Opened(asset: asset, file: url, fresh: false)
+            }
         }
         if let url { try? FileManager.default.removeItem(at: url) }
         // Apple's reader reads it through the stream, which then holds every part of the file the index is in.
@@ -38,7 +42,11 @@ enum FilmIndex {
         let held = await stream.heldNow()
         do {
             try FilmIndexFile.write(total: held.total, parts: held.parts, to: url)
-            let asset = try await FilmIndexFile.open(url, matching: marks)
+            // DTS sound as FFmpeg and HandBrake write it, which Apple's reader leaves out of the film's tracks
+            // altogether: named in the kept index, so that it's a track there. Only where the app has a decoder to
+            // play it with (the Apple TV: `TVFilmSound`); elsewhere nothing changes.
+            let named = FilmSoundDecoders.make != nil ? FilmHiddenSound.name(inIndexAt: url) : []
+            let asset = try await FilmIndexFile.open(url, matching: marks, besides: named)
             // Apple's reader has done what it was for.
             stream.indexRead()
             if let folder { FilmIndexFile.prune(folder) }

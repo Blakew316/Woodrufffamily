@@ -51,11 +51,13 @@ struct WatchSettingsView: View {
             } header: {
                 Text("Player")
             } footer: {
-                Text(ownEvery
-                     ? "Every film plays in Woodruff’s own player. A film it can’t open plays in Apple’s."
-                     : (handedOff > 0
-                        ? "Films play in Apple’s player. One that stutters there plays in Woodruff’s own from then on: \(handedOff) so far."
-                        : "Films play in Apple’s player. One that stutters there plays in Woodruff’s own from then on."))
+                // (The last sentence is FFmpeg's credit, which its licence asks for wherever its decoders are used.)
+                Text((ownEvery
+                      ? "Every film plays in Woodruff’s own player. A film it can’t open plays in Apple’s."
+                      : (handedOff > 0
+                         ? "Films play in Apple’s player. One that stutters there plays in Woodruff’s own from then on: \(handedOff) so far."
+                         : "Films play in Apple’s player. One that stutters there plays in Woodruff’s own from then on."))
+                     + (TVFilmSound.ready ? " Woodruff’s player decodes DTS and Dolby TrueHD sound with FFmpeg (LGPL)." : ""))
             }
             // The TV this Apple TV is plugged into: a film neither player here can play is played by that TV's own
             // player (`TVHandOff`). Each Apple TV keeps its own choice.

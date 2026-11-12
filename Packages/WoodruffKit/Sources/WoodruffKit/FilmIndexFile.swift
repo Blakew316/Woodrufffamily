@@ -84,12 +84,13 @@ public enum FilmIndexFile {
 
     /// Opens the index kept at [url]. With [marks] (taken from the film itself as its index was read), the file
     /// must walk the same: as many tracks that can be walked, each with its first and last sample where the film
-    /// has them.
-    public static func open(_ url: URL, matching marks: [Mark]? = nil) async throws -> AVURLAsset {
+    /// has them. The tracks in [named] aren't counted: sound Apple's reader left out of the film itself, named in
+    /// the kept index since (`FilmHiddenSound`).
+    public static func open(_ url: URL, matching marks: [Mark]? = nil, besides named: [CMPersistentTrackID] = []) async throws -> AVURLAsset {
         let asset = AVURLAsset(url: url)
         let found = try await Self.marks(of: asset)
         guard !found.isEmpty else { throw Failure.incomplete }
-        if let marks, marks != found { throw Failure.incomplete }
+        if let marks, marks != found.filter({ !named.contains($0.track) }) { throw Failure.incomplete }
         return asset
     }
 

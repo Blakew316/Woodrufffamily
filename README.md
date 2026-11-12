@@ -254,6 +254,21 @@ summary of what was installed where, and names the temporary folder its logs are
     `App/TV/TVFilmPlayer.swift` runs a film on it. It has the films Apple's player stutters on, or every film
     (Settings, Watch on the Apple TV). On a Mac, `open -a "Woodruff Family" --args -filmCheck "own:<film>"` plays a film
     with it and writes how it went to `~/Library/Logs/Woodruff Family/film-check.log`.
+  - `FilmSoundDecoding.swift`, `FilmHiddenSound.swift`: DTS, DTS-HD and Dolby TrueHD sound in that player. The Apple TV
+    has no decoder for them, so the player decodes them itself: `App/TV/TVFilmSound.swift` hands it FFmpeg's decoders
+    (`Packages/FilmSound`), and their plain samples go to the sound renderer like any other sound, 5.1 and 7.1 as they
+    are (Atmos and DTS:X objects aren't decoded: their 5.1 or 7.1 bed is). FFmpeg and HandBrake write DTS in a way
+    Apple's reader leaves out of the film's tracks altogether; in the index kept on the device such a track is named
+    the way a file names DTS outright (four bytes, in the kept copy only), so it's a track again. A track the decoder
+    can make nothing of gives way to the film's next sound. The Macs' log says which sound was decoded here. iPhone and
+    Mac are unchanged: they have no decoder, and such sound isn't played there.
+- `Packages/FilmSound`: `FilmSound.xcframework`, FFmpeg's DTS, TrueHD and MLP decoders (nothing else of FFmpeg) behind
+  a small C bridge, `Sources/wfsound.h`. `scripts/build_filmsound.sh` builds it from FFmpeg's source (the version and
+  its checksum are in the script) and first checks on the Mac that a tone put in every channel comes out of the right
+  one. GitHub runs it when the script or the bridge change (`.github/workflows/filmsound.yml`) and keeps what it built
+  on the branch `filmsound-build`; the copy in this folder is the one the Apple TV app is built with, linked weakly so
+  the app starts without it too. FFmpeg is under the LGPL 2.1 or later: its text, where the source is and how it was
+  built are beside the framework (`COPYING.LGPLv2.1`, `BUILD-INFO.txt`).
 - `App/Shared`: the SwiftUI screens, the same on iPhone (tabs), iPad and Mac (sidebar). `AndroidTVRemote.swift` is Android's
   own TV remote protocol (v2, as Google's TV remote app): pairing on port 6467, keys on 6466, over TLS with one client
   certificate built into the app (so a TV paired once takes every family device), the TV's certificate pinned per address. `App/iOS`: the QR scanner. `App/macOS`: the menu bar and commands.

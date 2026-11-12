@@ -146,10 +146,10 @@ final class OwnPlayer {
     private func open(_ play: PhonePlay, id: String, stream: DriveStream, screen: FilmScreen) async {
         let began = Date()
         do {
+            // DTS and Dolby TrueHD sound: the app's own decoder, for the index and the player to ask for.
+            TVFilmSound.install()
             let index = try await FilmIndex.open(stream, id: id)
             guard current?.id == play.id, self.screen === screen else { return }
-            // DTS and Dolby TrueHD sound: the app's own decoder, for the player to ask for.
-            TVFilmSound.install()
             let player = FilmPlayer(asset: index.asset, bytes: stream)
             try await player.open()
             guard current?.id == play.id, self.screen === screen else {
