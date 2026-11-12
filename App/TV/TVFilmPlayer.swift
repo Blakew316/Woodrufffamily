@@ -25,28 +25,11 @@ final class OwnPlayer {
 
     /// Films the app's own player couldn't open since the app started: Apple's player has them.
     private static var gaveUp: Set<String> = []
-    /// Apple's player has [key]: this player couldn't open it, or its sound is surround (`isSurround`).
-    static func hasGivenUp(on key: String) -> Bool { gaveUp.contains(key) || isSurround(key) }
-
-    /// Films whose sound is mixed for more than two speakers (their library keys), kept between launches: Apple's
-    /// player has those, always. This player puts such sound out wrong on an Apple TV (The Odyssey, six channels,
-    /// on a 32-channel HDMI output: builds 625 to 631), and Apple's player puts it out right. A film that then
-    /// stutters in Apple's player goes to the TV this Apple TV is plugged into, as it did before this player existed.
-    private static let surroundKey = "watch.surroundFilms"
-    static func isSurround(_ key: String) -> Bool {
-        (UserDefaults.standard.stringArray(forKey: surroundKey) ?? []).contains(key)
-    }
-    private static func rememberSurround(_ key: String) {
-        var all = UserDefaults.standard.stringArray(forKey: surroundKey) ?? []
-        guard !all.contains(key) else { return }
-        all.append(key)
-        if all.count > 500 { all.removeFirst(all.count - 500) }
-        UserDefaults.standard.set(all, forKey: surroundKey)
-    }
+    static func hasGivenUp(on key: String) -> Bool { gaveUp.contains(key) }
 
     /// Whether [play] is one for the app's own player.
     static func plays(_ play: PhonePlay) -> Bool {
-        guard case .drive = play.source, !gaveUp.contains(play.key), !isSurround(play.key) else { return false }
+        guard case .drive = play.source, !gaveUp.contains(play.key) else { return false }
         return forEvery || TVHandOff.knows(play.key)
     }
 
@@ -164,13 +147,6 @@ final class OwnPlayer {
                 player.close()
                 return
             }
-            // Sound mixed for more than two speakers: Apple's player has the film, from now on (`isSurround`).
-            let channels = player.film.sounds.first { $0.id == player.film.sound }?.channels ?? 0
-            if channels > 2 {
-                player.close()
-                surroundToApple(play, channels: channels)
-                return
-            }
             self.index = index
             self.player = player
             indexTook = Date().timeIntervalSince(began)
@@ -200,15 +176,6 @@ final class OwnPlayer {
         Self.gaveUp.insert(play.key)
         let ns = error as NSError
         Diagnostics.shared.notePlayback("\(play.title): the app’s own player couldn’t open it (\(ns.domain) \(ns.code)); Apple’s player has it")
-        closeForAnother()
-        NativePlayer.shared.present(play)
-    }
-
-    /// This film's sound is mixed for [channels] speakers: Apple's player has it now and every time after
-    /// (`isSurround`), because it puts such sound out right and this player doesn't.
-    private func surroundToApple(_ play: PhonePlay, channels: Int) {
-        Self.rememberSurround(play.key)
-        Diagnostics.shared.notePlayback("\(play.title): its sound is mixed for \(channels) channels; Apple’s player has it, where that sounds right")
         closeForAnother()
         NativePlayer.shared.present(play)
     }
@@ -323,15 +290,6 @@ final class OwnPlayer {
         if state == .playing, !started {
             started = true
             noteOutput(play)
-        }
-        // The sound track was changed to one mixed for more than two speakers: Apple's player has the film from here
-        // on (`isSurround`), from where it is.
-        let channels = player.film.sounds.first { $0.id == player.film.sound }?.channels ?? 0
-        if channels > 2 {
-            var on = play
-            if player.time > 0 { on.start = player.time }
-            surroundToApple(on, channels: channels)
-            return
         }
         if state == .ended {
             // Played to its end: the screen closes, back to the page it was started from.

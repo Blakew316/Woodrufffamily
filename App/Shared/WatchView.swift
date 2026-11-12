@@ -1634,8 +1634,7 @@ enum PlayRouter {
     static func start(_ a: PlayAction, fleet: Fleet, on tv: FleetTV? = nil, fromStart: Bool = false) -> Bool {
         #if os(tvOS)
         // A film Apple's player stutters on plays in the app's own player (`OwnPlayer`, below). Only one that player
-        // couldn't open, or whose sound is surround (Apple's player has those), goes to the TV this Apple TV is
-        // plugged into (`TVHandOff`), when one has been chosen and is on.
+        // couldn't open goes to the TV this Apple TV is plugged into (`TVHandOff`), when one has been chosen and is on.
         if tv == nil, a.isDrive, TVHandOff.knows(a.key), OwnPlayer.hasGivenUp(on: a.key), let screen = TVHandOff.screen(fleet) {
             return start(a, fleet: fleet, on: screen, fromStart: fromStart)
         }
