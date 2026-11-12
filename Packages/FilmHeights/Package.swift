@@ -5,7 +5,7 @@ import PackageDescription
 // what comes from where and under which licence.
 let package = Package(
     name: "FilmHeights",
-    platforms: [.tvOS(.v18), .macOS(.v15)],
+    platforms: [.tvOS("18.0"), .macOS("15.0")],
     products: [.library(name: "FilmHeights", targets: ["FilmHeights"])],
     targets: [
         // LibTrueHD: the decoder for TrueHD's Atmos presentation (MIT, with Apache-2.0 parts).
@@ -13,7 +13,8 @@ let package = Package(
         .target(
             name: "FilmHeights",
             dependencies: ["TrueHD"],
-            resources: [.copy("Resources/silent-atmos.mp4")],
+            // The licences travel with the app, beside the silent clip.
+            resources: [.copy("Resources/silent-atmos.mp4"), .copy("Resources/Licences")],
             // AetherEngine keeps these parts behind package traits; here they are simply on.
             swiftSettings: [.define("TrueHDObjectAudio"), .define("DTSXObjectAudio")]
         ),

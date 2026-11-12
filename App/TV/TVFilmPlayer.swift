@@ -1,5 +1,6 @@
 import UIKit
 import AVFoundation
+import FilmHeights
 import MediaPlayer
 import WoodruffKit
 
@@ -62,6 +63,10 @@ final class OwnPlayer {
     private var begun = false
     private var started = false
     private var ticks = 0
+    /// A film whose sound comes out with overhead channels (TrueHD Atmos, DTS:X): the Apple TV's HDMI output is
+    /// kept in Dolby Atmos while it plays, which is the only way overhead channels travel to the sound system.
+    private let heightsKeeper = HeightsOutputKeeper()
+    private var heightsFollowed = false
     private var checkedIndex = false
     /// Why it can't go on has been said.
     private var said = false
@@ -303,7 +308,9 @@ final class OwnPlayer {
         guard let kind = n.decodedKind else { return nil }
         var words = "its \(kind) sound is decoded here: \(n.decodedPackets) packets"
         words += n.decodedLost > 0 ? " (\(n.decodedLost) gave nothing)" : ""
-        words += n.decodedFrames > 0 ? ", \(n.decodedChannels) channels at \(n.decodedRate)" : ", no sound has come of them"
+        words += n.decodedFrames == 0 ? ", no sound has come of them"
+            : n.decodedChannels == 12 ? ", 7.1 with four overhead channels at \(n.decodedRate)"
+            : ", \(n.decodedChannels) channels at \(n.decodedRate)"
         if n.decodingGaveUp { words += "; a track nothing came of was given up on" }
         return words
     }
@@ -318,6 +325,18 @@ final class OwnPlayer {
             started = true
             startedTick = ticks
             noteOutput(play)
+        }
+        // Its sound has overhead channels: said to the sound session, and the output kept in Atmos from here on.
+        if !heightsFollowed, player.notes.decodedChannels == 12 {
+            heightsFollowed = true
+            Self.soundQueue.async { try? AVAudioSession.sharedInstance().setSupportsMultichannelContent(true) }
+            heightsKeeper.follow { [weak self] in
+                guard let state = self?.player?.state, self?.current != nil else { return nil }
+                return state == .playing || state == .waiting
+            }
+            Diagnostics.shared.notePlayback("\(play.title): its sound is played with overhead channels; the output is kept in Dolby Atmos while it plays")
+        } else if heightsFollowed {
+            heightsKeeper.refresh()
         }
         // Twenty seconds in: how the film's sound is coming (said once, so it's in the Macs' log while it still plays).
         if started, !soundSaid, ticks - startedTick >= 20 {
@@ -540,6 +559,10 @@ final class OwnPlayer {
         Task { await DriveLibrary.shared.sync() }
         ticker?.invalidate()
         ticker = nil
+        if heightsFollowed {
+            heightsFollowed = false
+            heightsKeeper.stop()
+        }
         opening?.cancel()
         opening = nil
         watchdog?.cancel()

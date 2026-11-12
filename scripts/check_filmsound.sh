@@ -45,4 +45,11 @@ if ! grep "_wfsound_decode" <<<"$wanted" >/dev/null; then
   echo "The app's code doesn't use the decoder (was the FilmSound module found when it was compiled?)."
   exit 1
 fi
-echo "The decoder is in the app, linked weakly, and used by it."
+# The silent Atmos clip the overhead sound's output keeper plays (Packages/FilmHeights): the app would stop the
+# first time a film has overhead sound if it weren't where the package looks for it.
+if [ ! -f "$app/FilmHeights_FilmHeights.bundle/silent-atmos.mp4" ]; then
+  echo "The overhead sound's silent Atmos clip isn't in the app (FilmHeights_FilmHeights.bundle)."
+  ls "$app" | head -40
+  exit 1
+fi
+echo "The decoder is in the app, linked weakly, and used by it; the overhead sound's clip is there too."

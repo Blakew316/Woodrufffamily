@@ -20,6 +20,9 @@ struct WatchSettingsView: View {
     @State private var handedOff = 0
     /// Every Drive film plays in the app's own player (`OwnPlayer.everyKey`).
     @AppStorage("watch.ownPlayerEvery") private var ownEvery = true
+    #if os(tvOS)
+    @AppStorage(TVFilmSound.heightsKey) private var heights = true
+    #endif
     #endif
     private let library = DriveLibrary.shared
 
@@ -42,6 +45,9 @@ struct WatchSettingsView: View {
             // player stutters on. Each Apple TV keeps its own choice.
             Section {
                 Toggle("Woodruff’s Player for Every Film", isOn: $ownEvery)
+                if TVFilmSound.ready {
+                    Toggle("Overhead Sound for Atmos and DTS:X", isOn: $heights)
+                }
                 if !ownEvery, handedOff > 0 {
                     Button("Try Apple’s Player Again") {
                         TVHandOff.forgetAll()
@@ -57,7 +63,7 @@ struct WatchSettingsView: View {
                       : (handedOff > 0
                          ? "Films play in Apple’s player. One that stutters there plays in Woodruff’s own from then on: \(handedOff) so far."
                          : "Films play in Apple’s player. One that stutters there plays in Woodruff’s own from then on."))
-                     + (TVFilmSound.ready ? " Woodruff’s player decodes DTS and Dolby TrueHD sound with FFmpeg (LGPL)." : ""))
+                     + (TVFilmSound.ready ? " Woodruff’s player decodes DTS and Dolby TrueHD sound itself, with their overhead sounds when that’s on. It uses FFmpeg and AetherEngine (LGPL) and LibTrueHD." : ""))
             }
             // The TV this Apple TV is plugged into: a film neither player here can play is played by that TV's own
             // player (`TVHandOff`). Each Apple TV keeps its own choice.
