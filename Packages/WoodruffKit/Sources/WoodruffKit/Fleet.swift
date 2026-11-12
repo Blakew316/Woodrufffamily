@@ -460,13 +460,7 @@ public final class Fleet {
             while !Task.isCancelled {
                 guard let self else { return }
                 if tick % 4 == 0 { await self.refreshLibrary() }
-                if tick % 20 == 1 {
-                    await self.checkReleases()
-                    // The LG TVs take a new build by themselves, from a Mac that can reach them (WebOSAutoUpdate).
-                    #if os(macOS)
-                    await self.updateWebOSTVs()
-                    #endif
-                }
+                if tick % 20 == 1 { await self.checkReleases() }
                 let scanDue = self.lanScannedAt.map({ Date().timeIntervalSince($0) > 600 }) ?? (tick >= 2)
                 #if os(macOS)
                 let mayScan = true
@@ -1261,6 +1255,11 @@ public final class Fleet {
             }
         }
         noteBadge()
+        // The LG TVs take a new build by themselves, from a Mac that can reach them (WebOSAutoUpdate): after every
+        // look at the releases, so the ten-minute look, Check Now and a token just saved all end with it.
+        #if os(macOS)
+        Task { await self.updateWebOSTVs() }
+        #endif
     }
 
     public func platform(of tv: FleetTV) -> TVPlatform? { extras[tv.id]?.platform ?? tv.platform }
