@@ -66,6 +66,13 @@ Every feature request or bug fix ends with exactly one release:
   under their own licences: AetherEngine's code, LibTrueHD's library and, in `Packages/FilmSound/patches`,
   FFmpegBuild's patch. The owner approved those three by name. Its `README.md` says what comes from where: keep it
   true, keep the licence files with it, and bring in nothing else from outside without the owner saying so.
+- The LG TV goes with the group, always. Its app is the webOS port of the Google TVs' app (`Blakew316/woodrufffiles`),
+  in the private repository `Blakew316/woodrufffiles-webos` (`webos/`). Whatever changes in the Google TVs' app goes
+  into the webOS port in the same request, and that request isn't done until both have their release (a push to the
+  port's `main` publishes `webos-N`). Nobody presses anything: the Mac app on a Mac that can reach the LG over SSH
+  installs a newer `webos-N` by itself (`WebOSAutoUpdate`, half a minute after the app opens and every ten minutes;
+  what it did and why it couldn't is in `~/Library/Logs/Woodruff Family/lg-updates.log`). No SSH key or token goes
+  into a repository.
 - A Mac-only request doesn't change the iOS app.
 - No decorative icons in menus or rows. Keep UI text plain and short.
 - Don't ask the user to review screenshots.

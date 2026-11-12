@@ -80,8 +80,8 @@ public enum WebOSInstaller {
         } catch { return error.localizedDescription }
     }
 
-    /// Installs [ipk] and opens Woodruff. [progress] gets one line per step.
-    public static func install(_ ipk: URL, on ssh: WebOSSSH, progress: @escaping @Sendable (String) -> Void) async throws {
+    /// Installs [ipk] and, with [launch], opens Woodruff. [progress] gets one line per step.
+    public static func install(_ ipk: URL, on ssh: WebOSSSH, launch: Bool = true, progress: @escaping @Sendable (String) -> Void) async throws {
         let dest = ssh.destination
         progress("Copying \(ipk.lastPathComponent) to \(ssh.host)…")
         let dir = (dest as NSString).deletingLastPathComponent
@@ -89,12 +89,12 @@ public enum WebOSInstaller {
         guard code == 0 else { throw TVError.badAnswer("Copy failed: \(out.trimmingCharacters(in: .whitespacesAndNewlines))") }
         progress("Installing…")
         let payload = #"{"id":"com.ares.defaultName","ipkUrl":"\#(dest)","subscribe":true}"#
-        let launch = #"{"id":"\#(appId)"}"#
-        let cmd = "luna-send-pub -w 30000 -i luna://com.webos.appInstallService/dev/install '\(payload)' 2>/dev/null | grep -m1 -E 'installed|failed|errorText'; rm -f \(dest); luna-send-pub -n 1 luna://com.webos.applicationManager/launch '\(launch)' >/dev/null"
+        let open = #"{"id":"\#(appId)"}"#
+        let cmd = "luna-send-pub -w 30000 -i luna://com.webos.appInstallService/dev/install '\(payload)' 2>/dev/null | grep -m1 -E 'installed|failed|errorText'; rm -f \(dest)" + (launch ? "; luna-send-pub -n 1 luna://com.webos.applicationManager/launch '\(open)' >/dev/null" : "")
         (code, out) = try await run(ssh, cmd)
         let said = out.trimmingCharacters(in: .whitespacesAndNewlines)
         if said.contains("failed") || said.contains("errorText") { throw TVError.badAnswer("The TV refused the package: \(said)") }
-        progress(said.contains("installed") ? "Installed. Woodruff is opening on the TV." : "Sent. \(said)")
+        progress(said.contains("installed") ? (launch ? "Installed. Woodruff is opening on the TV." : "Installed.") : "Sent. \(said)")
     }
 }
 #endif

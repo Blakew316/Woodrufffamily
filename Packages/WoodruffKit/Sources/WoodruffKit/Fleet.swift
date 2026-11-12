@@ -460,7 +460,13 @@ public final class Fleet {
             while !Task.isCancelled {
                 guard let self else { return }
                 if tick % 4 == 0 { await self.refreshLibrary() }
-                if tick % 20 == 1 { await self.checkReleases() }
+                if tick % 20 == 1 {
+                    await self.checkReleases()
+                    // The LG TVs take a new build by themselves, from a Mac that can reach them (WebOSAutoUpdate).
+                    #if os(macOS)
+                    await self.updateWebOSTVs()
+                    #endif
+                }
                 let scanDue = self.lanScannedAt.map({ Date().timeIntervalSince($0) > 600 }) ?? (tick >= 2)
                 #if os(macOS)
                 let mayScan = true
