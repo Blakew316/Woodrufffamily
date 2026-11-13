@@ -28,6 +28,8 @@ final class OwnPlayer {
 
     /// Films the app's own player couldn't open since the app started: Apple's player has them.
     private static var gaveUp: Set<String> = []
+    /// When each film was last opened again by itself after the device ran out of room (`failed`).
+    private static var openedAgain: [String: Date] = [:]
     static func hasGivenUp(on key: String) -> Bool { gaveUp.contains(key) }
 
     /// Whether [play] is one for the app's own player.
@@ -463,7 +465,28 @@ final class OwnPlayer {
         guard let screen, let play = current, !said else { return }
         said = true
         player?.pause()
-        Diagnostics.shared.notePlayback("\(play.title), the app’s own player: couldn’t go on: \(words)")
+        // With where each error is from and what the app holds of the device, so the Macs' log says what ran out.
+        let playerError = player?.failure, streamError = stream?.recentFailure
+        Diagnostics.shared.notePlayback("\(play.title), the app’s own player: couldn’t go on: \(words) [the player: \(PlayCrumb.trail(playerError)); the stream: \(PlayCrumb.trail(streamError)); \(PlayCrumb.resources)]")
+        // The device had no room for something ("Cannot allocate memory"), which isn't the film's doing: everything the
+        // film held is let go and it's opened again from where it stopped, by itself, instead of stopping with words
+        // on the screen. Not more than once in five minutes for a film: a second time so soon is said.
+        if PlayCrumb.outOfRoom(playerError) || PlayCrumb.outOfRoom(streamError),
+           Self.openedAgain[play.key].map({ Date().timeIntervalSince($0) > 300 }) ?? true {
+            Self.openedAgain[play.key] = Date()
+            var again = play
+            again.start = max(0, (player?.time ?? play.start) - 3)
+            Diagnostics.shared.notePlayback("\(play.title), the app’s own player: out of room, so it’s let go of and opened again from \(Int(again.start)) s in")
+            report()
+            closeForAnother()
+            ImageStore.shared.memory.empty()
+            BlurStore.empty()
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                OwnPlayer.start(again)
+            }
+            return
+        }
         // Google's daily limit: whether it's this film alone or every film is found out first, and said.
         if stream?.overLimitNow() == true, case .drive(let id) = play.source {
             Task { @MainActor [weak self, weak screen] in

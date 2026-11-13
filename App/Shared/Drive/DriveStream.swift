@@ -518,10 +518,12 @@ private final class Loader: NSObject, AVAssetResourceLoaderDelegate, StreamTask 
     /// and an Apple TV or iPhone has far less of that than a Mac. With 3 GB allowed, a film stopped 35 minutes in
     /// with 1.7 GB kept: Apple's decoder was refused the room it asked for ("Cannot allocate memory") while 2 GB
     /// of memory stood free. Kept well under that there; the Mac keeps the 3 GB.
+    /// (768 MB there didn't end it: a small film stopped the same way. 256 MB, until the Macs' log says what it is
+    /// that runs out: `PlayCrumb.resources`.)
     #if os(macOS)
     private static let onDisk: Int64 = 3 << 30
     #else
-    private static let onDisk: Int64 = 768 << 20
+    private static let onDisk: Int64 = 256 << 20
     #endif
     private static let worthFiling = 1 << 20
     /// Writing and removing the pieces' files, off the stream's own queue.

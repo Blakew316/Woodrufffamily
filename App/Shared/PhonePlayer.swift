@@ -367,6 +367,52 @@ enum PlayCrumb {
         return ""
         #endif
     }
+
+    /// How much of the device the app holds when a film stops, for the Macs' log: the memory left, the address space
+    /// in use (what mapped files and reserved memory take, which runs out long before the memory does), and how many
+    /// files and connections are open. "Cannot allocate memory" with 2 GB of memory free is one of the last two.
+    static var resources: String {
+        #if os(iOS) || os(tvOS)
+        var open = 0
+        for fd in 0..<getdtablesize() where fcntl(fd, F_GETFD) != -1 { open += 1 }
+        var info = task_vm_info_data_t()
+        var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<integer_t>.size)
+        let result = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+            }
+        }
+        let space = result == KERN_SUCCESS ? ", \(info.virtual_size >> 20) MB of address space in use" : ""
+        return "\(os_proc_available_memory() >> 20) MB of memory left\(space), \(open) files and connections open"
+        #else
+        return ""
+        #endif
+    }
+
+    /// An error and the ones under it, by where each is from and its number ("NSURLErrorDomain -1005 <
+    /// NSPOSIXErrorDomain 12"): the words shown say only the innermost one's.
+    nonisolated static func trail(_ error: Error?) -> String {
+        var parts: [String] = []
+        var e = error as NSError?
+        for _ in 0..<5 {
+            guard let x = e else { break }
+            parts.append("\(x.domain) \(x.code)")
+            e = x.userInfo[NSUnderlyingErrorKey] as? NSError
+        }
+        return parts.isEmpty ? "none" : parts.joined(separator: " < ")
+    }
+
+    /// The device had no room for something (memory or address space, files, network buffers), as opposed to the film
+    /// being one that can't be played: letting go of what the film holds and opening it again is worth a try.
+    nonisolated static func outOfRoom(_ error: Error?) -> Bool {
+        var e = error as NSError?
+        for _ in 0..<5 {
+            guard let x = e else { return false }
+            if x.domain == NSPOSIXErrorDomain, [12, 23, 24, 55].contains(x.code) { return true }   // ENOMEM, ENFILE, EMFILE, ENOBUFS
+            e = x.userInfo[NSUnderlyingErrorKey] as? NSError
+        }
+        return false
+    }
 }
 
 #if os(iOS) || os(tvOS)
