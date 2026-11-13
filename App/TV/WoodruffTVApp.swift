@@ -166,7 +166,7 @@ enum TVFreshness {
         Task {
             async let samsung: Void = SmartThings.shared.refresh(full: false)
             async let fans: Void = Dreo.shared.refresh(full: false)
-            async let cync: Void = Cync.shared.refresh()
+            async let cync: Bool = Cync.shared.refresh()
             async let wifi: Void = DecoWifi.shared.refresh()
             _ = await (samsung, fans, cync, wifi)
         }
