@@ -1225,6 +1225,23 @@ struct Billboard: View {
     }
 }
 
+#if os(tvOS)
+/// The last tile of a row on Apple TV: it opens everything in the row (what the row's name did, as a button the
+/// remote had to pass on every row).
+private struct SeeAllTile: View {
+    var all: LibraryRef
+    var body: some View {
+        NavigationLink(value: all) {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(.white.opacity(0.08))
+                .frame(width: TVWatch.poster, height: TVWatch.poster * 1.5)
+                .overlay { Text("See All").font(.system(size: 30, weight: .semibold)) }
+        }
+        .buttonStyle(.card)
+    }
+}
+#endif
+
 /// A heading and a row of tiles that scrolls sideways.
 struct ShelfRow<Content: View>: View {
     var title: String
@@ -1285,6 +1302,12 @@ struct ShelfRow<Content: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: headingGap) {
             Group {
+                #if os(tvOS)
+                // Apple TV: the row's name is only its name. As a button the remote stopped on every one of them on
+                // the way down the page, a press each before it reached a film. The row's last tile opens everything
+                // in it instead (`SeeAllTile`).
+                Text(title).font(titleFont)
+                #else
                 if let all {
                     #if os(macOS)
                     // On the Mac's own page stack, so Woodruff's Back button returns from it.
@@ -1297,11 +1320,15 @@ struct ShelfRow<Content: View>: View {
                 } else {
                     Text(title).font(titleFont)
                 }
+                #endif
             }
             .padding(.horizontal, inset)
             ScrollView(.horizontal) {
                 #if os(tvOS)
-                FirstFocusRow(spacing: TVWatch.gap, alignment: .top) { content }
+                FirstFocusRow(spacing: TVWatch.gap, alignment: .top) {
+                    content
+                    if let all { SeeAllTile(all: all) }
+                }
                     .scrollTargetLayout()
                     .padding(.horizontal, 20)
                     .padding(.vertical, 30)
