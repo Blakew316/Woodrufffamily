@@ -715,11 +715,13 @@ enum TVWatch {
     static let gap: CGFloat = 40
     /// A row's heading.
     static let heading = Font.system(size: 38, weight: .bold)
-    /// Where the first row under the banner starts (its heading's top, from the top of the screen), so the whole of
-    /// it shows with its names, clear of the bottom edge (and the page needn't move when the remote comes down onto
-    /// it): a row of stills, or the taller row of posters.
-    static let stillsTop: CGFloat = 568
-    static let postersTop: CGFloat = 456
+    /// Where the first row under the banner starts (its heading's top, from the top of the screen): low, so the
+    /// banner's picture is what the page shows, its name, Play and Details near the foot of the screen, and the first
+    /// row's name with about the upper half of its tiles under them. The remote coming down onto the row brings it up
+    /// whole. (The row used to start in the middle of the screen, all of it showing, over half the banner.) A row of
+    /// stills, or the taller row of posters.
+    static let stillsTop: CGFloat = 870
+    static let postersTop: CGFloat = 830
     /// How tall the words under a Continue Watching still are: a name on up to two lines, and the line under it.
     static let continueWords: CGFloat = 106
     /// On a title's page: how tall the words under a still are (an episode's number, name and story; a film's name),
@@ -958,8 +960,9 @@ struct Billboard: View {
     /// Apple TV: the words over the picture's lower left, as the TV app does: the name large, what it is, what it's
     /// about.
     private func tvWords(_ t: Title) -> some View {
-        // Over a row of posters there's less room than over the shorter stills: a smaller name, on one line.
-        let compact = rowsTop < TVWatch.stillsTop
+        // The same name over a row of posters as over the stills: with the rows this low there's room for it. (Only a
+        // row that starts high on the screen gets the smaller name on one line.)
+        let compact = rowsTop < 700
         return VStack(alignment: .leading, spacing: 14) {
             Text(t.title)
                 .font(.system(size: compact ? 60 : 76, weight: .heavy))
