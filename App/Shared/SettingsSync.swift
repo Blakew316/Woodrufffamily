@@ -133,6 +133,11 @@ final class SettingsSync {
     @ObservationIgnored private var held: Set<String> = []
     /// The TVs paired here at the last look (tells one paired or forgotten here from one that came from the family).
     @ObservationIgnored private var hubsSeen: [String: Hub] = [:]
+    /// `followAddresses`: when it last looked, the family's addresses this device has put right already, and whether
+    /// an address from the family's list is being tried now.
+    @ObservationIgnored private var addressLook = Date.distantPast
+    @ObservationIgnored private var addressTold: [String: String] = [:]
+    @ObservationIgnored private var addressTrying = false
     /// The app has been in the background since the last wake.
     @ObservationIgnored private var wasAway = false
     /// The starting point has been taken (`prepare`).
@@ -528,7 +533,43 @@ final class SettingsSync {
 
     /// A TV paired (or paired again) here since the last look goes into the family's list, and one forgotten here
     /// comes out of it; from there it reaches every device.
+    /// A TV's address in the family's list and the one this device talks to it at, kept together. A TV that moved was
+    /// followed only by the devices that heard it at its new address: the list kept the old one (only a new key ever
+    /// changed an entry), and a device that didn't hear the TV there went on calling the old address, with the TV
+    /// and every TV it passes on "not answering" on that device for good.
+    /// - This device reaches the TV at a home address the list doesn't have: the list takes it (once per address the
+    ///   list had: two devices that each reach a TV at an address of their own never write it back and forth).
+    /// - This device's address has stopped answering and the list has another home address: tried (`adoptAddress`).
+    private func followAddresses() {
+        guard let fleet, !addressTrying, Date().timeIntervalSince(addressLook) > 30 else { return }
+        addressLook = Date()
+        guard var list = loadFamilyPairings() else { return }
+        var changed = false
+        var tries: [(String, URL)] = []
+        for h in fleet.hubs where !h.connection.key.isEmpty {
+            guard let f = list[h.id], f.key == h.connection.key, f.base != h.connection.base.absoluteString,
+                  let theirs = URL(string: f.base),
+                  Fleet.isHomeAddress(h.connection.base.host), Fleet.isHomeAddress(theirs.host) else { continue }
+            if fleet.isAnswering(h.id), fleet.tv(h.id)?.online == true {
+                guard addressTold[h.id] != f.base else { continue }
+                addressTold[h.id] = f.base
+                list[h.id] = FamilyHub(base: h.connection.base.absoluteString, key: h.connection.key, name: f.name)
+                changed = true
+            } else if !fleet.isAnswering(h.id) {
+                tries.append((h.id, theirs))
+            }
+        }
+        if changed { saveFamilyPairings(list) }
+        guard !tries.isEmpty else { return }
+        addressTrying = true
+        Task {
+            for (id, base) in tries { await fleet.adoptAddress(base, forHub: id) }
+            self.addressTrying = false
+        }
+    }
+
     private func notePairings() {
+        followAddresses()
         guard let fleet else { return }
         let now = Dictionary(fleet.hubs.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         guard now != hubsSeen, var list = loadFamilyPairings() else { return }

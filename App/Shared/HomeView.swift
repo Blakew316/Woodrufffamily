@@ -925,7 +925,7 @@ enum HomeRefresh {
             g.addTask { await home.refreshSpeakers() }
             if stOn { g.addTask { await st.refresh(full: false) } }
             if dreoOn { g.addTask { await dreo.refresh(full: false) } }
-            if cyncOn { g.addTask { await cync.refresh() } }
+            if cyncOn { g.addTask { _ = await cync.refresh() } }
             if nestOn { g.addTask { await nest.load() } }
         }
     }

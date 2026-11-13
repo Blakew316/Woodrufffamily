@@ -693,7 +693,7 @@ struct LightsListView: View {
                     .disabled(key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || key == (home.goveeKey ?? ""))
                 if let e = home.goveeError { Text(e).foregroundStyle(Palette.attention) }
                 Text("Optional. Brings in your lights’ names from the Govee app and reaches lights without LAN Control. Get a key in the Govee app: Profile → Settings → Apply for API Key.")
-                    .font(.footnote).foregroundStyle(.secondary)
+                    .font(.footnote).foregroundStyle(.secondary).tvReachable()
             }
             Section("Cync and Apple Home") {
                 #if os(iOS)
@@ -701,7 +701,7 @@ struct LightsListView: View {
                     .font(.footnote).foregroundStyle(.secondary)
                 #elseif os(tvOS)
                 Text("Cync lights with the Matter logo show up here once they’re in Apple Home. In the Cync app, open the light’s settings and choose to connect it to Apple Home (Matter) to get its setup code; then in the Home app tap +, Add Accessory, and scan or enter that code. Any light in Apple Home appears here.")
-                    .font(.footnote).foregroundStyle(.secondary)
+                    .font(.footnote).foregroundStyle(.secondary).tvReachable()
                 #else
                 // The Mac has them too, through Woodruff Home Helper (it used to send you to the iPhone).
                 Text("Any light in Apple Home appears here, through \(HomeBridge.helperName) on this Mac. Settings → Devices shows whether it’s connected.")

@@ -98,7 +98,12 @@ struct AppleTVsSection: View {
         Section {
             if finder.found.isEmpty {
                 // An Apple TV shows here only while Woodruff is open on it: one that's on with another app up isn't "off".
+                // On an Apple TV the list is of the others (it doesn't list itself).
+                #if os(tvOS)
+                Text("No other Apple TV has Woodruff open on this Wi‑Fi").foregroundStyle(.secondary)
+                #else
                 Text("None has Woodruff open on this Wi‑Fi").foregroundStyle(.secondary)
+                #endif
             }
             ForEach(finder.found) { atv in
                 let inFamily = mine != nil && atv.fp == mine

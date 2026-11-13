@@ -777,6 +777,27 @@ public final class Fleet {
         return out
     }
 
+    /// Whether the paired TV [id] answers at the address this device has for it (true until it has missed twice).
+    public func isAnswering(_ id: String) -> Bool { hub(id) != nil && (failures[id] ?? 0) < 2 }
+
+    /// The family's list has another home address for the paired TV [id] than this device talks to it at, and this
+    /// device's has stopped answering: the TV moved, and wasn't heard here at its new address. It's asked at the
+    /// family's address, and if it answers there as that TV, with its key, this device talks to it there from now on.
+    /// Never replaces an away-from-home link, or an address that answers.
+    @discardableResult
+    public func adoptAddress(_ base: URL, forHub id: String) async -> Bool {
+        guard let have = hub(id), have.connection.base != base, !isAnswering(id),
+              Fleet.isHomeAddress(base.host), Fleet.isHomeAddress(have.connection.base.host) else { return false }
+        let trial = TVConnection(base: base, key: have.connection.key)
+        guard let status: TVStatus = try? await TVTransport(trial).get("/api/status", timeout: 4), status.id == id,
+              let i = hubs.firstIndex(where: { $0.id == id }), !isAnswering(id) else { return false }
+        hubs[i].connection.base = base
+        saveHubs()
+        extras[id]?.lastHost = base.host
+        failures[id] = 1
+        return true
+    }
+
     /// A paired TV that stopped answering but announces itself at another address on the home network (the
     /// router gave it a new one): talk to it there. Never replaces an away-from-home link.
     private func moveIfNeeded(_ hub: Hub, to found: DiscoveredTV) -> Hub? {

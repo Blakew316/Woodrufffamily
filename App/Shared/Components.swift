@@ -630,7 +630,27 @@ struct ShareSheet: View {
 
 // MARK: - Forms
 
+#if os(tvOS)
+/// Words with nothing to press under them, at the end of a page: the remote can land on them. Apple TV scrolls a page
+/// only to what the remote can be on, so words below the last button could never be brought into view.
+private struct TVReachable: ViewModifier {
+    @FocusState private var focused: Bool
+    func body(content: Content) -> some View {
+        content.focusable().focused($focused).opacity(focused ? 1 : 0.8)
+    }
+}
+#endif
+
 extension View {
+    /// Read-only words the Apple TV's remote can scroll to (`TVReachable`); as they are everywhere else.
+    @ViewBuilder func tvReachable() -> some View {
+        #if os(tvOS)
+        modifier(TVReachable())
+        #else
+        self
+        #endif
+    }
+
     /// Settings pages: grouped on iPhone and Mac; on Apple TV plain rows as its own Settings app has them (no frosted
     /// platters behind each row).
     @ViewBuilder func familyFormStyle() -> some View {

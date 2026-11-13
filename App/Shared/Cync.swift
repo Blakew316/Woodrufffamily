@@ -53,6 +53,8 @@ final class Cync {
     }
 
     private var lights: [String: Light] = [:]
+    /// How many times running the list of lights didn't come (`refresh`).
+    @ObservationIgnored private var listMissed = 0
     /// Looked up on every packet, so kept as dictionaries: a device's home, a home's lights by mesh number, and each
     /// home's first light (commands go through it when no light has answered on the Wi‑Fi).
     @ObservationIgnored private var homeOfDevice: [Int: Int] = [:]
@@ -133,10 +135,16 @@ final class Cync {
         connect()
         loop = Task { [weak self] in
             // The list every ten minutes (lights added or renamed in the Cync app); states come over the connection.
+            // One that didn't come (the Wi‑Fi not up yet as the app opened, Cync slow to answer) is asked for again
+            // soon: 5 seconds on, then 15, 45… It used to wait the ten minutes, with Cync under Needs Attention
+            // until someone refreshed it by hand.
+            var missed = 0
             while !Task.isCancelled {
                 guard let self else { return }
-                await self.refresh()
-                try? await Task.sleep(nanoseconds: 600_000_000_000)
+                let came = await self.refresh()
+                missed = came ? 0 : missed + 1
+                let wait = came ? 600 : min(600, 5 * pow(3, Double(missed - 1)))
+                try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
             }
         }
     }
@@ -341,9 +349,12 @@ final class Cync {
         index()
     }
 
-    /// The homes, their lights and Cync's rooms; then the connection for their states and commands.
-    func refresh() async {
-        guard connected, let user = Keychain.get("cync.user") else { return }
+    /// The homes, their lights and Cync's rooms; then the connection for their states and commands. True when the
+    /// list came. A list that doesn't come is only said (Needs Attention) the third time running, or with no lights
+    /// known yet: the lights known from before go on working over the connection meanwhile.
+    @discardableResult
+    func refresh() async -> Bool {
+        guard connected, let user = Keychain.get("cync.user") else { return true }
         do {
             guard let devices = try await get("/v2/user/\(user)/subscribe/devices") as? [[String: Any]] else {
                 throw Failure("Cync sent an unexpected list.")
@@ -378,10 +389,14 @@ final class Cync {
             index()
             keep()
             error = nil
+            listMissed = 0
             publish()
             connect()
+            return true
         } catch {
-            self.error = error.localizedDescription
+            listMissed += 1
+            if listMissed >= 3 || lights.isEmpty { self.error = error.localizedDescription }
+            return false
         }
     }
 
