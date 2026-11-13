@@ -133,6 +133,8 @@ class FakeEnv(updater.Env):
                                          # or a list of them to fail that many tries (None: that try works)
         self.tv_files = {}               # UDID -> False: no settings file there; (status, output): the listing fails
         self.tv_installs = []            # (UDID, build) of each Apple TV install, in order
+        self.tv_launches = []            # UDID of each Apple TV where Woodruff was opened again, in order
+        self.tv_launch = {}              # UDID -> (status, output) for devicectl device process launch there
         self.front_bundle = "com.apple.finder"
         self.idle_ns = 600 * 10 ** 9
         self.lsappinfo_status = 0
@@ -206,6 +208,12 @@ class FakeEnv(updater.Env):
             if listed is not False:
                 lines.append("Preferences/com.blakew316.woodruff.tv.plist        Writable, Readable              55 KB")
             return 0, "\n".join(lines) + "\n", ""
+        if name == "xcrun" and argv[1:5] == ["devicectl", "device", "process", "launch"]:
+            # Woodruff opened again on an Apple TV.
+            assert argv[5] == "--device" and argv[7:] == ["--timeout", "45", updater.TV_BUNDLE_ID], argv
+            self.tv_launches.append(argv[6])
+            status, out = self.tv_launch.get(argv[6], (0, "Launched application with com.blakew316.woodruff.tv\n"))
+            return status, out, ""
         if name == "xcrun":
             assert argv[1:6] == ["devicectl", "device", "install", "app", "--device"], argv
             assert argv[7:9] == ["--timeout", "240"], argv
@@ -319,6 +327,11 @@ class FakeEnv(updater.Env):
                 "devices": [{"udid": d["udid"], "name": d["name"]} for d in (self.tvs if devices is None else devices)]}
         with open(os.path.join(folder, "build.json"), "w") as handle:
             json.dump(meta, handle)
+
+    def on_screen(self, udid, seconds_ago):
+        """The Apple TV app's note that Woodruff is the app on screen there, last written that long ago."""
+        self.tv_settings.setdefault(udid, {})["open.crumb"] = {
+            "build": "Build 1200", "at": (self.clock - timedelta(seconds=seconds_ago)).timestamp()}
 
     def film(self, udid, seconds_ago, stage="playing"):
         """The Apple TV app's note of a film open there, last written that long ago."""
@@ -1022,6 +1035,42 @@ class AppleTVs(UpdaterTest):
         self.assertEqual(len(self.env.deploys), 2)
         self.assertEqual(self.env.names(calls), ["git"])
         self.assertIn("up to date: %s, build 1234" % NEW[:12], self.log_text())
+
+    def test_woodruff_on_screen_is_opened_again_after_the_update(self):
+        # Installing closes the app. Living Room had Woodruff on screen ten seconds ago: it's opened again there.
+        # The other Apple TV has no such note (asleep, or on another app): nothing is opened on it.
+        self.env.on_screen(TV1, 10)
+        doc = self.run_once()
+        self.assertEqual(self.env.tv_installs, [(TV1, 1234), (TV2, 1234)])
+        self.assertEqual(self.env.tv_launches, [TV1])
+        self.assertEqual(self.tv(doc, TV1)["state"], "current")
+        self.assertEqual(self.tv(doc, TV2)["state"], "current")
+        log = self.log_text()
+        self.assertIn("Apple TV Living Room: Woodruff was on screen, so it was opened again", log)
+        self.assertNotIn("Apple TV Extra Apple TV: Woodruff was on screen", log)
+
+    def test_woodruff_put_away_a_while_ago_is_not_opened(self):
+        # A note that hasn't been renewed for two minutes: Woodruff isn't the app on screen any more.
+        self.env.on_screen(TV1, 120)
+        self.run_once()
+        self.assertEqual(self.env.tv_installs, [(TV1, 1234), (TV2, 1234)])
+        self.assertEqual(self.env.tv_launches, [])
+
+    def test_an_app_that_cant_be_opened_again_is_still_up_to_date(self):
+        self.env.on_screen(TV1, 5)
+        self.env.tv_launch[TV1] = (1, "ERROR: The application failed to launch. (com.apple.dt.CoreDeviceError error 10002.)\n")
+        doc = self.run_once()
+        self.assertEqual(self.env.tv_launches, [TV1])
+        tv = self.tv(doc, TV1)
+        self.assertEqual((tv["state"], tv["commit"]), ("current", NEW))
+        self.assertIn("Apple TV Living Room: Woodruff was on screen, but couldn't be opened again", self.log_text())
+
+    def test_a_first_install_opens_nothing(self):
+        # Never installed there: there was no Woodruff on screen to open again, whatever is read.
+        self.env.tv_has[TV1] = None
+        self.env.on_screen(TV1, 5)
+        self.run_once()
+        self.assertEqual(self.env.tv_launches, [])
 
     def test_left_alone_while_a_film_is_playing(self):
         self.env.film(TV1, 20)
@@ -2007,6 +2056,20 @@ class AppleTVAnswers(unittest.TestCase):
                 "at": (T0 - timedelta(seconds=seconds_ago)).timestamp()}
         note.update(more)
         return {"playing.crumb": note, "atv.name": "Apple TV"}
+
+    def test_app_on_screen(self):
+        def open_note(seconds_ago):
+            return {"open.crumb": {"build": "Build 655", "at": (T0 - timedelta(seconds=seconds_ago)).timestamp()}}
+        self.assertTrue(updater.app_on_screen(open_note(0), T0))
+        self.assertTrue(updater.app_on_screen(open_note(45), T0))
+        self.assertTrue(updater.app_on_screen(open_note(-10), T0))     # the clocks a little apart
+        self.assertFalse(updater.app_on_screen(open_note(61), T0))
+        self.assertFalse(updater.app_on_screen(open_note(-120), T0))   # far ahead: not trusted
+        self.assertFalse(updater.app_on_screen({}, T0))
+        self.assertFalse(updater.app_on_screen(None, T0))
+        self.assertFalse(updater.app_on_screen({"open.crumb": {"at": True}}, T0))
+        self.assertFalse(updater.app_on_screen({"open.crumb": "yes"}, T0))
+        self.assertFalse(updater.app_on_screen(self.note(0), T0))      # a film's note isn't this one
 
     def test_film_on_screen(self):
         self.assertTrue(updater.film_on_screen(self.note(0), T0))

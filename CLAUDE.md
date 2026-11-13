@@ -52,6 +52,8 @@ Every feature request or bug fix ends with exactly one release:
   the TVs' pairings. The Apple TV app's is `com.blakew316.woodruff.tv`.
 - The Apple TV app keeps `playing.crumb` in its settings while a film is open (`PlayCrumb`), renewed every ten
   seconds. The Mac Studio's updater reads it off each Apple TV to leave a film alone: keep it written that way.
+  It keeps `open.crumb` the same way while Woodruff is the app on screen (`OpenCrumb`): the updater opens Woodruff
+  again after an update only where that note is fresh.
 - Swift 5.10 with `SWIFT_STRICT_CONCURRENCY: minimal`, iOS 26 and macOS 26 SDKs. Parse-check every changed Swift
   file (`swiftc -parse`) and treat CI as the real compile.
 - `scripts/deploy.sh` runs under macOS's `/bin/bash` 3.2: no associative arrays, `mapfile`, `${x,,}`, `&>>` or

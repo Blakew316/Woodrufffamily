@@ -61,6 +61,8 @@ struct WoodruffTVApp: App {
                     // A film the app was ended in the middle of last time: said in the Macs' log (nothing else reports
                     // it from an Apple TV).
                     PlayCrumb.reportLast()
+                    // Woodruff is on screen: noted for the Mac Studio's updater, which opens it again after an update.
+                    OpenCrumb.set(true)
                     // The Top Shelf's album, its newest photos ready for the slideshow.
                     Task { await TopShelfAlbum.shared.refresh() }
                     // The weather from where this Apple TV is (asked once), whether or not its TVs are paired yet.
@@ -76,6 +78,8 @@ struct WoodruffTVApp: App {
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { fleet.setActive(true) } else if phase == .background { fleet.setActive(false) }
+            // On screen, or put away (the screen saver over the app leaves it as it was): `OpenCrumb`.
+            if phase == .active { OpenCrumb.set(true) } else if phase == .background { OpenCrumb.set(false) }
             // Cync keeps one connection for the whole account: this Apple TV holds it while Woodruff is on screen.
             if phase == .active { Cync.shared.active(true) } else if phase == .background { Cync.shared.active(false) }
             if phase == .background {

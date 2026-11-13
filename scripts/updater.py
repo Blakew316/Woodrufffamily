@@ -67,6 +67,7 @@ TV_BUNDLE_ID = "com.blakew316.woodruff.tv"
 # screen, removed as it closes).
 TV_SETTINGS = "Library/Preferences/%s.plist" % TV_BUNDLE_ID
 TV_FILM_NOTE = "playing.crumb"
+TV_OPEN_NOTE = "open.crumb"
 RELEASE_BRANCH = "release"
 ROLES = ("hub", "follower")
 PYTHON = "/usr/bin/python3"
@@ -96,6 +97,8 @@ BACKOFF = (15 * 60, 30 * 60, 60 * 60, 2 * 3600, 4 * 3600, 8 * 3600)   # after th
 UNREACHABLE_RETRY = 10 * 60
 TV_FILM_FRESH = 90           # seconds: a film's note newer than this means the film is on screen now
 TV_FILM_RETRY = 4 * 60       # a film is playing (or it couldn't be told): asked again at the next check
+TV_OPEN_FRESH = 60           # seconds: the app's own note newer than this means Woodruff is the app on screen now
+TV_OPEN_AHEAD = 30           # ... and one stamped up to this far ahead of this Mac's clock still counts
 TV_FILM_TRIES = 3            # the settings file is copied off the Apple TV up to this many times,
 TV_FILM_PAUSE = 2            # this many seconds apart (a copy fails now and then)
 NO_TV_WAIT = 6 * 3600        # no Apple TV is paired with this Mac: looked for again this often
@@ -321,6 +324,18 @@ def film_on_screen(settings, now):
     if isinstance(at, bool) or not isinstance(at, (int, float)):
         return False
     return now.timestamp() - float(at) < TV_FILM_FRESH
+
+
+def app_on_screen(settings, now):
+    """The Apple TV app's settings say Woodruff is the app on screen there now: its note (TV_OPEN_NOTE) is there and
+    was written in the last TV_OPEN_FRESH seconds. The app writes it as it comes on screen, again every ten seconds
+    while it's there, and removes it as it's put away; an Apple TV that's asleep, or on another app, has none. One
+    stamped far ahead of now doesn't count: opening Woodruff over something else is worse than leaving it closed."""
+    note = settings.get(TV_OPEN_NOTE) if isinstance(settings, dict) else None
+    at = note.get("at") if isinstance(note, dict) else None
+    if isinstance(at, bool) or not isinstance(at, (int, float)):
+        return False
+    return -TV_OPEN_AHEAD <= now.timestamp() - float(at) < TV_OPEN_FRESH
 
 
 # --------------------------------------------------------------------------------------------- the world
@@ -681,6 +696,8 @@ class Updater(object):
         self.env = env
         self.config = config
         self.verbose = verbose
+        # UDID -> Woodruff was the app on screen on that Apple TV when its settings were last read (tv_film).
+        self.tv_open = {}
         self.role = config["role"]
         self.repo = config["repo"]
         self.branch = config.get("branch") or RELEASE_BRANCH
@@ -1337,6 +1354,8 @@ class Updater(object):
                 self.env.sleep(TV_FILM_PAUSE)
             settings, why = self.tv_settings(udid)
             if why is None:
+                # Whether Woodruff is the app on screen there, from the same copy (install_tvs opens it again after).
+                self.tv_open[udid] = app_on_screen(settings, self.env.now())
                 return film_on_screen(settings, self.env.now()), None
         status, out, _ = self.env.run(["xcrun", "devicectl", "device", "info", "files", "--device", udid,
                                        "--domain-type", "appDataContainer", "--domain-identifier", TV_BUNDLE_ID,
@@ -1344,6 +1363,18 @@ class Updater(object):
         if status == 0 and os.path.basename(TV_SETTINGS) not in out:
             return False, None
         return None, why
+
+    def tv_reopen(self, udid, name):
+        """Opens Woodruff again on an Apple TV where it was the app on screen when the update closed it. Not being
+        able to isn't a failure of the update: the app is there, and opens the next time someone picks it."""
+        status, out, err = self.env.run(["xcrun", "devicectl", "device", "process", "launch", "--device", udid,
+                                         "--timeout", "45", TV_BUNDLE_ID], TV_ASK_TIMEOUT)
+        if status == 0:
+            self.log("Apple TV %s: Woodruff was on screen, so it was opened again" % name)
+        else:
+            self.log("Apple TV %s: Woodruff was on screen, but couldn't be opened again: %s" % (
+                name, "it timed out" if status == 124 else one_line(first_error(out + "\n" + err) or
+                                                                      "devicectl exited %d" % status, 200)))
 
     def tv_held(self, record, state, detail, seconds):
         when = self.now + timedelta(seconds=seconds)
@@ -1394,8 +1425,9 @@ class Updater(object):
 
     def install_tvs(self, release, kept):
         """Installs the kept Apple TV app on each Apple TV that doesn't have this release and whose next try is
-        due: one that can be reached, isn't on this build already, and has no film on screen. The app isn't opened
-        afterwards (an Apple TV that's asleep stays asleep)."""
+        due: one that can be reached, isn't on this build already, and has no film on screen. Installing closes the
+        app: where Woodruff was the app on screen (app_on_screen), it's opened again afterwards. Nowhere else: an
+        Apple TV that's asleep stays asleep, and one on another app stays on it."""
         now = self.now
         todo = []
         for device in kept["devices"]:
@@ -1457,6 +1489,7 @@ class Updater(object):
                     self.log("Apple TV %s: a film is playing; asked again at %s" % (name, iso(when)))
                     self.save(True)
                     continue
+            was_open = bool(installed and self.tv_open.pop(udid, False))
             record.update(state="pending", detail="Installing.")
             self.save(True)
             self.log("Apple TV %s: installing the kept build of %s" % (name, release[:12]))
@@ -1473,6 +1506,9 @@ class Updater(object):
                         "build %d" % there if there is not None else "no build of it"), "Apple TV")
                 else:
                     self.phone_installed(record, release, "Apple TV")
+                    if was_open:
+                        self.tv_reopen(udid, name)
+                        self.tick()
             elif status == 124:
                 self.phone_failed(record, "the install timed out", "Apple TV")
             else:
