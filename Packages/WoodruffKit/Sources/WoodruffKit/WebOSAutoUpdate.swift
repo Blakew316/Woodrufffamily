@@ -135,7 +135,9 @@ extension Fleet {
                 guard let ipk else { continue }
                 // Woodruff is opened again only where it was in front: nobody is taken off another app or input.
                 try await WebOSInstaller.install(ipk, on: way, launch: fresh.onScreen) { line in WebOSAutoUpdate.say("\(name): \(line)") }
-                if known?.ssh != way { extras[tv.id, default: TVExtras()].ssh = way }
+                // Saved with the TV's details where this Mac has them; never made for a TV here (they travel between the
+                // family's devices, and a copy made here would replace what the others saved for it). Found again otherwise.
+                if known != nil, known?.ssh != way { extras[tv.id]?.ssh = way }
                 tried[tv.id]?.done = true
                 Saved.save(WebOSAutoUpdate.key, tried)
                 WebOSAutoUpdate.say("\(name): \(tag) went on by itself (\(way.user)@\(way.host)).")

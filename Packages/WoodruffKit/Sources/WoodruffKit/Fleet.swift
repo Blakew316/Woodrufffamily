@@ -179,6 +179,26 @@ public final class Fleet {
     /// TV id → the alerts hidden for it (their signature).
     public private(set) var hiddenAlerts: [String: String] = Saved.load("hiddenAlerts", as: [String: String].self) ?? [:]
     private let discovery = TVDiscovery()
+    /// Each TV's own address as last heard announcing on the Wi‑Fi, and its kind as this device worked it out, kept on
+    /// this device only. Both used to live in `extras`, which travels between the family's devices one TV at a time:
+    /// a device with nothing saved for a TV yet (a new install) saved its kind as the newest word on that TV, and the
+    /// address typed for its remote, its name and its Wake-on-LAN details were dropped from every device.
+    @ObservationIgnored private var heardHosts: [String: String] = Saved.load("heardHosts", as: [String: String].self) ?? [:]
+    @ObservationIgnored private var learnedPlatforms: [String: TVPlatform] = Saved.load("learnedPlatforms", as: [String: TVPlatform].self) ?? [:]
+
+    /// Where [tv] itself answers on this Wi‑Fi: where it's announcing now, else where it last did. Known for a TV
+    /// another TV passes on too, whose address this device isn't told any other way.
+    public func heardHost(of tv: FleetTV) -> String? {
+        if let h = discovery.found.first(where: { $0.id == tv.id })?.host, !h.isEmpty { return h }
+        return heardHosts[tv.id]
+    }
+
+    /// Notes what the TV [id] is (Android or LG), on this device only.
+    private func learn(_ id: String, _ platform: TVPlatform) {
+        guard learnedPlatforms[id] != platform else { return }
+        learnedPlatforms[id] = platform
+        Saved.save("learnedPlatforms", learnedPlatforms)
+    }
     /// TVs found by asking every address on the home network (for those whose announcement doesn't arrive).
     public private(set) var lanFound: [DiscoveredTV] = []
     private var lanScannedAt: Date?
@@ -554,7 +574,6 @@ public final class Fleet {
         hubs.append(hub)
         failures[hub.id] = nil
         saveHubs()
-        if extras[hub.id] == nil { extras[hub.id] = TVExtras() }
         extras[hub.id]?.lastHost = connection.base.host
         if selectedID == nil { selectedID = hub.id }
         _ = try? await hello(hub)
@@ -766,7 +785,7 @@ public final class Fleet {
               let i = hubs.firstIndex(where: { $0.id == hub.id }) else { return nil }
         hubs[i].connection.base = base
         saveHubs()
-        extras[hub.id, default: TVExtras()].lastHost = newHost
+        extras[hub.id]?.lastHost = newHost
         failures[hub.id] = 1
         return hubs[i]
     }
@@ -862,13 +881,15 @@ public final class Fleet {
             // What a hub last heard from a TV moves with nearly every answer, and is only shown once the TV is off: kept
             // while it stays on (`FleetMerge.steadySeen`), so the list isn't redrawn for it every second or two.
             all[i].seen = FleetMerge.steadySeen(all[i].seen, online: all[i].online, before: before[id])
-            if extras[id]?.platform == nil, let p = guessPlatform(all[i]) {
-                extras[id, default: TVExtras()].platform = p
-                all[i].platform = p
+            // What the TV is, worked out here, is kept here (`learn`): never saved as that TV's details for the family.
+            if extras[id]?.platform == nil {
+                if let p = guessPlatform(all[i]) { learn(id, p) }
+                if all[i].platform == nil, let p = learnedPlatforms[id] { all[i].platform = p }
             }
             // The webOS app calls itself "LG TV" until it's named on the TV: that's Elliot's Room.
+            // (Shown under that name; not saved as the TV's details, which a device with none for it would make anew.)
             if extras[id]?.alias == nil && all[i].name.trimmingCharacters(in: .whitespaces).caseInsensitiveCompare("LG TV") == .orderedSame {
-                extras[id, default: TVExtras()].alias = "Elliot’s Room"
+                all[i].name = "Elliot’s Room"
             }
             if let alias = extras[id]?.alias, !alias.isEmpty { all[i].name = alias }
             all[i].alertsHidden = all[i].hasAlerts && hiddenAlerts[id] == all[i].alertSignature
@@ -887,6 +908,13 @@ public final class Fleet {
         // TVs heard on the Wi‑Fi that no paired TV knows: listed so they can be paired.
         let pairedHosts = Set(hubs.compactMap { $0.connection.base.host })
         let heardAll = discovery.found + lanFound.filter { l in !discovery.found.contains { $0.host == l.host } }
+        // Where each TV announces itself, remembered on this device (`heardHost`).
+        var heardNew = false
+        for f in discovery.found where !f.host.isEmpty && heardHosts[f.id] != f.host {
+            heardHosts[f.id] = f.host
+            heardNew = true
+        }
+        if heardNew { Saved.save("heardHosts", heardHosts) }
         for f in heardAll where !pairedHosts.contains(f.host) {
             let shown = f.name.caseInsensitiveCompare("LG TV") == .orderedSame ? "Elliot’s Room" : f.name
             if all.contains(where: { $0.id == f.id || $0.name.caseInsensitiveCompare(f.name) == .orderedSame
@@ -1222,7 +1250,11 @@ public final class Fleet {
             let r = try await c.health()
             if healthReports[tv.id] != r { healthReports[tv.id] = r }
             if healthErrors[tv.id] != nil { healthErrors[tv.id] = nil }
-            if let p = r.platform, extras[tv.id]?.platform != p { extras[tv.id, default: TVExtras()].platform = p }
+            if let p = r.platform {
+                learn(tv.id, p)
+                // A kind saved for the TV that's wrong is put right where it is; details are never made for a TV here.
+                if let saved = extras[tv.id]?.platform, saved != p { extras[tv.id]?.platform = p }
+            }
         } catch let u as HealthUnavailable {
             if let last = u.last, healthReports[tv.id] != last { healthReports[tv.id] = last }
             if healthErrors[tv.id] != u.message { healthErrors[tv.id] = u.message }
@@ -1262,7 +1294,7 @@ public final class Fleet {
         #endif
     }
 
-    public func platform(of tv: FleetTV) -> TVPlatform? { extras[tv.id]?.platform ?? tv.platform }
+    public func platform(of tv: FleetTV) -> TVPlatform? { extras[tv.id]?.platform ?? tv.platform ?? learnedPlatforms[tv.id] }
 
     /// Whether [tv] runs an older version than the newest release for its platform.
     public func isBehind(_ tv: FleetTV) -> Bool {

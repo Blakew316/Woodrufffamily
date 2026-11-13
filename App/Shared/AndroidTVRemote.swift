@@ -224,7 +224,8 @@ extension Fleet {
     func androidAddress(for tv: FleetTV) -> String? {
         guard platform(of: tv) == .android else { return nil }
         var seen: [String] = []
-        for h in [hub(tv.id)?.connection.base.host, extras[tv.id]?.lastHost, tv.foundAt?.host] {
+        // Its own announcement on the Wi‑Fi last: a TV another TV passes on is found that way, with nothing typed.
+        for h in [hub(tv.id)?.connection.base.host, extras[tv.id]?.lastHost, tv.foundAt?.host, heardHost(of: tv)] {
             if let h, !h.isEmpty, !seen.contains(h) { seen.append(h) }
         }
         return seen.first { AndroidTVRemote.shared.isPaired(host: $0) } ?? seen.first { AndroidTVRemote.isLocal($0) }
