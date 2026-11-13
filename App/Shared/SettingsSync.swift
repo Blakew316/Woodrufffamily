@@ -59,7 +59,7 @@ final class SettingsSync {
                            "scenes", "nestCameras"]
     /// Plain preferences that travel (property-list values in UserDefaults): alert choices, the remote's click, and
     /// Now Playing on the Lock Screen.
-    static let valueKeys = ["watch.source", "nest.alert.person", "nest.alert.motion", "nest.alert.doorbell", "notifyFleet", "liveActivity", "remoteClick", "sonosSeed",
+    static let valueKeys = ["watch.source", "nest.alert.person", "nest.alert.motion", "nest.alert.doorbell", "nest.signedOut", "notifyFleet", "liveActivity", "remoteClick", "sonosSeed",
                             "scenes.filled", "vehicle.cameras", "vehicle.test", "vehicle.minConfidence", "vehicle.minChanged",
                             "vehicle.maxChanged", "watch.cellularDownloads", "camera.native", "cameraShare.hosts"]
 
@@ -133,6 +133,8 @@ final class SettingsSync {
     @ObservationIgnored private var held: Set<String> = []
     /// The TVs paired here at the last look (tells one paired or forgotten here from one that came from the family).
     @ObservationIgnored private var hubsSeen: [String: Hub] = [:]
+    /// When the cameras' sign-in was put back after another device removed it (`nestRemoved`).
+    @ObservationIgnored private var nestRestores: [Date] = []
     /// How many rounds of reading the TVs are over (`roundRead`).
     @ObservationIgnored private var roundsDone = 0
     /// `followAddresses`: when it last looked, the family's addresses this device has put right already, and whether
@@ -675,6 +677,27 @@ final class SettingsSync {
         return oursNewer
     }
 
+    /// The cameras' sign-in was removed on another device. Disconnected there by hand (that device says so, with
+    /// `NestCameras.signedOutKey`): this one is disconnected too. Otherwise it's that device's trouble: Google refused
+    /// the sign-in it held, often an old one, and it removed it (builds before this one did), which took the cameras
+    /// away from every device minutes after they'd been connected again. While the sign-in worked here in the last
+    /// quarter hour, it's put back as it was, which sends it on to the other devices again (the one that removed it
+    /// too). Not more than three times an hour: a sign-in Google has really ended stops working here as well.
+    private func nestRemoved(was before: [String: String]) {
+        let byHand = Date().timeIntervalSince1970 - UserDefaults.standard.double(forKey: NestCameras.signedOutKey) < 600
+        nestRestores.removeAll { Date().timeIntervalSince($0) > 3600 }
+        guard !byHand, NestCameras.shared.workedLately, nestRestores.count < 3,
+              let refresh = before["kc:nest.refresh"], !refresh.isEmpty else {
+            NestCameras.shared.signOut(elsewhere: true)
+            return
+        }
+        nestRestores.append(Date())
+        for k in ["kc:nest.refresh", "kc:nest.access", "kc:nest.expires"] {
+            if let old = before[k], !old.isEmpty { write(k, old) }
+        }
+        dirty = true
+    }
+
     private func write(_ k: String, _ v: String) {
         let key = String(k.dropFirst(3))
         if k == "ud:" + Self.familyPairingsKey {
@@ -741,7 +764,7 @@ final class SettingsSync {
         let decoOut = had("kc:deco.password") && !has("kc:deco.password")
         let github = keys.contains("kc:github.token")
         if stOut { SmartThings.shared.signOut() }
-        if nestOut { NestCameras.shared.signOut() }
+        if nestOut { nestRemoved(was: before) }
         if dreoOut { Dreo.shared.signOut() }
         if cyncOut { Cync.shared.signOut() }
         if cyncIn { Cync.shared.start() }

@@ -47,6 +47,16 @@ final class NestCameras {
 
     private var project: String? { Keychain.get("nest.project") }
     private var clientID: String? { Keychain.get("nest.client") }
+    /// The sign-in Google last refused to renew here (`token`): kept, not asked with again.
+    @ObservationIgnored private var refusedSignIn: String?
+    /// When Google last answered a request made with the cameras' sign-in here.
+    @ObservationIgnored private var lastWorked: Date?
+    /// The cameras' sign-in worked here in the last quarter hour: a removal of it arriving from another device is
+    /// then that device's trouble (an old sign-in refused there), not the family signing out (`SettingsSync`).
+    var workedLately: Bool { lastWorked.map { Date().timeIntervalSince($0) < 900 } ?? false }
+    /// Saved (and sent to the family's devices) when someone disconnects the cameras by hand: only then does a
+    /// removal of the sign-in on one device disconnect the others.
+    static let signedOutKey = "nest.signedOut"
 
     /// The cameras kept from last time, if this device is still signed in (never in Demo mode).
     nonisolated private static func saved() -> [Camera] {
@@ -152,7 +162,9 @@ final class NestCameras {
         } catch { self.error = error.localizedDescription }
     }
 
-    func signOut() {
+    /// [elsewhere]: the sign-in was removed on another device (the settings sync saying so), not here by hand.
+    func signOut(elsewhere: Bool = false) {
+        if !elsewhere { UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: Self.signedOutKey) }
         for k in ["nest.refresh", "nest.access", "nest.expires"] { Keychain.set(nil, for: k) }
         #if os(iOS) || os(tvOS)
         CameraEventMedia.forgetCredentials()
@@ -189,13 +201,20 @@ final class NestCameras {
             guard let r = Keychain.get("nest.refresh"), let id = self.clientID, let sec = Keychain.get("nest.secret") else {
                 throw OAuthRelay.Failure.refused("Connect the cameras again.")
             }
+            // The sign-in Google refused a moment ago: not asked again until another one arrives.
+            if r == self.refusedSignIn { throw OAuthRelay.Failure.refused("Connect the cameras again.") }
             do {
                 self.store(try await formPost("https://oauth2.googleapis.com/token", ["refresh_token": r, "client_id": id, "client_secret": sec, "grant_type": "refresh_token"]))
+                self.refusedSignIn = nil
             } catch {
-                // Google won't renew it (password changed, access removed): sign in again, don't keep trying.
+                // Google won't renew the sign-in this device holds. It's NOT removed: the family's sign-in travels to
+                // every device, so removing it here removed it everywhere, and the one this device holds may only be
+                // an old one (another device signed in again, and that hasn't reached this one yet: after an update
+                // every device starts afresh, and one with the old sign-in took the cameras away from all of them,
+                // minutes after they had been connected again). It's only remembered as refused, so Google isn't
+                // asked with it again; a newer one arriving from another device is used as it comes.
                 if "\(error.localizedDescription)".contains("invalid_grant") || error.localizedDescription.contains("expired or revoked") {
-                    Keychain.set(nil, for: "nest.refresh")
-                    self.connected = false
+                    self.refusedSignIn = r
                     throw OAuthRelay.Failure.refused("Connect the cameras again.")
                 }
                 throw error
@@ -219,6 +238,7 @@ final class NestCameras {
         let (d, resp) = try await URLSession.shared.data(for: r)
         let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
         let json = (try? JSONSerialization.jsonObject(with: d) as? [String: Any]) ?? [:]
+        if (200..<300).contains(code) { lastWorked = Date() }
         guard (200..<300).contains(code) else {
             if code == 401 {
                 // The sign-in ran out early (Google ended it, or another device's renewal replaced it): renew it once
