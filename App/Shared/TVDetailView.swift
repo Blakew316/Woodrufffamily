@@ -667,6 +667,12 @@ struct AndroidRemoteSection: View {
             } footer: {
                 Text("Lets the remote work in every app and turn \(tv.name) on and off.")
             }
+            // A TV at a new address keeps its pairing: it's looked for there before Pair is the only way.
+            .task(id: known) {
+                if let known, !remote.isPaired(host: known) {
+                    await remote.adoptMoved(host: known, inUse: fleet.androidAddressesInUse(except: tv))
+                }
+            }
         }
     }
 

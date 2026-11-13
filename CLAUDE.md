@@ -18,6 +18,8 @@ Every feature request or bug fix ends with exactly one release:
    builds the Apple TV app and installs it on both Apple TVs over the home network, each once no film is on screen
    there (it looks again at every check).
 
+- When the owner reports something broken or says to fix it, fix it and ship it in the same turn. Don't end by
+  asking whether to ship, and don't offer the fix as an option: the answer is always yes.
 - Never deploy through remote sessions, and never ask the user to run `scripts/deploy.sh` on each device. The
   release is the deploy, for the Apple TVs too: no install commands to paste.
 - Never put `[release]` on a work-in-progress commit. Any commit whose message contains it (in any case, anywhere

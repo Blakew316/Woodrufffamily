@@ -746,6 +746,12 @@ enum RemoteKeys {
     static func press(_ key: String, on tv: FleetTV, fleet: Fleet, repeat n: Int = 0, android: Bool = true) async throws {
         let canWake = !tv.online && fleet.extras[tv.id]?.mac != nil
         let atvHost = android && AndroidTVRemote.handles(key) ? fleet.androidRemoteHost(for: tv) : nil
+        // An Android TV that answers at an address with no pairing: one made at its old address is looked for there
+        // (`adoptMoved`), so the next keys go the remote's way again. This key goes the way it would have.
+        if android, atvHost == nil, AndroidTVRemote.handles(key), let h = fleet.androidAddress(for: tv) {
+            let inUse = fleet.androidAddressesInUse(except: tv)
+            Task { await AndroidTVRemote.shared.adoptMoved(host: h, inUse: inUse) }
+        }
         // Off, with no remote connection that can turn it on: Wake-on-LAN.
         if key == "power", canWake, atvHost == nil { fleet.wake(tv); return }
         if let lg = fleet.lg(for: tv), let action = LGKeyMap.action(for: key) {

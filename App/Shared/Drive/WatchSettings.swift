@@ -31,6 +31,8 @@ struct WatchSettingsView: View {
     @State private var hasTMDB = TMDB.key != nil
     @State private var busy = false
     @State private var message: String?
+    /// Google ended the Drive sign-in kept here (what the library last heard when it asked for Drive).
+    private var driveEnded: Bool { signedIn && library.error == GoogleDrive.endedMessage }
     @State private var clientID = GoogleDrive.clientID ?? ""
     @State private var secret = ""
     @State private var tmdbKey = ""
@@ -119,8 +121,20 @@ struct WatchSettingsView: View {
 
             Section {
                 if signedIn {
-                    LabeledContent("Status", value: "Signed in")
+                    // Google ended the sign-in: said as that, with the way to sign in again right here (it said
+                    // "Signed in", and to sign in again "in Settings", on this very page, with no button for it).
+                    LabeledContent("Status", value: driveEnded ? "Sign-in ended" : "Signed in")
                     if let e = GoogleDrive.email { LabeledContent("Account", value: e) }
+                    #if !os(tvOS)
+                    if driveEnded {
+                        Button {
+                            Task { await signIn() }
+                        } label: {
+                            HStack { Text("Sign In Again"); if busy { Spacer(); ProgressView() } }
+                        }
+                        .disabled(busy || !hasKeys)
+                    }
+                    #endif
                     LabeledContent("Titles", value: library.busy ? "Reading Drive…" : "\(library.titleCount)")
                     if let u = library.updated {
                         LabeledContent("Updated", value: u.formatted(date: .abbreviated, time: .shortened))
@@ -173,7 +187,7 @@ struct WatchSettingsView: View {
                             .disabled(busy || fleet.hubClient() == nil)
                     }
                 }
-                if let e = library.error, signedIn { Text(e).foregroundStyle(Palette.attention) }
+                if let e = library.error, signedIn { Text(driveEnded ? "Google ended the sign-in." : e).foregroundStyle(Palette.attention) }
                 if let m = message { Text(m).foregroundStyle(Palette.attention) }
             } header: { Text("Google Drive") } footer: {
                 #if os(tvOS)

@@ -45,6 +45,9 @@ enum GoogleDrive {
 
     /// Forgets this app's Drive sign-in here. Never revoked at Google: the TVs sign in with the same keys, and a
     /// revoke would end their sign-ins too (the Nest cameras, Drive, Photos, Calendar).
+    /// What's said when Google itself ended the sign-in (Watch's settings offer Sign In Again for exactly this).
+    static let endedMessage = "Google ended the sign-in. Sign in to Google Drive again in Settings."
+
     static func signOut() {
         for k in ["gdrive.refresh", "gdrive.access", "gdrive.expires", "gdrive.scopes", "gdrive.email"] { Keychain.set(nil, for: k) }
         memo.set(nil, expires: 0)
@@ -133,7 +136,7 @@ enum GoogleDrive {
         let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
         if code == 200 { return j }
         switch j["error"] as? String {
-        case "invalid_grant": throw Failure("Google ended the sign-in. Sign in to Google Drive again in Settings.")
+        case "invalid_grant": throw Failure(GoogleDrive.endedMessage)
         case "invalid_client", "unauthorized_client": throw Failure("Google didn’t accept the sign-in keys.")
         default: throw Failure("Google answered \(code). Try again shortly.")
         }

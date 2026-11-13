@@ -36,6 +36,9 @@ final class AndroidTVRemote {
     /// Pairings under way: the TV is showing its code on this connection.
     @ObservationIgnored private var pairings: [String: ATVLink] = [:]
     @ObservationIgnored private var observer: NSObjectProtocol?
+    /// Addresses a moved pairing is being looked for at (`adoptMoved`), and when one was last looked for in vain.
+    @ObservationIgnored private var adopting: Set<String> = []
+    @ObservationIgnored private var adoptTried: [String: Date] = [:]
 
     private init() {
         pairedData = UserDefaults.standard.data(forKey: Self.pairedKey)
@@ -129,6 +132,42 @@ final class AndroidTVRemote {
     func cancelPairing(host: String) {
         pairings[host]?.close()
         pairings[host] = nil
+    }
+
+    /// A TV whose address changed keeps its pairing. The pairing is the TV's own certificate, saved under the address
+    /// the TV had then: at a new address the TV read as never paired, and wanted its code again. When [host] (where a
+    /// TV answers now) has no pairing, each pairing saved under an address no TV answers at any more is tried there.
+    /// A TV at [host] that shows that certificate, and takes this family's, is that TV: its pairing moves to [host].
+    /// Nothing moves otherwise. [inUse]: where the family's other TVs answer now (their pairings stay put).
+    @discardableResult
+    func adoptMoved(host: String, inUse: Set<String>) async -> Bool {
+        guard paired[host] == nil, Self.isLocal(host), !adopting.contains(host), let me = ATVClientIdentity.shared else { return false }
+        // Tried a moment ago and nothing found: not again for a minute (every key press asks).
+        if let at = adoptTried[host], Date().timeIntervalSince(at) < 60 { return false }
+        let moved = paired.filter { $0.key != host && !inUse.contains($0.key) }
+        guard !moved.isEmpty else { return false }
+        adopting.insert(host)
+        defer { adopting.remove(host) }
+        for (old, pin) in moved.sorted(by: { $0.key < $1.key }) {
+            let s = ATVSession(host: host, pin: pin, identity: me.identity)
+            do {
+                try await s.connectNow()
+            } catch {
+                s.close()
+                continue
+            }
+            // Paired by hand meanwhile: that one stands.
+            guard paired[host] == nil else { s.close(); return true }
+            var all = Self.loadPaired()
+            all[host] = pin
+            all[old] = nil
+            sessions[host]?.close()
+            sessions[host] = s
+            save(all)
+            return true
+        }
+        adoptTried[host] = Date()
+        return false
     }
 
     func forget(host: String) {
@@ -229,6 +268,18 @@ extension Fleet {
             if let h, !h.isEmpty, !seen.contains(h) { seen.append(h) }
         }
         return seen.first { AndroidTVRemote.shared.isPaired(host: $0) } ?? seen.first { AndroidTVRemote.isLocal($0) }
+    }
+
+    /// Where the family's Android TVs other than [tv] answer now (for `AndroidTVRemote.adoptMoved`): each one's own
+    /// connection and its announcement on the Wi‑Fi, not an address only remembered for it.
+    func androidAddressesInUse(except tv: FleetTV) -> Set<String> {
+        var out: Set<String> = []
+        for other in tvs where other.id != tv.id && platform(of: other) == .android {
+            for h in [hub(other.id)?.connection.base.host, other.foundAt?.host, heardHost(of: other)] {
+                if let h, !h.isEmpty { out.insert(h) }
+            }
+        }
+        return out
     }
 
     /// The paired Android TV remote address for [tv], when keys should go that way.
