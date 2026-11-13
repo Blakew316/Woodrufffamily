@@ -514,7 +514,15 @@ private final class Loader: NSObject, AVAssetResourceLoaderDelegate, StreamTask 
     private static let burst: Int64 = 4 << 20
     private static let pace: Double = 64 * 1_048_576
     /// How much of the film is kept in files at most, and the smallest piece worth a file of its own.
+    /// Each kept piece is a file mapped into the app: it costs no memory, but it does take the app's address space,
+    /// and an Apple TV or iPhone has far less of that than a Mac. With 3 GB allowed, a film stopped 35 minutes in
+    /// with 1.7 GB kept: Apple's decoder was refused the room it asked for ("Cannot allocate memory") while 2 GB
+    /// of memory stood free. Kept well under that there; the Mac keeps the 3 GB.
+    #if os(macOS)
     private static let onDisk: Int64 = 3 << 30
+    #else
+    private static let onDisk: Int64 = 768 << 20
+    #endif
     private static let worthFiling = 1 << 20
     /// Writing and removing the pieces' files, off the stream's own queue.
     private static let disk = DispatchQueue(label: "woodruff.drive-stream.files", qos: .utility)
