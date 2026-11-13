@@ -40,17 +40,22 @@ enum AccountsWake {
     static func now() {
         round += 1
         let mine = round
-        Task {
+        Task { @MainActor in
             // The connections kept open to the services died while the app slept: new ones from here on.
             URLSession.shared.freshConnections()
-            // A moment first for the family's newest sign-ins (another device may have renewed one while this one
-            // was away): the settings sync, woken just before this, is reading them from the TVs. Then every account;
-            // then, twice more, any that still says something is wrong (the Wi‑Fi, or the TVs that hold the
-            // family's sign-ins, may only just be back).
-            for (pass, wait) in ([1.5, 6, 20] as [Double]).enumerated() {
+            // The family's newest sign-ins first (another device may have renewed one while this one was away): the
+            // settings sync, woken just before this, is reading them from the TVs. Every account is asked the moment
+            // that read is over, a second and a half on at the latest. (It was a second and a half every time,
+            // though the TVs answer in a fraction of that: everything on Home was that much older on opening.)
+            await SettingsSync.shared.roundRead(within: 1.5)
+            guard mine == round else { return }
+            await ask(onlyFailing: false)
+            // Then, twice more, any that still says something is wrong (the Wi‑Fi, or the TVs that hold the family's
+            // sign-ins, may only just be back).
+            for wait in [6.0, 20.0] {
                 try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
                 guard mine == round else { return }
-                await ask(onlyFailing: pass > 0)
+                await ask(onlyFailing: true)
             }
         }
     }

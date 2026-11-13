@@ -133,6 +133,8 @@ final class SettingsSync {
     @ObservationIgnored private var held: Set<String> = []
     /// The TVs paired here at the last look (tells one paired or forgotten here from one that came from the family).
     @ObservationIgnored private var hubsSeen: [String: Hub] = [:]
+    /// How many rounds of reading the TVs are over (`roundRead`).
+    @ObservationIgnored private var roundsDone = 0
     /// `followAddresses`: when it last looked, the family's addresses this device has put right already, and whether
     /// an address from the family's list is being tried now.
     @ObservationIgnored private var addressLook = Date.distantPast
@@ -245,6 +247,16 @@ final class SettingsSync {
     }
 
     func syncNow() async { check(); await syncTVs(); broadcast() }
+
+    /// Waits until the round that reads the TVs (the one `wake` has just started, or one under way) is over: [limit]
+    /// seconds at most, and that long when no round is running at all.
+    func roundRead(within limit: Double) async {
+        let seen = roundsDone
+        let began = Date()
+        while roundsDone == seen, Date().timeIntervalSince(began) < limit {
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+    }
 
     private func watch() {
         guard observers.isEmpty else { return }
@@ -881,6 +893,7 @@ final class SettingsSync {
         tvRun = run
         await run.value
         tvRun = nil
+        roundsDone += 1
         if tvAgain {
             tvAgain = false
             await syncTVs()
