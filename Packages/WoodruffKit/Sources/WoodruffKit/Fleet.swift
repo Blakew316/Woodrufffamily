@@ -644,7 +644,12 @@ public final class Fleet {
     /// Turns [tv] on with Wake-on-LAN (when its network address is known) and watches closely for it to come on.
     public func wake(_ tv: FleetTV) {
         #if canImport(Network)
-        if let mac = extras[tv.id]?.mac { WakeOnLAN.wake(mac: mac, lastHost: extras[tv.id]?.lastHost) }
+        // To the TV's own address as well as the broadcast ones. An iPhone can only send to the TV itself (iOS keeps
+        // broadcasts for apps Apple allows), and where it last answered is kept only once it has moved: for a TV that
+        // never had, the iPhone's Turn On sent nothing that could reach it. Its LG direct control's address (where its
+        // network address was read), else where it's paired, then.
+        let at = extras[tv.id]?.lastHost ?? extras[tv.id]?.lgHost ?? hub(tv.id)?.connection.base.host
+        if let mac = extras[tv.id]?.mac { WakeOnLAN.wake(mac: mac, lastHost: at) }
         #endif
         let until = Date().addingTimeInterval(90)
         for id in hubIDs(for: tv.id) { boostUntil[id] = until }
