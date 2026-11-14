@@ -426,11 +426,18 @@ final class SettingsSync {
         var changed = false
         var stamped = false
         let t = SyncMerge.stampNow()
+        // A TV's details the app changed by itself since the last look (`Fleet.adjustExtras`: where the TV answers now,
+        // the kind it says it is, the way in that worked) are stamped a moment after they were, not now
+        // (`SyncMerge.stampEntries`), so they never put back a change a person made to that TV on another device.
+        let automatic = (fleet?.takeAutomaticExtras() ?? [:]).compactMapValues { c in
+            Self.detailsText(c.from).flatMap { from in Self.detailsText(c.to).map { (from: from, to: $0) } }
+        }
         for (k, v) in now where last[k] != v {
             if let old = last[k] {
                 stamps[k] = t
                 if Self.entryKeys.contains(k) {
-                    entryStamps[k] = SyncMerge.stampEntries(old: old, new: v, stamps: entryStamps[k] ?? [:], now: t)
+                    entryStamps[k] = SyncMerge.stampEntries(old: old, new: v, stamps: entryStamps[k] ?? [:], now: t,
+                                                            automatic: k == "ud:extras" ? automatic : [:])
                 }
                 changed = true
             } else if !v.isEmpty && stamps[k] == nil {
@@ -452,6 +459,12 @@ final class SettingsSync {
             guard !Task.isCancelled else { return }
             await self?.syncTVs()
         }
+    }
+
+    /// One TV's details as the settings keep them (`Saved`), as text.
+    private static func detailsText(_ e: TVExtras) -> String? {
+        guard let d = try? JSONEncoder().encode(e), let o = try? JSONSerialization.jsonObject(with: d) else { return nil }
+        return SyncMerge.canonical(o)
     }
 
     /// An item that travels hasn't been readable yet (it's left out of `last` until it is).

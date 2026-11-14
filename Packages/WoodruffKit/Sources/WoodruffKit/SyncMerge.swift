@@ -20,6 +20,13 @@ public enum SyncMerge {
         (date.timeIntervalSince1970 * 1000).rounded() / 1000
     }
 
+    /// The stamp for a change the app made by itself to something stamped [stamp]: a millisecond after it, so it goes
+    /// to the devices that still have it as it was, but never ahead of a change a person made to it on another device
+    /// since (stamped with when they made it). Of the same form as `stampNow`'s, so it reads back from JSON as exactly.
+    public static func stampAfter(_ stamp: Double) -> Double {
+        ((stamp * 1000).rounded() + 1) / 1000
+    }
+
     /// Per-entry stamps for a dictionary setting after a change here: entries that changed or appeared get
     /// [now]; entries that went away get -[now] (so the removal wins over an older copy elsewhere).
     public static func stampEntries(old: String, new: String, stamps: [String: Double], now: Double) -> [String: Double] {
@@ -28,6 +35,22 @@ public enum SyncMerge {
         var out = stamps
         for (k, v) in n where canonical(v) != o[k].flatMap(canonical) { out[k] = now }
         for k in o.keys where n[k] == nil { out[k] = -now }
+        return out
+    }
+
+    /// The same, for a change here that the app made by itself to some entries, not a person ([automatic]: each such
+    /// entry's canonical text just before and just after): those are stamped a moment after they were (`stampAfter`),
+    /// not [now]. An entry travels whole, so stamped [now], a device that hadn't had a change a person made to that
+    /// entry elsewhere yet put the entry from before it back on every device. An entry that isn't exactly from [old]'s
+    /// to [new]'s by the app's change alone is stamped [now].
+    public static func stampEntries(old: String, new: String, stamps: [String: Double], now: Double,
+                                    automatic: [String: (from: String, to: String)]) -> [String: Double] {
+        var out = stampEntries(old: old, new: new, stamps: stamps, now: now)
+        guard !automatic.isEmpty, let o = object(old) as? [String: Any], let n = object(new) as? [String: Any] else { return out }
+        for (k, change) in automatic where change.from != change.to {
+            guard o[k].flatMap(canonical) == change.from, n[k].flatMap(canonical) == change.to else { continue }
+            out[k] = stampAfter(max(1, abs(stamps[k] ?? 1)))
+        }
         return out
     }
 

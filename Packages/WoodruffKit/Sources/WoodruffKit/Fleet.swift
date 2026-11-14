@@ -140,6 +140,33 @@ public final class Fleet {
     /// report saying the same platform, say). Every save is noticed by the settings sync as a change to look at.
     public var extras: [String: TVExtras] = [:] { didSet { if extras != oldValue { Saved.save("extras", extras); noteBadge() } } }
 
+    /// TV details the app changed by itself (`adjustExtras`), each TV's as it was just before and just after, until the
+    /// settings sync takes them (`takeAutomaticExtras`).
+    @ObservationIgnored private var automaticExtras: [String: (from: TVExtras, to: TVExtras)] = [:]
+
+    /// Changes what's kept for the TV [id] the way the app does by itself, not a person (where the TV answers now, the
+    /// kind it says it is, the way in that worked): only where something is kept for it already, and noted for the
+    /// settings sync (`takeAutomaticExtras`).
+    func adjustExtras(_ id: String, _ change: (inout TVExtras) -> Void) {
+        guard var e = extras[id] else { return }
+        let before = e
+        change(&e)
+        guard e != before else { return }
+        // Straight after another change of its own, with nothing else changed between: from where that one began.
+        let from = automaticExtras[id].flatMap { $0.to == before ? $0.from : nil } ?? before
+        automaticExtras[id] = (from, e)
+        extras[id] = e
+    }
+
+    /// The TV details the app changed by itself since the last call, each as it was before and after (`adjustExtras`).
+    /// The settings sync stamps these a moment after what they changed, never as new: a TV's details travel whole, and
+    /// stamped as new, a change like this on a device that hadn't had the family's latest yet put the details from
+    /// before back on every device, a name given to the TV on another device and all.
+    public func takeAutomaticExtras() -> [String: (from: TVExtras, to: TVExtras)] {
+        defer { automaticExtras = [:] }
+        return automaticExtras
+    }
+
     /// Reads names, TV details and hidden alerts again (after another of the family's devices changed them).
     public func reloadSynced() {
         if let e = Saved.load("extras", as: [String: TVExtras].self), e != extras { extras = e }
@@ -590,7 +617,7 @@ public final class Fleet {
         hubs.append(hub)
         failures[hub.id] = nil
         saveHubs()
-        extras[hub.id]?.lastHost = connection.base.host
+        adjustExtras(hub.id) { $0.lastHost = connection.base.host }
         followLG(hub.id, from: oldHost, to: connection.base.host)
         if selectedID == nil { selectedID = hub.id }
         _ = try? await hello(hub)
@@ -816,7 +843,7 @@ public final class Fleet {
         let oldHost = hubs[i].connection.base.host
         hubs[i].connection.base = base
         saveHubs()
-        extras[id]?.lastHost = base.host
+        adjustExtras(id) { $0.lastHost = base.host }
         followLG(id, from: oldHost, to: base.host)
         failures[id] = 1
         return true
@@ -830,7 +857,7 @@ public final class Fleet {
               let i = hubs.firstIndex(where: { $0.id == hub.id }) else { return nil }
         hubs[i].connection.base = base
         saveHubs()
-        extras[hub.id]?.lastHost = newHost
+        adjustExtras(hub.id) { $0.lastHost = newHost }
         followLG(hub.id, from: oldHost, to: newHost)
         failures[hub.id] = 1
         return hubs[i]
@@ -842,7 +869,7 @@ public final class Fleet {
     /// away-from-home link: LG direct control is only ever on the home network.)
     private func followLG(_ id: String, from oldHost: String?, to newHost: String?) {
         guard let oldHost, let newHost, oldHost != newHost, Fleet.isHomeAddress(newHost), extras[id]?.lgHost == oldHost else { return }
-        extras[id]?.lgHost = newHost
+        adjustExtras(id) { $0.lgHost = newHost }
     }
 
     /// Asks one hub for its TVs and shows the answer the moment it arrives.
@@ -1309,7 +1336,7 @@ public final class Fleet {
             if let p = r.platform {
                 learn(tv.id, p)
                 // A kind saved for the TV that's wrong is put right where it is; details are never made for a TV here.
-                if let saved = extras[tv.id]?.platform, saved != p { extras[tv.id]?.platform = p }
+                if let saved = extras[tv.id]?.platform, saved != p { adjustExtras(tv.id) { $0.platform = p } }
             }
         } catch let u as HealthUnavailable {
             if let last = u.last, healthReports[tv.id] != last { healthReports[tv.id] = last }

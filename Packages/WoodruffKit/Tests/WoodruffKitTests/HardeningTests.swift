@@ -95,6 +95,29 @@ final class HardeningTests: XCTestCase {
         XCTAssertEqual(m2.value, old)
     }
 
+    func testAutomaticChangeNeverPutsBackAChangeMadeElsewhere() {
+        // A TV's details: one entry, stamped 100 on both devices. The phone renames the TV at 200; the Mac, not having
+        // that yet, follows the TV to a new address by itself at 205.
+        let base = #"{"tv1":{"lastHost":"192.168.1.20","platform":"android"}}"#
+        let phone = #"{"tv1":{"alias":"Kitchen","lastHost":"192.168.1.20","platform":"android"}}"#
+        let mac = #"{"tv1":{"lastHost":"192.168.1.33","platform":"android"}}"#
+        func entry(_ s: String) -> String { SyncMerge.canonical((SyncMerge.object(s) as? [String: Any])?["tv1"] ?? [:]) ?? "" }
+        let ps = SyncMerge.stampEntries(old: base, new: phone, stamps: ["tv1": 100], now: 200)
+        let ms = SyncMerge.stampEntries(old: base, new: mac, stamps: ["tv1": 100], now: 205,
+                                        automatic: ["tv1": (from: entry(base), to: entry(mac))])
+        XCTAssertEqual(ms["tv1"], SyncMerge.stampAfter(100))
+        let m1 = SyncMerge.mergeEntries(local: phone, localStamps: ps, remote: mac, remoteStamps: ms)
+        let m2 = SyncMerge.mergeEntries(local: mac, localStamps: ms, remote: phone, remoteStamps: ps)
+        XCTAssertEqual(m1.value, phone)   // the name stays
+        XCTAssertEqual(m2.value, phone)
+        // With nothing changed elsewhere, the Mac's change still reaches a device that has the details as they were.
+        XCTAssertEqual(SyncMerge.mergeEntries(local: base, localStamps: ["tv1": 100], remote: mac, remoteStamps: ms).value, mac)
+        // Changed by a person here as well since the last look: stamped as new.
+        let both = #"{"tv1":{"alias":"Den","lastHost":"192.168.1.33","platform":"android"}}"#
+        XCTAssertEqual(SyncMerge.stampEntries(old: base, new: both, stamps: ["tv1": 100], now: 205,
+                                              automatic: ["tv1": (from: entry(base), to: entry(mac))])["tv1"], 205)
+    }
+
     func testUnstampedEntriesFillInWithoutOverwriting() {
         // A new device's old settings (no stamps) never replace an entry the family set.
         let m = SyncMerge.mergeEntries(local: #"{"a":"old","c":"mine"}"#, localStamps: [:],
