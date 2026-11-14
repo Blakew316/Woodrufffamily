@@ -515,6 +515,8 @@ public final class FilmPlayer: @unchecked Sendable {
             then(nil)
             #else
             guard let renderer = self.pictureRenderer else { return then(nil) }
+            // (Newer than the package's oldest systems; every device of the family's has it.)
+            guard #available(macOS 15.0, iOS 18.0, tvOS 18.0, visionOS 2.0, *) else { return then(nil) }
             renderer.loadVideoPerformanceMetrics { metrics in
                 guard let m = metrics else { return then(nil) }
                 then(String(format: "%ld frames, %ld dropped, %ld damaged, %.1f s late in all", m.totalNumberOfFrames,
