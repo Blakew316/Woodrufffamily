@@ -295,7 +295,8 @@ final class NestAlerts {
             }
             if let title {
                 posted[session] = Posted(title: title, body: name, camera: device, key: key, event: eventID, hasClip: clip != nil, at: Date())
-                if let alert = post(title: title, body: name, camera: device, key: key, event: eventID, clip: clip, quiet: catchingUp, session: session) {
+                if let alert = post(title: title, body: name, camera: device, key: key, event: eventID, clip: clip, quiet: catchingUp,
+                                    session: session, eventSession: (value as? [String: Any])?["eventSessionId"] as? String) {
                     alerts.append(alert)
                 }
             }
@@ -334,11 +335,12 @@ final class NestAlerts {
 
     /// [picture]: the Mac's own frame of the moment (a vehicle it saw), used instead of fetching one; [subject]: where
     /// what it saw is in that frame (shares of it, from its top left).
-    /// [session]: the event session (a clip that comes later for it joins the picture still being got).
+    /// [session]: the event session (a clip that comes later for it joins the picture still being got); [eventSession]:
+    /// Google's own session id, when it gave one (the Google TVs and the LG are told it with the alert's picture).
     /// Returns the alert's work, done once it has gone out (its message is acknowledged then).
     @discardableResult
     private func post(title: String, body: String, camera: String, key: String, event: String?, clip: String?, quiet: Bool = false,
-                      picture: Data? = nil, subject: CGRect? = nil, session: String? = nil) -> Task<Void, Never>? {
+                      picture: Data? = nil, subject: CGRect? = nil, session: String? = nil, eventSession: String? = nil) -> Task<Void, Never>? {
         let short = Self.shortID(key)
         let c = UNMutableNotificationContent()
         c.title = title
@@ -486,9 +488,10 @@ final class NestAlerts {
             /// The alert with [got] as its picture, shown here and sent on: what its picture is, and whether it's cut
             /// close on who or what was seen. [again]: the same alert with a better picture than it went out with,
             /// quietly (no sound, no second banner, no second Live Activity); nil when that picture couldn't be read,
-            /// and nothing changed. On the main actor, as all it touches is (a function made inside the task isn't, by
-            /// itself).
-            @MainActor func show(_ got: (file: URL, source: EventPicture.Source)?, again: Bool) async -> (picture: String, cut: Bool)? {
+            /// and nothing changed. [toTVs]: its picture goes to the Google TVs and the LG too (once per alert: the
+            /// first time it has one). On the main actor, as all it touches is (a function made inside the task isn't,
+            /// by itself).
+            @MainActor func show(_ got: (file: URL, source: EventPicture.Source)?, again: Bool, toTVs: Bool) async -> (picture: String, cut: Bool)? {
                 if again {
                     c.sound = nil
                     c.interruptionLevel = .passive
@@ -564,6 +567,12 @@ final class NestAlerts {
                                                  event: event, clip: race.clip ?? clip, happened: happened)
                 }
                 Notifier.deliver(c, id: id)
+                // The Google TVs' and the LG's card for it: its close-up, else the whole picture (the hub only).
+                if toTVs, !quiet, let forTVs = close ?? shown {
+                    let kind = CameraEventMedia.alertKind(title)
+                    TVCameraPicture.send(camera: camera, name: body, kind: kind == "event" ? "motion" : kind, event: event,
+                                         session: eventSession, at: happened ?? received, cropped: close != nil, file: forTVs)
+                }
                 let result = (picture: what, cut: close != nil)
                 guard !quiet else { return result }
                 // The camera's page lists its last events: this one's picture is kept for it, and its clip (now, if
@@ -616,7 +625,7 @@ final class NestAlerts {
                 return result
             }
             let got = await race.result(googleWait: googleWait, cap: Self.pictureWait, staleCap: Self.pictureWait, last: Self.pictureWait)
-            let first = await show(got, again: false)
+            let first = await show(got, again: false, toTVs: true)
             let shownAt = Date()
             // A better picture than the one it went out with, when one comes in the event's first twenty seconds: the
             // alert is updated with it. (Not waited for here: its message is acknowledged once the alert is out.) Then
@@ -625,7 +634,7 @@ final class NestAlerts {
                 var line = CameraEventMedia.alertLine(camera: body, title: title, happened: happened, shown: shownAt,
                                                       picture: first?.picture ?? "none", cut: first?.cut ?? false)
                 if let better = await race.better(than: got?.source, until: received.addingTimeInterval(20)),
-                   let then = await show(better, again: true) {
+                   let then = await show(better, again: true, toTVs: first?.picture == "none") {
                     let after = happened.map { String(format: " %.1f s after it happened", Date().timeIntervalSince($0)) } ?? ""
                     line += "; a better one\(after): \(then.picture), \(then.cut ? "close on its subject" : "whole")"
                 }

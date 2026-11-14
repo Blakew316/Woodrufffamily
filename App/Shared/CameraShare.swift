@@ -447,4 +447,51 @@ extension CameraShare {
         c.send(content: out, completion: .contentProcessed { _ in c.cancel() })
     }
 }
+
+// MARK: The Google TVs' and the LG's camera alerts
+
+/// The hub: each camera alert's close-up for the family's Google TVs and the LG, whose Woodruff apps show a camera
+/// alert as a card that had no picture (nothing sent them one). Once per alert, as soon as its close-up is picked:
+/// POST /api/camera-picture to every Woodruff TV this Mac is paired with (`Fleet.hubs`; the Apple TVs aren't among
+/// them, and get theirs from GET /events), with the pairing key as every request to them carries it. It never holds
+/// up an alert: it goes on its own, three seconds for each TV and once more at most, and a TV on a build from before
+/// (it answers 404) is left be.
+enum TVCameraPicture {
+    /// [kind]: doorbell, person, motion or vehicle. [file]: the close-up, or the whole picture when nothing was found
+    /// to close in on ([cropped] false).
+    @MainActor
+    static func send(camera: String, name: String, kind: String, event: String?, session: String?, at: Date, cropped: Bool, file: URL) {
+        guard PushRelay.updaterRole() == "hub", !Demo.isOn else { return }
+        let hubs = Fleet.shared.hubs
+        guard !hubs.isEmpty else { return }
+        let ms = Int64(at.timeIntervalSince1970 * 1000)
+        Task.detached(priority: .utility) {
+            guard let jpeg = await CameraEventMedia.smallJPEG(file, maxSide: 720, bytes: 150_000) else { return }
+            let fields: [String: Any] = [
+                "camera": camera, "name": name, "kind": kind, "event": event ?? "", "session": session ?? "",
+                "at": ms, "cropped": cropped, "picture": jpeg.base64EncodedString(),
+            ]
+            guard let body = try? JSONSerialization.data(withJSONObject: fields) else { return }
+            await withTaskGroup(of: Void.self) { group in
+                for hub in hubs {
+                    group.addTask {
+                        let tv = TVTransport(hub.connection)
+                        for attempt in 0..<2 {
+                            do {
+                                _ = try await tv.data("POST", "/api/camera-picture", body: body, timeout: 3)
+                                return
+                            } catch let e as TVError {
+                                // It answered: an older build (404), a key it turns down, or anything else it won't
+                                // take is not sent again.
+                                if let status = e.status, status < 500 { return }
+                            } catch {}
+                            if attempt == 0 { try? await Task.sleep(nanoseconds: 1_000_000_000) }
+                        }
+                        PushRelay.log.notice("camera picture for \(name, privacy: .public): \(hub.name, privacy: .public) couldn’t be reached")
+                    }
+                }
+            }
+        }
+    }
+}
 #endif

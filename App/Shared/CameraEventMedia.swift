@@ -732,6 +732,18 @@ enum CameraEventMedia {
         return CGImageDestinationFinalize(dest) && out.length > 0 ? out as Data : nil
     }
 
+    /// [file]'s picture as a JPEG at most [maxSide] pixels across and about [bytes] at most (a lower quality until it
+    /// fits): what the family's Google TVs and the LG show with a camera alert (`TVCameraPicture`).
+    static func smallJPEG(_ file: URL, maxSide: Int, bytes: Int) async -> Data? {
+        guard let image = await picture(file, maxSide: maxSide) else { return nil }
+        var made: Data?
+        for quality in [0.8, 0.7, 0.6, 0.5, 0.4, 0.3] {
+            made = jpeg(image, quality: quality)
+            if let made, made.count <= bytes { return made }
+        }
+        return made
+    }
+
     /// A picture of the moment for the TVs & Cameras widget: a JPEG at most 480 pixels across. [time]: a clip's frame
     /// that far in (a second in when it isn't said).
     static func still(_ file: URL, at time: Double = 1) async -> Data? {
