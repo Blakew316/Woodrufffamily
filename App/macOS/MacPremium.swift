@@ -47,7 +47,8 @@ struct MiniPlayerView: View {
         let p = tv?.nowPlaying
         HStack(spacing: 14) {
             Group {
-                if let p { NowPlayingArt(playing: p) } else { Color.secondary.opacity(0.18) }
+                // Decoded for its 64 points (256 pixels, as the other small pictures of what's playing), not 1024.
+                if let p { NowPlayingArt(playing: p, maxPixel: 256) } else { Color.secondary.opacity(0.18) }
             }
             .frame(width: 64, height: 64)
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))

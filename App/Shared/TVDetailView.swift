@@ -94,8 +94,9 @@ struct TVDetailView: View {
                     Rectangle().fill(.black)
                     // What's playing now; else, while it's on and nothing plays, its screen as last captured (only then:
                     // the capture goes with the view the moment the TV goes off or starts playing, so it never comes back
-                    // later showing what was on screen before).
-                    if let p = tv.nowPlaying { NowPlayingArt(playing: p, backdrop: true) }
+                    // later showing what was on screen before). The picture is decoded for its 136 points (512 pixels),
+                    // not the 1024 a Home tile gets.
+                    if let p = tv.nowPlaying { NowPlayingArt(playing: p, backdrop: true, maxPixel: 512) }
                     else if tv.online { TVScreenThumb(tvID: tvID, paused: showScreen) }
                     else { Text("Off").font(.caption.weight(.semibold)).foregroundStyle(.white.opacity(0.5)) }
                 }
