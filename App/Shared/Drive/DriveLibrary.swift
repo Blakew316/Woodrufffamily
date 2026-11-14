@@ -589,6 +589,9 @@ final class DriveLibrary: WatchSource {
     /// from a show that's still here). True when something was taken out.
     private func dropLost() async -> Bool {
         guard !saved.movies.isEmpty || !saved.shows.isEmpty else { return false }
+        // Not with a sign-in that wasn't allowed to read Drive's files (its box left unticked on Google's screen): Drive
+        // says "not found" for every one of them then, and every place was taken out, here and on the TVs.
+        guard GoogleDrive.canReadFiles else { return false }
         let now = Date().timeIntervalSince1970
         let all = now - UserDefaults.standard.double(forKey: "watch.placesChecked") > 86_400
         if all {
