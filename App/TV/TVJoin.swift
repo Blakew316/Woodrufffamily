@@ -210,8 +210,8 @@ final class TVJoin {
         c.send(content: out, completion: .contentProcessed { _ in c.cancel() })
     }
 
-    /// This Apple TV's address on the Wi‑Fi or Ethernet (IPv4).
-    private static func address() -> String? {
+    /// This Apple TV's address on the Wi‑Fi or Ethernet (IPv4). (The Apple TVs list leaves this one out by it.)
+    static func address() -> String? {
         var list: UnsafeMutablePointer<ifaddrs>?
         guard getifaddrs(&list) == 0, let first = list else { return nil }
         defer { freeifaddrs(list) }
