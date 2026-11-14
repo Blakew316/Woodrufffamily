@@ -77,17 +77,71 @@ struct NowPlayingArt: View {
             // hqdefault is 4:3 with black bars; filling crops them away.
             Artwork(url: url, maxPixel: maxPixel).scaleEffect(1.34)
         } else {
-            ZStack {
-                LinearGradient(colors: [Color(white: 0.2), Color(white: 0.09)], startPoint: .topLeading, endPoint: .bottomTrailing)
-                // No picture found: at least the title, not the app's name.
-                Text(playing?.title ?? playing?.app ?? "TV")
-                    .font(.system(.headline, design: .rounded).weight(.semibold))
-                    .foregroundStyle(.white.opacity(0.55))
-                    .minimumScaleFactor(0.4)
-                    .lineLimit(1)
-                    .padding(6)
-            }
+            // No picture found: at least the title, not the app's name.
+            NoPictureTile(text: playing?.title ?? playing?.app ?? "TV")
         }
+    }
+}
+
+/// What `NowPlayingArt` shows with no picture: [text] on a quiet dark tile.
+private struct NoPictureTile: View {
+    var text: String
+
+    var body: some View {
+        ZStack {
+            LinearGradient(colors: [Color(white: 0.2), Color(white: 0.09)], startPoint: .topLeading, endPoint: .bottomTrailing)
+            Text(text)
+                .font(.system(.headline, design: .rounded).weight(.semibold))
+                .foregroundStyle(.white.opacity(0.55))
+                .minimumScaleFactor(0.4)
+                .lineLimit(1)
+                .padding(6)
+        }
+    }
+}
+
+/// Now Playing's backdrop for a title with no picture: its tile (`NoPictureTile`) filling its space, blurred by
+/// [radius] once, as `BlurredArtwork` blurs a picture (drawn at a quarter of the size, which a blur this soft can't
+/// tell apart, and blurred off the main thread), not live on every frame drawn over it. Blurred live until then.
+private struct BlurredTitleTile: View {
+    var title: String
+    var radius: CGFloat
+    @Environment(\.dynamicTypeSize) private var typeSize
+    @State private var made: CGImage?
+    @State private var madeFor: String?
+
+    var body: some View {
+        GeometryReader { g in
+            let w = Int(g.size.width.rounded()), h = Int(g.size.height.rounded())
+            let key = "\(title)|\(w)x\(h)|\(radius)|\(typeSize)"
+            Group {
+                if madeFor == key, let made {
+                    Image(decorative: made, scale: 1).resizable()
+                        .frame(width: g.size.width, height: g.size.height)
+                } else {
+                    NoPictureTile(text: title)
+                        .frame(width: g.size.width, height: g.size.height)
+                        .blur(radius: radius, opaque: true)
+                }
+            }
+            .task(id: key) { await make(key, w: w, h: h) }
+        }
+    }
+
+    /// The tile drawn at a quarter of [w] by [h], then blurred off the main thread (`BlurStore.blur`).
+    private func make(_ key: String, w: Int, h: Int) async {
+        guard w > 0, h > 0 else { return }
+        let renderer = ImageRenderer(content: NoPictureTile(text: title)
+            .frame(width: CGFloat(w), height: CGFloat(h))
+            .environment(\.dynamicTypeSize, typeSize))
+        renderer.scale = 0.25
+        renderer.isOpaque = true
+        guard let tile = renderer.cgImage else { return }
+        let k = BlurKey(url: nil, w: w, h: h, radius: radius, opaque: true)
+        let blurred = await Task.detached(priority: .utility) { BlurStore.blur(tile, k) }.value
+        guard let blurred, !Task.isCancelled else { return }
+        made = blurred
+        madeFor = key
     }
 }
 
@@ -748,26 +802,25 @@ struct NowPlayingSheet: View {
             ZStack {
                 Color(white: 0.07)
                 if let p, let url = backdropURL(p) {
-                    // The film's picture: blurred once, not on every frame drawn over it.
-                    BlurredArtwork(url: url, radius: 80, opaque: true, maxPixel: 1800)
+                    // The film's picture: blurred once, not on every frame drawn over it, its colours made richer with
+                    // it (they were made so live, over the whole screen, on every frame).
+                    BlurredArtwork(url: url, radius: 80, opaque: true, maxPixel: 1800, saturation: 1.2)
                         .frame(width: g.size.width, height: g.size.height)
-                        .saturation(1.2)
                         .opacity(0.55)
                         .clipped()
                 } else if let p, let thumb = VideoThumbnails.shared.url(for: p) {
                     // A YouTube video's thumbnail, its black bars cropped away as its picture has them
                     // (`NowPlayingArt`): blurred once too. Blurred live, the whole screen was blurred again on every
                     // frame the sheet drew, and while something plays its progress bar moves all the time.
-                    BlurredArtwork(url: thumb, radius: 80, opaque: true, maxPixel: 1800, zoom: 1.34)
+                    BlurredArtwork(url: thumb, radius: 80, opaque: true, maxPixel: 1800, zoom: 1.34, saturation: 1.2)
                         .frame(width: g.size.width, height: g.size.height)
-                        .saturation(1.2)
                         .opacity(0.55)
                         .clipped()
                 } else if let p {
-                    NowPlayingArt(playing: p, backdrop: true, maxPixel: 1800)
+                    // No picture: its title's tile (`NowPlayingArt`'s), blurred once too. (All greys, which richer
+                    // colours leave as they are.)
+                    BlurredTitleTile(title: p.title, radius: 80)
                         .frame(width: g.size.width, height: g.size.height)
-                        .blur(radius: 80, opaque: true)
-                        .saturation(1.2)
                         .opacity(0.55)
                         .clipped()
                 }

@@ -383,11 +383,13 @@ struct BlurredArtwork: View {
     /// How much larger than filling its space the picture is drawn (about its middle) before it's blurred, as a
     /// `scaleEffect` before the blur would: a YouTube thumbnail's black bars cropped away (`NowPlayingArt`).
     var zoom: CGFloat = 1
+    /// Its colours' saturation once blurred, made with the blur, as a `saturation` after it would be (1: as they are).
+    var saturation: CGFloat = 1
 
     var body: some View {
         GeometryReader { g in
             BlurredArtworkFill(key: BlurKey(url: url, w: Int(g.size.width.rounded()), h: Int(g.size.height.rounded()),
-                                            radius: radius, opaque: opaque, zoom: zoom), maxPixel: maxPixel)
+                                            radius: radius, opaque: opaque, zoom: zoom, saturation: saturation), maxPixel: maxPixel)
         }
     }
 }
@@ -399,6 +401,7 @@ struct BlurKey: Hashable, Sendable {
     var radius: CGFloat
     var opaque: Bool
     var zoom: CGFloat = 1
+    var saturation: CGFloat = 1
 }
 
 private struct BlurredArtworkFill: View {
@@ -415,6 +418,7 @@ private struct BlurredArtworkFill: View {
             } else {
                 Color.clear.overlay { Artwork(url: key.url, maxPixel: maxPixel).scaleEffect(key.zoom) }.clipped()
                     .blur(radius: key.radius, opaque: key.opaque)
+                    .saturation(Double(key.saturation))
             }
         }
         .frame(width: CGFloat(key.w), height: CGFloat(key.h))
@@ -444,7 +448,7 @@ enum BlurStore {
     final class CGImageBox { let image: CGImage; init(_ i: CGImage) { image = i } }
 
     private static func name(_ k: BlurKey) -> NSString {
-        "\(k.url?.absoluteString ?? "")|\(k.w)x\(k.h)|\(k.radius)|\(k.opaque)|\(k.zoom)" as NSString
+        "\(k.url?.absoluteString ?? "")|\(k.w)x\(k.h)|\(k.radius)|\(k.opaque)|\(k.zoom)|\(k.saturation)" as NSString
     }
     static func cached(_ k: BlurKey) -> CGImage? { cache.object(forKey: name(k))?.image }
     static func empty() { cache.removeAllObjects() }
@@ -460,7 +464,7 @@ enum BlurStore {
     }
 
     /// [image] filling a quarter-size box of [k]'s size (centred, cut to it, [k]'s zoom larger), then blurred by a
-    /// quarter of the radius.
+    /// quarter of the radius, and its colours' saturation set as [k] asks.
     static func blur(_ image: CGImage, _ k: BlurKey) -> CGImage? {
         let f: CGFloat = 0.25
         let w = max(1, Int((CGFloat(k.w) * f).rounded(.up))), h = max(1, Int((CGFloat(k.h) * f).rounded(.up)))
@@ -476,7 +480,8 @@ enum BlurStore {
         let input = CIImage(cgImage: filled)
         let extent = input.extent
         let base = k.opaque ? input.clampedToExtent() : input
-        let out = base.applyingGaussianBlur(sigma: Double(k.radius * f)).cropped(to: extent)
+        var out = base.applyingGaussianBlur(sigma: Double(k.radius * f)).cropped(to: extent)
+        if k.saturation != 1 { out = out.applyingFilter("CIColorControls", parameters: [kCIInputSaturationKey: k.saturation]) }
         return context.createCGImage(out, from: extent)
     }
 }
