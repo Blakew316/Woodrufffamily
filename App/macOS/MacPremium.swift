@@ -14,11 +14,19 @@ struct AmbientArtwork: View {
         ZStack {
             if p != nil, fleet.artwork(for: p) != nil {
                 GeometryReader { g in
-                    NowPlayingArt(playing: p, backdrop: true)
-                        .frame(width: g.size.width, height: g.size.height)
-                        .blur(radius: 90, opaque: true)
-                        .saturation(1.3)
-                        .clipped()
+                    if let url = backdropURL(p) {
+                        // Blurred once, off the main thread (`BlurredArtwork`), not live on every frame the window draws.
+                        BlurredArtwork(url: url, radius: 90, opaque: true, maxPixel: 1024)
+                            .frame(width: g.size.width, height: g.size.height)
+                            .saturation(1.3)
+                            .clipped()
+                    } else {
+                        NowPlayingArt(playing: p, backdrop: true)
+                            .frame(width: g.size.width, height: g.size.height)
+                            .blur(radius: 90, opaque: true)
+                            .saturation(1.3)
+                            .clipped()
+                    }
                 }
                 .opacity(0.28)
                 .transition(.opacity)
@@ -28,6 +36,13 @@ struct AmbientArtwork: View {
         .ignoresSafeArea()
         .allowsHitTesting(false)
         .animation(.easeInOut(duration: 1.2), value: p?.title)
+    }
+
+    /// The picture `NowPlayingArt` shows for [p] as a backdrop: the title's backdrop, else its poster.
+    private func backdropURL(_ p: NowPlaying?) -> URL? {
+        let art = fleet.artwork(for: p)
+        guard let path = art?.backdrop ?? art?.poster else { return nil }
+        return fleet.hubClient()?.art(path)
     }
 }
 
