@@ -516,8 +516,14 @@ enum CameraEventMedia {
         guard let image = await picture(file, maxSide: side, at: time ?? 1),
               let cut = SubjectCrop.crop(image, unit: focus), cut.width >= 64, cut.height >= 64, let f = folder else { return nil }
         // Made clear first, on its own tones (a car seen across the street from the porch came out milky): then
-        // enlarged and sharpened, which shows more of edges that are there.
-        let clear = PictureTone.clarified(cut) ?? cut
+        // enlarged and sharpened, which shows more of edges that are there. (On an iPhone, whose notification step has
+        // little memory, only a cut of a size it can spare a copy of: the Mac's own close-up is made clear anyway.)
+        #if os(iOS)
+        let room = cut.width * cut.height <= 1_200_000
+        #else
+        let room = true
+        #endif
+        let clear = room ? (PictureTone.clarified(cut) ?? cut) : cut
         #if os(macOS)
         let shown = enlarged(clear) ?? clear
         #else
