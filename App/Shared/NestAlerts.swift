@@ -213,7 +213,7 @@ final class NestAlerts {
         let topic = (try await call("GET", shared))["topic"] as? String ?? ""
         guard !topic.isEmpty else { throw OAuthRelay.Failure.refused("The family’s doorbell subscription has no topic.") }
         let made: [String: Any] = [
-            "topic": topic, "ackDeadlineSeconds": 30, "messageRetentionDuration": "600s",
+            "topic": topic, "ackDeadlineSeconds": 30, "messageRetentionDuration": Self.retention,
             "expirationPolicy": ["ttl": "86400s"], "labels": ["made-by": "woodruff-family-app"],
         ]
         do {
@@ -221,14 +221,36 @@ final class NestAlerts {
         } catch let e as OAuthRelay.Failure where e.localizedDescription.contains("ALREADY_EXISTS") || e.localizedDescription.contains("409") {
             // Made before: still on the family's topic? One left on a topic since made again (Google then names it
             // "_deleted-topic_") hears nothing ever again, though every listen works: it's made again, on this one.
-            if let kept = (try? await call("GET", name))?["topic"] as? String, kept != topic {
+            let kept = try? await call("GET", name)
+            if let was = kept?["topic"] as? String, was != topic {
                 PushRelay.log.notice("camera listener: this device's subscription was on another topic, made again")
                 _ = try? await call("DELETE", name)
                 _ = try await call("PUT", name, made)
+            } else if let held = Self.seconds(kept?["messageRetentionDuration"]), held < 3600 {
+                // Made keeping its messages ten minutes: a device off any longer (an update, a restart, the network)
+                // lost the alerts that came meanwhile. Changed to an hour.
+                do {
+                    _ = try await call("PATCH", name, ["subscription": ["messageRetentionDuration": Self.retention],
+                                                       "updateMask": "messageRetentionDuration"])
+                    PushRelay.log.notice("camera listener: this device's subscription keeps its messages an hour now")
+                } catch {
+                    PushRelay.log.notice("camera listener: this device's subscription still keeps its messages \(Int(held), privacy: .public) s: \(error.localizedDescription, privacy: .public)")
+                }
             }
         }
         own = name
         return name
+    }
+
+    /// How long this device's subscription keeps a message it hasn't taken: an hour, so a device that was off a while
+    /// (an update, a restart, the network) still gets what came meanwhile. (An alert more than a quarter of an hour old
+    /// still isn't shown: `handle`.)
+    private static let retention = "3600s"
+
+    /// A length of time as Google writes it ("600s"), in seconds.
+    private static func seconds(_ value: Any?) -> Double? {
+        guard let s = value as? String, s.hasSuffix("s") else { return nil }
+        return Double(String(s.dropLast()))
     }
 
     private func call(_ method: String, _ path: String, _ body: [String: Any]? = nil, timeout: Double = 20, retried: Bool = false) async throws -> [String: Any] {
