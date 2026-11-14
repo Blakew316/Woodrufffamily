@@ -128,8 +128,10 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
             let macClose = closeUp.state.value, got = whole.state.value
             // The whole picture (the Mac Studio's full-size one, or Google's snapshot or clip) is kept for the
             // camera's page as well: an event there opens full size, with the Mac Studio out of reach. And the
-            // picture this alert shows, for when the whole one didn't come.
-            if let file = got?.file { CameraEventMedia.keepAlertFile(file, key: key) }
+            // picture this alert shows, for when the whole one didn't come. The same alert again (the Mac Studio's
+            // quiet update of it, with a better picture) puts its pictures in the first ones' place: the page kept
+            // the first.
+            if let file = got?.file { CameraEventMedia.keepAlertFile(file, key: key, replacing: repeated && got?.fromMac == true) }
             var alertPicture: URL? = macClose
             if let macClose, let a = CameraEventMedia.attachment(macClose) {
                 // The Mac's close-up is the alert's picture. The widgets' still is the whole picture when it came
@@ -181,7 +183,7 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
             if !self.hasPicture, let latest = Self.latestPicture(camera: camera), let a = CameraEventMedia.attachment(latest) {
                 self.set([a], "The camera’s latest picture attached", source: "the camera’s latest picture")
             }
-            CameraEventMedia.keepAlertPicture(alertPicture, jpeg: thumbStill, key: key)
+            CameraEventMedia.keepAlertPicture(alertPicture, jpeg: thumbStill, key: key, replacing: repeated)
             self.finish()
         }
     }

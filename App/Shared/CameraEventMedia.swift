@@ -312,22 +312,31 @@ enum CameraEventMedia {
     }
 
     /// What an alert fetched of its event, kept for the camera's page: the whole picture ([file] a JPEG: the Mac
-    /// Studio's full-size one, or Google's snapshot) or Google's clip of it (an mp4). The first of each stays.
-    static func keepAlertFile(_ file: URL, key: String) {
+    /// Studio's full-size one, or Google's snapshot) or Google's clip of it (an mp4). The first of each stays, except
+    /// that [replacing] a picture takes the kept one's place: the Mac Studio's better one, in its quiet update of an
+    /// alert already here (the page kept the first).
+    static func keepAlertFile(_ file: URL, key: String, replacing: Bool = false) {
         let ext = file.pathExtension.lowercased()
-        guard ext == "jpg" || ext == "mp4", let out = historyFile(key, ext),
-              !FileManager.default.fileExists(atPath: out.path) else { return }
+        guard ext == "jpg" || ext == "mp4", let out = historyFile(key, ext) else { return }
+        if replacing, ext == "jpg", let d = try? Data(contentsOf: file), d.count > 500 {
+            try? d.write(to: out, options: .atomic)
+            return
+        }
+        guard !FileManager.default.fileExists(atPath: out.path) else { return }
         try? FileManager.default.copyItem(at: file, to: out)
     }
 
     /// The picture the alert itself showed ([file], or [jpeg]): what the camera's page has of the event when nothing
-    /// fuller could be fetched (with the whole picture kept, it isn't needed).
-    static func keepAlertPicture(_ file: URL?, jpeg: Data? = nil, key: String) {
+    /// fuller could be fetched (with the whole picture kept, it isn't needed). [replacing]: an update of an alert
+    /// already here, whose picture takes the kept one's place.
+    static func keepAlertPicture(_ file: URL?, jpeg: Data? = nil, key: String, replacing: Bool = false) {
         let manager = FileManager.default
-        guard let out = historyFile(key, "alert.jpg"), !manager.fileExists(atPath: out.path),
+        guard let out = historyFile(key, "alert.jpg"), replacing || !manager.fileExists(atPath: out.path),
               let whole = historyFile(key, "jpg"), !manager.fileExists(atPath: whole.path) else { return }
-        if let file, ["jpg", "jpeg"].contains(file.pathExtension.lowercased()),
-           (try? FileManager.default.copyItem(at: file, to: out)) != nil { return }
+        if let file, ["jpg", "jpeg"].contains(file.pathExtension.lowercased()) {
+            if replacing, let d = try? Data(contentsOf: file), (try? d.write(to: out, options: .atomic)) != nil { return }
+            if !replacing, (try? FileManager.default.copyItem(at: file, to: out)) != nil { return }
+        }
         if let jpeg, jpeg.count > 200 { try? jpeg.write(to: out, options: .atomic) }
     }
     #endif
