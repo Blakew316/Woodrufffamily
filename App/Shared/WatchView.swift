@@ -483,8 +483,10 @@ struct WatchView: View {
         await restoreSections()
         // Read moments ago by this page before it was left and come back to (the Mac builds it again each time Watch
         // is picked): what the app kept shows, and the next read waits until it's due. Reading again at once was a
-        // request and a redraw at every visit.
-        if let id = client?.sourceID, let at = Self.lastRead[id], fleet.libraryFrom == id, fleet.library != nil {
+        // request and a redraw at every visit. The Drive library (Apple TV's) too, when this page still has its answer
+        // to show meanwhile (Movies and TV Shows keep theirs between visits; the app keeps no copy of it to show).
+        if let id = client?.sourceID, let at = Self.lastRead[id],
+           (fleet.libraryFrom == id && fleet.library != nil) || (id == "drive" && homeFrom == id && home != nil) {
             let since = Date().timeIntervalSince(at)
             if since >= 0 && since < 30 { try? await Task.sleep(nanoseconds: UInt64((30 - since) * 1_000_000_000)) }
         }
