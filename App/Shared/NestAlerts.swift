@@ -263,6 +263,9 @@ final class NestAlerts {
         }
         let (d, resp) = try await URLSession.shared.data(for: r)
         let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+        if let said = (resp as? HTTPURLResponse)?.value(forHTTPHeaderField: "Date"), let at = Self.httpDate.date(from: said) {
+            googleClock = (at, Date())
+        }
         let json = (try? JSONSerialization.jsonObject(with: d) as? [String: Any]) ?? [:]
         guard (200..<300).contains(code) else {
             // The sign-in ran out early (Google ended it, or another device's renewal replaced it): renew it once and
@@ -280,6 +283,25 @@ final class NestAlerts {
         return json
     }
 
+    /// Google's clock as its last answer here gave it (the Date it was sent), with this device's clock at that moment.
+    private var googleClock: (google: Date, here: Date)?
+
+    /// Now by Google's clock, as near as its last answer tells (this device's own clock until one has come). An event's
+    /// age is judged by it: by this device's clock, one set a quarter of an hour fast dropped every alert as old news.
+    private var googleNow: Date {
+        guard let c = googleClock else { return Date() }
+        return c.google.addingTimeInterval(Date().timeIntervalSince(c.here))
+    }
+
+    /// An answer's Date ("Sat, 14 Nov 2026 18:05:09 GMT").
+    private static let httpDate: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = TimeZone(identifier: "GMT")
+        f.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
+        return f
+    }()
+
     // MARK: Events → notifications
 
     /// The alerts it started, each done once it has gone out (or was found already shown).
@@ -293,8 +315,11 @@ final class NestAlerts {
         var alerts: [Task<Void, Never>] = []
         // When it happened, by Google's clock: how late it reached this device is logged and shown in Settings.
         let happened = (ev["timestamp"] as? String).flatMap { ISO8601DateFormatter.withFraction.date(from: $0) ?? ISO8601DateFormatter.plain.date(from: $0) }
-        if let happened {
-            let late = Int(-happened.timeIntervalSinceNow)
+        // How long ago that was, by Google's clock too (`googleNow`), so a clock set wrong here neither drops every
+        // alert nor lets old ones through.
+        let age = happened.map { googleNow.timeIntervalSince($0) }
+        if let age {
+            let late = Int(age)
             PushRelay.log.notice("camera event reached this device \(late, privacy: .public) s after it happened")
             // Older than a quarter of an hour (the phone was asleep a long time): old news, not shown.
             if late > 900 {
@@ -305,7 +330,7 @@ final class NestAlerts {
         eventHappened = happened
         #if os(iOS) || os(tvOS)
         // Caught up later (the iPhone was closed or asleep when the Mac's push should have come): shown, quietly.
-        let catchingUp = happened.map { -$0.timeIntervalSinceNow > 60 } ?? false
+        let catchingUp = age.map { $0 > 60 } ?? false
         #else
         let catchingUp = false
         #endif
