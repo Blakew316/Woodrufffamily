@@ -499,7 +499,8 @@ struct TVRow: View {
                 #endif
                 // What's playing now (a title left paused reads as nothing playing, as on its Home tile).
                 if let p = tv.nowPlaying, let d = p.duration, d > 0 {
-                    TimelineView(.periodic(from: .now, by: 1)) { ctx in
+                    // Once a second while it plays; paused, it stands still (it was drawn again every second anyway).
+                    TimelineView(.animation(minimumInterval: 1, paused: !p.isPlaying)) { ctx in
                         // From when the TV's answer arrived (as the player's bar does), so every screen agrees.
                         let pos = min(d, livePosition(p, at: ctx.date, since: fleet.refreshedAt))
                         GeometryReader { g in
