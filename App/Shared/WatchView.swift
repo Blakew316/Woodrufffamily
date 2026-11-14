@@ -3110,15 +3110,20 @@ enum WatchPrefetch {
     private static func warmKept(source: String, client: any WatchSource) async {
         let place = UserDefaults.standard.string(forKey: "watch.section") == "shows" ? "shows" : "movies"
         guard let titles = await ShelfStore.shared.titles(source: source, place: place), !titles.isEmpty else { return }
-        let banner = WatchRows.featured(titles, section: place).first.flatMap { client.artURL($0.backdrop ?? $0.poster) }
+        // The banner's first title and the first row's, picked off the main thread: arranging the whole list into its
+        // rows (every genre's) for the one row it needs held the main thread a second after the app opened.
+        let picked = await Task.detached(priority: .userInitiated) {
+            (banner: WatchRows.featured(titles, section: place).first, row: Array((WatchRows.rows(titles).first?.titles ?? []).prefix(14)))
+        }.value
+        let banner = picked.banner.flatMap { client.artURL($0.backdrop ?? $0.poster) }
         #if os(tvOS)
         // Apple TV: the copies its posters are drawn from (`tvLarge`), made ready at the size they're drawn at on a
         // 4K screen, and the banner's picture at the size its banner asks for.
-        let first = (WatchRows.rows(titles).first?.titles ?? []).prefix(14).compactMap { tvLarge(client.artURL($0.poster)) }
+        let first = picked.row.compactMap { tvLarge(client.artURL($0.poster)) }
         if let banner { _ = await ImageStore.shared.image(banner, maxPixel: 2400) }
         for u in first.prefix(6) { _ = await ImageStore.shared.image(u, maxPixel: 1024) }
         #else
-        let first = (WatchRows.rows(titles).first?.titles ?? []).prefix(14).compactMap { client.artURL($0.poster) }
+        let first = picked.row.compactMap { client.artURL($0.poster) }
         if let banner { _ = await ImageStore.shared.image(banner, maxPixel: 1800) }
         for u in first.prefix(6) { _ = await ImageStore.shared.image(u, maxPixel: 512) }
         #endif
