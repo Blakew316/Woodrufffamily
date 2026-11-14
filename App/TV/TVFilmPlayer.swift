@@ -673,6 +673,10 @@ final class OwnPlayer {
             if n.beatRestarted > 0 { words += ", the beat begun again \(n.beatRestarted) times" }
         }
         if n.renewed > 0 { words += ", its decoder emptied and given the film again \(n.renewed) times" }
+        if n.pictureOffMost > 0 || n.pictureSteps > 0 {
+            words += String(format: ", on the screen’s clock at most %.0f ms from the sound’s (set back on it %ld times)",
+                            n.pictureOffMost * 1000, n.pictureSteps)
+        }
         if n.setsTakenOut > 0 { words += ", the settings repeated inside \(n.setsTakenOut) frames taken out" }
         // What the frames are made of (keyframes of each kind, frames that look back past one, end-of-sequence
         // markers, Dolby Vision's own data) and what Apple's reader marked them with: why frames drop, if they do.

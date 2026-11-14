@@ -17,8 +17,11 @@ public protocol FilmBytes: AnyObject {
 /// Apple's player reads a film by asking for whichever sample comes next in time. For a film whose sound and picture
 /// are stored far apart that means hopping between the two some hundreds of times a second, and it stops every
 /// twenty seconds or so. This one reads each track straight on from its own place, as the Android TVs' player does,
-/// and hands each sample to Apple's own decoders: the picture to a display layer, the sound to a sound renderer,
-/// both on one clock.
+/// and hands each sample to Apple's own decoders: the picture to a display layer, the sound to a sound renderer.
+/// The sound plays on its own clock (the sound output's) and the picture on the screen's (the host's), kept in step
+/// with the sound's: on an Apple TV, a display layer timed by the sound's clock dropped about one frame in ten, none
+/// of them late, because the two clocks aren't the same and a frame can't be shown between two of the screen's
+/// refreshes. Other players on Apple TV found the same and present on the host's clock (plezy #1776, MPVUI #11).
 ///
 /// - Apple's reader of the file's index says where each sample is and when it plays (`FilmTrackReader`).
 /// - The bytes come from `FilmBytes` (the app's Drive stream), a run at a time.
@@ -153,6 +156,10 @@ public final class FilmPlayer: @unchecked Sendable {
         public var droppedSoFar: [Int] = []
         /// Times the picture's decoder was emptied and given the film again (`renewPicture`).
         public var renewed = 0
+        /// The picture on the screen's clock: the furthest it was from the sound's (seconds), and the times it was
+        /// set back on the sound's (`keepPictureInStep`).
+        public var pictureOffMost = 0.0
+        public var pictureSteps = 0
     }
 
     /// What the film is, once it's open.
@@ -247,7 +254,15 @@ public final class FilmPlayer: @unchecked Sendable {
     private let asset: AVAsset
     private let bytes: FilmBytes
     private let queue = DispatchQueue(label: "woodruff.film-player", qos: .userInitiated)
+    /// The sound's clock: the film's time, which everything else follows.
     private let clock = AVSampleBufferRenderSynchronizer()
+    /// The picture's clock: the host's (the screen's), started with the sound's and kept within a frame of it.
+    private let pictureClock = AVSampleBufferRenderSynchronizer()
+    /// Asked to start then, waiting for both decoders to have what they need (two seconds at most).
+    private var startPending: Date?
+    /// When the picture's clock was last held up against the sound's, and how far apart they've been lately.
+    private var stepCheckedAt = Date.distantPast
+    private var pictureOffAverage = 0.0
     private let soundRenderer = AVSampleBufferAudioRenderer()
     private var pictureRenderer: AVSampleBufferVideoRenderer?
     private var timer: DispatchSourceTimer?
@@ -302,6 +317,9 @@ public final class FilmPlayer: @unchecked Sendable {
         self.asset = asset
         self.bytes = bytes
         clock.addRenderer(soundRenderer)
+        // Started by `startClocks`, at a moment both decoders are ready for, on both clocks at once.
+        clock.delaysRateChangeUntilHasSufficientMediaData = false
+        pictureClock.delaysRateChangeUntilHasSufficientMediaData = false
         // The sound output changed (another speaker, another format): the renderer let go of what it had, and wants
         // the sound again from where it says.
         flushWatch = NotificationCenter.default.addObserver(forName: .AVSampleBufferAudioRendererWasFlushedAutomatically,
@@ -538,7 +556,7 @@ public final class FilmPlayer: @unchecked Sendable {
         queue.async {
             guard self.pictureRenderer == nil else { return }
             self.pictureRenderer = renderer
-            self.clock.addRenderer(renderer)
+            self.pictureClock.addRenderer(renderer)
         }
     }
 
@@ -635,7 +653,7 @@ public final class FilmPlayer: @unchecked Sendable {
             self.wanted = false
             self.settleWait()
             self.waiting = false
-            self.clock.rate = 0
+            self.stopClocks()
             self.publish()
         }
     }
@@ -733,7 +751,7 @@ public final class FilmPlayer: @unchecked Sendable {
             self.timer?.cancel()
             self.timer = nil
             self.bytes.forgetReads()
-            self.clock.rate = 0
+            self.stopClocks()
             for pipe in [self.picturePipe, self.soundPipe].compactMap({ $0 }) {
                 if pipe.requesting { self.renderer(for: pipe)?.stopRequestingMediaData() }
                 pipe.requesting = false
@@ -763,7 +781,7 @@ public final class FilmPlayer: @unchecked Sendable {
         lock.unlock()
         let pipes = [picturePipe, soundPipe].compactMap { $0 }
         for pipe in pipes { reset(pipe, to: target) }
-        clock.setRate(0, time: target)
+        stopClocks(at: target)
         waiting = wanted
         resetWords(to: target)
         for pipe in pipes { fill(pipe) }
@@ -1057,7 +1075,76 @@ public final class FilmPlayer: @unchecked Sendable {
             fill(pipe)
         }
         judge()
+        advanceStart()
+        keepPictureInStep()
         words()
+    }
+
+    // MARK: The two clocks
+
+    /// Both clocks stopped: where [time] says (the film was moved), else the picture's where the sound's stopped.
+    private func stopClocks(at time: CMTime? = nil) {
+        startPending = nil
+        if let time {
+            clock.setRate(0, time: time)
+            pictureClock.setRate(0, time: time)
+        } else {
+            clock.rate = 0
+            pictureClock.setRate(0, time: clock.currentTime())
+        }
+    }
+
+    /// Both clocks go from where the film is, once both decoders have what they need to start.
+    private func startClocks() {
+        startPending = Date()
+        advanceStart()
+    }
+
+    /// (Asked again at every tick while it waits.) Both clocks started at one moment a twentieth of a second ahead,
+    /// once the sound's and the picture's decoders say they have what they need, or after two seconds whatever they
+    /// say.
+    private func advanceStart() {
+        guard let since = startPending else { return }
+        guard wanted, !waiting, !closed, why == nil, !ended else {
+            startPending = nil
+            return
+        }
+        let soundReady = soundPipe == nil || soundRenderer.hasSufficientMediaDataForReliablePlaybackStart
+        let pictureReady = showing == nil || (pictureRenderer?.hasSufficientMediaDataForReliablePlaybackStart ?? true)
+        if !(soundReady && pictureReady), Date().timeIntervalSince(since) < 2 { return }
+        startPending = nil
+        let host = CMClockGetHostTimeClock()
+        let at = CMTimeAdd(CMClockGetTime(host), CMTime(value: 1, timescale: 20))
+        let from = clock.currentTime()
+        clock.setRate(1, time: from, atHostTime: at)
+        pictureClock.setRate(1, time: from, atHostTime: at)
+        stepCheckedAt = Date()
+        pictureOffAverage = 0
+    }
+
+    /// Once a second while both run: how far the picture's clock is from the sound's (the two drift apart by a few
+    /// milliseconds a minute). Past 30 ms on average, well inside what anyone sees or hears, the picture's is set
+    /// back on the sound's: one frame at most is shown early or late then, instead of one in ten all the time.
+    private func keepPictureInStep() {
+        guard pictureRenderer != nil, startPending == nil, Date().timeIntervalSince(stepCheckedAt) >= 1,
+              CMTimebaseGetRate(clock.timebase) > 0, CMTimebaseGetRate(pictureClock.timebase) > 0 else { return }
+        stepCheckedAt = Date()
+        let host = CMClockGetHostTimeClock()
+        let now = CMClockGetTime(host)
+        let off = CMTimeSubtract(CMSyncConvertTime(now, from: host, to: pictureClock.timebase),
+                                 CMSyncConvertTime(now, from: host, to: clock.timebase)).seconds
+        guard off.isFinite else { return }
+        pictureOffAverage = pictureOffAverage * 0.7 + off * 0.3
+        lock.lock()
+        sharedNotes.pictureOffMost = max(sharedNotes.pictureOffMost, abs(off))
+        lock.unlock()
+        guard abs(pictureOffAverage) > 0.03 else { return }
+        let at = CMTimeAdd(now, CMTime(value: 1, timescale: 50))
+        pictureClock.setRate(1, time: CMSyncConvertTime(at, from: host, to: clock.timebase), atHostTime: at)
+        pictureOffAverage = 0
+        lock.lock()
+        sharedNotes.pictureSteps += 1
+        lock.unlock()
     }
 
     private func ahead(_ pipe: Pipe?, _ now: CMTime) -> Double? {
@@ -1085,7 +1172,7 @@ public final class FilmPlayer: @unchecked Sendable {
                 ended = true
                 wanted = false
                 waiting = false
-                clock.rate = 0
+                stopClocks()
                 publish()
                 return
             }
@@ -1112,7 +1199,7 @@ public final class FilmPlayer: @unchecked Sendable {
         case .go:
             settleWait()
             waiting = false
-            clock.rate = 1
+            startClocks()
             if let asked = startAsked {
                 startAsked = nil
                 lock.lock()
@@ -1124,7 +1211,7 @@ public final class FilmPlayer: @unchecked Sendable {
             waiting = true
             hasWaited = true
             waitBegan = Date()
-            clock.rate = 0
+            stopClocks()
             lock.lock()
             sharedNotes.waits += 1
             lock.unlock()
@@ -1199,7 +1286,7 @@ public final class FilmPlayer: @unchecked Sendable {
         why = error
         wanted = false
         waiting = false
-        clock.rate = 0
+        stopClocks()
         publish()
     }
 
