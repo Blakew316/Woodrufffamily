@@ -428,6 +428,8 @@ struct VehicleAlertsSection: View {
     private let nest = NestCameras.shared
     @State private var watched = VehicleWatch.shared.watched
     @State private var testMode = VehicleWatch.shared.testMode
+    /// The last vehicle's picture, read from its file once (not at every redraw of the section).
+    @State private var lastImage: NSImage?
 
     var body: some View {
         Section {
@@ -450,12 +452,13 @@ struct VehicleAlertsSection: View {
             }
             if let last = watch.last {
                 HStack(spacing: 12) {
-                    if let image = NSImage(contentsOf: last.file) {
+                    if let image = lastImage {
                         Image(nsImage: image).resizable().scaledToFit().frame(width: 96)
                             .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
                     }
                     Text("Last vehicle: \(last.at.formatted(date: .omitted, time: .shortened)), \(last.camera)")
                 }
+                .task(id: last.file) { lastImage = NSImage(contentsOf: last.file) }
             }
         } header: { Text("Vehicle Alerts") } footer: {
             Text(VehicleWatch.watchesHere
