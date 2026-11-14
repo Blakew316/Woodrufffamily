@@ -91,9 +91,14 @@ final class NestAlerts {
             beat(received: (r["receivedMessages"] as? [Any])?.count ?? 0)
             var acks: [String] = []
             for m in r["receivedMessages"] as? [[String: Any]] ?? [] {
-                if let a = m["ackId"] as? String { acks.append(a) }
+                var alerts: [Task<Void, Never>] = []
                 if let msg = m["message"] as? [String: Any], let b64 = msg["data"] as? String, let d = Data(base64Encoded: b64),
-                   let ev = try? JSONSerialization.jsonObject(with: d) as? [String: Any] { handle(ev, messageID: msg["messageId"] as? String) }
+                   let ev = try? JSONSerialization.jsonObject(with: d) as? [String: Any] { alerts = handle(ev, messageID: msg["messageId"] as? String) }
+                guard let a = m["ackId"] as? String else { continue }
+                // A message with an alert to show is acknowledged once that alert has gone out: until then Google keeps
+                // it, and sends it again if this device stops first (the app quit for an update, or ended by iOS).
+                // Acknowledged as it came, an alert the app never got to show was lost.
+                if alerts.isEmpty { acks.append(a) } else { acknowledge(a, on: sub, after: alerts) }
             }
             if !acks.isEmpty { _ = try? await call("POST", "\(sub):acknowledge", ["ackIds": acks]) }
             status = "On"
@@ -110,6 +115,14 @@ final class NestAlerts {
             // The subscription went away (unused a day): make it again next time.
             if error.localizedDescription.contains("NOT_FOUND") { own = nil }
             return false
+        }
+    }
+
+    /// Acknowledges the message [ack] once each of [alerts] has gone out.
+    private func acknowledge(_ ack: String, on sub: String, after alerts: [Task<Void, Never>]) {
+        Task {
+            for a in alerts { await a.value }
+            _ = try? await call("POST", "\(sub):acknowledge", ["ackIds": [ack]])
         }
     }
 
@@ -186,13 +199,15 @@ final class NestAlerts {
 
     // MARK: Events → notifications
 
-    private func handle(_ ev: [String: Any], messageID: String?) {
-        guard let upd = ev["resourceUpdate"] as? [String: Any], let device = upd["name"] as? String else { return }
+    /// The alerts it started, each done once it has gone out (or was found already shown).
+    private func handle(_ ev: [String: Any], messageID: String?) -> [Task<Void, Never>] {
+        guard let upd = ev["resourceUpdate"] as? [String: Any], let device = upd["name"] as? String else { return [] }
         // A trait change, not an event: a camera going offline or coming back shows on its tile.
         if let status = ((upd["traits"] as? [String: Any])?["sdm.devices.traits.Connectivity"] as? [String: Any])?["status"] as? String {
             NestCameras.shared.setOnline(device, status.uppercased() != "OFFLINE")
         }
-        guard let events = upd["events"] as? [String: Any] else { return }
+        guard let events = upd["events"] as? [String: Any] else { return [] }
+        var alerts: [Task<Void, Never>] = []
         // When it happened, by Google's clock: how late it reached this device is logged and shown in Settings.
         let happened = (ev["timestamp"] as? String).flatMap { ISO8601DateFormatter.withFraction.date(from: $0) ?? ISO8601DateFormatter.plain.date(from: $0) }
         if let happened {
@@ -201,7 +216,7 @@ final class NestAlerts {
             // Older than a quarter of an hour (the phone was asleep a long time): old news, not shown.
             if late > 900 {
                 PushRelay.log.notice("camera event dropped: \(late, privacy: .public) s old")
-                return
+                return []
             }
         }
         eventHappened = happened
@@ -262,7 +277,9 @@ final class NestAlerts {
             }
             if let title {
                 posted[session] = Posted(title: title, body: name, camera: device, key: key, event: eventID, hasClip: clip != nil, at: Date())
-                post(title: title, body: name, camera: device, key: key, event: eventID, clip: clip, quiet: catchingUp, session: session)
+                if let alert = post(title: title, body: name, camera: device, key: key, event: eventID, clip: clip, quiet: catchingUp, session: session) {
+                    alerts.append(alert)
+                }
             }
         }
         seen = seen.filter { $0.value.timeIntervalSinceNow > -3600 }
@@ -270,6 +287,7 @@ final class NestAlerts {
         #if os(iOS)
         laterClips = laterClips.filter { posted[$0.key] != nil }
         #endif
+        return alerts
     }
 
     /// [quiet]: an update of an alert already shown (its clip came later), so no second sound.
@@ -296,8 +314,10 @@ final class NestAlerts {
 
     /// [picture]: the Mac's own frame of the moment (a vehicle it saw), used instead of fetching one.
     /// [session]: the event session (a clip that comes later for it joins the picture still being got).
+    /// Returns the alert's work, done once it has gone out (its message is acknowledged then).
+    @discardableResult
     private func post(title: String, body: String, camera: String, key: String, event: String?, clip: String?, quiet: Bool = false,
-                      picture: Data? = nil, session: String? = nil) {
+                      picture: Data? = nil, session: String? = nil) -> Task<Void, Never>? {
         let short = Self.shortID(key)
         let c = UNMutableNotificationContent()
         c.title = title
@@ -328,7 +348,7 @@ final class NestAlerts {
         let google = Task { await CameraEventMedia.fetch(camera: camera, eventID: event, clipURL: clip, key: short, until: Date().addingTimeInterval(25)) }
         // One alert per event, with its picture. The Mac's push normally brings it (picture included), so the iPhone
         // shows its own only when that hasn't come: after a short wait for it, or at once when catching up.
-        Task {
+        return Task {
             if !quiet { try? await Task.sleep(nanoseconds: 15_000_000_000) }
             let shown = await Self.alreadyShown(id: id, key: short)
             // The visit's clip, when it came in a later message meanwhile (a ring's comes a few seconds after it, and
@@ -405,7 +425,7 @@ final class NestAlerts {
         if let session { racing[session] = race }
         race.start(given: picture)
         let googleWait: Double = EventPicture.googleGives(camera) ? (ring ? 2.5 : 4.5) : 0
-        Task { [weak self] in
+        return Task { [weak self] in
             let got = await race.result(googleWait: googleWait, cap: ring ? 4 : 7, staleCap: ring ? 8 : 12, last: 20)
             if let session, self?.racing[session] === race { self?.racing[session] = nil }
             var thumb: String?
@@ -519,6 +539,8 @@ final class NestAlerts {
             }
             Notifier.deliver(c, id: id)
         }
+        #else
+        return nil
         #endif
     }
 
