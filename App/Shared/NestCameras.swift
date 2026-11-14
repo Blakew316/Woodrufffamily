@@ -8,6 +8,7 @@ import WidgetKit
 import os
 #if os(macOS)
 import AppKit
+import ImageIO
 #endif
 import WoodruffKit
 #if os(iOS) || os(tvOS)
@@ -527,13 +528,20 @@ final class CameraStreams {
                 }
             }
             #else
-            let loaded = found
+            // Decoded here too, as the iPhone's are: made from their bytes on the main thread, each camera's picture
+            // (1280 pixels across on the Mac) was decoded there the moment Home first drew its tile.
+            var decoded: [String: (NSImage, Date)] = [:]
+            for (id, d) in found {
+                guard let src = CGImageSourceCreateWithData(d.0 as CFData, nil),
+                      let cg = CGImageSourceCreateImageAtIndex(src, 0, [kCGImageSourceShouldCacheImmediately: true] as CFDictionary)
+                else { continue }
+                decoded[id] = (NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height)), d.1)
+            }
+            let ready = decoded
             await MainActor.run {
-                for (id, d) in loaded where CameraStreams.shared.stills[id] == nil {
-                    if let img = PlatformImage(data: d.0) {
-                        CameraStreams.shared.stillAt[id] = d.1
-                        CameraStreams.shared.stills[id] = img
-                    }
+                for (id, d) in ready where CameraStreams.shared.stills[id] == nil {
+                    CameraStreams.shared.stillAt[id] = d.1
+                    CameraStreams.shared.stills[id] = d.0
                 }
             }
             #endif
