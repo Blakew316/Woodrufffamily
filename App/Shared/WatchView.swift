@@ -379,9 +379,17 @@ struct WatchView: View {
         if !force, sectionTitles[place] != nil, let at = sectionRead[place], Date().timeIntervalSince(at) < 600 { return }
         let source = c.sourceID
         // Already being read (the page asks as it opens, every minute, and when the section or library changes):
-        // one read of the whole list at a time, unless asked for a fresh one.
+        // one read of the whole list at a time. One asked for afresh meanwhile waits for it to finish (half a minute
+        // at most) instead of reading the whole list again alongside it (a film closing asked for both at once).
         let reading = source + "|" + place
-        if !force && readingSections.contains(reading) { return }
+        if readingSections.contains(reading) {
+            guard force else { return }
+            let until = Date().addingTimeInterval(30)
+            while readingSections.contains(reading), Date() < until, !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+            return
+        }
         readingSections.insert(reading)
         defer { readingSections.remove(reading) }
         var all: [Title] = []
