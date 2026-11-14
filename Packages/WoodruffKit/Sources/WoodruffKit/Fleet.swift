@@ -1372,16 +1372,20 @@ public final class Fleet {
         return r
     }
 
-    /// Connects LG direct control (the TV asks "Allow?" the first time) and keeps its key.
+    /// Connects LG direct control (the TV asks "Allow?" the first time) and keeps its address and key, once the TV has
+    /// taken the connection. (The address was kept first: one that never connected (mistyped, the TV off, Allow not
+    /// pressed) showed as Connected on the TV's page, and every key on the remote went there and failed.)
     public func connectLG(_ tv: FleetTV, host: String) async throws {
-        extras[tv.id, default: TVExtras()].lgHost = host
-        extras[tv.id]?.platform = .webOS
         // The connection there before is closed, not just let go of (it kept its socket open).
         if let old = lgRemotes[tv.id] { Task { await old.disconnect() } }
         lgRemotes[tv.id] = nil
-        guard let r = lg(for: tv) else { return }
+        let r = LGRemote(host: host, clientKey: Keychain.get("lg.\(tv.id)"))
         let key = try await r.connect()
+        extras[tv.id, default: TVExtras()].lgHost = host
+        extras[tv.id]?.platform = .webOS
         Keychain.set(key, for: "lg.\(tv.id)")
+        if let other = lgRemotes[tv.id], other !== r { Task { await other.disconnect() } }
+        lgRemotes[tv.id] = r
         lgKeys[tv.id] = key
         if let mac = await r.macAddress() { extras[tv.id]?.mac = mac }
     }
