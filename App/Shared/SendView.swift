@@ -15,6 +15,14 @@ import WoodruffKit
     var loadedPhones = false
 }
 
+private extension Phone {
+    /// This device as the TVs list it: its lasting id ("ios-…", "mac-…"), or a copy from before it kept one under its
+    /// name (`Fleet.hello` forgets those). Not the name alone: every iPhone, iPad and Apple TV goes by "iPhone".
+    func isThisDevice(_ me: PhoneIdentity) -> Bool {
+        id == me.id || (!id.hasPrefix("ios-") && !id.hasPrefix("mac-") && name.caseInsensitiveCompare(me.name) == .orderedSame)
+    }
+}
+
 /// Send: a message to TVs and phones (or kept on every TV's Home), the TV's photos and files, a link, the slideshow.
 struct SendView: View {
     @Environment(Fleet.self) private var fleet
@@ -235,7 +243,7 @@ struct SendView: View {
     private var canSend: Bool { !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && hasRecipient }
 
     private var toSummary: String {
-        let others = to.knownPhones.filter { $0.id != fleet.phone.id && $0.name.caseInsensitiveCompare(fleet.phone.name) != .orderedSame }
+        let others = to.knownPhones.filter { !$0.isThisDevice(fleet.phone) }
         let names = Set(others.map { $0.name.lowercased() })
         let phonesOn = Set(others.filter { to.phones.contains($0.id) }.map { $0.name.lowercased() }).count
         if to.allTVs && (names.isEmpty || phonesOn == names.count) { return to.pin ? "Everyone · Pinned" : "Everyone" }
@@ -248,7 +256,7 @@ struct SendView: View {
     private func loadPhones() async {
         guard !to.loadedPhones, let c = fleet.hubClient(), let p = try? await c.phones() else { return }
         to.knownPhones = p
-        to.phones = Set(p.filter { $0.id != fleet.phone.id && $0.name.caseInsensitiveCompare(fleet.phone.name) != .orderedSame }.map(\.id))
+        to.phones = Set(p.filter { !$0.isThisDevice(fleet.phone) }.map(\.id))
         to.loadedPhones = true
     }
 
@@ -302,7 +310,7 @@ struct SendToView: View {
 
     private var phoneGroups: [PhoneGroup] {
         var groups: [String: PhoneGroup] = [:]
-        for p in to.knownPhones where p.id != fleet.phone.id && p.name.caseInsensitiveCompare(fleet.phone.name) != .orderedSame {
+        for p in to.knownPhones where !p.isThisDevice(fleet.phone) {
             let key = p.name.lowercased()
             var g = groups[key] ?? PhoneGroup(name: p.name, ids: [], lockScreen: false)
             g.ids.insert(p.id)
