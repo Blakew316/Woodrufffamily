@@ -21,10 +21,14 @@ final class AppleTVFinder {
     static let shared = AppleTVFinder()
     private(set) var found: [FoundAppleTV] = []
     private var browser: NWBrowser?
+    /// start() was called and stop() wasn't: a search that fails is started again.
+    private var wanted = false
 
     func start() {
+        wanted = true
         guard browser == nil else { return }
         let b = NWBrowser(for: .bonjourWithTXTRecord(type: "_woodruffatv._tcp", domain: nil), using: .tcp)
+        let mine = ObjectIdentifier(b)
         b.browseResultsChangedHandler = { [weak self] results, _ in
             var list: [FoundAppleTV] = []
             for r in results {
@@ -34,13 +38,35 @@ final class AppleTVFinder {
                 list.append(FoundAppleTV(id: id, name: name.isEmpty ? "Apple TV" : name, base: u, build: txt["build"] ?? "", fp: txt["fp"] ?? ""))
             }
             list.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-            Task { @MainActor in self?.found = list }
+            Task { @MainActor in
+                // Only the search running now (not one that failed and was let go).
+                guard let self, let current = self.browser, ObjectIdentifier(current) == mine else { return }
+                self.found = list
+            }
+        }
+        b.stateUpdateHandler = { [weak self] state in
+            guard case .failed = state else { return }
+            // Delivered on the main queue (started there below). The network changed, or the system let the search go
+            // while the app was away: the list stopped there for good (an Apple TV opened afterwards never showed, one
+            // gone still did) until the app was opened again. Looked for again in a moment.
+            MainActor.assumeIsolated {
+                guard let self, let current = self.browser, ObjectIdentifier(current) == mine else { return }
+                current.cancel()
+                self.browser = nil
+                self.found = []
+                Task { @MainActor [weak self] in
+                    try? await Task.sleep(nanoseconds: 3_000_000_000)
+                    guard let self, self.wanted, self.browser == nil else { return }
+                    self.start()
+                }
+            }
         }
         b.start(queue: .main)
         browser = b
     }
 
     func stop() {
+        wanted = false
         browser?.cancel()
         browser = nil
     }
