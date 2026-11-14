@@ -125,12 +125,10 @@ final class OwnPlayer {
         CameraStreams.shared.filmStarting()
         let audio = AVAudioSession.sharedInstance()
         try? audio.setCategory(.playback, mode: .moviePlayback)
-        // Nothing else is asked of the sound session. How many channels go out, and how a film mixed for six
-        // speakers is fitted to what's connected, is the Apple TV's to decide: Apple's player, where such a film
-        // sounds right, sets only the line above, and the Android TVs' player likewise hands the TV the film's
-        // sound and leaves the output to it. This player used to say its sound was multichannel, and build 626
-        // also asked for the film's six channels: the Apple TV's output went to 32 channels and the film sounded
-        // wrong.
+        // How many channels go out, and how a film mixed for six speakers is fitted to what's connected, is the
+        // Apple TV's to decide: no number of output channels is asked for (build 626 asked for the film's six, the
+        // Apple TV's output went to 32 channels and the film sounded wrong). Whether the film's sound is surround is
+        // said once it's open (`followSound`).
         // Activating can take a moment; not on the main thread, where the screen is being shown.
         Self.soundQueue.async { try? audio.setActive(true) }
 
@@ -206,14 +204,8 @@ final class OwnPlayer {
             self.index = index
             self.player = player
             indexTook = Date().timeIntervalSince(began)
-            // Sound the app decodes itself (DTS, TrueHD) reaches the Apple TV as plain samples of six, eight or
-            // twelve channels: the sound session is told so before the film starts, as AetherEngine tells it.
-            // Films whose sound Apple decodes are left as they were.
-            let film = player.film
-            if film.sounds.first(where: { $0.id == film.sound })?.decodedHere == true {
-                saidMultichannel = true
-                Self.soundQueue.async { try? AVAudioSession.sharedInstance().setSupportsMultichannelContent(true) }
-            }
+            // Surround sound is said to be surround before the film starts (`followSound`).
+            followSound(player, title: play.title)
             screen.attach(player)
             player.seek(to: play.start > 5 ? play.start : 0)
             let waited = await screen.matchDisplay(to: player.film.picture)
@@ -349,8 +341,23 @@ final class OwnPlayer {
         }
     }
 
-    /// What the sound is going out through and in how many channels, for the Macs' log. Read only: nothing is asked
-    /// of the sound session (see `present`). Said once the film is playing, when the output has settled on it.
+    /// The sound session told the film's sound is multichannel while the track playing is mixed for more than two
+    /// speakers (5.1 and 7.1 that Apple decodes, as well as the DTS and TrueHD the app decodes itself), and not
+    /// otherwise. Without it an app's sound reaches the Apple TV as two channels: The Master's 5.1 (AAC) went out as
+    /// stereo, and a receiver fed Dolby Digital 5.1 by the Apple TV got only the front pair. Only that is said: no number
+    /// of output channels is asked for (build 626 asked for six, and the output went to 32 and sounded wrong).
+    private func followSound(_ player: FilmPlayer, title: String) {
+        let film = player.film
+        guard let chosen = film.sounds.first(where: { $0.id == film.sound }) else { return }
+        let surround = chosen.channels > 2 || chosen.decodedHere
+        guard surround != saidMultichannel else { return }
+        saidMultichannel = surround
+        Self.soundQueue.async { try? AVAudioSession.sharedInstance().setSupportsMultichannelContent(surround) }
+        Diagnostics.shared.notePlayback("\(title): its sound (\(chosen.codec), \(chosen.channels) channels) goes to the Apple TV as \(surround ? "surround" : "two channels")")
+    }
+
+    /// What the sound is going out through and in how many channels, for the Macs' log. Read only (`followSound` says
+    /// whether it's surround). Said once the film is playing, when the output has settled on it.
     private func noteOutput(_ play: PhonePlay) {
         let title = play.title
         Self.soundQueue.async {
@@ -419,6 +426,8 @@ final class OwnPlayer {
             startedTick = ticks
             noteOutput(play)
         }
+        // Another sound track chosen (the sound menu): the session told whether it's surround.
+        followSound(player, title: play.title)
         // Its sound has overhead channels: the output is kept in Atmos from here on.
         if !heightsFollowed, player.notes.decodedChannels == 12 {
             heightsFollowed = true
