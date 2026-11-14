@@ -252,6 +252,12 @@ enum GoogleDrive {
 
     /// A Drive API GET, with a fresh token and one retry after a 401.
     static func get(_ url: URL) async throws -> [String: Any] {
+        let d = try await getData(url)
+        return (try? JSONSerialization.jsonObject(with: d) as? [String: Any]) ?? [:]
+    }
+
+    /// The same, as the answer's bytes (`files` reads each page of a listing off the main thread).
+    private static func getData(_ url: URL) async throws -> Data {
         for attempt in 0..<2 {
             var r = URLRequest(url: url)
             r.setValue("Bearer \(try await token())", forHTTPHeaderField: "Authorization")
@@ -260,7 +266,7 @@ enum GoogleDrive {
             let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
             if code == 401 && attempt == 0 { dropToken(); continue }
             guard code == 200 else { throw failure(code, d) }
-            return (try? JSONSerialization.jsonObject(with: d) as? [String: Any]) ?? [:]
+            return d
         }
         throw Failure("Google Drive refused the sign-in. Sign in again in Settings.")
     }
@@ -331,10 +337,15 @@ enum GoogleDrive {
         var out: [File] = []
         var page: String?
         repeat {
-            let j = try await get(filesURL(q, orderBy: orderBy, fields: fields, pageSize: min(1000, limit), page: page, allDrives: allDrives))
-            let data = try JSONSerialization.data(withJSONObject: j["files"] ?? [])
-            out += (try? JSONDecoder().decode([File].self, from: data)) ?? []
-            page = j["nextPageToken"] as? String
+            let d = try await getData(filesURL(q, orderBy: orderBy, fields: fields, pageSize: min(1000, limit), page: page, allDrives: allDrives))
+            // Read off the main thread: a page is up to a thousand files.
+            let read = try await Task.detached(priority: .userInitiated) { () throws -> (files: [File], next: String?) in
+                let j = (try? JSONSerialization.jsonObject(with: d) as? [String: Any]) ?? [:]
+                let data = try JSONSerialization.data(withJSONObject: j["files"] ?? [])
+                return ((try? JSONDecoder().decode([File].self, from: data)) ?? [], j["nextPageToken"] as? String)
+            }.value
+            out += read.files
+            page = read.next
         } while page != nil && out.count < limit
         return out
     }
