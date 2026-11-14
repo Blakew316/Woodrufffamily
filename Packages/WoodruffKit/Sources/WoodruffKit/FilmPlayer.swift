@@ -133,6 +133,12 @@ public final class FilmPlayer: @unchecked Sendable {
         /// it played), and the times that went under a second.
         public var pictureLeast: Double?
         public var pictureThin = 0
+        /// (A picture handed over under another name) what its first frames are made of, by kind of piece (NAL unit
+        /// type: how many of them), how many frames that is, and what Apple's reader made of the file's tables for
+        /// them ("PartialSync=1": how many frames had it).
+        public var pieceKinds: [Int: Int] = [:]
+        public var framesCounted = 0
+        public var hints: [String: Int] = [:]
     }
 
     /// What the film is, once it's open.
@@ -808,17 +814,41 @@ public final class FilmPlayer: @unchecked Sendable {
                     if let remade = pipe.remade { remake = { (given: CMFormatDescription) -> CMFormatDescription in remade(given) } }
                     var lean: ((Data) -> Data?)?
                     var takenOut = 0
+                    var kinds: [Int: Int] = [:]
+                    var hints: [String: Int] = [:]
+                    var counted = 0
+                    lock.lock()
+                    let counting = pipe.known != nil && sharedNotes.framesCounted < 4000
+                    lock.unlock()
                     if let known = pipe.known {
                         lean = { (frame: Data) -> Data? in
+                            if counting {
+                                counted += 1
+                                for kind in FilmNALUnits.kinds(frame, lengthSize: known.lengthSize) ?? [] { kinds[Int(kind), default: 0] += 1 }
+                            }
                             let slim = FilmNALUnits.withoutKnownSets(frame, lengthSize: known.lengthSize, sets: known.sets)
                             if slim != nil { takenOut += 1 }
                             return slim
                         }
+                        if counting {
+                            for sample in run.samples {
+                                for (key, value) in sample.attachments ?? [:] {
+                                    let name = (key.base as? String).map { $0.replacingOccurrences(of: "kCMSampleAttachmentKey_", with: "") } ?? "?"
+                                    let said = (value as? NSNumber).map { "=\($0)" } ?? ""
+                                    hints[name + said, default: 0] += 1
+                                }
+                            }
+                        }
                     }
-                    let all = try FilmSampleBuffers.each(of: run, bytes: data, format: pipe.format, remake: remake, lean: lean)
-                    if takenOut > 0 {
+                    // A picture handed over under another name: each frame is told only whether it's a keyframe.
+                    let all = try FilmSampleBuffers.each(of: run, bytes: data, format: pipe.format, remake: remake, lean: lean,
+                                                         plain: pipe.remade != nil)
+                    if takenOut > 0 || counted > 0 {
                         lock.lock()
                         sharedNotes.setsTakenOut += takenOut
+                        sharedNotes.framesCounted += counted
+                        for (kind, n) in kinds { sharedNotes.pieceKinds[kind, default: 0] += n }
+                        for (hint, n) in hints { sharedNotes.hints[hint, default: 0] += n }
                         lock.unlock()
                     }
                     for (sample, buffer) in zip(run.samples, all) {

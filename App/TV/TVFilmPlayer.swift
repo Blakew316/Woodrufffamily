@@ -626,6 +626,18 @@ final class OwnPlayer {
         }
         if waits { words += String(format: ", %ld stops to wait (%.1f s)", n.waits, n.waited) }
         if n.setsTakenOut > 0 { words += ", the settings repeated inside \(n.setsTakenOut) frames taken out" }
+        // What the frames are made of (keyframes of each kind, frames that look back past one, end-of-sequence
+        // markers, Dolby Vision's own data) and what Apple's reader marked them with: why frames drop, if they do.
+        if n.framesCounted > 0 {
+            let names: [Int: String] = [0: "TRAIL_N", 1: "TRAIL_R", 2: "TSA_N", 3: "TSA_R", 4: "STSA_N", 5: "STSA_R", 6: "RADL_N",
+                                        7: "RADL_R", 8: "RASL_N", 9: "RASL_R", 16: "BLA_W_LP", 17: "BLA_W_RADL", 18: "BLA_N_LP",
+                                        19: "IDR_W_RADL", 20: "IDR_N_LP", 21: "CRA", 32: "VPS", 33: "SPS", 34: "PPS", 35: "AUD",
+                                        36: "EOS", 37: "EOB", 38: "FD", 39: "SEI", 40: "SEI_SUFFIX", 62: "RPU", 63: "EL"]
+            let kinds = n.pieceKinds.sorted { $0.key < $1.key }.map { "\(names[$0.key] ?? String($0.key)) ×\($0.value)" }
+            words += "; its first \(n.framesCounted) frames hold " + kinds.joined(separator: ", ")
+            let hints = n.hints.sorted { $0.value > $1.value }.prefix(8).map { "\($0.key) ×\($0.value)" }
+            if !hints.isEmpty { words += "; the file’s marks on them: " + hints.joined(separator: ", ") + " (handed on: keyframes only)" }
+        }
         return words
     }
 

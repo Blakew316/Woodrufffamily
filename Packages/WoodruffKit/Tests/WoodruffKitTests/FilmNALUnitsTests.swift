@@ -67,4 +67,21 @@ final class FilmNALUnitsTests: XCTestCase {
         // Two-byte lengths.
         XCTAssertEqual(FilmNALUnits.withoutKnownSets(frame([sps, slice], size: 2), lengthSize: 2, sets: known.sets), frame([slice], size: 2))
     }
+
+    /// "End of sequence" and "end of bitstream" make Apple's decoder start afresh at the next keyframe: they go too,
+    /// with or without parameter sets to take out.
+    func testEndOfSequenceMarkersGo() throws {
+        let known = try XCTUnwrap(FilmNALUnits.parameterSets(hvcC: hvcC()))
+        let eos = unit(36, []), eob = unit(37, [])
+        XCTAssertEqual(FilmNALUnits.withoutKnownSets(frame([slice, rpu, eos]), lengthSize: 4, sets: known.sets), frame([slice, rpu]))
+        XCTAssertEqual(FilmNALUnits.withoutKnownSets(frame([slice, eob]), lengthSize: 4, sets: []), frame([slice]))
+        XCTAssertNil(FilmNALUnits.withoutKnownSets(frame([slice, rpu]), lengthSize: 4, sets: []))
+    }
+
+    func testTheKindsOfAFramesPieces() {
+        XCTAssertEqual(FilmNALUnits.kinds(frame([vps, sps, pps, sei, slice, rpu]), lengthSize: 4), [32, 33, 34, 39, 19, 62])
+        var broken = frame([vps, slice])
+        broken[3] = 0xFF
+        XCTAssertNil(FilmNALUnits.kinds(broken, lengthSize: 4))
+    }
 }

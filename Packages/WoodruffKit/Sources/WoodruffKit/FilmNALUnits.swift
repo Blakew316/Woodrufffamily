@@ -10,6 +10,30 @@ import Foundation
 public enum FilmNALUnits {
     /// HEVC's video, sequence and picture parameter sets.
     static let parameterSetTypes: Set<UInt8> = [32, 33, 34]
+    /// "End of sequence" and "end of bitstream": after one, Apple's decoder starts afresh at the next keyframe and
+    /// can't show the frames that lead into it (they look back past it). A film played straight through needs
+    /// neither, so they're taken out with the repeated parameter sets.
+    static let endTypes: Set<UInt8> = [36, 37]
+
+    /// The kinds of the pieces in [frame], in order (each piece's NAL unit type: 19 and 20 a keyframe of its own, 21
+    /// one the frames before it may look back past, 8 and 9 such frames, 62 Dolby Vision's own data); nil when the
+    /// pieces can't be walked.
+    public static func kinds(_ frame: Data, lengthSize: Int) -> [UInt8]? {
+        guard (1...4).contains(lengthSize) else { return nil }
+        var out: [UInt8] = []
+        var at = frame.startIndex
+        let end = frame.endIndex
+        while at < end {
+            guard end - at >= lengthSize else { return nil }
+            var length = 0
+            for i in 0..<lengthSize { length = length << 8 | Int(frame[at + i]) }
+            let body = at + lengthSize
+            guard length > 0, end - body >= length else { return nil }
+            out.append((frame[body] >> 1) & 0x3F)
+            at = body + length
+        }
+        return out
+    }
 
     /// The length of each piece's length, and the parameter sets, in an `hvcC` box's contents; nil when it isn't one.
     public static func parameterSets(hvcC: Data) -> (lengthSize: Int, sets: Set<Data>)? {
@@ -39,7 +63,7 @@ public enum FilmNALUnits {
     /// used as it is). Nil too when its pieces can't be walked to its end, or nothing else would be left: it's left
     /// alone then.
     public static func withoutKnownSets(_ frame: Data, lengthSize: Int, sets: Set<Data>) -> Data? {
-        guard !sets.isEmpty, (1...4).contains(lengthSize) else { return nil }
+        guard (1...4).contains(lengthSize) else { return nil }
         var kept = Data()
         var dropped = false
         var at = frame.startIndex
@@ -51,7 +75,7 @@ public enum FilmNALUnits {
             let body = at + lengthSize
             guard length > 0, end - body >= length else { return nil }
             let type = (frame[body] >> 1) & 0x3F
-            if parameterSetTypes.contains(type), sets.contains(Data(frame[body..<(body + length)])) {
+            if endTypes.contains(type) || (parameterSetTypes.contains(type) && sets.contains(Data(frame[body..<(body + length)]))) {
                 dropped = true
             } else {
                 kept.append(frame[at..<(body + length)])

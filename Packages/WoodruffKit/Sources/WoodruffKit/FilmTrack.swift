@@ -141,9 +141,11 @@ public enum FilmSampleBuffers {
     /// run's bytes, from its first. [format]: the track's format, for samples that don't carry one of their own.
     /// [remake]: each sample's format as the decoder is to have it (a name it takes: `FilmPictureFormat`). [lean]: a
     /// sample's bytes without what the decoder has already (`FilmNALUnits`), or nil to hand them over as they are.
+    /// [plain]: each frame told only whether it's a keyframe, not the rest of what Apple's reader made of the file's
+    /// tables (for a picture handed over under another name than the file gives it).
     public static func each(of run: FilmRun, bytes: Data, format: CMFormatDescription?,
                             remake: ((CMFormatDescription) -> CMFormatDescription)? = nil,
-                            lean: ((Data) -> Data?)? = nil) throws -> [CMSampleBuffer] {
+                            lean: ((Data) -> Data?)? = nil, plain: Bool = false) throws -> [CMSampleBuffer] {
         guard bytes.count >= run.length else { throw Failure.short }
         let whole = try block(run.length)
         try bytes.withUnsafeBytes { raw in
@@ -178,7 +180,7 @@ public enum FilmSampleBuffers {
                                                 sampleCount: 1, sampleTimingEntryCount: 1, sampleTimingArray: &timing,
                                                 sampleSizeEntryCount: 1, sampleSizeArray: &size, sampleBufferOut: &made))
             guard let buffer = made else { throw Failure.refused(-1) }
-            attach(s, to: buffer)
+            attach(s, to: buffer, plain: plain)
             out.append(buffer)
         }
         return out
@@ -265,8 +267,8 @@ public enum FilmSampleBuffers {
 
     /// What the file says about how [s] depends on other samples goes with its buffer: the decoder and the display
     /// use it (which frames a film can start from, which can be skipped when it's behind).
-    private static func attach(_ s: FilmSample, to buffer: CMSampleBuffer) {
-        if let extra = s.attachments, !extra.isEmpty {
+    private static func attach(_ s: FilmSample, to buffer: CMSampleBuffer, plain: Bool = false) {
+        if !plain, let extra = s.attachments, !extra.isEmpty {
             for (key, value) in extra {
                 guard let name = key.base as? String else { continue }
                 set(name as CFString, value as AnyObject, on: buffer)
