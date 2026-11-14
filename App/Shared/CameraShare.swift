@@ -107,6 +107,8 @@ final class CameraShare {
     private var recent: [CameraShareEvent] = []
     /// Puts this Mac's addresses in the family's settings every ten minutes (one for good, however often it listens again).
     private var publishing: Task<Void, Never>?
+    /// `start` again in a little while, while the share couldn't start (`startLater`).
+    private var retrying: Task<Void, Never>?
 
     /// An alert went out (its picture already kept for GET /event): the Apple TVs show it on their next ask. Only on
     /// the Mac that shares the cameras (the hub). Kept while the share is being started again too (its network went
@@ -131,15 +133,21 @@ final class CameraShare {
 
     /// On the Mac Studio (the updater's hub) only: it's the Mac that's always home with every camera live.
     func start() {
-        guard listener == nil, !Demo.isOn, PushRelay.updaterRole() == "hub",
-              let port = NWEndpoint.Port(rawValue: CameraShareKey.port) else { return }
+        guard listener == nil, !Demo.isOn else { return }
+        // The updater's settings couldn't be read (as the app opened, say): tried again until they can be. (Tried only
+        // at launch, the Apple TVs had no cameras and no alerts until the app was next opened.)
+        let role = PushRelay.updaterRole()
+        guard role == "hub", let port = NWEndpoint.Port(rawValue: CameraShareKey.port) else {
+            if role == nil { startLater() }
+            return
+        }
         // The port is taken again at once when the app starts again (every release), not refused while the copy
         // before's last answers still hold it (each answer here closes its own connection, and the system keeps the
         // port for those a while). Refused, the share never started, and the Apple TVs had no cameras and no alerts
         // until the app was opened again.
         let params = NWParameters.tcp
         params.allowLocalEndpointReuse = true
-        guard let l = try? NWListener(using: params, on: port) else { return }
+        guard let l = try? NWListener(using: params, on: port) else { startLater(); return }
         l.newConnectionHandler = { [weak self] c in
             c.start(queue: .main)
             // An Apple TV that went away mid-request: never left open.
@@ -169,6 +177,17 @@ final class CameraShare {
                 try? await Task.sleep(nanoseconds: 600_000_000_000)
                 publish()
             }
+        }
+    }
+
+    /// `start` again in half a minute (the updater's settings are read again once a minute), until it has started.
+    private func startLater() {
+        guard retrying == nil else { return }
+        retrying = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 30_000_000_000)
+            guard let self else { return }
+            self.retrying = nil
+            self.start()
         }
     }
 
