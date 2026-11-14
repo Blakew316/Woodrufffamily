@@ -202,7 +202,8 @@ final class FilmScreen: UIViewController, UIGestureRecognizerDelegate {
         view.backgroundColor = .black
         picture.frame = view.bounds
         picture.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        picture.backgroundColor = .black
+        // No colour of its own behind the film (the screen is black under it): the picture alone, so it can go
+        // straight to the TV rather than be painted together with anything.
         picture.display.videoGravity = .resizeAspect
         view.addSubview(picture)
 
@@ -401,7 +402,7 @@ final class FilmScreen: UIViewController, UIGestureRecognizerDelegate {
         for _ in 0..<60 where view.window == nil { try? await Task.sleep(nanoseconds: 50_000_000) }
         guard let picture, let display = view.window?.avDisplayManager, display.isDisplayCriteriaMatchingEnabled else { return nil }
         self.display = display
-        let rate = picture.framesASecond > 0 ? picture.framesASecond : 24
+        let rate = Self.displayRate(picture.framesASecond)
         display.preferredDisplayCriteria = AVDisplayCriteria(refreshRate: rate, formatDescription: picture.format)
         var took: Double?
         for _ in 0..<2 {
@@ -423,6 +424,19 @@ final class FilmScreen: UIViewController, UIGestureRecognizerDelegate {
         if took != nil { try? await Task.sleep(nanoseconds: 300_000_000) }
         return took
     }
+
+    /// The rate the TV is asked to show pictures at for a film of [fps] frames a second: exactly one of the rates TVs
+    /// show when it's within half a percent of one (23.976 for a film made at 24000/1001, not 24, which would show
+    /// one picture twice every 42 seconds), else the film's own.
+    static func displayRate(_ fps: Float) -> Float {
+        guard fps > 0 else { return 24 }
+        let rates: [Float] = [24000 / 1001, 24, 25, 30000 / 1001, 30, 50, 60000 / 1001, 60]
+        guard let nearest = rates.min(by: { abs($0 - fps) < abs($1 - fps) }), abs(nearest - fps) / fps < 0.005 else { return fps }
+        return nearest
+    }
+
+    /// How many times a second the TV shows a new picture now (for the Macs' log), nil when it can't be told.
+    var screenRate: Int? { viewIfLoaded?.window?.screen.maximumFramesPerSecond }
 
     /// Whether the Apple TV matches the film's picture mode (for the Macs' log), nil when it can't be told.
     var matchesContent: Bool? { viewIfLoaded?.window?.avDisplayManager.isDisplayCriteriaMatchingEnabled }

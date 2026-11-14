@@ -186,7 +186,7 @@ final class OwnPlayer {
             let waited = await screen.matchDisplay(to: player.film.picture)
             guard current?.id == play.id, self.screen === screen else { return }
             switchWait = waited
-            noteFormats(player.film, play, matches: screen.matchesContent)
+            noteFormats(player.film, play, matches: screen.matchesContent, screenRate: screen.screenRate)
             player.play()
             begun = true
             commandsOn()
@@ -309,7 +309,7 @@ final class OwnPlayer {
     }
 
     /// The film's picture and sound, for the Macs' log.
-    private func noteFormats(_ film: FilmPlayer.Film, _ play: PhonePlay, matches: Bool?) {
+    private func noteFormats(_ film: FilmPlayer.Film, _ play: PhonePlay, matches: Bool?, screenRate: Int? = nil) {
         var words: [String] = []
         if let p = film.picture {
             var line = "picture \(p.codec) \(p.width)×\(p.height)"
@@ -317,7 +317,7 @@ final class OwnPlayer {
             if let hardware = p.hardware {
                 line += hardware ? ", Apple’s hardware decoder takes it" : ", Apple’s hardware decoder doesn’t take it (decoded in software)"
             }
-            if p.framesASecond > 0 { line += String(format: " %.0f fps", p.framesASecond) }
+            if p.framesASecond > 0 { line += String(format: " %.3f fps", p.framesASecond) }
             line += PhonePlayback.dynamicRange(p.format)
             words.append(line)
         }
@@ -329,7 +329,10 @@ final class OwnPlayer {
         let hdr = AVPlayer.eligibleForHDRPlayback ? "HDR can be shown here" : "HDR can’t be shown here"
         let also = matches == nil ? "" : matches == true ? "; the Apple TV matches the film’s picture mode"
             : "; the Apple TV keeps its own picture mode (Match Content is off)"
-        Diagnostics.shared.notePlayback("\(play.title), the app’s own player: " + words.joined(separator: "; ") + "; \(hdr)\(also)")
+        // How often the TV shows a new picture now, once its mode has changed for the film: a 24-frame film on a TV at
+        // 60 shows some pictures three times and some twice, which looks like a small stutter when the camera moves.
+        let shown = screenRate.map { "; the TV shows \($0) pictures a second" } ?? ""
+        Diagnostics.shared.notePlayback("\(play.title), the app’s own player: " + words.joined(separator: "; ") + "; \(hdr)\(also)\(shown)")
         // Once after the app starts: whether this build decodes DTS and Dolby TrueHD (`TVFilmSound`).
         if !Self.saidDecoder {
             Self.saidDecoder = true
