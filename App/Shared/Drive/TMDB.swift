@@ -92,10 +92,22 @@ final class TMDB {
         r.setValue("application/json", forHTTPHeaderField: "Accept")
         if bearer { r.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization") }
         r.timeoutInterval = 20
+        return try await Self.fetch(r).json
+    }
+
+    /// TMDB's answer, read off the main actor and then only handed over. A title's details carry its whole cast and
+    /// crew (a long-running show's are hundreds of KB, some a megabyte or more) and a season its episodes' guest stars:
+    /// read on the main thread, a title's page held the remote as it opened, and the library's first fill did so for
+    /// every title.
+    private struct Answer: @unchecked Sendable {
+        var json: [String: Any]
+    }
+
+    nonisolated private static func fetch(_ r: URLRequest) async throws -> Answer {
         let (d, resp) = try await URLSession.shared.data(for: r)
         let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
         guard code == 200 else { throw GoogleDrive.Failure(code == 401 ? "TMDB didn’t accept the key." : "TMDB answered \(code).") }
-        return (try? JSONSerialization.jsonObject(with: d) as? [String: Any]) ?? [:]
+        return Answer(json: (try? JSONSerialization.jsonObject(with: d) as? [String: Any]) ?? [:])
     }
 
     // MARK: Searches
