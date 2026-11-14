@@ -75,6 +75,8 @@ struct CameraShareEvent: Codable, Equatable {
     /// Google's event id and clip, for the replay when the camera is opened.
     var event: String?
     var clip: String?
+    /// When the event happened, in milliseconds by Google's clock (for the Apple TV's line in the family's log).
+    var happened: Int64? = nil
 }
 
 /// GET /events: the Mac's clock now and the alerts after `since`.
@@ -110,7 +112,8 @@ final class CameraShare {
     /// the Mac that shares the cameras (the hub). Kept while the share is being started again too (its network went
     /// away a moment): the Apple TVs ask for what came meanwhile once it's back. (It was dropped then, and they never
     /// showed it.)
-    func noteEvent(key: String, camera: String, name: String, title: String, focus: CGRect?, event: String?, clip: String?) {
+    func noteEvent(key: String, camera: String, name: String, title: String, focus: CGRect?, event: String?, clip: String?,
+                   happened: Date? = nil) {
         guard listener != nil || PushRelay.updaterRole() == "hub" else { return }
         let t = title.lowercased()
         let kind = t.contains("door") || t.contains("ring") ? "door" : t.contains("person") ? "person"
@@ -121,7 +124,8 @@ final class CameraShare {
         recent.removeAll { $0.key == key }
         recent.append(CameraShareEvent(key: key, camera: camera, name: name, title: title, kind: kind, at: at,
                                        focus: focus.map { CameraEventMedia.focusText($0) },
-                                       event: event.flatMap { $0.isEmpty ? nil : $0 }, clip: clip.flatMap { $0.isEmpty ? nil : $0 }))
+                                       event: event.flatMap { $0.isEmpty ? nil : $0 }, clip: clip.flatMap { $0.isEmpty ? nil : $0 },
+                                       happened: happened.map { Int64($0.timeIntervalSince1970 * 1000) }))
         if recent.count > 20 { recent.removeFirst(recent.count - 20) }
     }
 

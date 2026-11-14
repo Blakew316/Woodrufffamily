@@ -14,6 +14,12 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
     private var content: UNMutableNotificationContent?
     /// What the alert's picture is now (for Camera Alerts' "Last alert from the Mac").
     private var what = "No picture came in time"
+    /// The same for the alert's line in the family's log: what the picture is, and whether it's cut close on who or
+    /// what was seen.
+    private var source = "none"
+    private var cut = false
+    /// The alert, for that line (none for an alert already shown, which this one only replaces).
+    private var entry: (camera: String, title: String, happened: Date?)?
     /// The camera's line on the TVs & Cameras and doorbell widgets: they reload as the alert is shown.
     private var widget: WidgetLine?
     /// The alert's picture as a still for the widgets, once a better one than the push's has come.
@@ -45,7 +51,8 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
         // iPhone's own copy shown first): in its place, quietly, not a second sound and banner. An update whose alert
         // never reached this iPhone (it was off the network then, and Apple keeps only the newest push for it) is that
         // alert, sound and all.
-        if CameraEventMedia.pushArrived(key) || CameraEventMedia.shownHere(key) {
+        let repeated = CameraEventMedia.pushArrived(key) || CameraEventMedia.shownHere(key)
+        if repeated {
             c.sound = nil
             c.interruptionLevel = .passive
         } else if request.content.interruptionLevel == .passive, CameraEventMedia.notesPushes {
@@ -58,13 +65,18 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
         // How far into Google's clip the Mac's picture of the event is from, when it's a frame of the clip.
         let clipTime = text("t").flatMap { Double($0) }
         let title = request.content.title
+        // When it happened (the Mac says), for the alert's line in the family's log.
+        if !repeated {
+            let happened = text("h").flatMap { Double($0) }.map { Date(timeIntervalSince1970: $0) }
+            lock.lock(); entry = (camera: request.content.body, title: title, happened: happened); lock.unlock()
+        }
 
         // The Mac's small picture first: whatever happens next, the alert has it.
         let thumbFile = thumb.flatMap { CameraEventMedia.thumbnailFile($0) }
         let thumbStill = thumbFile.flatMap { try? Data(contentsOf: $0) }
         if let thumbFile {
             if let a = CameraEventMedia.attachment(thumbFile) {
-                set([a], "The Mac’s small picture attached")
+                set([a], "The Mac’s small picture attached", source: "the Mac’s small picture", cut: macFocus != nil)
             }
             // The attachment is a copy of it: this one isn't needed after.
             try? FileManager.default.removeItem(at: thumbFile)
@@ -123,7 +135,7 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
                 // too (it's also what opening the alert replays), else the close-up itself: either is far better
                 // than the push's small picture, which is what they showed when the whole picture didn't come.
                 let size = CameraEventMedia.pixelSize(macClose).map { " (\($0.width)x\($0.height))" } ?? ""
-                self.set([a], "The Mac’s close-up of its subject attached\(size)")
+                self.set([a], "The Mac’s close-up of its subject attached\(size)", source: "the Mac’s close-up", cut: true)
                 if let file = got?.file, let still = await CameraEventMedia.still(file, at: clipTime ?? 1) { self.keep(still: still) }
                 else if let still = await CameraEventMedia.still(macClose) { self.keep(still: still) }
             } else if let got {
@@ -154,18 +166,19 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
                     // A clip also carries a still: Apple Watch shows a picture with the alert, never a video. Its own
                     // frame, else the Mac's small picture of the moment (a clip never takes the alert's picture away).
                     if showsClip, let s = Self.stillAttachment(look.still ?? thumbStill) { all.append(s) }
-                    self.set(all, shown == file ? "\(source) attached" : "\(source), close on its subject, attached")
+                    self.set(all, shown == file ? "\(source) attached" : "\(source), close on its subject, attached",
+                             source: got.fromMac ? "the Mac’s full picture" : isClip ? "Google’s clip" : "Google’s snapshot", cut: shown != file)
                     if let still = look.still { self.keep(still: still) }
                 } else if isClip, let still = look.still, let s = Self.stillAttachment(still) {
                     // The clip itself couldn't go in: its picture does.
-                    self.set([s], "The clip’s picture attached")
+                    self.set([s], "The clip’s picture attached", source: "Google’s clip, its picture")
                     self.keep(still: still)
                 }
             }
             // Nothing of the moment came, and the push had no picture (the Mac had none): the camera's latest picture
             // on this iPhone, whatever its age, as the Mac itself does when nothing better comes.
             if !self.hasPicture, let latest = Self.latestPicture(camera: camera), let a = CameraEventMedia.attachment(latest) {
-                self.set([a], "The camera’s latest picture attached")
+                self.set([a], "The camera’s latest picture attached", source: "the camera’s latest picture")
             }
             CameraEventMedia.keepAlertPicture(alertPicture, jpeg: thumbStill, key: key)
             self.finish()
@@ -181,12 +194,14 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
         var state: (done: Bool, value: T?) { lock.lock(); defer { lock.unlock() }; return (done, value) }
     }
 
-    /// The alert's picture, unless it has already gone.
-    private func set(_ attachments: [UNNotificationAttachment], _ note: String) {
+    /// The alert's picture, unless it has already gone: what it is ([source]), and whether it's cut close on its subject.
+    private func set(_ attachments: [UNNotificationAttachment], _ note: String, source: String, cut: Bool = false) {
         lock.lock()
         if handler != nil, let c = content {
             c.attachments = attachments
             what = note
+            self.source = source
+            self.cut = cut
         }
         lock.unlock()
     }
@@ -256,11 +271,17 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
     private func finish(noting: Bool = true) {
         lock.lock()
         let h = handler, c = content, note = what, line = widget, still = betterStill
+        let alert = entry, picture = source, close = cut
         handler = nil
         lock.unlock()
         guard let h, let c else { return }
         if let line { Self.updateWidgets(line, still: still) }
         if noting { CameraEventMedia.noteLastPush(note) }
+        // Its line in the family's log, which the app passes on.
+        if noting, let alert {
+            CameraEventMedia.noteAlertLine(CameraEventMedia.alertLine(camera: alert.camera, title: alert.title, happened: alert.happened,
+                                                                      picture: c.attachments.isEmpty ? "none" : picture, cut: close))
+        }
         h(c)
     }
 }

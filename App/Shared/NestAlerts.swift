@@ -359,6 +359,7 @@ final class NestAlerts {
         // Google's picture of the event, asked for at once: it makes a snapshot only within 30 seconds of the event.
         // Kept for the replay, and for this device's own alert below.
         let google = Task { await CameraEventMedia.fetch(camera: camera, eventID: event, clipURL: clip, key: short, until: Date().addingTimeInterval(25)) }
+        let happened = eventHappened
         // One alert per event, with its picture. The Mac's push normally brings it (picture included), so the iPhone
         // shows its own only when that hasn't come: after a short wait for it (the Mac's alert goes within a few
         // seconds of the event, and this waited fifteen), or at once when catching up.
@@ -399,8 +400,8 @@ final class NestAlerts {
                 return
             }
             // Its picture close on who or what was seen, cut from the full picture (as Google Home's is); with
-            // nothing to close in on, the picture or the clip as it is.
-            @MainActor func attach(_ file: URL, _ look: (still: Data?, focus: CGRect?)) async {
+            // nothing to close in on, the picture or the clip as it is. Whether it's that close-up.
+            @MainActor func attach(_ file: URL, _ look: (still: Data?, focus: CGRect?)) async -> Bool {
                 var all: [UNNotificationAttachment] = []
                 var pictured = file
                 if let focus = look.focus, let close = await CameraEventMedia.closeUp(file, focus: focus) { pictured = close }
@@ -412,8 +413,10 @@ final class NestAlerts {
                     all.append(s)
                 }
                 c.attachments = all
+                return pictured != file
             }
-            if let file { await attach(file, look) }
+            var cut = false
+            if let file { cut = await attach(file, look) }
             // The Mac's push may have come during the fetch: not shown twice.
             if await Self.alreadyShown(id: id, key: short) {
                 PushRelay.log.notice("alert for \(body, privacy: .public) came from the Mac meanwhile (not shown twice)")
@@ -423,6 +426,11 @@ final class NestAlerts {
             // The Mac's push for it, if it comes after all, takes its place quietly.
             CameraEventMedia.noteShownHere(short)
             Notifier.deliver(c, id: id)
+            // Its one line in the family's log, once its picture is settled.
+            let shownAt = Date()
+            var line = CameraEventMedia.alertLine(camera: body, title: title, happened: happened, shown: shownAt,
+                                                  picture: c.attachments.isEmpty ? "none" : how, cut: cut)
+            defer { Diagnostics.shared.noteAlert(line, at: shownAt) }
             // Its picture came only after it went: put in its place, quietly. (Not when the Mac's push has come
             // meanwhile: that alert has the Mac's own picture.)
             guard got == nil, let late = await fetching.value else { return }
@@ -432,12 +440,14 @@ final class NestAlerts {
                 PhoneWidgetShare.reloadWidgets(showing: camera)
             }
             guard !CameraEventMedia.pushArrived(short) else { return }
-            await attach(late.file, lateLook)
+            let lateCut = await attach(late.file, lateLook)
             c.sound = nil
             c.interruptionLevel = .passive
             let lateHow = late.fromMac ? "the Mac’s picture" : late.file.pathExtension == "mp4" ? "Google’s clip" : "Google’s snapshot"
             PushRelay.log.notice("alert for \(body, privacy: .public) given its picture after it was shown: \(lateHow, privacy: .public)")
             Notifier.deliver(c, id: id)
+            let after = happened.map { String(format: " %.1f s after it happened", Date().timeIntervalSince($0)) } ?? ""
+            line += "; its picture\(after): \(lateHow), \(lateCut ? "close on its subject" : "whole")"
         }
         #elseif os(macOS)
         // One alert per event, with its picture: the best there is within two seconds (Google's picture of the event
@@ -448,6 +458,8 @@ final class NestAlerts {
         // quietly, under the same id: here, on the iPhones and on the Apple TVs. (The alert waited for the best picture
         // before it went: up to seven seconds, and twenty when there was none at all.)
         let received = Date(), happened = eventHappened
+        // When it happened, for each iPhone's line in the family's log (how long after it the alert was shown there).
+        if let happened { c.userInfo["h"] = String(format: "%.1f", happened.timeIntervalSince1970) }
         // The Mac's TVs & Cameras widget: the camera's red tag at once, its picture of the moment when there is one.
         let macCam = NestCameras.shared.cameras.first { $0.id == camera }
         let macTag = title.localizedCaseInsensitiveContains("person") ? "Person"
@@ -463,11 +475,12 @@ final class NestAlerts {
         race.start(given: picture)
         let googleWait: Double = EventPicture.googleGives(camera) ? Self.pictureWait : 0
         return Task { [weak self] in
-            /// The alert with [got] as its picture, shown here and sent on. [again]: the same alert with a better
-            /// picture than it went out with, quietly (no sound, no second banner, no second Live Activity); false when
-            /// that picture couldn't be read, and nothing changed. On the main actor, as all it touches is (a function
-            /// made inside the task isn't, by itself).
-            @MainActor func show(_ got: (file: URL, source: EventPicture.Source)?, again: Bool) async -> Bool {
+            /// The alert with [got] as its picture, shown here and sent on: what its picture is, and whether it's cut
+            /// close on who or what was seen. [again]: the same alert with a better picture than it went out with,
+            /// quietly (no sound, no second banner, no second Live Activity); nil when that picture couldn't be read,
+            /// and nothing changed. On the main actor, as all it touches is (a function made inside the task isn't, by
+            /// itself).
+            @MainActor func show(_ got: (file: URL, source: EventPicture.Source)?, again: Bool) async -> (picture: String, cut: Bool)? {
                 if again {
                     c.sound = nil
                     c.interruptionLevel = .passive
@@ -492,11 +505,15 @@ final class NestAlerts {
                 }
                 // What came couldn't be read (a clip cut short): the camera's latest picture instead. (An update keeps
                 // the picture it has.)
-                if again, made == nil { return false }
+                if again, made == nil { return nil }
+                // What the picture is, for the alert's line in the family's log.
+                var what = got.map { race.text($0.source) } ?? "none"
                 if made == nil, let jpeg = CameraStreams.shared.latestStill(camera), let u = CameraEventMedia.jpegFile(jpeg, name: "frame-kept-\(short)") {
                     made = await CameraEventMedia.keepEventPicture(u, key: short, title: title, moved: moved)
                     if made != nil { PushRelay.log.notice("picture for \(body, privacy: .public): \(got == nil ? "none came" : "it couldn’t be read", privacy: .public), the camera’s latest picture instead") }
+                    what = EventPicture.Source.kept.text
                 }
+                if made == nil { what = "none" }
                 if let made {
                     focus = made.focus; still = made.still; shown = made.file
                     // A clip that came meanwhile goes in the push too.
@@ -536,16 +553,17 @@ final class NestAlerts {
                 // alert itself, here and on the iPhones.
                 if !quiet {
                     CameraShare.shared.noteEvent(key: short, camera: camera, name: body, title: title, focus: focus,
-                                                 event: event, clip: race.clip ?? clip)
+                                                 event: event, clip: race.clip ?? clip, happened: happened)
                 }
                 Notifier.deliver(c, id: id)
-                guard !quiet else { return true }
+                let result = (picture: what, cut: close != nil)
+                guard !quiet else { return result }
                 // The camera's page lists its last events: this one's picture is kept for it, and its clip (now, if
                 // Google's has come; else when it does, a few seconds after the event or in a later message).
                 let when = happened ?? received
                 let here = CameraEventMedia.cached(short).flatMap { $0.pathExtension == "mp4" ? $0 : nil }
                 await CameraHistory.keep(key: short, camera: camera, title: title, at: when, picture: shown, clip: here)
-                guard !again, here == nil else { return true }
+                guard !again, here == nil else { return result }
                 // Its own short film, made here from the pictures of the stream this Mac keeps (Google sends no
                 // clip for most of the family's cameras): something to play when the event is opened. The
                 // pictures from before it are taken now (only the last twelve seconds are kept), the rest once
@@ -587,16 +605,23 @@ final class NestAlerts {
                         await CameraHistory.keep(key: short, camera: camera, title: title, at: when, picture: nil, clip: file)
                     }
                 }
-                return true
+                return result
             }
             let got = await race.result(googleWait: googleWait, cap: Self.pictureWait, staleCap: Self.pictureWait, last: Self.pictureWait)
-            _ = await show(got, again: false)
+            let first = await show(got, again: false)
+            let shownAt = Date()
             // A better picture than the one it went out with, when one comes in the event's first twenty seconds: the
-            // alert is updated with it. (Not waited for here: its message is acknowledged once the alert is out.)
+            // alert is updated with it. (Not waited for here: its message is acknowledged once the alert is out.) Then
+            // the alert's one line in the family's log, with both.
             Task {
-                if let better = await race.better(than: got?.source, until: received.addingTimeInterval(20)) {
-                    _ = await show(better, again: true)
+                var line = CameraEventMedia.alertLine(camera: body, title: title, happened: happened, shown: shownAt,
+                                                      picture: first?.picture ?? "none", cut: first?.cut ?? false)
+                if let better = await race.better(than: got?.source, until: received.addingTimeInterval(20)),
+                   let then = await show(better, again: true) {
+                    let after = happened.map { String(format: " %.1f s after it happened", Date().timeIntervalSince($0)) } ?? ""
+                    line += "; a better one\(after): \(then.picture), \(then.cut ? "close on its subject" : "whole")"
                 }
+                Diagnostics.shared.noteAlert(line, at: shownAt)
                 if let session, self?.racing[session] === race { self?.racing[session] = nil }
             }
         }

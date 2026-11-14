@@ -15,6 +15,8 @@ final class Diagnostics: NSObject {
     /// The synced settings item: device id → that device's latest summaries (newest first, a few).
     static let key = "diagnostics"
     private static let keptPerDevice = 12
+    /// The camera alerts' lines are kept apart, as many again: a busy camera's alerts don't push a crash out.
+    private static let alertsKept = 12
 
     struct Report: Codable, Equatable {
         var at: Double
@@ -41,6 +43,10 @@ final class Diagnostics: NSObject {
         MXMetricManager.shared.add(self)
         // What was delivered while the app wasn't running: fetched and read off the main thread.
         Task.detached(priority: .utility) { self.take(MXMetricManager.shared.pastDiagnosticPayloads) }
+        #endif
+        #if os(iOS)
+        // The camera alerts the notification extension showed while the app wasn't running.
+        takeExtensionAlerts()
         #endif
         #if os(macOS)
         writeFamilyLog()
@@ -107,6 +113,22 @@ final class Diagnostics: NSObject {
         add([Report(at: Date().timeIntervalSince1970, kind: "Timing", build: AppBuild.label, detail: detail)])
     }
 
+    /// A camera alert shown on this device (`CameraEventMedia.alertLine`): the Macs' log had nothing on alerts.
+    func noteAlert(_ line: String, at: Date = Date()) {
+        guard !Demo.isOn else { return }
+        add([Report(at: at.timeIntervalSince1970, kind: "Alert", build: AppBuild.label, detail: line)])
+    }
+
+    #if os(iOS)
+    /// The camera alerts the notification extension showed since the app last ran (it notes them for the app).
+    func takeExtensionAlerts() {
+        guard !Demo.isOn else { return }
+        let lines = CameraEventMedia.takeAlertLines()
+        guard !lines.isEmpty else { return }
+        add(lines.map { Report(at: $0.at.timeIntervalSince1970, kind: "Alert", build: AppBuild.label, detail: $0.line) })
+    }
+    #endif
+
     private func add(_ new: [Report]) {
         guard !new.isEmpty else { return }
         #if os(tvOS)
@@ -117,7 +139,9 @@ final class Diagnostics: NSObject {
         let before = list
         for r in new where !list.contains(r) { list.append(r) }
         list.sort { $0.at > $1.at }
-        if list.count > Self.keptPerDevice { list = Array(list.prefix(Self.keptPerDevice)) }
+        let alerts = list.filter { $0.kind == "Alert" }.prefix(Self.alertsKept)
+        let rest = list.filter { $0.kind != "Alert" }.prefix(Self.keptPerDevice)
+        list = (Array(rest) + Array(alerts)).sorted { $0.at > $1.at }
         // Nothing new (Apple's past reports, kept already): nothing is saved or sent on again.
         guard list != before else { return }
         var family = Saved.load(Self.key, as: [String: String].self) ?? [:]

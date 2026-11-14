@@ -30,6 +30,11 @@ final class TVAlerts {
         var clip: String?
         /// When it came on screen.
         var shownAt = Date()
+        /// For its line in the family's log: when the event happened (by this Apple TV's clock), what its picture is,
+        /// and whether the round picture is cut close on who or what was seen.
+        var happened: Date? = nil
+        var source = "none yet"
+        var cut = false
 
         static func == (a: Item, b: Item) -> Bool { a.id == b.id && a.thumb === b.thumb }
     }
@@ -143,25 +148,30 @@ final class TVAlerts {
             }
             seen[e.key] = Date()
             let at = Date().addingTimeInterval(-Double(max(0, feed.now - e.at)) / 1000)
-            Task { await self.prepare(e, at: at, host: host, token: token) }
+            let happened = e.happened.map { Date().addingTimeInterval(-Double(max(0, feed.now - $0)) / 1000) }
+            Task { await self.prepare(e, at: at, happened: happened, host: host, token: token) }
         }
     }
 
-    /// An alert's picture, kept for the replay, and its round thumbnail.
+    /// An alert's picture, kept for the replay, and its round thumbnail: which picture it is, and whether the round
+    /// one is cut close on who or what was seen.
     private struct Shot {
         var file: URL?
         var thumb: UIImage?
+        var source: String
+        var cut: Bool
     }
 
     /// The alert, shown with its picture and round thumbnail when they've come within two seconds; else shown at once
     /// without them, and they're put in when they come. (It waited for them, three seconds and more for each address
     /// that didn't answer.)
-    private func prepare(_ e: CameraShareEvent, at: Date, host: String, token: String) async {
+    private func prepare(_ e: CameraShareEvent, at: Date, happened: Date?, host: String, token: String) async {
         let getting = Task { await self.shot(e, host: host, token: token) }
         let soon = await FirstOf<Shot>(1).run([{ await getting.value }], deadline: Date().addingTimeInterval(2))
         guard loop != nil else { return }
         enqueue(Item(id: e.key, camera: e.camera, name: e.name, title: e.title, at: at, thumb: soon?.thumb,
-                     picture: soon?.file, event: e.event, clip: e.clip))
+                     picture: soon?.file, event: e.event, clip: e.clip, happened: happened,
+                     source: soon?.source ?? "none yet", cut: soon?.cut ?? false))
         if soon == nil, let late = await getting.value { update(e.key, late) }
     }
 
@@ -176,13 +186,22 @@ final class TVAlerts {
         for i in queue.indices where queue[i].id == id {
             if let t = shot.thumb { queue[i].thumb = t }
             if let f = shot.file { queue[i].picture = f }
+            queue[i].source = shot.source
+            queue[i].cut = shot.cut
         }
+    }
+
+    /// The alert's line in the family's log, as it comes on screen (it reaches the Mac Studio's log from here).
+    private func noteShown(_ a: Item) {
+        Diagnostics.shared.noteAlert(CameraEventMedia.alertLine(camera: a.name, title: a.title, happened: a.happened,
+                                                                picture: a.source, cut: a.cut))
     }
 
     /// The event's picture (else the camera's picture now) and its round thumbnail on who or what was seen; nil when
     /// neither picture could be had.
     private func shot(_ e: CameraShareEvent, host: String, token: String) async -> Shot? {
         var data: Data?
+        var source = ""
         let order = [host] + hosts.filter { $0 != host }
         for (path, id) in [("/event", e.key), ("/still", e.camera)] where data == nil {
             for h in order {
@@ -192,7 +211,10 @@ final class TVAlerts {
                 // No answer from this address: the next one.
                 guard let (d, resp) = try? await URLSession.shared.data(for: r),
                       let code = (resp as? HTTPURLResponse)?.statusCode else { continue }
-                if code == 200, d.count > 500 { data = d }
+                if code == 200, d.count > 500 {
+                    data = d
+                    source = path == "/event" ? "the Mac Studio’s picture of it" : "the camera’s picture now"
+                }
                 // An answer, picture or not: the Mac's other addresses would say the same (they're the same Mac), and
                 // away from home its home address only times out, holding the alert up three seconds or more.
                 break
@@ -203,17 +225,17 @@ final class TVAlerts {
         let focus = CameraEventMedia.focus(e.focus)
         let kind = SubjectCrop.kind(e.title)
         // Kept for the replay (the camera opened from the pill) and made round, both off the main thread.
-        let made = await Task.detached(priority: .userInitiated) { () -> (file: URL?, thumb: UIImage?) in
+        let made = await Task.detached(priority: .userInitiated) { () -> (file: URL?, round: (image: UIImage, cut: Bool)?) in
             let kept = (try? data.write(to: u, options: .atomic)) != nil
-            return (file: kept ? u : nil, thumb: Self.roundThumb(data, focus: focus, kind: kind))
+            return (file: kept ? u : nil, round: Self.roundThumb(data, focus: focus, kind: kind))
         }.value
-        return Shot(file: made.file, thumb: made.thumb)
+        return Shot(file: made.file, thumb: made.round?.image, source: source, cut: made.round?.cut ?? false)
     }
 
     /// A square of the picture on its subject (the Mac's framing, else found here), small enough for the pill. Cut
     /// from the picture at its full size when the Mac says where the subject is (somebody across a room is a small
-    /// part of it); looked for here in a smaller copy.
-    nonisolated private static func roundThumb(_ data: Data, focus: CGRect?, kind: SubjectCrop.Kind) -> UIImage? {
+    /// part of it); looked for here in a smaller copy. [cut]: it's on a subject (else the picture's middle).
+    nonisolated private static func roundThumb(_ data: Data, focus: CGRect?, kind: SubjectCrop.Kind) -> (image: UIImage, cut: Bool)? {
         guard let src = CGImageSourceCreateWithData(data as CFData, nil),
               let image = CGImageSourceCreateThumbnailAtIndex(src, 0, [kCGImageSourceCreateThumbnailFromImageAlways: true,
                                                                        kCGImageSourceThumbnailMaxPixelSize: focus != nil ? CameraEventMedia.fullSide : 1280,
@@ -237,7 +259,7 @@ final class TVAlerts {
         guard let cut = image.cropping(to: square.integral) else { return nil }
         let out = CGSize(width: 192, height: 192)
         let made = UIGraphicsImageRenderer(size: out).image { _ in UIImage(cgImage: cut).draw(in: CGRect(origin: .zero, size: out)) }
-        return made.preparingForDisplay() ?? made
+        return (image: made.preparingForDisplay() ?? made, cut: unit != nil)
     }
 
     // MARK: On screen
@@ -245,6 +267,7 @@ final class TVAlerts {
     private func enqueue(_ a: Item) {
         if let c = current, c.camera == a.camera, !holding {
             // The same camera again: the newer one takes its place.
+            noteShown(a)
             withAnimation(.smooth(duration: 0.25)) { current = a }
             return
         }
@@ -257,6 +280,7 @@ final class TVAlerts {
     private func show(_ a: Item) {
         var a = a
         a.shownAt = Date()
+        noteShown(a)
         covered = Self.appCovered(except: window)
         if covered { showWindow() }
         withAnimation(Self.slide) { current = a }

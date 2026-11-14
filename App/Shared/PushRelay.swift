@@ -760,6 +760,8 @@ final class PushAppDelegate: NSObject, UIApplicationDelegate {
         let done = WakeDone(completionHandler)
         let work = Task {
             let kept = await CameraHistoryStore.keepArriving(camera: camera, key: key)
+            // The alert's line in the family's log (its notification step noted it here for the app).
+            await MainActor.run { Diagnostics.shared.takeExtensionAlerts() }
             done.call(kept ? .newData : .noData)
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 24) {

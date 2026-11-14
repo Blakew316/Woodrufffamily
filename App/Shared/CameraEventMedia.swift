@@ -88,6 +88,42 @@ enum CameraEventMedia {
         return Date().timeIntervalSince1970 - t < 3600
     }
 
+    // MARK: The line each alert leaves in the family's log
+
+    /// What an alert's title says it's about, for the log: doorbell, person, motion, vehicle or event.
+    static func alertKind(_ title: String) -> String {
+        let t = title.lowercased()
+        return t.contains("door") || t.contains("ring") ? "doorbell" : t.contains("person") ? "person"
+            : t.contains("motion") ? "motion" : t.contains("vehicle") ? "vehicle" : "event"
+    }
+
+    /// The line an alert leaves in the family's log where it's shown: the camera, what it was about, how long after it
+    /// happened it was shown, its picture and whether that was cut close on who or what was seen.
+    static func alertLine(camera: String, title: String, happened: Date?, shown: Date = Date(), picture: String, cut: Bool) -> String {
+        let after = happened.map { String(format: "%.1f s after it happened", max(0, shown.timeIntervalSince($0))) } ?? "(when it happened isn't known)"
+        return "\(camera): \(alertKind(title)) alert shown \(after); picture: \(picture), \(cut ? "close on its subject" : "whole")"
+    }
+
+    #if os(iOS)
+    /// Noted by the notification extension for each camera alert it shows (it can't write to the family's log): the
+    /// app passes them on the next time it runs (`Diagnostics.takeExtensionAlerts`).
+    static func noteAlertLine(_ line: String) {
+        guard let s = store else { return }
+        let lines = (s.stringArray(forKey: "alert.lines") ?? []) + ["\(Date().timeIntervalSince1970)|\(line)"]
+        s.set(Array(lines.suffix(20)), forKey: "alert.lines")
+    }
+
+    /// The lines the extension noted since they were last taken, each with when, taken out of the store.
+    static func takeAlertLines() -> [(at: Date, line: String)] {
+        guard let s = store, let lines = s.stringArray(forKey: "alert.lines"), !lines.isEmpty else { return [] }
+        s.removeObject(forKey: "alert.lines")
+        return lines.compactMap { entry -> (at: Date, line: String)? in
+            guard let bar = entry.firstIndex(of: "|"), let t = Double(entry[..<bar]) else { return nil }
+            return (at: Date(timeIntervalSince1970: t), line: String(entry[entry.index(after: bar)...]))
+        }
+    }
+    #endif
+
     // MARK: The sign-in, kept current by the app
 
     static func keepCredentials(clientID: String?, secret: String?, refresh: String?, access: String?, expires: Double?) {
