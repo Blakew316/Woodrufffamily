@@ -282,7 +282,6 @@ public actor LGRemote {
         let text = String(decoding: try JSONEncoder().encode(msg), as: UTF8.self)
         registration += 1
         let n = registration
-        let paired = clientKey != nil
         prompting = false
         return try await withCheckedThrowingContinuation { (c: CheckedContinuation<String, Error>) in
             // Never two waiting: an older one (there shouldn't be any) is let go first.
@@ -291,23 +290,24 @@ public actor LGRemote {
             Task {
                 do { try await task.send(.string(text)) } catch { await self.failRegister(error, registration: n) }
             }
-            // Paired before, a TV that's there answers in a moment; one that's off never does, so it isn't waited
-            // on long. The first time (or when it asks again on screen), whoever has the TV's remote gets a minute
-            // to press Allow.
+            // A TV that's there answers in a moment: paired before, it takes the key; the first time (or when it asks
+            // again on screen) it says it's asking, and whoever has the TV's remote gets a minute to press Allow. One
+            // that's off, or a mistyped address, never answers, so it isn't waited on long. (The first time it was
+            // waited on for the whole minute, Connect showing "Allow it on the TV…" over a TV that wasn't there.)
             Task {
                 try? await Task.sleep(nanoseconds: 10_000_000_000)
-                await self.registerTimedOut(n, giveUp: false, paired: paired)
+                await self.registerTimedOut(n, giveUp: false)
                 try? await Task.sleep(nanoseconds: 50_000_000_000)
-                await self.registerTimedOut(n, giveUp: true, paired: paired)
+                await self.registerTimedOut(n, giveUp: true)
             }
         }
     }
 
-    private func registerTimedOut(_ n: Int, giveUp: Bool, paired: Bool) {
+    private func registerTimedOut(_ n: Int, giveUp: Bool) {
         guard n == registration, registerWaiter != nil else { return }
         if giveUp {
             failRegister(TVError.offline("Nobody allowed the connection on the TV in time."), registration: n)
-        } else if paired && !prompting {
+        } else if !prompting {
             failRegister(Self.noAnswer(host), registration: n)
         }
     }
