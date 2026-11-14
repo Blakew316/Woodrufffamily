@@ -272,9 +272,10 @@ final class TVAlerts {
             return
         }
         if current == nil, timer == nil { show(a); return }
+        // Waiting: each is shown in turn, a few seconds each (none more than a minute after it came: `next`). Only the
+        // newest two were kept, and a third alert in the same moment was never shown.
         queue.append(a)
-        // Briefly: the newest few, not a backlog.
-        if queue.count > 2 { queue.removeFirst(queue.count - 2) }
+        if queue.count > 8 { queue.removeFirst(queue.count - 8) }
     }
 
     private func show(_ a: Item) {
