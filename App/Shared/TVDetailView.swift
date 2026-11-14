@@ -369,10 +369,13 @@ struct TVScreenThumb: View {
             guard !paused, fleet.isActive else { return }
             while !Task.isCancelled {
                 if let t = fleet.tv(tvID), t.online, t.nowPlaying == nil, fleet.platform(of: t) != .webOS, let c = fleet.client(for: t),
-                   let d = try? await c.screen(width: 480), !Task.isCancelled,
-                   // Still on and idle now the capture is back (it may have started playing meanwhile).
-                   let latest = fleet.tv(tvID), latest.online, latest.nowPlaying == nil {
-                    screen = PlatformImage(data: d)
+                   let d = try? await c.screen(width: 480), !Task.isCancelled {
+                    // Decoded off the main thread, ready to draw.
+                    let image = await Task.detached(priority: .userInitiated) { NowPlayingSheet.decode(d) }.value
+                    // Still on and idle now the capture is back (it may have started playing meanwhile).
+                    if !Task.isCancelled, let latest = fleet.tv(tvID), latest.online, latest.nowPlaying == nil {
+                        screen = image
+                    }
                 }
                 try? await Task.sleep(nanoseconds: 3_000_000_000)
             }
