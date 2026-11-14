@@ -836,11 +836,13 @@ struct LGMenu: View {
         }
         .accessibilityLabel("\(tv.name) Options")
         .help("\(tv.name) Options")
-        // Asked again for another TV (the remote's TV changed while the menu stayed).
-        .task(id: tv.id) {
+        // Asked again for another TV (the remote's TV changed while the menu stayed), and again once the TV is on: asked
+        // only as the menu first showed, a TV that was off then (or not yet answering) left Apps and Inputs greyed out
+        // after it came on, until the remote was opened again.
+        .task(id: "\(tv.id)|\(tv.online)") {
             apps = []
             inputs = []
-            guard let lg = fleet.lg(for: tv) else { return }
+            guard tv.online, let lg = fleet.lg(for: tv) else { return }
             apps = (try? await lg.apps()) ?? []
             inputs = (try? await lg.inputs()) ?? []
         }
