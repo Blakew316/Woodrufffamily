@@ -697,7 +697,13 @@ struct NowPlayingSheet: View {
             .frame(width: size.width, height: size.height)
             .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).strokeBorder(.white.opacity(0.08)))
-            .shadow(color: .black.opacity(0.5), radius: 30, y: 16)
+            // Its shadow cast by a plain card of its shape behind it: the same shadow (the picture is opaque, on black).
+            // Cast by the clipped picture itself, it was worked out off screen on every frame the sheet drew, and the
+            // progress bar under it moves all the time.
+            .background {
+                RoundedRectangle(cornerRadius: 18, style: .continuous).fill(.black)
+                    .shadow(color: .black.opacity(0.5), radius: 30, y: 16)
+            }
             .scaleEffect(playing == false ? 0.92 : 1)
             .animation(.spring(response: 0.5, dampingFraction: 0.8), value: playing)
     }
