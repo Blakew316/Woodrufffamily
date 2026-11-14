@@ -95,9 +95,20 @@ final class TopShelfAlbum {
         refreshing = false
     }
 
-    /// A photo's original, sized down off the main thread without decoding it whole (a 48-megapixel one is hundreds of MB).
-    nonisolated private static func downsample(_ data: Data, maxPixel: Int = 1920) -> UIImage? {
+    /// A photo's original, sized down off the main thread without decoding it whole (a 48-megapixel one is hundreds of MB):
+    /// decoded by ImageIO straight at the size it's drawn, fitted whole on [screen] (a portrait photo at the 2160 pixels
+    /// it's drawn tall, not 3840).
+    nonisolated private static func downsample(_ data: Data, fitting screen: CGSize) -> UIImage? {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        var maxPixel = Int(max(screen.width, screen.height))
+        if let p = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+           var w = (p[kCGImagePropertyPixelWidth] as? NSNumber)?.doubleValue,
+           var h = (p[kCGImagePropertyPixelHeight] as? NSNumber)?.doubleValue, w > 0, h > 0 {
+            // On its side in the file (EXIF orientations 5 to 8): its width and height swap once it's the right way up.
+            if let o = (p[kCGImagePropertyOrientation] as? NSNumber)?.intValue, o >= 5 { swap(&w, &h) }
+            let fit = min(1, Double(screen.width) / w, Double(screen.height) / h)
+            maxPixel = max(1, Int((max(w, h) * fit).rounded(.up)))
+        }
         let options: [CFString: Any] = [kCGImageSourceCreateThumbnailFromImageAlways: true,
                                         kCGImageSourceCreateThumbnailWithTransform: true,
                                         kCGImageSourceShouldCacheImmediately: true,
@@ -165,77 +176,124 @@ final class TopShelfAlbum {
         let stamp = String(Int(Date().timeIntervalSince1970 * 1000))
         let req = PHImageRequestOptions()
         req.deliveryMode = .opportunistic
-        req.resizeMode = .fast
+        req.resizeMode = .exact
         req.isNetworkAccessAllowed = true
         req.isSynchronous = false
         // A 4K screen: each photo is asked for at 3840 × 2160 and kept at both sizes. The Top Shelf was given the
         // 1920 × 1080 picture for 4K too, where it was drawn at half the screen's sharpness.
         let big = Self.screenIs4K
         let asked = big ? CGSize(width: 3840, height: 2160) : CGSize(width: 1920, height: 1080)
+        // The photos made last time, by what each was made from (`madeKey`): one picked again and unchanged since keeps
+        // its pictures (every photo was downloaded, decoded and drawn at both sizes each time the app came back).
+        let before = self.saved.dictionary(forKey: "topShelf.made") as? [String: String] ?? [:]
+        var made: [String: String] = [:]
         var saved = 0
         var lastError: String?
         for (i, a) in chosen.enumerated() {
             // Not while a film is on screen: iCloud's photos came down the same connection as its first minutes (the
             // rest follow once it closes; the Top Shelf can't be seen meanwhile anyway).
             while NativePlayer.shared.isOpen && !Task.isCancelled { try? await Task.sleep(nanoseconds: 2_000_000_000) }
-            let got: (full: UIImage?, rough: UIImage?) = await withCheckedContinuation { c in
-                var done = false
-                var rough: UIImage?
-                // Fitted whole, so asked for at the size it's drawn (asked to fill 1920 × 1080, a portrait photo came
-                // back with more than twice the pixels it's shown with, all of it downloaded and decoded).
-                PHImageManager.default().requestImage(for: a, targetSize: asked, contentMode: .aspectFit, options: req) { im, info in
-                    if done { return }
-                    // The quick, smaller copy first: kept in case nothing better comes.
-                    if (info?[PHImageResultIsDegradedKey] as? Bool) == true { rough = im; return }
-                    done = true
-                    if im == nil, let e = info?[PHImageErrorKey] as? Error { lastError = e.localizedDescription }
-                    c.resume(returning: (full: im, rough: rough))
-                }
-            }
-            var picture = got.full
-            if picture == nil {
-                // Some iCloud photos only come as their original: read that and size it down here.
-                let data: Data? = await withCheckedContinuation { c in
-                    let o = PHImageRequestOptions()
-                    o.isNetworkAccessAllowed = true
-                    o.deliveryMode = .highQualityFormat
-                    PHImageManager.default().requestImageDataAndOrientation(for: a, options: o) { d, _, _, _ in c.resume(returning: d) }
-                }
-                if let data { picture = await Task.detached(priority: .utility) { Self.downsample(data, maxPixel: big ? 3840 : 1920) }.value }
-            }
-            // Only when neither came: the quick copy (a few hundred pixels across, soft on the TV, but better than a
-            // gap). It used to be taken before the original was tried.
-            if picture == nil { picture = got.rough }
             // Apple TV only lets apps write in Caches (the shared folder's too), which is where the Top Shelf reads.
             // A new name each time (the Apple TV keeps pictures by their address: the same name would keep showing
-            // the old photo). Fitted to the Top Shelf and made into a JPEG off the main thread, so the remote stays
-            // smooth meanwhile.
-            let file = dir.appendingPathComponent(String(format: "%@-%02d.jpg", stamp, i))
-            // Its 3840 × 2160 copy for a 4K screen: the same name with "@2x", which is how the Top Shelf pairs them.
-            let large = dir.appendingPathComponent(String(format: "%@-%02d@2x.jpg", stamp, i))
+            // the old photo). Its 3840 × 2160 copy for a 4K screen has the same name with "@2x", which is how the Top
+            // Shelf pairs them.
+            let name = String(format: "%@-%02d", stamp, i)
+            let file = dir.appendingPathComponent(name + ".jpg")
+            let large = dir.appendingPathComponent(name + "@2x.jpg")
+            let key = Self.madeKey(a, big: big)
+            // Made last time and unchanged since: its pictures renamed for this refresh (in its order), not made again.
+            if let was = before[key], Self.rename(was, to: name, big: big, in: dir) {
+                made[key] = name
+                saved += 1
+                continue
+            }
+            // The photo's own file, decoded by ImageIO straight at the size it's drawn: never whole first (asked of
+            // Photos at a size, it could hand back the whole original decoded, only to be drawn smaller).
+            let data: Data? = await withCheckedContinuation { c in
+                let o = PHImageRequestOptions()
+                o.isNetworkAccessAllowed = true
+                o.deliveryMode = .highQualityFormat
+                PHImageManager.default().requestImageDataAndOrientation(for: a, options: o) { d, _, _, _ in c.resume(returning: d) }
+            }
+            var picture: UIImage?
+            if let data { picture = await Task.detached(priority: .utility) { Self.downsample(data, fitting: asked) }.value }
+            // Made from the photo itself (not the quick copy, which is tried again next time).
+            var whole = picture != nil
+            if picture == nil {
+                let got: (full: UIImage?, rough: UIImage?) = await withCheckedContinuation { c in
+                    var done = false
+                    var rough: UIImage?
+                    // Fitted whole, so asked for at the size it's drawn, and no larger (asked to fill 1920 × 1080, a
+                    // portrait photo came back with more than twice the pixels it's shown with, all of it downloaded
+                    // and decoded).
+                    PHImageManager.default().requestImage(for: a, targetSize: asked, contentMode: .aspectFit, options: req) { im, info in
+                        if done { return }
+                        // The quick, smaller copy first: kept in case nothing better comes.
+                        if (info?[PHImageResultIsDegradedKey] as? Bool) == true { rough = im; return }
+                        done = true
+                        if im == nil, let e = info?[PHImageErrorKey] as? Error { lastError = e.localizedDescription }
+                        c.resume(returning: (full: im, rough: rough))
+                    }
+                }
+                // Only when neither came: the quick copy (a few hundred pixels across, soft on the TV, but better than a
+                // gap).
+                picture = got.full ?? got.rough
+                whole = got.full != nil
+            }
+            // Fitted to the Top Shelf and made into a JPEG off the main thread, so the remote stays smooth meanwhile.
             var written: Result<Void, Error>?
             if let image = picture {
                 written = await Task.detached(priority: .utility) { () -> Result<Void, Error>? in
-                    guard let data = (Self.shelfPicture(image) ?? image).jpegData(compressionQuality: 0.8) else { return nil }
+                    // One size at a time, each let go before the next is drawn (both were held at once, with the photo).
                     // The 4K copy first, so it's there whenever the photo is (the Top Shelf can ask at any moment). If
                     // it can't be made or kept, the Top Shelf shows the photo itself on a 4K screen, as it did.
-                    if big, let sharp = Self.shelfPicture(image, screen: CGSize(width: 3840, height: 2160))?.jpegData(compressionQuality: 0.8) {
-                        try? sharp.write(to: large, options: .atomic)
+                    if big {
+                        autoreleasepool {
+                            if let sharp = Self.shelfPicture(image, screen: CGSize(width: 3840, height: 2160))?.jpegData(compressionQuality: 0.8) {
+                                try? sharp.write(to: large, options: .atomic)
+                            }
+                        }
                     }
-                    do { try data.write(to: file, options: .atomic); return .success(()) } catch { return .failure(error) }
+                    return autoreleasepool { () -> Result<Void, Error>? in
+                        guard let data = (Self.shelfPicture(image) ?? image).jpegData(compressionQuality: 0.8) else { return nil }
+                        do { try data.write(to: file, options: .atomic); return .success(()) } catch { return .failure(error) }
+                    }
                 }.value
             }
             switch written {
-            case .success?: saved += 1
+            case .success?:
+                saved += 1
+                if whole { made[key] = name }
             case .failure(let e)?: lastError = e.localizedDescription
             case nil: if lastError == nil { lastError = "iCloud sent no picture" }
             }
         }
-        if saved > 0 { for f in old { try? FileManager.default.removeItem(at: f) } }
+        if saved > 0 {
+            for f in old { try? FileManager.default.removeItem(at: f) }
+            self.saved.set(made, forKey: "topShelf.made")
+        }
         TVTopShelfContentProvider.topShelfContentDidChange()
         ready = Self.files().count
         version += 1
         note = chosen.isEmpty ? "That album has no photos." : saved == 0 ? "Couldn’t get the photos from iCloud" + (lastError.map { ": \($0)" } ?? ".") + " Check that iCloud Photos is on in this Apple TV’s Settings → Users and Accounts." : "\(saved) photos are on the Top Shelf."
+    }
+
+    /// What a photo's pictures were made from: the photo as it is now (an edit changes its date), at this screen's sizes.
+    nonisolated private static func madeKey(_ a: PHAsset, big: Bool) -> String {
+        "\(a.localIdentifier) \(a.modificationDate?.timeIntervalSince1970 ?? 0) \(big ? "4K" : "HD")"
+    }
+
+    /// A photo's pictures from the last refresh ([from]) renamed [to]; false when they aren't all there (one kept without
+    /// its 4K copy is made again).
+    nonisolated private static func rename(_ from: String, to name: String, big: Bool, in dir: URL) -> Bool {
+        let fm = FileManager.default
+        let moves = (big ? ["@2x.jpg"] : []) + [".jpg"]
+        guard moves.allSatisfy({ fm.fileExists(atPath: dir.appendingPathComponent(from + $0).path) }) else { return false }
+        // The 4K copy first, so it's there whenever the photo is.
+        for end in moves {
+            do { try fm.moveItem(at: dir.appendingPathComponent(from + end), to: dir.appendingPathComponent(name + end)) } catch { return false }
+        }
+        return true
     }
 
     /// 15 of [id]'s photos, a different mix each time (the newest few always among them); nil when there's no such album.
