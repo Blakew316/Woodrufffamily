@@ -50,8 +50,9 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
         // The same alert again (the Mac's update of it with a better picture, a second Mac sending it too, or this
         // iPhone's own copy shown first): in its place, quietly, not a second sound and banner. An update whose alert
         // never reached this iPhone (it was off the network then, and Apple keeps only the newest push for it) is that
-        // alert, sound and all.
-        let repeated = CameraEventMedia.pushArrived(key) || CameraEventMedia.shownHere(key)
+        // alert, sound and all. (Send Test Camera Alert sends the latest event again under its own id: never a repeat.)
+        let test = request.content.title.hasPrefix("Test: ")
+        let repeated = !test && (CameraEventMedia.pushArrived(key) || CameraEventMedia.shownHere(key))
         if repeated {
             c.sound = nil
             c.interruptionLevel = .passive
