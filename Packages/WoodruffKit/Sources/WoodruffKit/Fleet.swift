@@ -569,12 +569,14 @@ public final class Fleet {
         if !replacing, let have = hub(status.id), have.connection != connection {
             throw AlreadyPaired(name: tv(have.id)?.name ?? have.name)
         }
+        let oldHost = self.hub(status.id)?.connection.base.host
         let hub = Hub(id: status.id, name: status.name, connection: connection)
         hubs.removeAll { $0.id == hub.id }
         hubs.append(hub)
         failures[hub.id] = nil
         saveHubs()
         extras[hub.id]?.lastHost = connection.base.host
+        followLG(hub.id, from: oldHost, to: connection.base.host)
         if selectedID == nil { selectedID = hub.id }
         _ = try? await hello(hub)
         await refresh()
@@ -791,9 +793,11 @@ public final class Fleet {
         let trial = TVConnection(base: base, key: have.connection.key)
         guard let status: TVStatus = try? await TVTransport(trial).get("/api/status", timeout: 4), status.id == id,
               let i = hubs.firstIndex(where: { $0.id == id }), !isAnswering(id) else { return false }
+        let oldHost = hubs[i].connection.base.host
         hubs[i].connection.base = base
         saveHubs()
         extras[id]?.lastHost = base.host
+        followLG(id, from: oldHost, to: base.host)
         failures[id] = 1
         return true
     }
@@ -807,8 +811,18 @@ public final class Fleet {
         hubs[i].connection.base = base
         saveHubs()
         extras[hub.id]?.lastHost = newHost
+        followLG(hub.id, from: oldHost, to: newHost)
         failures[hub.id] = 1
         return hubs[i]
+    }
+
+    /// The TV [id] answers at [newHost] on the home network now, not at [oldHost]: its LG direct control, connected at
+    /// that old address (the TV's own), goes with it. It stayed there: every key on the remote, its mute and Turn Off
+    /// went to an address nothing answered at, and failed, until it was connected again by hand. (Never to an
+    /// away-from-home link: LG direct control is only ever on the home network.)
+    private func followLG(_ id: String, from oldHost: String?, to newHost: String?) {
+        guard let oldHost, let newHost, oldHost != newHost, Fleet.isHomeAddress(newHost), extras[id]?.lgHost == oldHost else { return }
+        extras[id]?.lgHost = newHost
     }
 
     /// Asks one hub for its TVs and shows the answer the moment it arrives.
