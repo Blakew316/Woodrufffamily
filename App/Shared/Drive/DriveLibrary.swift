@@ -371,15 +371,23 @@ final class DriveLibrary: WatchSource {
         }
     }
 
-    /// A folder's contents: as kept when Drive can't be reached (offline), else read again and kept.
+    /// A folder's contents: as read in the last minute, else read again and kept (as kept when Drive can't be reached:
+    /// offline).
     private func folder(_ id: String) async -> [GoogleDrive.File] {
+        if let kept = saved.folders[id], let at = listedAt[id], Date().timeIntervalSince(at) < 60 { return kept }
         if let fresh = try? await GoogleDrive.children(id) {
             saved.folders[id] = fresh
+            listedAt[id] = Date()
             store()
             return fresh
         }
         return saved.folders[id] ?? []
     }
+
+    /// When each folder was last read from Drive since the app opened. A show's page reads its folder and its season's
+    /// to read the title, then the same two again a moment later for its episodes, each one a wait for Google before
+    /// the episodes showed: a folder read in the last minute answers from what was read.
+    @ObservationIgnored private var listedAt: [String: Date] = [:]
 
     /// Drive's file [id] as it was last listed (its name and type), when it was.
     func listedFile(_ id: String) -> GoogleDrive.File? {
