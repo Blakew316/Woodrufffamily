@@ -259,10 +259,11 @@ final class DriveLibrary: WatchSource {
             defer { previous = [:] }
             if let m = moviesID { movies = try await films(in: m) }
             if let s = showsID {
-                let list = try await GoogleDrive.children(s)
-                shows = list.filter(\.isFolder).map { f in
-                    let p = TitleNames.parse(f.name, stripExtension: false)
-                    return keep(Entry(id: f.id, kind: "show", name: f.name, title: p.title, year: p.year, added: f.added))
+                let list = try await GoogleDrive.children(s).filter(\.isFolder)
+                // Their names read all at once, off the main thread.
+                let names = await TitleNames.parseAll(list.map(\.name), stripExtension: false)
+                shows = zip(list, names).map { f, p in
+                    keep(Entry(id: f.id, kind: "show", name: f.name, title: p.title, year: p.year, added: f.added))
                 }
             }
             saved.movies = movies
@@ -297,8 +298,10 @@ final class DriveLibrary: WatchSource {
     private func films(in folder: String) async throws -> [Entry] {
         let list = try await GoogleDrive.children(folder)
         var out: [Entry] = []
-        for f in list where f.isVideo {
-            let p = TitleNames.parse(f.name, stripExtension: true)
+        // Their names read all at once, off the main thread (the films' folders' too, below).
+        let loose = list.filter(\.isVideo)
+        let looseNames = await TitleNames.parseAll(loose.map(\.name), stripExtension: true)
+        for (f, p) in zip(loose, looseNames) {
             out.append(keep(Entry(id: f.id, kind: "movie", name: f.name, title: p.title, year: p.year, added: f.added, file: f.id)))
         }
         // Each film's folder listed eight at a time (one after another, a library of a few hundred took minutes on a
@@ -316,12 +319,12 @@ final class DriveLibrary: WatchSource {
             }
             for try await done in group { listed[done.0] = done.1 }
         }
-        for f in folders {
+        let folderNames = await TitleNames.parseAll(folders.map(\.name), stripExtension: false)
+        for (f, p) in zip(folders, folderNames) {
             guard let inside = listed[f.id] else { continue }
             saved.folders[f.id] = inside
             let videos = inside.filter(\.isVideo).sorted { $0.bytes > $1.bytes }
             guard !videos.isEmpty else { continue }
-            let p = TitleNames.parse(f.name, stripExtension: false)
             let one = videos.count == 1 || videos[0].bytes >= 2 * videos[1].bytes
             out.append(keep(Entry(id: f.id, kind: one ? "movie" : "collection", name: f.name, title: p.title, year: p.year,
                                   added: f.added, file: one ? videos[0].id : nil)))

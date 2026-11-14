@@ -64,6 +64,14 @@ enum TitleNames {
         return (TitleText.withoutYear(s), y ?? bracketYear)
     }
 
+    /// [names] as `parse` reads each of them, in the same order, worked out off the main thread: every one is several
+    /// regular expressions, and the library's few hundred names held the main thread each time it was read.
+    static func parseAll(_ names: [String], stripExtension: Bool) async -> [(title: String, year: Int?)] {
+        await Task.detached(priority: .userInitiated) {
+            names.map { TitleNames.parse($0, stripExtension: stripExtension) }
+        }.value
+    }
+
     private static func cleanCopy(_ name: String) -> String {
         replace(copySuffix, in: replace(copyNumber, in: replace(copyOf, in: name)))
     }
