@@ -45,9 +45,9 @@ public actor LGRemote {
     /// The address that worked last time (TLS on 3001, or plain on 3000), tried first next time.
     private var preferred: String?
     private var counter = 0
-    /// Told the key whenever the TV gives one other than the key this connection had (it forgot this device and asked
-    /// "Allow?" again, or none was kept here), so the app keeps it: kept only here, the TV asked again every time the
-    /// app opened.
+    /// Told the key when the TV gives one other than the key this connection had, after asking on screen (it forgot
+    /// this device and asked "Allow?" again, or none was kept here), so the app keeps it: kept only here, the TV asked
+    /// again every time the app opened.
     private let onNewKey: (@Sendable (String) -> Void)?
 
     /// [clientKey]: the key the TV gave last time (nil the first time: the TV then asks on screen).
@@ -95,7 +95,8 @@ public actor LGRemote {
             do {
                 let key = try await register(on: task)
                 guard socket === task else { throw TVError.offline("Disconnected") }
-                let given = key != clientKey
+                // Only a key given after Allow on the TV's screen (or the first one here), never a key swapped silently.
+                let given = key != clientKey && (clientKey == nil || prompting)
                 clientKey = key
                 registered = true
                 preferred = url
