@@ -622,13 +622,18 @@ struct DeviceGlyph: View {
 /// there once (moving one later in its settings sticks).
 @MainActor enum ArcRoom {
     static func place() {
+        // Only once this device has the family's rooms (a round with the TVs is done), and only a device with no room
+        // chosen for it: what's been placed is remembered on each device, but the rooms travel, so a device new to the
+        // family (or opening All Devices for the first time) moved every one of them back here as the newest change,
+        // over the rooms the family had moved them to.
+        guard Demo.isOn || SettingsSync.shared.lastSynced != nil else { return }
         let home = SmartHome.shared
         let rooms = homeRooms(Fleet.shared)
         let master = rooms.first { AllDevicesView.key($0) == AllDevicesView.key("Master Bedroom") } ?? "Master Bedroom"
         let defaults = UserDefaults.standard
         if !defaults.bool(forKey: "arcPlacedInMasterBedroom"),
            let arc = home.speakers.first(where: { ($0.model ?? "").localizedCaseInsensitiveContains("arc") || $0.name.localizedCaseInsensitiveContains("arc") }) {
-            home.setRoom(arc.id, master)
+            if home.rooms[arc.id] == nil { home.setRoom(arc.id, master) }
             defaults.set(true, forKey: "arcPlacedInMasterBedroom")
         }
         var placed = Set(defaults.stringArray(forKey: "cyncPlacedInMasterBedroom") ?? [])
@@ -641,7 +646,7 @@ struct DeviceGlyph: View {
         ids += home.lights.filter { $0.isCync || ($0.isHome && isCync($0.name, $0.sku)) }.map(\.id)
         ids += AccessoryStore.shared.all.filter { $0.source == "home" && isCync($0.name, $0.product) }.map(\.id)
         for id in ids where !placed.contains(id) {
-            home.setRoom(id, master)
+            if home.rooms[id] == nil { home.setRoom(id, master) }
             placed.insert(id)
         }
         if placed.count != before { defaults.set(Array(placed), forKey: "cyncPlacedInMasterBedroom") }
