@@ -257,7 +257,7 @@ struct WatchView: View {
         // Movies or TV Shows, as on the TV: the day's five across the top, then the rows.
         let place = self.place
         let titles = sectionTitles[place] ?? []
-        let watchingIDs = Set((h.continue ?? []).filter { ($0.kind == "show") == (place == "shows") }.compactMap(\.titleId))
+        let watchingIDs = Self.watchingIDs(h, place: place)
         let worked = shelves.get(place: place, titles: titles, shown: watchingIDs)
         // (The banner is above the rows: `tvBanner` on Apple TV, `cinemaTop` elsewhere.)
         let watching = (h.continue ?? []).filter { !removed.contains($0.key) && ($0.kind == "show") == (place == "shows") }
@@ -374,6 +374,19 @@ struct WatchView: View {
 
     }
 
+    /// The titles in [h]'s Continue Watching for [place] (left out of the rows under it).
+    private static func watchingIDs(_ h: WatchHome?, place: String) -> Set<String> {
+        Set((h?.continue ?? []).filter { ($0.kind == "show") == (place == "shows") }.compactMap(\.titleId))
+    }
+
+    /// The library the page shows, as `body` works it out: its own answer, else the one the app kept from its TV.
+    private var showing: WatchHome? {
+        let client = self.client
+        let kept = client.flatMap { c in fleet.libraryFrom == c.sourceID ? fleet.library : nil }
+        let mine = homeFrom == client?.sourceID ? home : nil
+        return mine ?? (error == nil ? kept : nil)
+    }
+
     /// Every title of the section shown (a page at a time from the library), for its banner and rows.
     private func loadSection(force: Bool = false) async {
         guard let c = client else { return }
@@ -408,10 +421,18 @@ struct WatchView: View {
             offset += p.items.count
             // The first page shows at once (the rows fill in as the rest arrives), unless the rows kept from last time
             // are already showing: they stay until the whole list is here.
-            if offset == p.items.count, (sectionTitles[place] ?? []).isEmpty { sectionTitles[place] = all }
+            if offset == p.items.count, (sectionTitles[place] ?? []).isEmpty {
+                await shelves.make(place: place, titles: all, shown: Self.watchingIDs(showing, place: place))
+                if client?.sourceID == source, (sectionTitles[place] ?? []).isEmpty { sectionTitles[place] = all }
+            }
             if p.items.isEmpty || offset >= p.count || offset >= 3000 { break }
         }
         guard client?.sourceID == source else { return }
+        // Its rows worked out before the list is shown (in the page's body, they held up its drawing).
+        if !all.isEmpty {
+            await shelves.make(place: place, titles: all, shown: Self.watchingIDs(showing, place: place))
+            guard client?.sourceID == source else { return }
+        }
         if !all.isEmpty || sectionTitles[place] == nil { sectionTitles[place] = all }
         // An empty or failed read is tried again with the next one (a library still being read, a TV that didn't
         // answer), not ten minutes later.
@@ -434,6 +455,7 @@ struct WatchView: View {
         }
         for place in ["movies", "shows"] where sectionTitles[place] == nil {
             guard let kept = await ShelfStore.shared.titles(source: source, place: place), !kept.isEmpty else { continue }
+            await shelves.make(place: place, titles: kept, shown: Self.watchingIDs(showing, place: place))
             // Meanwhile read afresh, or the remote moved to another TV.
             guard client?.sourceID == source, sectionTitles[place] == nil else { return }
             sectionTitles[place] = kept
@@ -450,6 +472,11 @@ struct WatchView: View {
             let h = try await c.watchHome()
             // The remote moved to a TV with another library meanwhile: this answer is for the old one.
             guard client?.sourceID == hubID else { return }
+            // A new Continue Watching: the rows under it worked out before it shows (it leaves its titles out of them).
+            if h != home, let titles = sectionTitles[self.place] {
+                await shelves.make(place: self.place, titles: titles, shown: Self.watchingIDs(h, place: self.place))
+                guard client?.sourceID == hubID else { return }
+            }
             // The Drive library read again, or TMDB's posters come in: its rows are read again too.
             let newer = hubID == "drive" && home != nil && h.updated != home?.updated
             // Asked again every minute and after every play: the page redraws only for an answer that's new (what was
@@ -3022,27 +3049,44 @@ struct WatchPlaceholder: View {
 }
 
 
-/// The banner's five and the rows for a list, kept until the list (or what's in Continue Watching) changes.
+/// The banner's five and the rows for each list, kept until the list (or what's in Continue Watching) changes. Worked
+/// out off the main thread as the page takes a new list or Continue Watching (`make`), so its body only reads them;
+/// worked out there only when something else changed them (a new day).
+@MainActor
 final class ShelfCache {
     struct Worked {
         var featured: [Title]; var rows: [(name: String, genre: String?, titles: [Title])]
         /// Each title's wide picture, by title (Continue Watching's stills).
         var wide: [String: String] = [:]
     }
-    private var lastTitles: [Title] = []
-    private var lastShown: Set<String> = []
-    private var lastDay = -1
-    private var lastPlace = ""
-    private var value = Worked(featured: [], rows: [])
+    /// What each place's were worked out from.
+    private struct Made {
+        var titles: [Title]; var shown: Set<String>; var day: Int; var value: Worked
+    }
+    private var made: [String: Made] = [:]
+
+    private static var today: Int { Calendar.current.ordinality(of: .day, in: .era, for: Date()) ?? 0 }
 
     /// Worked out again when anything about a title changes (a poster, a rating), not only the list's length.
     func get(place: String, titles: [Title], shown: Set<String>) -> Worked {
-        let day = Calendar.current.ordinality(of: .day, in: .era, for: Date()) ?? 0
-        if titles != lastTitles || shown != lastShown || day != lastDay || place != lastPlace {
-            lastTitles = titles; lastShown = shown; lastDay = day; lastPlace = place
-            value = Worked(featured: WatchRows.featured(titles, section: place), rows: WatchRows.rows(titles, shown: shown))
-            value.wide = Dictionary(titles.compactMap { t in t.backdrop.map { (t.id, $0) } }, uniquingKeysWith: { first, _ in first })
-        }
+        let day = Self.today
+        if let m = made[place], m.day == day, m.shown == shown, m.titles == titles { return m.value }
+        let value = Self.work(place: place, titles: titles, shown: shown)
+        made[place] = Made(titles: titles, shown: shown, day: day, value: value)
+        return value
+    }
+
+    /// [place]'s worked out ahead, off the main thread, for the list and Continue Watching about to be shown.
+    func make(place: String, titles: [Title], shown: Set<String>) async {
+        let day = Self.today
+        if let m = made[place], m.day == day, m.shown == shown, m.titles == titles { return }
+        let value = await Task.detached(priority: .userInitiated) { Self.work(place: place, titles: titles, shown: shown) }.value
+        made[place] = Made(titles: titles, shown: shown, day: day, value: value)
+    }
+
+    nonisolated private static func work(place: String, titles: [Title], shown: Set<String>) -> Worked {
+        var value = Worked(featured: WatchRows.featured(titles, section: place), rows: WatchRows.rows(titles, shown: shown))
+        value.wide = Dictionary(titles.compactMap { t in t.backdrop.map { (t.id, $0) } }, uniquingKeysWith: { first, _ in first })
         return value
     }
 }
