@@ -38,8 +38,8 @@ struct TVMacRoot: View {
                 }
                 // A result opens its title's page, as everywhere else in Watch (without these, choosing one did
                 // nothing).
-                .environment(\.openTitle, OpenTitleAction { searchTitle = $0 })
-                .environment(\.watchChanged, WatchChanged { _ in searchAgain += 1 })
+                .environment(\.openTitle, OpenTitleAction(page: "tv search") { searchTitle = $0 })
+                .environment(\.watchChanged, WatchChanged(page: "tv search") { _ in searchAgain += 1 })
                 .titleSheet(Binding(get: { searchTitle.map { TitleRef(id: $0) } }, set: { searchTitle = $0?.id })) { TitleSheet(id: $0.id) }
             }
             // The sidebar's icons are Apple's plain solid ones (a house, a film, a screen, a gear): the outlined

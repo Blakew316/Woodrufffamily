@@ -163,10 +163,10 @@ struct WatchView: View {
             TitleSheet(id: ref.id).zoomDestination(ref.id, zoom)
             #endif
         }
-        .environment(\.openTitle, OpenTitleAction { openTitle = $0 })
+        .environment(\.openTitle, OpenTitleAction(page: "watch") { openTitle = $0 })
         .environment(\.zoomNamespace, zoom)
         // Marked watched or taken off Continue Watching anywhere in Watch: gone at once, then asked again.
-        .environment(\.watchChanged, WatchChanged { key in
+        .environment(\.watchChanged, WatchChanged(page: "watch") { key in
             if let key { withAnimation(.smooth) { _ = removed.insert(key) } }
             Task {
                 await load()
@@ -586,14 +586,27 @@ struct LibraryRef: Hashable {
     var sort: String? = nil
 }
 
-/// Opens a title's sheet from anywhere in Watch.
-struct OpenTitleAction { var open: (String) -> Void; func callAsFunction(_ id: String) { open(id) } }
-private struct OpenTitleKey: EnvironmentKey { static let defaultValue = OpenTitleAction { _ in } }
+/// Opens a title's sheet from anywhere in Watch. Equal to any other from the same [page]: a page makes a new one each
+/// time it's drawn, and a new closure each time redrew every tile that reads it (See All twice for each 60 titles it
+/// loads). Each one a page makes does the same (it sets the page's own state), so a tile keeps the one it has.
+struct OpenTitleAction: Equatable {
+    var page: String
+    var open: (String) -> Void
+    func callAsFunction(_ id: String) { open(id) }
+    static func == (a: Self, b: Self) -> Bool { a.page == b.page }
+}
+private struct OpenTitleKey: EnvironmentKey { static let defaultValue = OpenTitleAction(page: "") { _ in } }
 
 /// Tells Watch the library changed here (marked watched, taken off Continue Watching), so it shows at once
-/// instead of on its next round. [removed] is a Continue Watching key to hide straight away.
-struct WatchChanged { var changed: (String?) -> Void; func callAsFunction(removed: String? = nil) { changed(removed) } }
-private struct WatchChangedKey: EnvironmentKey { static let defaultValue = WatchChanged { _ in } }
+/// instead of on its next round. [removed] is a Continue Watching key to hide straight away. Equal to any other from
+/// the same [page], as `OpenTitleAction` is.
+struct WatchChanged: Equatable {
+    var page: String
+    var changed: (String?) -> Void
+    func callAsFunction(removed: String? = nil) { changed(removed) }
+    static func == (a: Self, b: Self) -> Bool { a.page == b.page }
+}
+private struct WatchChangedKey: EnvironmentKey { static let defaultValue = WatchChanged(page: "") { _ in } }
 
 /// How wide Watch's posters are: the Mac fits them to the window; elsewhere the usual 112 (Apple TV: its one size).
 private struct PosterWidthKey: EnvironmentKey {
@@ -2717,9 +2730,9 @@ struct LibraryGrid: View {
         // (Not on Apple TV: no keyboard over the posters there. Search is its own tab in the sidebar.)
         .pageSearch(text: $query, prompt: heading)
         #endif
-        .environment(\.openTitle, OpenTitleAction { openTitle = $0 })
+        .environment(\.openTitle, OpenTitleAction(page: "all") { openTitle = $0 })
         // Marked watched here: the checkmarks (and an Unwatched list) follow at once, and so does Watch.
-        .environment(\.watchChanged, WatchChanged { key in
+        .environment(\.watchChanged, WatchChanged(page: "all") { key in
             watchChanged(removed: key)
             Task { await reloadShown() }
         })
@@ -2881,11 +2894,11 @@ struct SearchPage: View {
             TitleSheet(id: ref.id)
             #endif
         }
-        .environment(\.openTitle, OpenTitleAction { openTitle = $0 })
+        .environment(\.openTitle, OpenTitleAction(page: "search") { openTitle = $0 })
         #if os(iOS)
         .environment(\.zoomNamespace, zoom)
         #endif
-        .environment(\.watchChanged, WatchChanged { key in
+        .environment(\.watchChanged, WatchChanged(page: "search") { key in
             watchChanged(removed: key)
             again += 1
         })

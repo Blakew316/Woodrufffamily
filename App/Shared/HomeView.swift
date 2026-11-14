@@ -849,7 +849,7 @@ struct LibrarySearchResults: View {
             .padding(.vertical, 24)
         }
         .navigationTitle("Search")
-        .environment(\.openTitle, OpenTitleAction { openTitle = $0 })
+        .environment(\.openTitle, OpenTitleAction(page: "library search") { openTitle = $0 })
         .titleSheet(Binding(get: { opened.map { TitleRef(id: $0) } }, set: { openTitle = $0?.id })) { TitleSheet(id: $0.id) }
         .task(id: query) {
             try? await Task.sleep(nanoseconds: 220_000_000)
