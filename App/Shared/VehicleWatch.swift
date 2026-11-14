@@ -149,7 +149,7 @@ final class VehicleWatch {
                 let file = Self.keep(Self.marked(image, s.box) ?? jpeg, note: "\(cam.name)-\(s.label)-\(sure)")
                 if let file { last = (now, cam.name, file) }
                 note("vehicle seen on \(cam.name): \(s.label) \(sure)% at \(Self.place(s.box)) (test mode \(testMode ? "on: no alert" : "off: alert sent"))")
-                if !testMode { NestAlerts.shared.postVehicle(camera: cam, jpeg: jpeg) }
+                if !testMode { NestAlerts.shared.postVehicle(camera: cam, jpeg: jpeg, box: s.box) }
             case .passedOver(let s, let why):
                 passed += 1
                 let sure = Int((s.confidence * 100).rounded())

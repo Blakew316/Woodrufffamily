@@ -298,8 +298,10 @@ final class NestAlerts {
     /// [quiet]: an update of an alert already shown (its clip came later), so no second sound.
     #if os(macOS)
     /// A vehicle the Mac saw itself on a camera's stream (Google sends no vehicle events): the same alert as Google's
-    /// events, with that frame as its picture.
-    func postVehicle(camera: NestCameras.Camera, jpeg: Data) {
+    /// events, with that frame as its picture, close on the vehicle where the detector found it ([box], in shares of
+    /// the frame from its top left). (Its close-up was framed on whatever stood out or changed in the picture, which
+    /// could be a person walking past, or the house.)
+    func postVehicle(camera: NestCameras.Camera, jpeg: Data, box: CGRect? = nil) {
         let now = Date()
         eventHappened = now
         // The frame the vehicle was found in is smaller than the camera sends (looking through full-size frames all
@@ -313,16 +315,17 @@ final class NestAlerts {
             picture = full.jpeg
         }
         post(title: "Vehicle seen", body: camera.name, camera: camera.id,
-             key: "vehicle|\(camera.id)|\(Int(now.timeIntervalSince1970))", event: nil, clip: nil, picture: picture)
+             key: "vehicle|\(camera.id)|\(Int(now.timeIntervalSince1970))", event: nil, clip: nil, picture: picture, subject: box)
     }
     #endif
 
-    /// [picture]: the Mac's own frame of the moment (a vehicle it saw), used instead of fetching one.
+    /// [picture]: the Mac's own frame of the moment (a vehicle it saw), used instead of fetching one; [subject]: where
+    /// what it saw is in that frame (shares of it, from its top left).
     /// [session]: the event session (a clip that comes later for it joins the picture still being got).
     /// Returns the alert's work, done once it has gone out (its message is acknowledged then).
     @discardableResult
     private func post(title: String, body: String, camera: String, key: String, event: String?, clip: String?, quiet: Bool = false,
-                      picture: Data? = nil, session: String? = nil) -> Task<Void, Never>? {
+                      picture: Data? = nil, subject: CGRect? = nil, session: String? = nil) -> Task<Void, Never>? {
         let short = Self.shortID(key)
         let c = UNMutableNotificationContent()
         c.title = title
@@ -447,7 +450,8 @@ final class NestAlerts {
             let picked = got?.source == .moment ? race.momentPick : nil
             let moved = picked?.moved ?? StreamMoment.moved(camera: camera, happened: happened ?? received)
             if let got {
-                made = await CameraEventMedia.keepEventPicture(got.file, key: short, title: title, moved: moved, subject: picked?.subject)
+                made = await CameraEventMedia.keepEventPicture(got.file, key: short, title: title, moved: moved,
+                                                               subject: picked?.subject ?? (got.source == .given ? subject : nil))
             }
             // What came couldn't be read (a clip cut short): the camera's latest picture instead.
             if made == nil, let jpeg = CameraStreams.shared.latestStill(camera), let u = CameraEventMedia.jpegFile(jpeg, name: "frame-kept-\(short)") {
