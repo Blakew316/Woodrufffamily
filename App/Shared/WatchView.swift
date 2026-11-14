@@ -175,11 +175,14 @@ struct WatchView: View {
         })
         .refreshable { await load() }
         // A film or episode played on this device stopped: Continue Watching (and each Resume) shows where it was left
-        // off at once, not a minute later.
-        .onChange(of: DriveLibrary.shared.stoppedHere) { _, _ in
-            Task {
-                await load()
-                if client?.sourceID == "drive" { await loadSection(force: true) }
+        // off at once, not a minute later. Heard by a view of its own: heard here, the whole page was drawn again for it
+        // as it came back from the film, before anything on it had changed.
+        .background {
+            StoppedWatcher {
+                Task {
+                    await load()
+                    if client?.sourceID == "drive" { await loadSection(force: true) }
+                }
             }
         }
         #if !os(tvOS)
@@ -542,6 +545,19 @@ private struct PlayingWatcher: View {
                 guard !Task.isCancelled else { return }
                 await changed()
             }
+    }
+}
+
+/// Notices a film or episode played on this device stopping (`DriveLibrary.stoppedHere`) and says so. A view of its own
+/// behind Watch, as `PlayingWatcher` is: only it is drawn again for it.
+private struct StoppedWatcher: View {
+    var stopped: () -> Void
+
+    var body: some View {
+        Color.clear
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+            .onChange(of: DriveLibrary.shared.stoppedHere) { _, _ in stopped() }
     }
 }
 
