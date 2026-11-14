@@ -164,12 +164,20 @@ final class NestAlerts {
         let name = "projects/\(project)/subscriptions/\(id.prefix(255 - suffix.count))\(suffix)"
         let topic = (try await call("GET", shared))["topic"] as? String ?? ""
         guard !topic.isEmpty else { throw OAuthRelay.Failure.refused("The family’s doorbell subscription has no topic.") }
+        let made: [String: Any] = [
+            "topic": topic, "ackDeadlineSeconds": 30, "messageRetentionDuration": "600s",
+            "expirationPolicy": ["ttl": "86400s"], "labels": ["made-by": "woodruff-family-app"],
+        ]
         do {
-            _ = try await call("PUT", name, [
-                "topic": topic, "ackDeadlineSeconds": 30, "messageRetentionDuration": "600s",
-                "expirationPolicy": ["ttl": "86400s"], "labels": ["made-by": "woodruff-family-app"],
-            ])
+            _ = try await call("PUT", name, made)
         } catch let e as OAuthRelay.Failure where e.localizedDescription.contains("ALREADY_EXISTS") || e.localizedDescription.contains("409") {
+            // Made before: still on the family's topic? One left on a topic since made again (Google then names it
+            // "_deleted-topic_") hears nothing ever again, though every listen works: it's made again, on this one.
+            if let kept = (try? await call("GET", name))?["topic"] as? String, kept != topic {
+                PushRelay.log.notice("camera listener: this device's subscription was on another topic, made again")
+                _ = try? await call("DELETE", name)
+                _ = try await call("PUT", name, made)
+            }
         }
         own = name
         return name
