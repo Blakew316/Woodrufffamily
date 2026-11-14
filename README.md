@@ -184,6 +184,15 @@ moment after an alert from a camera they show (the doorbell and the driveway), t
 has iOS reload the camera widgets, even with Woodruff closed. Without it the build leaves push off the widgets alone:
 they then update from the alert itself, which iOS can put off once a widget has used its reloads for the day.
 
+The camera alerts ("Person seen", "Someone's at the door") are Time Sensitive, so they come through Sleep and the
+other Focuses as Google Home's do: the Mac's push asks for it on each first alert (its quiet updates stay passive),
+and so does an iPhone's own alert when the push didn't come. The app (`com.blakew316.woodruff`) needs the Time
+Sensitive Notifications capability on its identifier, which Xcode's signing on the Mac Studio normally turns on by
+itself (else at developer.apple.com: Identifiers, the id, Time Sensitive Notifications). No build goes without it:
+when Apple refuses it, the iPhone build and the TestFlight upload fail and say so, even if the error names the app
+group too, and the iPhones keep the build they have. A retry without the app group comes only after an error that
+names the group.
+
 Until the app exists in App Store Connect the upload says "Not Set Up" in the Mac app's Settings window (⌘,) under
 General and is tried again every 6 hours (or at Check for Updates Now). To turn uploads off, add `"testflight": false` to the
 updater's `config.json`. TestFlight builds use Apple's production push service, so Instant iPhone Alerts need a push
