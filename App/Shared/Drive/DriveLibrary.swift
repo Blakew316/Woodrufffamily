@@ -3,31 +3,27 @@ import SwiftUI
 import WoodruffKit
 
 /// A file saved by the app, read and decoded off the main thread as the app opens, so the first page that needs it
-/// doesn't wait for it. Whoever needs it first takes it if it's ready, else reads it then as before.
+/// doesn't wait for it. Whoever needs it first takes it: at once when it's ready, else as soon as the read under way
+/// is done. (It used to be read a second time then, on the main thread beside the first read: an Apple TV opening on
+/// Movies or TV Shows held its first frame for a whole read of the library.)
 final class EarlyRead<T: Decodable>: @unchecked Sendable {
-    private let lock = NSLock()
-    private var done = false
-    private var taken = false
+    /// The read, and `take` waiting for it. A serial queue: a wait from the main thread lends the read its priority.
+    private let queue = DispatchQueue(label: "com.woodruff.family.early-read", qos: .userInitiated)
     private var value: T?
 
     init(_ url: URL) {
-        Task.detached(priority: .userInitiated) { [self] in
-            let v = try? JSONDecoder().decode(T.self, from: Data(contentsOf: url, options: .mappedIfSafe))
-            lock.lock()
-            if !taken { value = v; done = true }
-            lock.unlock()
+        queue.async { [self] in
+            value = try? JSONDecoder().decode(T.self, from: Data(contentsOf: url, options: .mappedIfSafe))
         }
     }
 
-    /// The decoded file (nil inside: no file, or not readable) once it's ready; nil when it isn't yet.
-    func take() -> T?? {
-        lock.lock()
-        defer { lock.unlock() }
-        taken = true
-        guard done else { return nil }
-        let v = value
-        value = nil
-        return .some(v)
+    /// The decoded file (nil: no file, or not readable), once the read is done.
+    func take() -> T? {
+        queue.sync {
+            let v = value
+            value = nil
+            return v
+        }
     }
 }
 
@@ -204,11 +200,7 @@ final class DriveLibrary: WatchSource {
     var updated: Date? { saved.updated.map { Date(timeIntervalSince1970: $0 / 1000) } }
 
     private init() {
-        if let ready = Self.early.take() {
-            saved = ready ?? Saved()
-        } else {
-            saved = (try? JSONDecoder().decode(Saved.self, from: Data(contentsOf: file))) ?? Saved()
-        }
+        saved = Self.early.take() ?? Saved()
     }
 
     /// Written a couple of seconds after the last change (the player reports every 10 seconds).

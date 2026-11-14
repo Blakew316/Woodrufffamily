@@ -55,11 +55,7 @@ final class TMDB {
     private var waiting: [CheckedContinuation<Void, Never>] = []
 
     private init() {
-        if let ready = Self.early.take() {
-            cache = ready ?? Cache()
-        } else {
-            cache = (try? JSONDecoder().decode(Cache.self, from: Data(contentsOf: file))) ?? Cache()
-        }
+        cache = Self.early.take() ?? Cache()
     }
 
     private func save() {
