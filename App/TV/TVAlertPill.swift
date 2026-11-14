@@ -132,15 +132,56 @@ final class TVAlerts {
         // Only what just happened: none from before the app opened or while it was away, beyond a few seconds.
         let fresh = feed.events.filter { feed.now - $0.at <= (first ? 20_000 : 60_000) }.sorted { $0.at < $1.at }
         seen = seen.filter { $0.value.timeIntervalSinceNow > -3600 }
-        for e in fresh where seen[e.key] == nil {
+        for e in fresh {
+            // The same alert again: the Mac Studio found a better picture for it after it went. Put in its place while
+            // it's still on screen or waiting.
+            if seen[e.key] != nil {
+                if current?.id == e.key || queue.contains(where: { $0.id == e.key }) {
+                    Task { if let shot = await self.shot(e, host: host, token: token) { self.update(e.key, shot) } }
+                }
+                continue
+            }
             seen[e.key] = Date()
             let at = Date().addingTimeInterval(-Double(max(0, feed.now - e.at)) / 1000)
             Task { await self.prepare(e, at: at, host: host, token: token) }
         }
     }
 
-    /// The event's picture (else the camera's picture now), its round thumbnail on who or what was seen, then shown.
+    /// An alert's picture, kept for the replay, and its round thumbnail.
+    private struct Shot {
+        var file: URL?
+        var thumb: UIImage?
+    }
+
+    /// The alert, shown with its picture and round thumbnail when they've come within two seconds; else shown at once
+    /// without them, and they're put in when they come. (It waited for them, three seconds and more for each address
+    /// that didn't answer.)
     private func prepare(_ e: CameraShareEvent, at: Date, host: String, token: String) async {
+        let getting = Task { await self.shot(e, host: host, token: token) }
+        let soon = await FirstOf<Shot>(1).run([{ await getting.value }], deadline: Date().addingTimeInterval(2))
+        guard loop != nil else { return }
+        enqueue(Item(id: e.key, camera: e.camera, name: e.name, title: e.title, at: at, thumb: soon?.thumb,
+                     picture: soon?.file, event: e.event, clip: e.clip))
+        if soon == nil, let late = await getting.value { update(e.key, late) }
+    }
+
+    /// The picture of an alert on screen or waiting, put in its place.
+    private func update(_ id: String, _ shot: Shot) {
+        if current?.id == id {
+            withAnimation(.smooth(duration: 0.25)) {
+                if let t = shot.thumb { current?.thumb = t }
+                if let f = shot.file { current?.picture = f }
+            }
+        }
+        for i in queue.indices where queue[i].id == id {
+            if let t = shot.thumb { queue[i].thumb = t }
+            if let f = shot.file { queue[i].picture = f }
+        }
+    }
+
+    /// The event's picture (else the camera's picture now) and its round thumbnail on who or what was seen; nil when
+    /// neither picture could be had.
+    private func shot(_ e: CameraShareEvent, host: String, token: String) async -> Shot? {
         var data: Data?
         let order = [host] + hosts.filter { $0 != host }
         for (path, id) in [("/event", e.key), ("/still", e.camera)] where data == nil {
@@ -157,23 +198,16 @@ final class TVAlerts {
                 break
             }
         }
-        var file: URL?
-        var thumb: UIImage?
-        if let data {
-            let u = FileManager.default.temporaryDirectory.appendingPathComponent("tv-alert-\(e.key).jpg")
-            let focus = CameraEventMedia.focus(e.focus)
-            let kind = SubjectCrop.kind(e.title)
-            // Kept for the replay (the camera opened from the pill) and made round, both off the main thread.
-            let made = await Task.detached(priority: .userInitiated) { () -> (file: URL?, thumb: UIImage?) in
-                let kept = (try? data.write(to: u, options: .atomic)) != nil
-                return (file: kept ? u : nil, thumb: Self.roundThumb(data, focus: focus, kind: kind))
-            }.value
-            file = made.file
-            thumb = made.thumb
-        }
-        guard loop != nil else { return }
-        enqueue(Item(id: e.key, camera: e.camera, name: e.name, title: e.title, at: at, thumb: thumb,
-                      picture: file, event: e.event, clip: e.clip))
+        guard let data else { return nil }
+        let u = FileManager.default.temporaryDirectory.appendingPathComponent("tv-alert-\(e.key).jpg")
+        let focus = CameraEventMedia.focus(e.focus)
+        let kind = SubjectCrop.kind(e.title)
+        // Kept for the replay (the camera opened from the pill) and made round, both off the main thread.
+        let made = await Task.detached(priority: .userInitiated) { () -> (file: URL?, thumb: UIImage?) in
+            let kept = (try? data.write(to: u, options: .atomic)) != nil
+            return (file: kept ? u : nil, thumb: Self.roundThumb(data, focus: focus, kind: kind))
+        }.value
+        return Shot(file: made.file, thumb: made.thumb)
     }
 
     /// A square of the picture on its subject (the Mac's framing, else found here), small enough for the pill. Cut
