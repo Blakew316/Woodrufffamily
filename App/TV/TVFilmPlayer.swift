@@ -191,6 +191,21 @@ final class OwnPlayer {
             }
         } catch {
             guard current?.id == play.id, self.screen === screen else { return }
+            // A picture this Apple TV can't show: said, rather than handed to Apple's player, which can't show it either
+            // (it played the sound over a black screen).
+            if case FilmPlayer.Failure.cantShow(let kind)? = error as? FilmPlayer.Failure {
+                let words = "This Apple TV can’t show this film’s picture (\(FilmPictureFormat.name(kind))). Play it on a TV instead."
+                Task { @MainActor [weak self, weak screen] in
+                    // Said once the screen is up: an alert put up while it's still coming is refused without a word.
+                    for _ in 0..<50 {
+                        guard let screen, screen.presentingViewController == nil || screen.isBeingPresented else { break }
+                        try? await Task.sleep(nanoseconds: 100_000_000)
+                    }
+                    guard let self, let screen, self.current?.id == play.id, self.screen === screen else { return }
+                    self.failed(words)
+                }
+                return
+            }
             giveToApple(play, error)
         }
     }
@@ -293,6 +308,7 @@ final class OwnPlayer {
         var words: [String] = []
         if let p = film.picture {
             var line = "picture \(p.codec) \(p.width)×\(p.height)"
+            if let marked = p.markedAs { line += " (marked \(marked) in the file)" }
             if p.framesASecond > 0 { line += String(format: " %.0f fps", p.framesASecond) }
             line += PhonePlayback.dynamicRange(p.format)
             words.append(line)

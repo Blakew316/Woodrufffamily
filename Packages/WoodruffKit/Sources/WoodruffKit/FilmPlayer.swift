@@ -50,6 +50,9 @@ public final class FilmPlayer: @unchecked Sendable {
         case short
         /// Apple's decoder gave up, more than once.
         case decoder
+        /// The film has a picture this device can't show (its kind's four letters, "av01"): it isn't played as sound
+        /// over a black screen.
+        case cantShow(String)
     }
 
     public struct Picture {
@@ -59,6 +62,9 @@ public final class FilmPlayer: @unchecked Sendable {
         public let width: Int
         public let height: Int
         public let framesASecond: Float
+        /// What the file calls it, when that's a name Apple's decoder doesn't take and it's handed over as [codec]
+        /// ("hev1"; `FilmPictureFormat`).
+        public var markedAs: String? = nil
     }
 
     public struct Sound: Equatable, Sendable {
@@ -160,6 +166,8 @@ public final class FilmPlayer: @unchecked Sendable {
         let playable: Bool
         /// (Sound) the kind the app's own decoder is asked for ("dts", "truehd"); nil for sound Apple decodes.
         var ours: String? = nil
+        /// (Picture) [format] is the file's own made again under a name Apple's decoder takes (`FilmPictureFormat`).
+        var remadeFrom: CMFormatDescription? = nil
     }
 
     /// One track being played: its reader, and what has been read of it and not yet handed to its decoder.
@@ -184,6 +192,9 @@ public final class FilmPlayer: @unchecked Sendable {
         var soundEnd = CMTime.invalid
         /// (Sound Apple has no decoder for) the app's own decoder for this track, and what it has made of it.
         var decoding: FilmSoundDecoding?
+        /// (A picture the file names in a way Apple's decoder doesn't take) each sample's format, made under the name
+        /// it takes.
+        var remade: FilmPictureFormat.Remade?
 
         init(lane: Int, sound: Bool, reader: FilmTrackReader, format: CMFormatDescription?) {
             self.lane = lane
@@ -297,18 +308,37 @@ public final class FilmPlayer: @unchecked Sendable {
         var sounds: [CMPersistentTrackID: Loaded] = [:]
         var words: [CMPersistentTrackID: Loaded] = [:]
         var firstEnabled: CMPersistentTrackID?
+        /// The kind of a picture the film has that can't be shown here, while none that can has been found.
+        var unshown: String?
         for track in tracks {
             let formats = (try? await track.load(.formatDescriptions)) ?? []
             let segments = (try? await track.load(.segments)) ?? []
             let shift = Self.shift(segments)
-            guard let format = formats.first, (try? await track.load(.canProvideSampleCursors)) ?? false else { continue }
+            guard let format = formats.first, (try? await track.load(.canProvideSampleCursors)) ?? false else {
+                if track.mediaType == .video, unshown == nil {
+                    unshown = formats.first.map { Self.letters(CMFormatDescriptionGetMediaSubType($0)) } ?? "?"
+                }
+                continue
+            }
             let kind = Self.letters(CMFormatDescriptionGetMediaSubType(format))
             if track.mediaType == .video {
-                guard picture == nil, (try? await track.load(.isDecodable)) ?? true else { continue }
-                let size = CMVideoFormatDescriptionGetDimensions(format)
+                guard picture == nil else { continue }
+                var shown = format
+                var remadeFrom: CMFormatDescription?
+                if !((try? await track.load(.isDecodable)) ?? true) {
+                    // A name Apple's decoder doesn't take for a picture it decodes ("hev1"), or a kind it can't show.
+                    guard let remade = FilmPictureFormat.takeable(format) else {
+                        if unshown == nil { unshown = kind }
+                        continue
+                    }
+                    shown = remade
+                    remadeFrom = format
+                }
+                let size = CMVideoFormatDescriptionGetDimensions(shown)
                 let rate = (try? await track.load(.nominalFrameRate)) ?? 0
-                film.picture = Picture(format: format, codec: kind, width: Int(size.width), height: Int(size.height), framesASecond: rate)
-                picture = Loaded(track: track, shift: shift, format: format, playable: true)
+                film.picture = Picture(format: shown, codec: Self.letters(CMFormatDescriptionGetMediaSubType(shown)), width: Int(size.width),
+                                       height: Int(size.height), framesASecond: rate, markedAs: remadeFrom == nil ? nil : kind)
+                picture = Loaded(track: track, shift: shift, format: shown, playable: true, remadeFrom: remadeFrom)
             } else if track.mediaType == .audio {
                 // DTS and Dolby TrueHD: Apple has no decoder for them (whatever it says of an "mp4a" track that
                 // holds DTS), so they play when the app has given one, and not otherwise.
@@ -335,6 +365,8 @@ public final class FilmPlayer: @unchecked Sendable {
         }
         // The sound the file itself puts first, else the first that can be played.
         film.sound = firstEnabled ?? film.sounds.first(where: { $0.playable })?.id
+        // A film whose picture can't be shown here isn't played as its sound over a black screen.
+        if picture == nil, let unshown { throw Failure.cantShow(unshown) }
         guard picture != nil || film.sound != nil else { throw Failure.nothingToPlay }
         // The film's chapters: a track of their names that one of the others points at.
         var chapters: Loaded?
@@ -352,7 +384,9 @@ public final class FilmPlayer: @unchecked Sendable {
         try queue.sync {
             if let picture {
                 guard let reader = FilmTrackReader(track: picture.track, shift: picture.shift) else { throw Failure.noIndex }
-                picturePipe = Pipe(lane: 0, sound: false, reader: reader, format: picture.format)
+                let pipe = Pipe(lane: 0, sound: false, reader: reader, format: picture.format)
+                if let from = picture.remadeFrom, let to = picture.format { pipe.remade = FilmPictureFormat.Remade(from: from, to: to) }
+                picturePipe = pipe
             }
             if let chosen {
                 guard let reader = FilmTrackReader(track: chosen.track, shift: chosen.shift) else { throw Failure.noIndex }
@@ -735,7 +769,9 @@ public final class FilmPlayer: @unchecked Sendable {
                 } else if pipe.sound {
                     pipe.ready.append(contentsOf: joined(try FilmSampleBuffers.together(run, bytes: data, format: pipe.format, from: pipe.showFrom), on: pipe))
                 } else {
-                    let all = try FilmSampleBuffers.each(of: run, bytes: data, format: pipe.format)
+                    var remake: ((CMFormatDescription) -> CMFormatDescription)?
+                    if let remade = pipe.remade { remake = { (given: CMFormatDescription) -> CMFormatDescription in remade(given) } }
+                    let all = try FilmSampleBuffers.each(of: run, bytes: data, format: pipe.format, remake: remake)
                     for (sample, buffer) in zip(run.samples, all) {
                         // Frames that show before the one decoding started from can't be decoded: left out.
                         if pipe.dropBefore.isValid, CMTimeCompare(sample.shown, pipe.dropBefore) < 0 { continue }

@@ -139,7 +139,9 @@ public enum FilmSampleBuffers {
 
     /// One buffer for each sample of [run] (picture frames are handed to the decoder one at a time). [bytes]: the
     /// run's bytes, from its first. [format]: the track's format, for samples that don't carry one of their own.
-    public static func each(of run: FilmRun, bytes: Data, format: CMFormatDescription?) throws -> [CMSampleBuffer] {
+    /// [remake]: each sample's format as the decoder is to have it (a name it takes: `FilmPictureFormat`).
+    public static func each(of run: FilmRun, bytes: Data, format: CMFormatDescription?,
+                            remake: ((CMFormatDescription) -> CMFormatDescription)? = nil) throws -> [CMSampleBuffer] {
         guard bytes.count >= run.length else { throw Failure.short }
         let whole = try block(run.length)
         try bytes.withUnsafeBytes { raw in
@@ -149,7 +151,8 @@ public enum FilmSampleBuffers {
         var out: [CMSampleBuffer] = []
         out.reserveCapacity(run.samples.count)
         for s in run.samples {
-            guard let fd = s.format ?? format else { throw Failure.noFormat }
+            guard let given = s.format ?? format else { throw Failure.noFormat }
+            let fd = remake?(given) ?? given
             var part: CMBlockBuffer?
             try check(CMBlockBufferCreateWithBufferReference(allocator: kCFAllocatorDefault, referenceBuffer: whole,
                                                              offsetToData: Int(s.offset - run.offset), dataLength: s.size,
