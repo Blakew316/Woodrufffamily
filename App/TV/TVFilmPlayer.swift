@@ -631,6 +631,19 @@ final class OwnPlayer {
             words += String(format: ", at least %.1f s of it in hand (under a second %ld times)", least, n.pictureThin)
         }
         if waits { words += String(format: ", %ld stops to wait (%.1f s)", n.waits, n.waited) }
+        // Dropped each half minute: all at the start, or all the way through.
+        if n.droppedSoFar.count > 1 {
+            var each: [String] = []
+            for (before, now) in zip(n.droppedSoFar, n.droppedSoFar.dropFirst()) { each.append(String(now >= before ? now - before : now)) }
+            words += ", dropped each half minute: " + each.joined(separator: ", ")
+        }
+        if let beat = n.beat {
+            words += n.beatMoved > 0
+                ? String(format: ", its times put on the film’s beat of %@ (%ld of %ld frames moved, by up to %.2f ms)",
+                         beat, n.beatMoved, n.beatFrames, n.beatMost * 1000)
+                : ", its times on the film’s beat of \(beat) already (\(n.beatFrames) frames)"
+            if n.beatRestarted > 0 { words += ", the beat begun again \(n.beatRestarted) times" }
+        }
         if n.setsTakenOut > 0 { words += ", the settings repeated inside \(n.setsTakenOut) frames taken out" }
         // What the frames are made of (keyframes of each kind, frames that look back past one, end-of-sequence
         // markers, Dolby Vision's own data) and what Apple's reader marked them with: why frames drop, if they do.

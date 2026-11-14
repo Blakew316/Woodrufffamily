@@ -141,6 +141,16 @@ public final class FilmPlayer: @unchecked Sendable {
         public var pieceKinds: [Int: Int] = [:]
         public var framesCounted = 0
         public var hints: [String: Int] = [:]
+        /// The picture's times put on the film's own beat (`FilmFrameGrid`): one frame's length in words ("1/24 s";
+        /// nil when the film's rate isn't one films are made at), frames looked at, frames moved, the furthest one
+        /// was moved (seconds) and times the beat began again.
+        public var beat: String?
+        public var beatFrames = 0
+        public var beatMoved = 0
+        public var beatMost = 0.0
+        public var beatRestarted = 0
+        /// The frames Apple's renderer had dropped in all, each time it was asked (`pictureFrames`).
+        public var droppedSoFar: [Int] = []
     }
 
     /// What the film is, once it's open.
@@ -186,6 +196,8 @@ public final class FilmPlayer: @unchecked Sendable {
         var ours: String? = nil
         /// (Picture) [format] is the file's own made again under a name Apple's decoder takes (`FilmPictureFormat`).
         var remadeFrom: CMFormatDescription? = nil
+        /// (Picture) one frame's length at the rate films are made at nearest the film's own (`FilmFrameGrid`).
+        var beat: (value: Int64, timescale: Int32)? = nil
     }
 
     /// One track being played: its reader, and what has been read of it and not yet handed to its decoder.
@@ -214,6 +226,8 @@ public final class FilmPlayer: @unchecked Sendable {
         /// it takes, and the parameter sets the frames' own copies are taken out against.
         var remade: FilmPictureFormat.Remade?
         var known: (lengthSize: Int, sets: Set<Data>)?
+        /// (Picture) puts each frame's time on the film's own beat.
+        var even: FilmFrameGrid.Evener?
 
         init(lane: Int, sound: Bool, reader: FilmTrackReader, format: CMFormatDescription?) {
             self.lane = lane
@@ -360,7 +374,8 @@ public final class FilmPlayer: @unchecked Sendable {
                 film.picture = Picture(format: shown, codec: Self.letters(CMFormatDescriptionGetMediaSubType(shown)), width: Int(size.width),
                                        height: Int(size.height), framesASecond: rate, markedAs: remadeFrom == nil ? nil : kind,
                                        hardware: remadeFrom == nil ? nil : FilmPictureFormat.hardwareDecodes(shown))
-                picture = Loaded(track: track, shift: shift, format: shown, playable: true, remadeFrom: remadeFrom)
+                picture = Loaded(track: track, shift: shift, format: shown, playable: true, remadeFrom: remadeFrom,
+                                 beat: FilmFrameGrid.step(fps: Double(rate), shortest: 0))
             } else if track.mediaType == .audio {
                 // DTS and Dolby TrueHD: Apple has no decoder for them (whatever it says of an "mp4a" track that
                 // holds DTS), so they play when the app has given one, and not otherwise.
@@ -410,6 +425,13 @@ public final class FilmPlayer: @unchecked Sendable {
                 if let from = picture.remadeFrom, let to = picture.format {
                     pipe.remade = FilmPictureFormat.Remade(from: from, to: to)
                     pipe.known = FilmPictureFormat.knownSets(from)
+                }
+                if let beat = picture.beat {
+                    let even = FilmFrameGrid.Evener(value: beat.value, timescale: beat.timescale)
+                    pipe.even = even
+                    lock.lock()
+                    sharedNotes.beat = even.words
+                    lock.unlock()
                 }
                 picturePipe = pipe
             }
@@ -528,6 +550,9 @@ public final class FilmPlayer: @unchecked Sendable {
             guard #available(macOS 15.0, iOS 18.0, tvOS 18.0, visionOS 2.0, *) else { return then(nil) }
             renderer.loadVideoPerformanceMetrics { metrics in
                 guard let m = metrics else { return then(nil) }
+                self.lock.lock()
+                self.sharedNotes.droppedSoFar.append(m.numberOfDroppedFrames)
+                self.lock.unlock()
                 then(String(format: "%ld frames, %ld dropped, %ld damaged, %.1f s late in all, %ld straight to the screen",
                             m.totalNumberOfFrames, m.numberOfDroppedFrames, m.numberOfCorruptedFrames, m.totalAccumulatedFrameDelay,
                             m.numberOfFramesDisplayedUsingOptimizedCompositing))
@@ -814,6 +839,17 @@ public final class FilmPlayer: @unchecked Sendable {
                 } else if pipe.sound {
                     pipe.ready.append(contentsOf: joined(try FilmSampleBuffers.together(run, bytes: data, format: pipe.format, from: pipe.showFrom), on: pipe))
                 } else {
+                    // Each frame's time on the film's own beat: a file's times rounded to the millisecond put two
+                    // frames on one refresh of a TV that shows the film's own rate, and Apple's renderer drops one.
+                    let timed = pipe.even.map { Self.evened(run, by: $0) } ?? run
+                    if let even = pipe.even {
+                        lock.lock()
+                        sharedNotes.beatFrames = even.frames
+                        sharedNotes.beatMoved = even.moved
+                        sharedNotes.beatMost = even.most
+                        sharedNotes.beatRestarted = even.restarted
+                        lock.unlock()
+                    }
                     var remake: ((CMFormatDescription) -> CMFormatDescription)?
                     if let remade = pipe.remade { remake = { (given: CMFormatDescription) -> CMFormatDescription in remade(given) } }
                     var lean: ((Data) -> Data?)?
@@ -835,7 +871,7 @@ public final class FilmPlayer: @unchecked Sendable {
                             return slim
                         }
                         if counting {
-                            for sample in run.samples {
+                            for sample in timed.samples {
                                 for (key, value) in sample.attachments ?? [:] {
                                     let name = (key.base as? String).map { $0.replacingOccurrences(of: "kCMSampleAttachmentKey_", with: "") } ?? "?"
                                     let said = (value as? NSNumber).map { "=\($0)" } ?? ""
@@ -845,7 +881,7 @@ public final class FilmPlayer: @unchecked Sendable {
                         }
                     }
                     // A picture handed over under another name: each frame is told only whether it's a keyframe.
-                    let all = try FilmSampleBuffers.each(of: run, bytes: data, format: pipe.format, remake: remake, lean: lean,
+                    let all = try FilmSampleBuffers.each(of: timed, bytes: data, format: pipe.format, remake: remake, lean: lean,
                                                          plain: pipe.remade != nil)
                     if takenOut > 0 || counted > 0 {
                         lock.lock()
@@ -855,6 +891,7 @@ public final class FilmPlayer: @unchecked Sendable {
                         for (hint, n) in hints { sharedNotes.hints[hint, default: 0] += n }
                         lock.unlock()
                     }
+                    // (Told by the file's own times: where decoding starts after a move is one of them.)
                     for (sample, buffer) in zip(run.samples, all) {
                         // Frames that show before the one decoding started from can't be decoded: left out.
                         if pipe.dropBefore.isValid, CMTimeCompare(sample.shown, pipe.dropBefore) < 0 { continue }
@@ -873,6 +910,20 @@ public final class FilmPlayer: @unchecked Sendable {
             fill(pipe)
             judge()
         }
+    }
+
+    /// [run] with each frame shown on the film's own beat (`FilmFrameGrid`), lasting one frame, and decoded no later
+    /// than it's shown. A frame where the beat began again keeps its own times.
+    private static func evened(_ run: FilmRun, by even: FilmFrameGrid.Evener) -> FilmRun {
+        let frame = CMTime(value: even.value, timescale: even.timescale)
+        let samples = run.samples.map { s -> FilmSample in
+            guard s.shown.isNumeric, let at = even.even(s.shown.seconds), at.onBeat else { return s }
+            let shown = CMTime(value: at.at, timescale: even.timescale)
+            let decoded = s.decoded.isNumeric && CMTimeCompare(s.decoded, shown) > 0 ? shown : s.decoded
+            return FilmSample(offset: s.offset, size: s.size, shown: shown, decoded: decoded, lasts: frame, sync: s.sync,
+                              attachments: s.attachments, format: s.format)
+        }
+        return FilmRun(offset: run.offset, length: run.length, samples: samples)
     }
 
     /// A piece of sound whose time in the file is within this of where the piece before it ended is set to start
