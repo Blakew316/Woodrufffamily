@@ -756,11 +756,17 @@ enum RemoteKeys {
         // Off, with no remote connection that can turn it on: Wake-on-LAN.
         if key == "power", canWake, atvHost == nil { fleet.wake(tv); return }
         if let lg = fleet.lg(for: tv), let action = LGKeyMap.action(for: key) {
-            try await action(lg)
-            // LG direct control doesn't pass through Woodruff, so ask the TV again here (keys sent through Woodruff
-            // do this by themselves).
-            if !quiet.contains(key) { fleet.poke(tv.id) }
-            return
+            // LG direct control reaches every app; when it can't, Woodruff on the TV still takes the key (its webOS app
+            // has `/api/key`), as with the Android TV remote below. Not Power: only the LG's own connection turns it off.
+            do {
+                try await action(lg)
+                // LG direct control doesn't pass through Woodruff, so ask the TV again here (keys sent through Woodruff
+                // do this by themselves).
+                if !quiet.contains(key) { fleet.poke(tv.id) }
+                return
+            } catch {
+                guard key != "power", fleet.client(for: tv) != nil else { throw error }
+            }
         }
         if let atvHost {
             // The Android TV remote reaches every app; when it can't, Woodruff on the TV still takes the key.
