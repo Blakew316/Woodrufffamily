@@ -754,6 +754,15 @@ struct NowPlayingSheet: View {
                         .saturation(1.2)
                         .opacity(0.55)
                         .clipped()
+                } else if let p, let thumb = VideoThumbnails.shared.url(for: p) {
+                    // A YouTube video's thumbnail, its black bars cropped away as its picture has them
+                    // (`NowPlayingArt`): blurred once too. Blurred live, the whole screen was blurred again on every
+                    // frame the sheet drew, and while something plays its progress bar moves all the time.
+                    BlurredArtwork(url: thumb, radius: 80, opaque: true, maxPixel: 1800, zoom: 1.34)
+                        .frame(width: g.size.width, height: g.size.height)
+                        .saturation(1.2)
+                        .opacity(0.55)
+                        .clipped()
                 } else if let p {
                     NowPlayingArt(playing: p, backdrop: true, maxPixel: 1800)
                         .frame(width: g.size.width, height: g.size.height)
