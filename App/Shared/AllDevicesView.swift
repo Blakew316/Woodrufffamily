@@ -69,7 +69,7 @@ struct AllDevicesView: View {
     #endif
 
     /// One device on the tab, whatever kind it is.
-    enum Item: Identifiable {
+    enum Item: Identifiable, Equatable {
         case tv(FleetTV)
         case speaker(SonosRoom)
         case light(GoveeLight)
@@ -92,6 +92,8 @@ struct AllDevicesView: View {
         let roomOf = home.roomIndex
         let rooms = Array(Set(homeRooms(fleet, devices: devices, roomOf: roomOf) + laundry)).filter { $0 != noRoom && !$0.isEmpty }
         let byRoom = grouped(devices: devices, roomOf: roomOf)
+        // Worked out once for the tab, not once for each tile.
+        let away = awayFromHome
         roomStack {
             ForEach(sections(rooms), id: \.title) { section in
                 let list = section.rooms.flatMap { byRoom[$0] ?? [] }
@@ -101,7 +103,7 @@ struct AllDevicesView: View {
                         Text(section.title).font(.system(size: 34, weight: .bold)).foregroundStyle(IconPalette.white)
                         ScrollView(.horizontal) {
                             FirstFocusRow(spacing: 40) {
-                                ForEach(list) { item in tile(item).frame(width: 300, height: 330) }
+                                ForEach(list) { item in tile(item, away: away).frame(width: 300, height: 330) }
                             }
                             .padding(.vertical, 30)
                             .padding(.horizontal, 4)
@@ -114,7 +116,7 @@ struct AllDevicesView: View {
                         #else
                         Text(section.title).font(.title3.bold())
                         LazyVGrid(columns: columns, alignment: .leading, spacing: 12) {
-                            ForEach(list) { item in tile(item) }
+                            ForEach(list) { item in tile(item, away: away) }
                         }
                         // One glass pass for the room's tiles, not one each. (They never touch, so none of them
                         // blends into the next. Home's own boards are left as they are: a tile dragged over another
@@ -224,80 +226,129 @@ struct AllDevicesView: View {
         #endif
     }
 
-    private func tile(_ item: Item) -> some View {
-        let f = facts(item)
-        // Centred, the same in every tile: the picture in a square of its own at the top, the name and state under it
-        // at the same height whatever the picture is.
-        return VStack(alignment: .center, spacing: 10) {
-            // Drawn larger than the standard size, so each picture fills its tile.
-            DeviceGlyph(look: f.look, on: f.on, tint: f.tint, scale: Self.glyphScale)
-                .frame(maxWidth: .infinity)
-                .frame(height: 56 * Self.glyphScale, alignment: .center)
-            VStack(spacing: 2) {
-                // Two lines kept for the name and the state in every tile, used or not, so every tile in a row is the
-                // same height whatever its name ("Shelf Light" was shorter than "Shelf Light 2" beside it).
-                #if os(tvOS)
-                Spacer(minLength: 0)
-                Text(f.name).font(.system(size: 26, weight: .bold)).lineLimit(2, reservesSpace: true)
-                Text(f.state).font(.system(size: 21, weight: .medium))
-                    .foregroundStyle(f.on ? Color.black.opacity(0.55) : .secondary).lineLimit(1)
-                #else
-                Text(f.name).font(.footnote.weight(.semibold)).lineLimit(2, reservesSpace: true)
-                // Two lines, so a TV's title reads in full more often.
-                Text(f.state).font(.caption)
-                    .foregroundStyle(f.on ? Color.black.opacity(0.55) : .secondary).lineLimit(2, reservesSpace: true)
-                #endif
-            }
-            .multilineTextAlignment(.center)
-            .frame(maxWidth: .infinity)
-        }
-        .foregroundStyle(f.on ? Color.black : .primary)
-        #if os(tvOS)
-        .padding(.top, 30).padding(.horizontal, 18).padding(.bottom, 22)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    /// [item]'s tile, a view of its own (`Tile`).
+    private func tile(_ item: Item, away: Bool) -> some View {
+        #if os(macOS)
+        return Tile(item: item, facts: facts(item), away: away, taps: taps, popoverOpen: popoverOpen(item),
+                    tap: { tap(item) }, open: { open(item) }, closePopover: { closePopover(item) })
+            .equatable()
         #else
-        .padding(12)
-        .frame(maxWidth: .infinity, minHeight: 150, alignment: .top)
+        return Tile(item: item, facts: facts(item), away: away, taps: taps, tap: { tap(item) }, open: { open(item) })
+            .equatable()
         #endif
-        .background {
-            if f.on {
-                RoundedRectangle(cornerRadius: 22, style: .continuous).fill(IconPalette.onTile)
-                    .shadow(color: IconPalette.cyan.opacity(0.35), radius: 10)
+    }
+
+    /// One tile, with only what it shows: drawn again when its own device changes (or whether the iPhone is away from
+    /// home, or its popover on the Mac), not whenever any device, speaker or TV on the tab does (every tile was made
+    /// again inside the tab's body).
+    private struct Tile: View, Equatable {
+        var item: Item
+        var facts: Facts
+        var away: Bool
+        var taps: TapLog
+        #if os(macOS)
+        var popoverOpen: Bool
+        #endif
+        var tap: () -> Void
+        var open: () -> Void
+        #if os(macOS)
+        var closePopover: () -> Void
+        #endif
+
+        /// What it shows. (Its actions do the same whichever drawing they came from: they act on this same device.)
+        nonisolated static func == (a: Tile, b: Tile) -> Bool {
+            #if os(macOS)
+            guard a.popoverOpen == b.popoverOpen else { return false }
+            #endif
+            return a.away == b.away && a.facts == b.facts && a.item == b.item
+        }
+
+        var body: some View {
+            let f = facts
+            // Centred, the same in every tile: the picture in a square of its own at the top, the name and state under it
+            // at the same height whatever the picture is.
+            return VStack(alignment: .center, spacing: 10) {
+                // Drawn larger than the standard size, so each picture fills its tile.
+                DeviceGlyph(look: f.look, on: f.on, tint: f.tint, scale: AllDevicesView.glyphScale)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 56 * AllDevicesView.glyphScale, alignment: .center)
+                VStack(spacing: 2) {
+                    // Two lines kept for the name and the state in every tile, used or not, so every tile in a row is the
+                    // same height whatever its name ("Shelf Light" was shorter than "Shelf Light 2" beside it).
+                    #if os(tvOS)
+                    Spacer(minLength: 0)
+                    Text(f.name).font(.system(size: 26, weight: .bold)).lineLimit(2, reservesSpace: true)
+                    Text(f.state).font(.system(size: 21, weight: .medium))
+                        .foregroundStyle(f.on ? Color.black.opacity(0.55) : .secondary).lineLimit(1)
+                    #else
+                    Text(f.name).font(.footnote.weight(.semibold)).lineLimit(2, reservesSpace: true)
+                    // Two lines, so a TV's title reads in full more often.
+                    Text(f.state).font(.caption)
+                        .foregroundStyle(f.on ? Color.black.opacity(0.55) : .secondary).lineLimit(2, reservesSpace: true)
+                    #endif
+                }
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: .infinity)
+            }
+            .foregroundStyle(f.on ? Color.black : .primary)
+            #if os(tvOS)
+            .padding(.top, 30).padding(.horizontal, 18).padding(.bottom, 22)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            #else
+            .padding(12)
+            .frame(maxWidth: .infinity, minHeight: 150, alignment: .top)
+            #endif
+            .background {
+                if f.on {
+                    RoundedRectangle(cornerRadius: 22, style: .continuous).fill(IconPalette.onTile)
+                        .shadow(color: IconPalette.cyan.opacity(0.35), radius: 10)
+                }
+            }
+            .modifier(TileGlass(on: f.on))
+            .contentShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+            // The Samsung appliances say they're out of reach whenever they're idle: their pictures stay clear (the
+            // state under them still says so).
+            // Away from home (the iPhone off the home Wi‑Fi) nothing is dimmed: Home says it once instead.
+            .opacity(f.reachable || f.isAppliance || away ? 1 : 0.55)
+            .animation(.spring(response: 0.35, dampingFraction: 0.75), value: f.on)
+            #if os(iOS) || os(tvOS)
+            // A second, firmer tap once the device has really changed (not when someone else changed it).
+            .sensoryFeedback(.impact(weight: .medium), trigger: f.on) { _, _ in
+                taps.at[item.id].map { Date().timeIntervalSince($0) < 8 } ?? false
+            }
+            #endif
+            #if os(tvOS)
+            .modifier(TVFocusTile())
+            #endif
+            .onTapGesture { tap() }
+            #if os(macOS)
+            // The keyboard reaches it too: Tab (with the Mac's Keyboard Navigation on), then Space or Return.
+            .modifier(MacKeyTile(radius: 20) { tap() })
+            #endif
+            .onLongPressGesture(minimumDuration: 0.4) { open() }
+            #if os(macOS)
+            .contextMenu { Button("Controls…") { open() } }
+            #endif
+            .accessibilityElement(children: .combine)
+            .accessibilityAddTraits(.isButton)
+            .accessibilityHint("Tap to turn on or off. Touch and hold for its controls.")
+            // Touch and hold isn't there for VoiceOver: its controls as an action.
+            .accessibilityAction(named: "Controls") { open() }
+            #if os(macOS)
+            // The Mac: a TV's small remote, or anything else's controls, in a popover pointing at its tile.
+            .modifier(MacTilePopover(isOpen: popoverOpen, close: closePopover) { popoverContent })
+            #endif
+        }
+
+        #if os(macOS)
+        @ViewBuilder private var popoverContent: some View {
+            switch item {
+            case .tv(let tv): MiniRemote(tvID: tv.id).background { ArtBackdrop(url: nil) }.homePopover()
+            case .speaker(let s): SpeakerPopover(room: s)
+            case .light(let l): LightPopover(light: l)
+            case .device(let d): DevicePopover(device: d)
             }
         }
-        .modifier(TileGlass(on: f.on))
-        .contentShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-        // The Samsung appliances say they're out of reach whenever they're idle: their pictures stay clear (the
-        // state under them still says so).
-        // Away from home (the iPhone off the home Wi‑Fi) nothing is dimmed: Home says it once instead.
-        .opacity(f.reachable || f.isAppliance || awayFromHome ? 1 : 0.55)
-        .animation(.spring(response: 0.35, dampingFraction: 0.75), value: f.on)
-        #if os(iOS) || os(tvOS)
-        // A second, firmer tap once the device has really changed (not when someone else changed it).
-        .sensoryFeedback(.impact(weight: .medium), trigger: f.on) { _, _ in
-            taps.at[item.id].map { Date().timeIntervalSince($0) < 8 } ?? false
-        }
-        #endif
-        #if os(tvOS)
-        .modifier(TVFocusTile())
-        #endif
-        .onTapGesture { tap(item) }
-        #if os(macOS)
-        // The keyboard reaches it too: Tab (with the Mac's Keyboard Navigation on), then Space or Return.
-        .modifier(MacKeyTile(radius: 20) { tap(item) })
-        #endif
-        .onLongPressGesture(minimumDuration: 0.4) { open(item) }
-        #if os(macOS)
-        .contextMenu { Button("Controls…") { open(item) } }
-        #endif
-        .accessibilityElement(children: .combine)
-        .accessibilityAddTraits(.isButton)
-        .accessibilityHint("Tap to turn on or off. Touch and hold for its controls.")
-        // Touch and hold isn't there for VoiceOver: its controls as an action.
-        .accessibilityAction(named: "Controls") { open(item) }
-        #if os(macOS)
-        // The Mac: a TV's small remote, or anything else's controls, in a popover pointing at its tile.
-        .modifier(MacTilePopover(isOpen: popoverOpen(item), close: { closePopover(item) }) { popoverContent(item) })
         #endif
     }
 
@@ -322,18 +373,9 @@ struct AllDevicesView: View {
         case .device: openDevice = nil
         }
     }
-
-    @ViewBuilder private func popoverContent(_ item: Item) -> some View {
-        switch item {
-        case .tv(let tv): MiniRemote(tvID: tv.id).background { ArtBackdrop(url: nil) }.homePopover()
-        case .speaker(let s): SpeakerPopover(room: s)
-        case .light(let l): LightPopover(light: l)
-        case .device(let d): DevicePopover(device: d)
-        }
-    }
     #endif
 
-    private struct Facts {
+    private struct Facts: Equatable {
         var name: String
         var state: String
         var on: Bool
