@@ -752,8 +752,8 @@ enum CameraEventMedia {
     /// [file]'s picture as a JPEG at most [maxSide] pixels across and about [bytes] at most (a lower quality until it
     /// fits): what the family's Google TVs and the LG show with a camera alert (`TVCameraPicture`).
     static func smallJPEG(_ file: URL, maxSide: Int, bytes: Int) async -> Data? {
-        guard let picture = await picture(file, maxSide: maxSide) else { return nil }
-        let image = PictureTone.clarified(picture) ?? picture
+        guard let raw = await picture(file, maxSide: maxSide) else { return nil }
+        let image = PictureTone.clarified(raw) ?? raw
         var made: Data?
         for quality in [0.8, 0.7, 0.6, 0.5, 0.4, 0.3] {
             made = jpeg(image, quality: quality)

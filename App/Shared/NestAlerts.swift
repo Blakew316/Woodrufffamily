@@ -811,7 +811,8 @@ final class NestAlerts {
     /// The title of the alert that went out for the visit [session] in the last hour, if one did.
     static func alertedVisit(_ session: String) -> String? {
         guard let v = (UserDefaults.standard.dictionary(forKey: alertedVisits) as? [String: String])?[session] else { return nil }
-        return visit(v).flatMap { Date().timeIntervalSince1970 - $0.at < alertedFor ? $0.title : nil }
+        guard let kept = visit(v), Date().timeIntervalSince1970 - kept.at < alertedFor else { return nil }
+        return kept.title
     }
 
     /// The alert [short] (for the visit [session], titled [title]) went out.
@@ -821,8 +822,9 @@ final class NestAlerts {
         keys[short] = now
         d.set(keys, forKey: alertedKeys)
         guard let session, !session.isEmpty else { return }
-        var visits = (d.dictionary(forKey: alertedVisits) as? [String: String] ?? [:]).filter {
-            visit($0.value).map { now - $0.at < alertedFor } ?? false
+        var visits = (d.dictionary(forKey: alertedVisits) as? [String: String] ?? [:]).filter { entry in
+            guard let kept = visit(entry.value) else { return false }
+            return now - kept.at < alertedFor
         }
         // The door's alert stays the visit's: what a later one in it is checked against (a ring after a person alert
         // still goes; a person after the ring doesn't).
