@@ -20,7 +20,8 @@ jobs:
   # the real gate: when it fails, nothing is installed anywhere. The full build below still runs for the record.
   # On Linux: it starts at once (GitHub's Mac machines can keep a job waiting for minutes).
   check:
-    runs-on: ubuntu-latest
+    # Ubuntu 26.04 (ubuntu-latest from 14 November 2026) has no Python 3.9 for setup-python: 24.04 still does.
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
