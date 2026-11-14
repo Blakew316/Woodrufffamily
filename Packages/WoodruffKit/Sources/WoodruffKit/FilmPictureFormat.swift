@@ -79,6 +79,22 @@ public enum FilmPictureFormat {
         return known
     }
 
+    /// Whether Apple's hardware decoder takes [format] (nil when that can't be found out). A picture it doesn't take is
+    /// decoded in software, too slowly for 4K: the renderer then skips the frames nothing else needs to keep up.
+    public static func hardwareDecodes(_ format: CMFormatDescription) -> Bool? {
+        var session: VTDecompressionSession?
+        guard VTDecompressionSessionCreate(allocator: kCFAllocatorDefault, formatDescription: format, decoderSpecification: nil,
+                                           imageBufferAttributes: nil, outputCallback: nil, decompressionSessionOut: &session) == noErr,
+              let session else { return nil }
+        defer { VTDecompressionSessionInvalidate(session) }
+        var value: CFTypeRef?
+        let status = withUnsafeMutablePointer(to: &value) {
+            VTSessionCopyProperty(session, key: "UsingHardwareAcceleratedVideoDecoder" as CFString, allocator: kCFAllocatorDefault, valueOut: $0)
+        }
+        guard status == noErr else { return nil }
+        return value as? Bool
+    }
+
     /// The Dolby Vision profile in a picture's Dolby Vision box, when it has one.
     static func visionProfile(_ boxes: [String: Any]) -> Int? {
         for box in visionBoxes {

@@ -65,6 +65,8 @@ public final class FilmPlayer: @unchecked Sendable {
         /// What the file calls it, when that's a name Apple's decoder doesn't take and it's handed over as [codec]
         /// ("hev1"; `FilmPictureFormat`).
         public var markedAs: String? = nil
+        /// (Such a picture) whether Apple's hardware decoder takes it under its new name; nil when not looked at.
+        public var hardware: Bool? = nil
     }
 
     public struct Sound: Equatable, Sendable {
@@ -356,7 +358,8 @@ public final class FilmPlayer: @unchecked Sendable {
                 let size = CMVideoFormatDescriptionGetDimensions(shown)
                 let rate = (try? await track.load(.nominalFrameRate)) ?? 0
                 film.picture = Picture(format: shown, codec: Self.letters(CMFormatDescriptionGetMediaSubType(shown)), width: Int(size.width),
-                                       height: Int(size.height), framesASecond: rate, markedAs: remadeFrom == nil ? nil : kind)
+                                       height: Int(size.height), framesASecond: rate, markedAs: remadeFrom == nil ? nil : kind,
+                                       hardware: remadeFrom == nil ? nil : FilmPictureFormat.hardwareDecodes(shown))
                 picture = Loaded(track: track, shift: shift, format: shown, playable: true, remadeFrom: remadeFrom)
             } else if track.mediaType == .audio {
                 // DTS and Dolby TrueHD: Apple has no decoder for them (whatever it says of an "mp4a" track that
@@ -525,8 +528,9 @@ public final class FilmPlayer: @unchecked Sendable {
             guard #available(macOS 15.0, iOS 18.0, tvOS 18.0, visionOS 2.0, *) else { return then(nil) }
             renderer.loadVideoPerformanceMetrics { metrics in
                 guard let m = metrics else { return then(nil) }
-                then(String(format: "%ld frames, %ld dropped, %ld damaged, %.1f s late in all", m.totalNumberOfFrames,
-                            m.numberOfDroppedFrames, m.numberOfCorruptedFrames, m.totalAccumulatedFrameDelay))
+                then(String(format: "%ld frames, %ld dropped, %ld damaged, %.1f s late in all, %ld straight to the screen",
+                            m.totalNumberOfFrames, m.numberOfDroppedFrames, m.numberOfCorruptedFrames, m.totalAccumulatedFrameDelay,
+                            m.numberOfFramesDisplayedUsingOptimizedCompositing))
             }
             #endif
         }

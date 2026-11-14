@@ -216,6 +216,7 @@ final class FilmScreen: UIViewController, UIGestureRecognizerDelegate {
 
         words.numberOfLines = 0
         words.textAlignment = .center
+        words.isHidden = true
         words.layer.shadowColor = UIColor.black.cgColor
         words.layer.shadowOpacity = 0.8
         words.layer.shadowRadius = 6
@@ -228,9 +229,14 @@ final class FilmScreen: UIViewController, UIGestureRecognizerDelegate {
         shade.layer.addSublayer(shadeLayer)
         shade.isUserInteractionEnabled = false
         shade.alpha = 0
+        // Out of sight while the film plays, not only see-through: anything over a 4K Dolby Vision picture (glass
+        // samples what's behind it) means every frame is blended with it rather than sent straight to the TV, and the
+        // renderer skipped frames to keep up.
+        shade.isHidden = true
         view.addSubview(shade)
 
         controls.alpha = 0
+        controls.isHidden = true
         view.addSubview(controls)
         for label in [line, name] {
             label.textColor = .white
@@ -480,8 +486,10 @@ final class FilmScreen: UIViewController, UIGestureRecognizerDelegate {
     private func say(_ text: String?) {
         guard let text, !text.isEmpty else {
             words.attributedText = nil
+            words.isHidden = true
             return
         }
+        words.isHidden = false
         words.attributedText = NSAttributedString(string: text, attributes: [
             .font: UIFont.systemFont(ofSize: 48, weight: .semibold),
             .foregroundColor: UIColor.white,
@@ -510,6 +518,8 @@ final class FilmScreen: UIViewController, UIGestureRecognizerDelegate {
             bar.quiet = panel != nil
             refresh()
             bar.setNeedsLayout()
+            controls.isHidden = false
+            shade.isHidden = false
             UIView.animate(withDuration: 0.25) {
                 self.controls.alpha = 1
                 self.shade.alpha = 1
@@ -530,12 +540,17 @@ final class FilmScreen: UIViewController, UIGestureRecognizerDelegate {
         } else if !barFocused {
             focus(bar)
         }
-        UIView.animate(withDuration: 0.35) {
+        UIView.animate(withDuration: 0.35, animations: {
             self.controls.alpha = 0
             self.shade.alpha = 0
             self.bar.quiet = true
             self.layoutWords()
-        }
+        }, completion: { _ in
+            // Gone from over the picture, unless they came back meanwhile.
+            guard !self.shownControls else { return }
+            self.controls.isHidden = true
+            self.shade.isHidden = true
+        })
     }
 
     /// The controls go away by themselves a few seconds after the last press, while the film plays and nothing is

@@ -314,6 +314,9 @@ final class OwnPlayer {
         if let p = film.picture {
             var line = "picture \(p.codec) \(p.width)×\(p.height)"
             if let marked = p.markedAs { line += " (marked \(marked) in the file)" }
+            if let hardware = p.hardware {
+                line += hardware ? ", Apple’s hardware decoder takes it" : ", Apple’s hardware decoder doesn’t take it (decoded in software)"
+            }
             if p.framesASecond > 0 { line += String(format: " %.0f fps", p.framesASecond) }
             line += PhonePlayback.dynamicRange(p.format)
             words.append(line)
