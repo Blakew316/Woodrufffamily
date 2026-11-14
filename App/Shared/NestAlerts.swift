@@ -671,7 +671,7 @@ final class NestAlerts {
                     CameraShare.shared.noteEvent(key: short, camera: camera, name: body, title: title, focus: focus,
                                                  event: event, clip: race.clip ?? clip, happened: happened)
                 }
-                self.quietIfStale(c, happened: happened)
+                self?.quietIfStale(c, happened: happened)
                 Notifier.deliver(c, id: id)
                 // The Google TVs' and the LG's card for it: its close-up, else the whole picture (the hub only).
                 if toTVs, !quiet, let forTVs = close ?? shown {
