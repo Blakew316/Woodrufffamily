@@ -270,10 +270,15 @@ final class NestAlerts {
                 PushRelay.log.notice("camera event not alerted: \(type.components(separatedBy: ".").last ?? type, privacy: .public) is off on this device")
             }
             // Another event of a visit already alerted for (a person after the ring, motion after a person): not a
-            // second alert. Only a ring after a person or motion alert still goes (it means someone's at the door).
-            if title != nil, let p = posted[session], !(type.hasSuffix(".Chime") && !p.title.localizedCaseInsensitiveContains("door")) {
-                PushRelay.log.notice("camera event not alerted: \(type.components(separatedBy: ".").last ?? type, privacy: .public) is part of a visit already alerted for")
-                continue
+            // second alert. A ring after a person or motion alert still goes (it means someone's at the door), and so
+            // does a person after a motion alert (with Motion on, the visit's person was never said).
+            if title != nil, let p = posted[session] {
+                let tells = type.hasSuffix(".Chime") ? !p.title.localizedCaseInsensitiveContains("door")
+                    : type.hasSuffix(".Person") && p.title.localizedCaseInsensitiveContains("motion")
+                if !tells {
+                    PushRelay.log.notice("camera event not alerted: \(type.components(separatedBy: ".").last ?? type, privacy: .public) is part of a visit already alerted for")
+                    continue
+                }
             }
             if let title {
                 posted[session] = Posted(title: title, body: name, camera: device, key: key, event: eventID, hasClip: clip != nil, at: Date())
