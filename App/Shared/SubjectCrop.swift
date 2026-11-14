@@ -177,17 +177,13 @@ enum SubjectCrop {
         }
     }
 
-    /// What stands out (a vehicle, a parcel, whatever moved): the objects Vision picks out, else where the eye goes.
+    /// What stands out (a vehicle, a parcel, whatever moved): the objects Vision picks out; none, and the picture is
+    /// shown whole. (Where the eye goes, Vision's other kind of saliency, was the fallback: it always names somewhere,
+    /// a bright window or the sky as readily as what the alert was about, and the close-up was cut there.)
     private static func salient(_ handler: VNImageRequestHandler) -> [CGRect] {
         let objects = VNGenerateObjectnessBasedSaliencyImageRequest()
-        if (try? handler.perform([objects])) != nil {
-            let found = (objects.results?.first?.salientObjects ?? []).sorted { $0.confidence > $1.confidence }.prefix(2)
-            if !found.isEmpty { return found.map { $0.boundingBox } }
-        }
-        let attention = VNGenerateAttentionBasedSaliencyImageRequest()
-        if (try? handler.perform([attention])) != nil {
-            return (attention.results?.first?.salientObjects ?? []).map { $0.boundingBox }
-        }
-        return []
+        guard (try? handler.perform([objects])) != nil else { return [] }
+        let found = (objects.results?.first?.salientObjects ?? []).sorted { $0.confidence > $1.confidence }.prefix(2)
+        return found.map { $0.boundingBox }
     }
 }
