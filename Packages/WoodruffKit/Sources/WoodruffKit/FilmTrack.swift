@@ -139,9 +139,11 @@ public enum FilmSampleBuffers {
 
     /// One buffer for each sample of [run] (picture frames are handed to the decoder one at a time). [bytes]: the
     /// run's bytes, from its first. [format]: the track's format, for samples that don't carry one of their own.
-    /// [remake]: each sample's format as the decoder is to have it (a name it takes: `FilmPictureFormat`).
+    /// [remake]: each sample's format as the decoder is to have it (a name it takes: `FilmPictureFormat`). [lean]: a
+    /// sample's bytes without what the decoder has already (`FilmNALUnits`), or nil to hand them over as they are.
     public static func each(of run: FilmRun, bytes: Data, format: CMFormatDescription?,
-                            remake: ((CMFormatDescription) -> CMFormatDescription)? = nil) throws -> [CMSampleBuffer] {
+                            remake: ((CMFormatDescription) -> CMFormatDescription)? = nil,
+                            lean: ((Data) -> Data?)? = nil) throws -> [CMSampleBuffer] {
         guard bytes.count >= run.length else { throw Failure.short }
         let whole = try block(run.length)
         try bytes.withUnsafeBytes { raw in
@@ -154,11 +156,23 @@ public enum FilmSampleBuffers {
             guard let given = s.format ?? format else { throw Failure.noFormat }
             let fd = remake?(given) ?? given
             var part: CMBlockBuffer?
-            try check(CMBlockBufferCreateWithBufferReference(allocator: kCFAllocatorDefault, referenceBuffer: whole,
-                                                             offsetToData: Int(s.offset - run.offset), dataLength: s.size,
-                                                             flags: 0, blockBufferOut: &part))
-            var timing = CMSampleTimingInfo(duration: s.lasts, presentationTimeStamp: s.shown, decodeTimeStamp: s.decoded)
             var size = s.size
+            let from = bytes.startIndex + Int(s.offset - run.offset)
+            if let lean, s.size > 0, let slim = lean(bytes[from..<(from + s.size)]) {
+                // The frame without what the decoder has already: a block of its own.
+                let own = try block(slim.count)
+                try slim.withUnsafeBytes { raw in
+                    guard let base = raw.baseAddress else { return }
+                    try check(CMBlockBufferReplaceDataBytes(with: base, blockBuffer: own, offsetIntoDestination: 0, dataLength: slim.count))
+                }
+                part = own
+                size = slim.count
+            } else {
+                try check(CMBlockBufferCreateWithBufferReference(allocator: kCFAllocatorDefault, referenceBuffer: whole,
+                                                                 offsetToData: Int(s.offset - run.offset), dataLength: s.size,
+                                                                 flags: 0, blockBufferOut: &part))
+            }
+            var timing = CMSampleTimingInfo(duration: s.lasts, presentationTimeStamp: s.shown, decodeTimeStamp: s.decoded)
             var made: CMSampleBuffer?
             try check(CMSampleBufferCreateReady(allocator: kCFAllocatorDefault, dataBuffer: part, formatDescription: fd,
                                                 sampleCount: 1, sampleTimingEntryCount: 1, sampleTimingArray: &timing,

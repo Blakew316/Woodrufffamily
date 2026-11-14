@@ -53,14 +53,16 @@ public enum FilmBuffering {
     /// past where the film is (nil for a film without one), and [pictureDone], [soundDone]: whether everything to
     /// the end of each has been read. [enough]: the seconds of each a film starts with. [low]: with this little
     /// left of either, it waits (a moment before the last of it has gone to the decoder).
+    /// [pictureLow]: the picture's own [low], when it needs more in hand than the sound (a frame that reaches the
+    /// decoder only as it's due shows late, or not at all).
     public static func move(waiting: Bool, picture: Double?, sound: Double?, pictureDone: Bool, soundDone: Bool,
-                            enough: Double, low: Double = 0) -> Move {
+                            enough: Double, low: Double = 0, pictureLow: Double? = nil) -> Move {
         func ready(_ ahead: Double?, _ done: Bool) -> Bool { ahead.map { $0 >= enough || done } ?? true }
-        func out(_ ahead: Double?, _ done: Bool) -> Bool { ahead.map { $0 <= low && !done } ?? false }
+        func out(_ ahead: Double?, _ done: Bool, _ low: Double) -> Bool { ahead.map { $0 <= low && !done } ?? false }
         if waiting {
             return ready(picture, pictureDone) && ready(sound, soundDone) ? .go : .stay
         }
-        return out(picture, pictureDone) || out(sound, soundDone) ? .wait : .stay
+        return out(picture, pictureDone, pictureLow ?? low) || out(sound, soundDone, low) ? .wait : .stay
     }
 }
 

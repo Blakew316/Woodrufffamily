@@ -66,6 +66,19 @@ public enum FilmPictureFormat {
         return made
     }
 
+    /// For a picture the file marks "hev1" or "dvhe" (its frames may carry its parameter sets too): the parameter sets
+    /// its sample description gives, which the frames' own copies are taken out against (`FilmNALUnits`). Nil for
+    /// any other picture.
+    public static func knownSets(_ format: CMFormatDescription) -> (lengthSize: Int, sets: Set<Data>)? {
+        let kind = CMFormatDescriptionGetMediaSubType(format)
+        guard kind == hev1 || kind == dvhe else { return nil }
+        let extensions = (CMFormatDescriptionGetExtensions(format) as NSDictionary?) as? [String: Any] ?? [:]
+        let boxes = extensions[kCMFormatDescriptionExtension_SampleDescriptionExtensionAtoms as String] as? [String: Any] ?? [:]
+        guard let value = boxes["hvcC"], let hvcC = (value as? Data) ?? (value as? [Data])?.first,
+              let known = FilmNALUnits.parameterSets(hvcC: hvcC), !known.sets.isEmpty else { return nil }
+        return known
+    }
+
     /// The Dolby Vision profile in a picture's Dolby Vision box, when it has one.
     static func visionProfile(_ boxes: [String: Any]) -> Int? {
         for box in visionBoxes {

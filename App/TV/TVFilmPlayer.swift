@@ -85,6 +85,9 @@ final class OwnPlayer {
     /// The tick the film began playing at, and whether its sound's pieces have been reported yet (`tick`).
     private var startedTick = 0
     private var soundSaid = false
+    /// What Apple's renderer said of the picture's frames at the last look, and whether the two-minute line is out.
+    private var frames: String?
+    private var framesSaid = false
     /// The sound session's work, one thing after another and never on the main thread (activating can take a moment).
     private static let soundQueue = DispatchQueue(label: "woodruff.film-sound", qos: .userInitiated)
 
@@ -126,6 +129,8 @@ final class OwnPlayer {
         ticks = 0
         startedTick = 0
         soundSaid = false
+        frames = nil
+        framesSaid = false
         checkedIndex = false
         said = false
         nextUp = nil
@@ -374,6 +379,21 @@ final class OwnPlayer {
                 ? String(format: "%@: 20 s in, %ld pieces of its sound were set end to end (up to %.2f ms out)", play.title, n.joined, n.joinedBy * 1000)
                 : "\(play.title): 20 s in, every piece of its sound met the one before") + decoded)
         }
+        // How the picture is coming: what Apple's renderer says of its frames every half minute (for the summary), and
+        // two minutes in, a line of its own (so it's in the Macs' log while the film still plays).
+        if started, player.film.picture != nil, (ticks - startedTick) % 30 == 0 {
+            let title = play.title, say = !framesSaid && ticks - startedTick >= 120
+            if say { framesSaid = true }
+            player.pictureFrames { [weak self] words in
+                Task { @MainActor in
+                    guard let self, self.current?.id == play.id else { return }
+                    if let words { self.frames = words }
+                    if say, let player = self.player {
+                        Diagnostics.shared.notePlayback("\(title): 2 minutes in, " + self.pictureWords(player.notes))
+                    }
+                }
+            }
+        }
         if state == .ended {
             // Played to its end: the screen closes, back to the page it was started from.
             screen.close()
@@ -589,11 +609,24 @@ final class OwnPlayer {
         } else if n.decodingGaveUp {
             words += ", a sound track the app’s decoder could make nothing of was given up on"
         }
+        if player.film.picture != nil { words += ", " + pictureWords(n, waits: false) }
         words += ", asked Google for \(stream.askedNow())"
         if let size = stream.sizeNow(), player.length > 60 {
             words += String(format: ", the film needs %.0f Mb/s", Double(size) * 8 / player.length / 1_000_000)
         }
         Diagnostics.shared.notePlayback(words)
+    }
+
+    /// How the picture came, for the Macs' log: its frames as Apple's renderer counts them (dropped ones are the
+    /// stutter), how little of it was in hand at worst, how often it waited, and the repeated settings taken out.
+    private func pictureWords(_ n: FilmPlayer.Notes, waits: Bool = true) -> String {
+        var words = "the picture: " + (frames ?? "its frames not counted yet")
+        if let least = n.pictureLeast {
+            words += String(format: ", at least %.1f s of it in hand (under a second %ld times)", least, n.pictureThin)
+        }
+        if waits { words += String(format: ", %ld stops to wait (%.1f s)", n.waits, n.waited) }
+        if n.setsTakenOut > 0 { words += ", the settings repeated inside \(n.setsTakenOut) frames taken out" }
+        return words
     }
 
     private func finish() {

@@ -78,6 +78,21 @@ final class FilmRunsTests: XCTestCase {
         XCTAssertEqual(fine, .stay)
     }
 
+    /// The picture waits a moment earlier than the sound: a frame that reaches the decoder only as it's due is shown
+    /// late or not at all (a fast stutter), where a short wait isn't.
+    func testThePictureWaitsBeforeItsLastSecond() {
+        func move(_ p: Double, _ s: Double) -> FilmBuffering.Move {
+            FilmBuffering.move(waiting: false, picture: p, sound: s, pictureDone: false, soundDone: false, enough: 2.5, low: 0.25, pictureLow: 1)
+        }
+        XCTAssertEqual(move(0.8, 5), .wait)
+        XCTAssertEqual(move(1.5, 5), .stay)
+        // The sound keeps its own: half a second of it is still plenty.
+        XCTAssertEqual(move(5, 0.5), .stay)
+        XCTAssertEqual(move(5, 0.2), .wait)
+        // All of the picture read: nothing to wait for.
+        XCTAssertEqual(FilmBuffering.move(waiting: false, picture: 0.1, sound: 5, pictureDone: true, soundDone: false, enough: 2.5, low: 0.25, pictureLow: 1), .stay)
+    }
+
     func testSubtitleWords() {
         // As the test film has them: two bytes of length, then the words.
         XCTAssertEqual(FilmText.subtitle(Data([0x00, 0x0a] + Array("First line".utf8))), "First line")

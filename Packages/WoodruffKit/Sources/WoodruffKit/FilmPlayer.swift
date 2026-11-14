@@ -127,6 +127,12 @@ public final class FilmPlayer: @unchecked Sendable {
         public var decodedChannels = 0
         public var decodedRate = 0
         public var decodingGaveUp = false
+        /// Frames whose own copies of the picture's parameter sets were taken out (`FilmNALUnits`).
+        public var setsTakenOut = 0
+        /// While it played: the least of the picture it had in hand past where the film was (seconds; nil before
+        /// it played), and the times that went under a second.
+        public var pictureLeast: Double?
+        public var pictureThin = 0
     }
 
     /// What the film is, once it's open.
@@ -147,10 +153,14 @@ public final class FilmPlayer: @unchecked Sendable {
     /// Seconds of each track a film starts with, and with after it has had to wait.
     public var enough = 2.5
     public var enoughAfterWaiting = 5.0
-    /// With this little of either track left, it waits.
+    /// With this little of either track left, it waits; the picture with this little of its own. A 4K frame that
+    /// reaches the decoder only as it's due shows late or not at all, which looked like a fast stutter, so the
+    /// picture waits a moment earlier and starts again with a few seconds in hand.
     public var low = 0.25
-    /// Seconds of each track kept ready past where the film is.
-    public var keep = 8.0
+    public var pictureLow = 1.0
+    /// Seconds of each track kept ready past where the film is: enough to ride out a scene that needs more than
+    /// the connection gives for a while.
+    public var keep = 12.0
 
     /// Said on the main thread when its state, its tracks or its chapters change.
     public var onChange: (() -> Void)?
@@ -193,8 +203,9 @@ public final class FilmPlayer: @unchecked Sendable {
         /// (Sound Apple has no decoder for) the app's own decoder for this track, and what it has made of it.
         var decoding: FilmSoundDecoding?
         /// (A picture the file names in a way Apple's decoder doesn't take) each sample's format, made under the name
-        /// it takes.
+        /// it takes, and the parameter sets the frames' own copies are taken out against.
         var remade: FilmPictureFormat.Remade?
+        var known: (lengthSize: Int, sets: Set<Data>)?
 
         init(lane: Int, sound: Bool, reader: FilmTrackReader, format: CMFormatDescription?) {
             self.lane = lane
@@ -237,6 +248,8 @@ public final class FilmPlayer: @unchecked Sendable {
     private var waitBegan: Date?
     private var hasWaited = false
     private var lastMend = Date.distantPast
+    /// The picture in hand was under a second at the last look (`judge`).
+    private var pictureWasThin = false
 
     /// The track the film's chapters are in (their names, each at the time it starts), until they've been read; and
     /// which try at reading them is the current one (a move to another place drops what was asked for).
@@ -385,7 +398,10 @@ public final class FilmPlayer: @unchecked Sendable {
             if let picture {
                 guard let reader = FilmTrackReader(track: picture.track, shift: picture.shift) else { throw Failure.noIndex }
                 let pipe = Pipe(lane: 0, sound: false, reader: reader, format: picture.format)
-                if let from = picture.remadeFrom, let to = picture.format { pipe.remade = FilmPictureFormat.Remade(from: from, to: to) }
+                if let from = picture.remadeFrom, let to = picture.format {
+                    pipe.remade = FilmPictureFormat.Remade(from: from, to: to)
+                    pipe.known = FilmPictureFormat.knownSets(from)
+                }
                 picturePipe = pipe
             }
             if let chosen {
@@ -488,6 +504,23 @@ public final class FilmPlayer: @unchecked Sendable {
             guard self.pictureRenderer == nil else { return }
             self.pictureRenderer = renderer
             self.clock.addRenderer(renderer)
+        }
+    }
+
+    /// What Apple's renderer says of the picture's frames so far, in words for the Macs' log ("2880 frames, 3
+    /// dropped, 0 damaged, 0.4 s late in all"), on any thread; nil before there's a picture, or where it doesn't say.
+    public func pictureFrames(_ then: @escaping (String?) -> Void) {
+        queue.async {
+            #if targetEnvironment(macCatalyst)
+            then(nil)
+            #else
+            guard let renderer = self.pictureRenderer else { return then(nil) }
+            renderer.loadVideoPerformanceMetrics { metrics in
+                guard let m = metrics else { return then(nil) }
+                then(String(format: "%ld frames, %ld dropped, %ld damaged, %.1f s late in all", m.totalNumberOfFrames,
+                            m.numberOfDroppedFrames, m.numberOfCorruptedFrames, m.totalAccumulatedFrameDelay))
+            }
+            #endif
         }
     }
 
@@ -771,7 +804,21 @@ public final class FilmPlayer: @unchecked Sendable {
                 } else {
                     var remake: ((CMFormatDescription) -> CMFormatDescription)?
                     if let remade = pipe.remade { remake = { (given: CMFormatDescription) -> CMFormatDescription in remade(given) } }
-                    let all = try FilmSampleBuffers.each(of: run, bytes: data, format: pipe.format, remake: remake)
+                    var lean: ((Data) -> Data?)?
+                    var takenOut = 0
+                    if let known = pipe.known {
+                        lean = { (frame: Data) -> Data? in
+                            let slim = FilmNALUnits.withoutKnownSets(frame, lengthSize: known.lengthSize, sets: known.sets)
+                            if slim != nil { takenOut += 1 }
+                            return slim
+                        }
+                    }
+                    let all = try FilmSampleBuffers.each(of: run, bytes: data, format: pipe.format, remake: remake, lean: lean)
+                    if takenOut > 0 {
+                        lock.lock()
+                        sharedNotes.setsTakenOut += takenOut
+                        lock.unlock()
+                    }
                     for (sample, buffer) in zip(run.samples, all) {
                         // Frames that show before the one decoding started from can't be decoded: left out.
                         if pipe.dropBefore.isValid, CMTimeCompare(sample.shown, pipe.dropBefore) < 0 { continue }
@@ -917,9 +964,21 @@ public final class FilmPlayer: @unchecked Sendable {
             }
         }
         guard wanted else { return }
-        let move = FilmBuffering.move(waiting: waiting, picture: ahead(showing, now), sound: ahead(soundPipe, now),
+        let pictureAhead = ahead(showing, now)
+        // How much of the picture there was in hand while it played: the least, and how often under a second.
+        if !waiting, clock.rate > 0, let a = pictureAhead, !(showing?.allRead ?? true) {
+            lock.lock()
+            if a < 1, !pictureWasThin { sharedNotes.pictureThin += 1 }
+            sharedNotes.pictureLeast = min(sharedNotes.pictureLeast ?? a, a)
+            lock.unlock()
+            pictureWasThin = a < 1
+        }
+        let start = hasWaited ? enoughAfterWaiting : enough
+        // Never so near what it starts again with that it would stop as soon as it went on.
+        let thin = max(low, min(pictureLow, start / 2, keep / 2))
+        let move = FilmBuffering.move(waiting: waiting, picture: pictureAhead, sound: ahead(soundPipe, now),
                                       pictureDone: showing?.allRead ?? true, soundDone: soundPipe?.allRead ?? true,
-                                      enough: hasWaited ? enoughAfterWaiting : enough, low: low)
+                                      enough: start, low: low, pictureLow: thin)
         switch move {
         case .stay:
             break
