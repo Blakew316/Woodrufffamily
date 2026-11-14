@@ -107,9 +107,11 @@ final class CameraShare {
     private var publishing: Task<Void, Never>?
 
     /// An alert went out (its picture already kept for GET /event): the Apple TVs show it on their next ask. Only on
-    /// the Mac that shares the cameras (the hub).
+    /// the Mac that shares the cameras (the hub). Kept while the share is being started again too (its network went
+    /// away a moment): the Apple TVs ask for what came meanwhile once it's back. (It was dropped then, and they never
+    /// showed it.)
     func noteEvent(key: String, camera: String, name: String, title: String, focus: CGRect?, event: String?, clip: String?) {
-        guard listener != nil else { return }
+        guard listener != nil || PushRelay.updaterRole() == "hub" else { return }
         let t = title.lowercased()
         let kind = t.contains("door") || t.contains("ring") ? "door" : t.contains("person") ? "person"
             : t.contains("motion") ? "motion" : t.contains("vehicle") ? "vehicle" : "event"
