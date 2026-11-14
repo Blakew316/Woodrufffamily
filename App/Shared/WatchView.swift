@@ -388,7 +388,9 @@ struct WatchView: View {
             while readingSections.contains(reading), Date() < until, !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 100_000_000)
             }
-            return
+            // Then read afresh, as asked: the read it waited for may have begun before what it was asked for (a film's
+            // place as it closed).
+            guard !Task.isCancelled, !readingSections.contains(reading) else { return }
         }
         readingSections.insert(reading)
         defer { readingSections.remove(reading) }
