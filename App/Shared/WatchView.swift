@@ -13,6 +13,8 @@ struct WatchView: View {
     @State private var routedTitle = false
     @State private var error: String?
     @State private var page = 0
+    /// The banner can be seen: it hasn't faded away as the page moved down to the rows (`Billboard`'s `paused`).
+    @State private var bannerShows = true
     @State private var openTitle: String?
     /// The hub whose library is shown (the remote's TV picks it).
     @State private var loadedHub: String?
@@ -295,10 +297,13 @@ struct WatchView: View {
         let fade = max(300, m.height * 0.6)
         ZStack(alignment: .top) {
             if m.width > 0, shown != nil, !featured.isEmpty {
-                Billboard(titles: featured, page: $page, client: client, metrics: m, rowsTop: rowsTop)
+                Billboard(titles: featured, page: $page, client: client, metrics: m, rowsTop: rowsTop,
+                          paused: openTitle != nil || !bannerShows)
                     .id(place)
                     // Fading out as the page moves down to the rows (and back in on the way up), as the Apple TV's.
                     .visualEffect { c, p in c.opacity(max(0, min(1, 1 + p.frame(in: .scrollView).minY / fade))) }
+                    // Whether any of it can still be seen.
+                    .onGeometryChange(for: Bool.self, of: { $0.frame(in: .scrollView).minY > -fade }) { shows in bannerShows = shows }
                     // The banner is the whole page; the rows start at `rowsTop` (the stack puts 28 points between
                     // the banner and them).
                     .padding(.bottom, rowsTop - 28 - m.banner)
@@ -334,9 +339,11 @@ struct WatchView: View {
         let rowsTop = watching.contains(where: { !removed.contains($0.key) }) ? TVWatch.stillsTop : TVWatch.postersTop
         ZStack(alignment: .top) {
             if !featured.isEmpty {
-                Billboard(titles: featured, page: $page, client: client, rowsTop: rowsTop)
+                Billboard(titles: featured, page: $page, client: client, rowsTop: rowsTop, paused: openTitle != nil || !bannerShows)
                     // Fading out as the page moves down to the rows (and back in on the way up), as the TV app's does.
                     .visualEffect { c, p in c.opacity(max(0, min(1, 1 + p.frame(in: .scrollView).minY / 650))) }
+                    // Whether any of it can still be seen.
+                    .onGeometryChange(for: Bool.self, of: { $0.frame(in: .scrollView).minY > -650 }) { shows in bannerShows = shows }
                     // The banner is the whole screen (1080); the rows start at `rowsTop` (the stack puts 28 points
                     // between the banner and them).
                     .padding(.bottom, rowsTop - 28 - 1080)
@@ -797,6 +804,9 @@ struct Billboard: View {
     var metrics = WatchMetrics()
     var rowsTop: CGFloat = 0
     #endif
+    /// A title's page is open over it, or the page has moved down until it faded away: it doesn't turn (nor fetch
+    /// the next title's picture) until it shows again.
+    var paused = false
     /// What each featured title is about (the wide banner shows it), read once each.
     @State private var overviews: [String: String] = [:]
     #if os(iOS) || os(tvOS)
@@ -848,7 +858,9 @@ struct Billboard: View {
         .frame(height: 1080)
         .frame(maxWidth: .infinity)
         .ignoresSafeArea(edges: [.top, .horizontal])
-        .task(id: page) {
+        .task(id: "\(page)|\(paused)") {
+            // Not while it can't be seen: it turns again once it shows.
+            guard !paused else { return }
             // The next title's picture made ready meanwhile (it fills the screen), so it fades in whole instead of as a
             // grey placeholder its picture then fades into.
             if titles.count > 1, let next = titles[safe: (page + 1) % titles.count],
@@ -906,7 +918,9 @@ struct Billboard: View {
             }
         })
         #endif
-        .task(id: "\(page)|\(holdsStill)") {
+        .task(id: "\(page)|\(holdsStill)|\(paused)") {
+            // Not while it can't be seen: it turns again once it shows.
+            guard !paused else { return }
             // The next title's picture made ready meanwhile (it fills the page), so it fades in whole instead of as a
             // grey placeholder its picture then fades into.
             if titles.count > 1, let next = titles[safe: (page + 1) % titles.count],
