@@ -103,6 +103,8 @@ final class CameraShare {
     private var taking: [String: Task<Data?, Never>] = [:]
     /// The last alerts this Mac sent, newest last, for the Apple TVs' own alerts (GET /events).
     private var recent: [CameraShareEvent] = []
+    /// Puts this Mac's addresses in the family's settings every ten minutes (one for good, however often it listens again).
+    private var publishing: Task<Void, Never>?
 
     /// An alert went out (its picture already kept for GET /event): the Apple TVs show it on their next ask. Only on
     /// the Mac that shares the cameras (the hub).
@@ -122,8 +124,14 @@ final class CameraShare {
     /// On the Mac Studio (the updater's hub) only: it's the Mac that's always home with every camera live.
     func start() {
         guard listener == nil, !Demo.isOn, PushRelay.updaterRole() == "hub",
-              let port = NWEndpoint.Port(rawValue: CameraShareKey.port),
-              let l = try? NWListener(using: .tcp, on: port) else { return }
+              let port = NWEndpoint.Port(rawValue: CameraShareKey.port) else { return }
+        // The port is taken again at once when the app starts again (every release), not refused while the copy
+        // before's last answers still hold it (each answer here closes its own connection, and the system keeps the
+        // port for those a while). Refused, the share never started, and the Apple TVs had no cameras and no alerts
+        // until the app was opened again.
+        let params = NWParameters.tcp
+        params.allowLocalEndpointReuse = true
+        guard let l = try? NWListener(using: params, on: port) else { return }
         l.newConnectionHandler = { [weak self] c in
             c.start(queue: .main)
             // An Apple TV that went away mid-request: never left open.
@@ -133,10 +141,22 @@ final class CameraShare {
             }
             Task { @MainActor in self?.read(c, Data()) }
         }
+        // Failed all the same (the port held, the network gone): listened for again a moment later, not never again.
+        l.stateUpdateHandler = { [weak self, weak l] state in
+            guard case .failed = state else { return }
+            Task { @MainActor in
+                guard let self, let l, self.listener === l else { return }
+                l.cancel()
+                self.listener = nil
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
+                if self.listener == nil { self.start() }
+            }
+        }
         l.start(queue: .main)
         listener = l
         publish()
-        Task {
+        guard publishing == nil else { return }
+        publishing = Task {
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 600_000_000_000)
                 publish()
