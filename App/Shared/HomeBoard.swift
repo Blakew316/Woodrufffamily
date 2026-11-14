@@ -806,18 +806,12 @@ private struct Jiggle: ViewModifier {
     var size: CGSize
     @AmbientResting private var resting: Bool
 
-    @ViewBuilder func body(content: Content) -> some View {
-        // Only while arranging: a paused timeline around every tile still cost a pass over each one at rest.
-        if !active {
-            content
-        } else {
-            wobbling(content)
-        }
-    }
-
-    private func wobbling(_ content: Content) -> some View {
+    func body(content: Content) -> some View {
+        // The same view round the tile whether it wobbles or not, its timeline paused at rest (nothing ticks then). As
+        // two different views, every tile was built again from nothing as arranging started and ended, and as one was
+        // picked up and put down (a camera's picture went dark for a moment each time).
         // 60 a second at most: the wobble is only a degree or so, and ProMotion's 120 just doubled the work.
-        TimelineView(.animation(minimumInterval: 1.0 / 60, paused: resting)) { ctx in
+        TimelineView(.animation(minimumInterval: 1.0 / 60, paused: !active || resting)) { ctx in
             let t = ctx.date.timeIntervalSinceReferenceDate
             let phase = Double(seed % 628) / 100
             let speed = 24 + Double(seed % 9)
