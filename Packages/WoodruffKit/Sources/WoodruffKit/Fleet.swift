@@ -209,6 +209,17 @@ public final class Fleet {
         lanScannedAt = Date()
         lanFound = await LANScan.find()
         await refresh()
+        // A paired TV that has stopped answering, found by this search under its own name at another address on the
+        // home network: asked there, and talked to there from now on if it answers as that TV, with its key
+        // (`adoptAddress`). Otherwise only its announcement on the Wi‑Fi (`moveIfNeeded`), or another device that
+        // already had its new address, moved one, and an LG's announcement doesn't reach this device: one the router
+        // gave a new address stayed off everywhere (not offered to pair again either, its name being the paired TV's)
+        // until it was paired again by hand.
+        for hub in hubs where !isAnswering(hub.id) {
+            for f in lanFound where f.name.caseInsensitiveCompare(hub.name) == .orderedSame && f.host != hub.connection.base.host {
+                if let base = f.base, await adoptAddress(base, forHub: hub.id) { break }
+            }
+        }
         #endif
     }
     private var notifiedAlerts: [String: String] = Saved.load("notifiedAlerts", as: [String: String].self) ?? [:]
