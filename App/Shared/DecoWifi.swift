@@ -44,7 +44,16 @@ final class DecoWifi {
 
     func isRestarting(_ n: Node) -> Bool { restarts[n.id] != nil }
 
-    var connected: Bool { Keychain.get("deco.password") != nil }
+    /// Signed in with a password the Deco hasn't turned down here (`refusedPasswords`).
+    var connected: Bool {
+        guard let p = Keychain.get("deco.password") else { return false }
+        return !refusedPasswords.contains(p)
+    }
+    /// Passwords the Deco turned down on this device, kept in memory only. Not tried again (that would lock the owner
+    /// out), and not removed either: the password travels to every device, so removing it here signed them all out,
+    /// even the one where the new password had just been typed (this device may only hold the old one, the newer one
+    /// not here yet). A newer one arriving from another device is used as it comes.
+    private var refusedPasswords: Set<String> = []
     var host: String { Keychain.get("deco.host") ?? Self.guessHost() ?? "192.168.68.1" }
     var internetUp: Bool? { nodes.first(where: \.main)?.internet }
 
@@ -93,6 +102,8 @@ final class DecoWifi {
         guard !h.contains(" "), URL(string: "http://\(h.isEmpty ? "192.168.68.1" : h)/")?.host != nil else { error = "That Deco address isn’t valid."; return }
         busy = true; error = nil
         defer { busy = false }
+        // Typed in by hand: tried, even if the Deco turned it down before.
+        refusedPasswords.remove(password)
         Keychain.set(h.isEmpty ? nil : h, for: "deco.host")
         Keychain.set(password, for: "deco.password")
         stok = nil
@@ -110,6 +121,7 @@ final class DecoWifi {
         loop?.cancel(); loop = nil
         restartWatch?.cancel(); restartWatch = nil
         Keychain.set(nil, for: "deco.password")
+        refusedPasswords = []
         LocalTrust.forget()
         stok = nil; nodes = []; clients = []; restarts = [:]; seenDown = []
         error = nil; updated = nil; wasUp = nil
@@ -192,9 +204,9 @@ final class DecoWifi {
             updated = Date()
             noticeInternet()
         } catch WrongPassword.refused {
-            // The password changed on the Deco: stop trying the old one (which would lock the owner out).
+            // The password changed on the Deco: stop trying the old one (which would lock the owner out). It stays in
+            // the Keychain, turned down here only (`refusedPasswords`).
             loop?.cancel(); loop = nil
-            Keychain.set(nil, for: "deco.password")
             stok = nil; nodes = []; clients = []
             self.error = "The Deco password changed. Sign in again."
         } catch {
@@ -319,7 +331,10 @@ final class DecoWifi {
         let r = try await post("/cgi-bin/luci/;stok=/login", form: "login", body: body)
         let data = try decrypt(r)
         let code = (data["error_code"] as? NSNumber)?.intValue ?? -1
-        if code == -5002 { throw WrongPassword.refused }
+        if code == -5002 {
+            refusedPasswords.insert(password)
+            throw WrongPassword.refused
+        }
         guard code == 0, let t = (data["result"] as? [String: Any])?["stok"] as? String else {
             throw OAuthRelay.Failure.refused("The Deco refused the sign-in (\(code)). If the Deco app is signed in as the owner on another device, try again in a minute.")
         }
