@@ -1457,7 +1457,12 @@ struct CameraLiveView: View {
         .background(Color.black)
         .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 28, style: .continuous).strokeBorder(.white.opacity(0.12), lineWidth: 0.5))
-        .shadow(color: .black.opacity(0.45), radius: 30, y: 14)
+        // Its shadow cast by a plain card of its shape behind it: the same shadow (the card is opaque). Cast by the card
+        // itself, it was worked out off screen again for every frame of the live picture.
+        .background {
+            RoundedRectangle(cornerRadius: 28, style: .continuous).fill(.black)
+                .shadow(color: .black.opacity(0.45), radius: 30, y: 14)
+        }
     }
     #endif
 }
