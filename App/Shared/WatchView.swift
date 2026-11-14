@@ -968,14 +968,20 @@ struct Billboard: View {
     private var tvScrims: some View {
         // How far up the screen the first row starts, from the bottom (0 to 1).
         let rows = (1080 - rowsTop) / 1080
+        // The material only as tall as it can be seen (and 160 points above that, so its blur's own edge is where it's
+        // already gone), its fade the same on screen: it was the whole screen, more than half of it masked away, all of
+        // it blurred again on every frame the banner moved (down to the rows, back up to Play) or changed.
+        let tall = min(1, rows + 0.37)
         return ZStack {
             Rectangle().fill(.regularMaterial)
                 .mask {
-                    LinearGradient(stops: [.init(color: .black, location: 0), .init(color: .black, location: rows),
-                                           .init(color: .black.opacity(0.35), location: rows + 0.1),
-                                           .init(color: .clear, location: rows + 0.22)],
+                    LinearGradient(stops: [.init(color: .black, location: 0), .init(color: .black, location: rows / tall),
+                                           .init(color: .black.opacity(0.35), location: (rows + 0.1) / tall),
+                                           .init(color: .clear, location: (rows + 0.22) / tall)],
                                    startPoint: .bottom, endPoint: .top)
                 }
+                .frame(height: 1080 * tall)
+                .frame(maxHeight: .infinity, alignment: .bottom)
             LinearGradient(stops: [.init(color: .black.opacity(0.7), location: 0), .init(color: .black.opacity(0.25), location: 0.5),
                                    .init(color: .clear, location: 0.8)], startPoint: .leading, endPoint: .trailing)
         }
@@ -1872,16 +1878,24 @@ struct TitleSheet: View {
     private func tvBackdrop(_ art: URL?, shelf: Bool) -> some View {
         // How far up the screen the material is whole (0 to 1 from the bottom): behind a shelf, or only a film's foot.
         let whole: CGFloat = shelf ? 0.54 : 0.12
+        // The material only as tall as it can be seen (and 160 points above that, so its blur's own edge is where it's
+        // already gone), its fade the same on screen: a film's page masked away the top 60% of a material the whole
+        // screen tall, all of which was blurred again whenever what's under it changed.
+        let tall = min(1, whole + 0.43)
         return Color.black
             .overlay { Artwork(url: art, maxPixel: 2400) }
             .overlay {
-                Rectangle().fill(.regularMaterial)
-                    .mask {
-                        LinearGradient(stops: [.init(color: .black, location: 0), .init(color: .black, location: whole),
-                                               .init(color: .black.opacity(0.35), location: whole + 0.12),
-                                               .init(color: .clear, location: whole + 0.28)],
-                                       startPoint: .bottom, endPoint: .top)
-                    }
+                GeometryReader { g in
+                    Rectangle().fill(.regularMaterial)
+                        .mask {
+                            LinearGradient(stops: [.init(color: .black, location: 0), .init(color: .black, location: whole / tall),
+                                                   .init(color: .black.opacity(0.35), location: (whole + 0.12) / tall),
+                                                   .init(color: .clear, location: (whole + 0.28) / tall)],
+                                           startPoint: .bottom, endPoint: .top)
+                        }
+                        .frame(height: g.size.height * tall)
+                        .frame(maxHeight: .infinity, alignment: .bottom)
+                }
             }
             .overlay {
                 LinearGradient(stops: [.init(color: .black.opacity(0.75), location: 0), .init(color: .black.opacity(0.3), location: 0.5),
