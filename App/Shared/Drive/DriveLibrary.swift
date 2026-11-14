@@ -501,11 +501,20 @@ final class DriveLibrary: WatchSource {
 
     // MARK: Answers in Watch's shapes (the TV's JSON)
 
-    /// Decoded off the main thread: a page of the library is a hundred titles and more, and the Apple TV reads the
-    /// whole library this way as Watch opens and after each film.
+    /// Written out and decoded off the main thread: a page of the library is a hundred titles and more, and the Apple
+    /// TV reads the whole library this way as Watch opens and after each film. (Only the decoding was: each page was
+    /// still written out as JSON on the main thread, a few milliseconds a page as Watch came back from a film.)
     private func decode<T: Decodable & Sendable>(_ v: Any) async throws -> T {
-        let data = try JSONSerialization.data(withJSONObject: v)
-        return try await Task.detached(priority: .userInitiated) { try JSONDecoder().decode(T.self, from: data) }.value
+        let shaped = ShapedAnswer(value: v)
+        return try await Task.detached(priority: .userInitiated) {
+            try JSONDecoder().decode(T.self, from: JSONSerialization.data(withJSONObject: shaped.value))
+        }.value
+    }
+
+    /// An answer as built here in the TV's JSON shape (dictionaries, arrays, strings and numbers, not changed once
+    /// made), handed over to be written out and decoded off the main thread.
+    private struct ShapedAnswer: @unchecked Sendable {
+        let value: Any
     }
 
     private func duration(_ ms: Double) -> String {
