@@ -21,6 +21,8 @@ final class TVJoin {
     @ObservationIgnored private var waiting: (code: String, connection: NWConnection)?
     @ObservationIgnored private var listener: NWListener?
     @ObservationIgnored private var base: String?
+    /// The network, watched so a new address goes into the QR code and the announcement (`readdress`).
+    @ObservationIgnored private var network: NWPathMonitor?
     private let token = UUID().uuidString.replacingOccurrences(of: "-", with: "")
 
     /// This Apple TV's own id (kept), and its name as the iPhone lists it.
@@ -36,6 +38,7 @@ final class TVJoin {
     }
 
     func start() {
+        watchNetwork()
         guard listener == nil, let l = try? NWListener(using: .tcp, on: .any) else { return }
         l.newConnectionHandler = { [weak self] c in
             Task { @MainActor in self?.serve(c) }
@@ -80,6 +83,25 @@ final class TVJoin {
         c.queryItems = [URLQueryItem(name: "u", value: base), URLQueryItem(name: "t", value: token)]
         link = c.url
         announce()
+    }
+
+    /// The address was worked out once, as the listener came up: after the router gave this Apple TV a new one, the
+    /// QR code and the announcement still gave the old one, and Connect from the iPhone went there. Each time the
+    /// network changes it's worked out again, and both are redone when it's another.
+    private func watchNetwork() {
+        guard network == nil else { return }
+        let m = NWPathMonitor()
+        m.pathUpdateHandler = { [weak self] path in
+            guard path.status == .satisfied else { return }
+            Task { @MainActor in self?.readdress() }
+        }
+        m.start(queue: .main)
+        network = m
+    }
+
+    private func readdress() {
+        guard let port = listener?.port?.rawValue, let ip = Self.address(), base != "http://\(ip):\(port)" else { return }
+        ready()
     }
 
     /// Announced on the Wi‑Fi with what the apps show: its name, build, address, and which family it's in (the
