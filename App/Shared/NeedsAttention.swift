@@ -36,6 +36,9 @@ struct NeedsAttentionSection: View {
         }
         #if os(macOS)
         add("alerts", "Camera Alerts", AlertWatchdog.shared.problem, accounts: false)
+        // The Mac that sends the family's alerts, when its last push to the iPhones didn't go (the push key turned down,
+        // say): said on its Notifications page alone, the iPhones' alerts stopped with nothing else saying so.
+        if PushRelay.shared.isSender { add("push", "Instant iPhone Alerts", PushRelay.shared.lastError, accounts: false) }
         let u = UpdaterStatus.shared
         if u.hasProblem { add("updates", "Updates", u.detail ?? u.summary, accounts: false) }
         if let tf = u.testFlight, tf.problem { add("testflight", "TestFlight", tf.detail ?? tf.value, accounts: false) }
