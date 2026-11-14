@@ -88,6 +88,10 @@ final class OwnPlayer {
     /// What Apple's renderer said of the picture's frames at the last look, and whether the two-minute line is out.
     private var frames: String?
     private var framesSaid = false
+    /// The picture's frames as Apple's renderer last counted them, and how often its decoder has been emptied and
+    /// given the film again because it kept dropping them.
+    private var lastCounts: (frames: Int, dropped: Int)?
+    private var renewals = 0
     /// The sound session's work, one thing after another and never on the main thread (activating can take a moment).
     private static let soundQueue = DispatchQueue(label: "woodruff.film-sound", qos: .userInitiated)
 
@@ -131,6 +135,8 @@ final class OwnPlayer {
         soundSaid = false
         frames = nil
         framesSaid = false
+        lastCounts = nil
+        renewals = 0
         checkedIndex = false
         said = false
         nextUp = nil
@@ -186,6 +192,9 @@ final class OwnPlayer {
             let waited = await screen.matchDisplay(to: player.film.picture)
             guard current?.id == play.id, self.screen === screen else { return }
             switchWait = waited
+            // The TV changed its picture mode after the picture's decoder had its first frames: it's emptied and
+            // given them again now, or it drops one frame in ten all through the film.
+            if waited != nil { player.renewPicture() }
             noteFormats(player.film, play, matches: screen.matchesContent, screenRate: screen.screenRate)
             player.play()
             begun = true
@@ -397,6 +406,25 @@ final class OwnPlayer {
                     if say, let player = self.player {
                         Diagnostics.shared.notePlayback("\(title): 2 minutes in, " + self.pictureWords(player.notes))
                     }
+                }
+            }
+        }
+        // A picture whose frames Apple's renderer keeps dropping (more than one in twenty over ten seconds of the film
+        // playing) has its decoder emptied and given the film again, up to three times a film.
+        if started, player.film.picture != nil, renewals < 3, (ticks - startedTick) % 10 == 5 {
+            let title = play.title, at = ticks - startedTick
+            player.pictureCounts { [weak self] counts in
+                Task { @MainActor in
+                    guard let self, self.current?.id == play.id, let counts else { return }
+                    let last = self.lastCounts
+                    self.lastCounts = counts
+                    guard let last, counts.frames >= last.frames + 120, counts.dropped >= last.dropped, self.renewals < 3 else { return }
+                    let shown = counts.frames - last.frames, lost = counts.dropped - last.dropped
+                    guard lost * 20 > shown else { return }
+                    self.renewals += 1
+                    self.lastCounts = nil
+                    self.player?.renewPicture()
+                    Diagnostics.shared.notePlayback("\(title): \(at) s in, \(lost) of \(shown) frames dropped in ten seconds; the picture’s decoder was emptied and given the film again")
                 }
             }
         }
@@ -644,6 +672,7 @@ final class OwnPlayer {
                 : ", its times on the film’s beat of \(beat) already (\(n.beatFrames) frames)"
             if n.beatRestarted > 0 { words += ", the beat begun again \(n.beatRestarted) times" }
         }
+        if n.renewed > 0 { words += ", its decoder emptied and given the film again \(n.renewed) times" }
         if n.setsTakenOut > 0 { words += ", the settings repeated inside \(n.setsTakenOut) frames taken out" }
         // What the frames are made of (keyframes of each kind, frames that look back past one, end-of-sequence
         // markers, Dolby Vision's own data) and what Apple's reader marked them with: why frames drop, if they do.

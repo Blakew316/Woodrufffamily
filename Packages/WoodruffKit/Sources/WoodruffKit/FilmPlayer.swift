@@ -151,6 +151,8 @@ public final class FilmPlayer: @unchecked Sendable {
         public var beatRestarted = 0
         /// The frames Apple's renderer had dropped in all, each time it was asked (`pictureFrames`).
         public var droppedSoFar: [Int] = []
+        /// Times the picture's decoder was emptied and given the film again (`renewPicture`).
+        public var renewed = 0
     }
 
     /// What the film is, once it's open.
@@ -228,6 +230,8 @@ public final class FilmPlayer: @unchecked Sendable {
         var known: (lengthSize: Int, sets: Set<Data>)?
         /// (Picture) puts each frame's time on the film's own beat.
         var even: FilmFrameGrid.Evener?
+        /// Times it was started again from somewhere (`reset`): a run asked for before then is not wanted.
+        var resets = 0
 
         init(lane: Int, sound: Bool, reader: FilmTrackReader, format: CMFormatDescription?) {
             self.lane = lane
@@ -561,6 +565,39 @@ public final class FilmPlayer: @unchecked Sendable {
         }
     }
 
+    /// How many of the picture's frames Apple's renderer has counted so far, and how many of them it dropped, on any
+    /// thread; nil before there's a picture, or where it doesn't say.
+    public func pictureCounts(_ then: @escaping ((frames: Int, dropped: Int)?) -> Void) {
+        queue.async {
+            #if targetEnvironment(macCatalyst)
+            then(nil)
+            #else
+            guard let renderer = self.pictureRenderer else { return then(nil) }
+            guard #available(macOS 15.0, iOS 18.0, tvOS 18.0, visionOS 2.0, *) else { return then(nil) }
+            renderer.loadVideoPerformanceMetrics { metrics in
+                guard let m = metrics else { return then(nil) }
+                then((frames: m.totalNumberOfFrames, dropped: m.numberOfDroppedFrames))
+            }
+            #endif
+        }
+    }
+
+    /// The picture's decoder is emptied and given the film again from where it is; the sound plays on. A decoder
+    /// that had its first frames before the TV changed its picture mode dropped one frame in ten all through the
+    /// film; emptied and given them again (build 669, when the app was put away and brought back), it dropped one in
+    /// 1,316. Nothing happens before the film is open and placed, or once it's over.
+    public func renewPicture() {
+        queue.async {
+            guard self.opened, self.placed, !self.closed, self.why == nil, !self.ended, let pipe = self.showing else { return }
+            self.lock.lock()
+            self.sharedNotes.renewed += 1
+            self.lock.unlock()
+            self.reset(pipe, to: self.clock.currentTime())
+            self.fill(pipe)
+            self.judge()
+        }
+    }
+
     /// The sound off, or on again (the Mac's film check plays in silence).
     public func mute(_ off: Bool) {
         soundRenderer.isMuted = off
@@ -748,6 +785,7 @@ public final class FilmPlayer: @unchecked Sendable {
         pipe.tries = 0
         pipe.soundEnd = .invalid
         pipe.decoding?.flush()
+        pipe.resets += 1
         pipe.showFrom = target
         pipe.dropBefore = .invalid
         if target.seconds <= 0.05 {
@@ -782,19 +820,20 @@ public final class FilmPlayer: @unchecked Sendable {
     }
 
     private func ask(_ run: FilmRun, for pipe: Pipe) {
-        let turn = generation, asked = Date()
+        let turn = generation, resets = pipe.resets, asked = Date()
         guard run.length > 0 else {
-            queue.async { [weak self] in self?.arrived(run, .success(Data()), for: pipe, turn: turn, asked: asked) }
+            queue.async { [weak self] in self?.arrived(run, .success(Data()), for: pipe, turn: turn, resets: resets, asked: asked) }
             return
         }
         bytes.read(from: run.offset, count: run.length, lane: pipe.lane) { [weak self] result in
-            self?.queue.async { self?.arrived(run, result, for: pipe, turn: turn, asked: asked) }
+            self?.queue.async { self?.arrived(run, result, for: pipe, turn: turn, resets: resets, asked: asked) }
         }
     }
 
-    private func arrived(_ run: FilmRun, _ result: Result<Data, Error>, for pipe: Pipe, turn: Int, asked: Date) {
-        // Asked for before the film was moved, or for a sound track no longer playing: not wanted.
-        guard turn == generation, !closed, pipe === picturePipe || pipe === soundPipe else { return }
+    private func arrived(_ run: FilmRun, _ result: Result<Data, Error>, for pipe: Pipe, turn: Int, resets: Int, asked: Date) {
+        // Asked for before the film was moved, before this track was started again from somewhere (its frames
+        // would come twice), or for a sound track no longer playing: not wanted.
+        guard turn == generation, resets == pipe.resets, !closed, pipe === picturePipe || pipe === soundPipe else { return }
         switch result {
         case .failure(let error):
             // The connection, not the film: asked for again a few times, a little later each time.
@@ -804,7 +843,8 @@ public final class FilmPlayer: @unchecked Sendable {
                 sharedNotes.again += 1
                 lock.unlock()
                 queue.asyncAfter(deadline: .now() + Double(pipe.tries)) { [weak self] in
-                    guard let self, turn == self.generation, !self.closed, pipe === self.picturePipe || pipe === self.soundPipe else { return }
+                    guard let self, turn == self.generation, resets == pipe.resets, !self.closed,
+                          pipe === self.picturePipe || pipe === self.soundPipe else { return }
                     self.ask(run, for: pipe)
                 }
                 return
