@@ -355,7 +355,8 @@ final class OwnPlayer {
             : "; the Apple TV keeps its own picture mode (Match Content is off)"
         // How often the TV shows a new picture now, once its mode has changed for the film: a 24-frame film on a TV at
         // 60 shows some pictures three times and some twice, which looks like a small stutter when the camera moves.
-        let shown = screenRate.map { "; the TV shows \($0) pictures a second" } ?? ""
+        let shown = (screenRate.map { "; the TV shows \($0) pictures a second" } ?? "")
+            + (screen?.askedHDR10 == true ? ", in HDR10 (the Apple TV applying the film’s Dolby Vision)" : "")
         Diagnostics.shared.notePlayback("\(play.title), the app’s own player: " + words.joined(separator: "; ") + "; \(hdr)\(also)\(shown)")
         // Once after the app starts: whether this build decodes DTS and Dolby TrueHD (`TVFilmSound`).
         if !Self.saidDecoder {

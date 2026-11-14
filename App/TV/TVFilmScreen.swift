@@ -447,7 +447,9 @@ final class FilmScreen: UIViewController, UIGestureRecognizerDelegate {
         guard let picture, let display = view.window?.avDisplayManager, display.isDisplayCriteriaMatchingEnabled else { return nil }
         self.display = display
         let rate = Self.displayRate(picture.framesASecond)
-        let criteria = AVDisplayCriteria(refreshRate: rate, formatDescription: picture.format)
+        let mode = Self.modeFormat(for: picture.format)
+        askedHDR10 = mode !== picture.format
+        let criteria = AVDisplayCriteria(refreshRate: rate, formatDescription: mode)
         display.preferredDisplayCriteria = criteria
         // Every other window of the app asks for it too while the film shows: a camera alert's window over the film,
         // asking for nothing, sent the TV back to the menus' 60 pictures a second three minutes into a film.
@@ -502,6 +504,32 @@ final class FilmScreen: UIViewController, UIGestureRecognizerDelegate {
             Self.filmCriteria = nil
             for w in Self.windows { w.avDisplayManager.preferredDisplayCriteria = nil }
         }
+    }
+
+    /// The film's picture is Dolby Vision and the TV was asked for HDR10 (`modeFormat`).
+    private(set) var askedHDR10 = false
+
+    /// What the TV is asked to show a film's picture in: a Dolby Vision picture in HDR10, the Apple TV applying the
+    /// film's Dolby Vision to each frame itself. In Dolby Vision mode the Apple TV paints the whole screen in Dolby
+    /// Vision's own signal for each frame it doesn't send straight to the screen (none of this player's ever went),
+    /// and Avengers Endgame Encore, 4K Dolby Vision, dropped one frame in ten, more as the Apple TV warmed. Any other
+    /// picture as it is.
+    static func modeFormat(for format: CMFormatDescription) -> CMFormatDescription {
+        let codec = CMFormatDescriptionGetMediaSubType(format)
+        let atoms = CMFormatDescriptionGetExtension(format, extensionKey: kCMFormatDescriptionExtension_SampleDescriptionExtensionAtoms) as? [String: Any]
+        let vision = codec == 0x6476_6831 || codec == 0x6476_6865 || ["dvcC", "dvvC", "dvwC"].contains { atoms?[$0] != nil }
+        guard vision else { return format }
+        let size = CMVideoFormatDescriptionGetDimensions(format)
+        let extensions: [CFString: Any] = [
+            kCMFormatDescriptionExtension_ColorPrimaries: kCMFormatDescriptionColorPrimaries_ITU_R_2020,
+            kCMFormatDescriptionExtension_TransferFunction: kCMFormatDescriptionTransferFunction_SMPTE_ST_2084_PQ,
+            kCMFormatDescriptionExtension_YCbCrMatrix: kCMFormatDescriptionYCbCrMatrix_ITU_R_2020,
+        ]
+        var made: CMFormatDescription?
+        guard CMVideoFormatDescriptionCreate(allocator: kCFAllocatorDefault, codecType: kCMVideoCodecType_HEVC, width: size.width,
+                                             height: size.height, extensions: extensions as CFDictionary,
+                                             formatDescriptionOut: &made) == noErr, let made else { return format }
+        return made
     }
 
     /// The picture mode the film on screen asks the TV for (nil when there's none): every window of the app asks
