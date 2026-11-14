@@ -338,6 +338,13 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate {
         // Handled here: nothing more for AppKit to do. (Not handled only if the window can't be opened from here yet.)
         !MainWindowOpener.show()
     }
+
+    /// Quitting (⌘Q, or the updater quitting it to put a new build in place): Watch's places and changes still on
+    /// their way to disk are written first. The Mac never goes through the background on the way out, where the
+    /// iPhone and Apple TV write them, so a film's place from the last minute was lost with every update.
+    func applicationWillTerminate(_ notification: Notification) {
+        DriveLibrary.shared.flush()
+    }
 }
 
 /// Opens Woodruff's own window from outside SwiftUI (the Dock, the menus, a notification). The menu bar icon hands
