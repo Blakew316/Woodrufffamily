@@ -405,9 +405,13 @@ final class FilmScreen: UIViewController, UIGestureRecognizerDelegate {
         let rate = Self.displayRate(picture.framesASecond)
         display.preferredDisplayCriteria = AVDisplayCriteria(refreshRate: rate, formatDescription: picture.format)
         var took: Double?
-        for _ in 0..<2 {
+        // A TV not yet at the film's rate takes a moment to begin changing: up to two seconds for it, half a second
+        // for a second change (the dynamic range after the rate) or for a TV that's at the rate already.
+        let already = view.window?.screen.maximumFramesPerSecond == Int(rate.rounded())
+        for round in 0..<2 {
             var looks = 0
-            while !display.isDisplayModeSwitchInProgress, looks < 10 {
+            let wait = round == 0 && !already ? 40 : 10
+            while !display.isDisplayModeSwitchInProgress, looks < wait {
                 try? await Task.sleep(nanoseconds: 50_000_000)
                 looks += 1
             }

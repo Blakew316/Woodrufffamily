@@ -88,10 +88,8 @@ final class OwnPlayer {
     /// What Apple's renderer said of the picture's frames at the last look, and whether the two-minute line is out.
     private var frames: String?
     private var framesSaid = false
-    /// The picture's frames as Apple's renderer last counted them, and how often its decoder has been emptied and
-    /// given the film again because it kept dropping them.
-    private var lastCounts: (frames: Int, dropped: Int)?
-    private var renewals = 0
+    /// How many pictures a second the TV showed at the last look while the film played (a change is said in the log).
+    private var screenRateSeen: Int?
     /// The sound session's work, one thing after another and never on the main thread (activating can take a moment).
     private static let soundQueue = DispatchQueue(label: "woodruff.film-sound", qos: .userInitiated)
 
@@ -135,8 +133,7 @@ final class OwnPlayer {
         soundSaid = false
         frames = nil
         framesSaid = false
-        lastCounts = nil
-        renewals = 0
+        screenRateSeen = nil
         checkedIndex = false
         said = false
         nextUp = nil
@@ -196,6 +193,7 @@ final class OwnPlayer {
             // given them again now, or it drops one frame in ten all through the film.
             if waited != nil { player.renewPicture() }
             noteFormats(player.film, play, matches: screen.matchesContent, screenRate: screen.screenRate)
+            screenRateSeen = screen.screenRate
             player.play()
             begun = true
             commandsOn()
@@ -409,24 +407,10 @@ final class OwnPlayer {
                 }
             }
         }
-        // A picture whose frames Apple's renderer keeps dropping (more than one in twenty over ten seconds of the film
-        // playing) has its decoder emptied and given the film again, up to three times a film.
-        if started, player.film.picture != nil, renewals < 3, (ticks - startedTick) % 10 == 5 {
-            let title = play.title, at = ticks - startedTick
-            player.pictureCounts { [weak self] counts in
-                Task { @MainActor in
-                    guard let self, self.current?.id == play.id, let counts else { return }
-                    let last = self.lastCounts
-                    self.lastCounts = counts
-                    guard let last, counts.frames >= last.frames + 120, counts.dropped >= last.dropped, self.renewals < 3 else { return }
-                    let shown = counts.frames - last.frames, lost = counts.dropped - last.dropped
-                    guard lost * 20 > shown else { return }
-                    self.renewals += 1
-                    self.lastCounts = nil
-                    self.player?.renewPicture()
-                    Diagnostics.shared.notePlayback("\(title): \(at) s in, \(lost) of \(shown) frames dropped in ten seconds; the picture’s decoder was emptied and given the film again")
-                }
-            }
+        // The TV's picture mode changing while the film plays (to the menus' 60, say): said once each time.
+        if started, ticks % 5 == 0, let rate = screen.screenRate, rate != screenRateSeen {
+            Diagnostics.shared.notePlayback("\(play.title): \(ticks - startedTick) s in, the TV shows \(rate) pictures a second now (it was \(screenRateSeen.map(String.init) ?? "not known"))")
+            screenRateSeen = rate
         }
         if state == .ended {
             // Played to its end: the screen closes, back to the page it was started from.

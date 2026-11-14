@@ -1,6 +1,7 @@
 import SwiftUI
 import UIKit
 import ImageIO
+import AVKit
 import WoodruffKit
 
 // The cameras' alerts on Apple TV: a small Liquid Glass pill at the top right ("Person seen", "Front Driveway · now",
@@ -98,7 +99,7 @@ final class TVAlerts {
         holding = false
         current = nil
         covered = false
-        window?.isHidden = true
+        hideWindow()
     }
 
     private var hosts: [String] {
@@ -313,7 +314,7 @@ final class TVAlerts {
             self.timer = nil
             self.queue.removeAll { $0.at.timeIntervalSinceNow < -60 }
             if !self.queue.isEmpty { self.show(self.queue.removeFirst()); return }
-            if self.current == nil { self.window?.isHidden = true }
+            if self.current == nil { self.hideWindow() }
         }
     }
 
@@ -361,7 +362,20 @@ final class TVAlerts {
             w.rootViewController = host
             window = w
         }
+        // Over a film the TV is in the film's picture mode: this window asks for the same while it shows, so a pill
+        // coming up never sends the TV back to the menus' mode (a 24-frame film was left on a TV at 60).
+        if let w = window {
+            let film = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.flatMap(\.windows)
+                .first { $0 !== w && !$0.isHidden && $0.avDisplayManager.preferredDisplayCriteria != nil }
+            w.avDisplayManager.preferredDisplayCriteria = film?.avDisplayManager.preferredDisplayCriteria
+        }
         window?.isHidden = false
+    }
+
+    /// The window away, asking for no picture mode of its own.
+    private func hideWindow() {
+        window?.avDisplayManager.preferredDisplayCriteria = nil
+        window?.isHidden = true
     }
 }
 

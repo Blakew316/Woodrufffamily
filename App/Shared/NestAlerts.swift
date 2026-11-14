@@ -283,6 +283,15 @@ final class NestAlerts {
         return json
     }
 
+    /// An alert that has gone stale while it was made (the Mac or iPhone slept partway through: one Mac showed alerts
+    /// up to half an hour late, with a sound): more than two minutes after its event by Google's clock, it goes into
+    /// the list quietly, no sound and no banner.
+    private func quietIfStale(_ c: UNMutableNotificationContent, happened: Date?) {
+        guard let happened, googleNow.timeIntervalSince(happened) > 120 else { return }
+        c.sound = nil
+        c.interruptionLevel = .passive
+    }
+
     /// Google's clock as its last answer here gave it (the Date it was sent), with this device's clock at that moment.
     private var googleClock: (google: Date, here: Date)?
 
@@ -530,6 +539,7 @@ final class NestAlerts {
             PushRelay.log.notice("alert for \(body, privacy: .public) shown here, picture: \(c.attachments.isEmpty ? "none" : how, privacy: .public)")
             // The Mac's push for it, if it comes after all, takes its place quietly.
             CameraEventMedia.noteShownHere(short)
+            self.quietIfStale(c, happened: happened)
             Notifier.deliver(c, id: id)
             // Its one line in the family's log, once its picture is settled.
             let shownAt = Date()
@@ -661,6 +671,7 @@ final class NestAlerts {
                     CameraShare.shared.noteEvent(key: short, camera: camera, name: body, title: title, focus: focus,
                                                  event: event, clip: race.clip ?? clip, happened: happened)
                 }
+                self.quietIfStale(c, happened: happened)
                 Notifier.deliver(c, id: id)
                 // The Google TVs' and the LG's card for it: its close-up, else the whole picture (the hub only).
                 if toTVs, !quiet, let forTVs = close ?? shown {
