@@ -515,10 +515,13 @@ enum CameraEventMedia {
         #endif
         guard let image = await picture(file, maxSide: side, at: time ?? 1),
               let cut = SubjectCrop.crop(image, unit: focus), cut.width >= 64, cut.height >= 64, let f = folder else { return nil }
+        // Made clear first, on its own tones (a car seen across the street from the porch came out milky): then
+        // enlarged and sharpened, which shows more of edges that are there.
+        let clear = PictureTone.clarified(cut) ?? cut
         #if os(macOS)
-        let shown = enlarged(cut) ?? cut
+        let shown = enlarged(clear) ?? clear
         #else
-        let shown = cut
+        let shown = clear
         #endif
         guard let data = jpeg(shown, quality: 0.9) else { return nil }
         let out = f.appendingPathComponent("close-" + file.deletingPathExtension().lastPathComponent + ".jpg")
@@ -586,8 +589,7 @@ enum CameraEventMedia {
     static func stillAndFocus(_ file: URL, title: String) async -> (still: Data?, focus: CGRect?) {
         guard let image = await picture(file, maxSide: 1280) else { return (nil, nil) }
         let focus = SubjectCrop.unitFocus(in: image, kind: SubjectCrop.kind(title))
-        let still = scaled(image, maxSide: 480).flatMap { jpeg($0, quality: 0.75) }
-        return (still, focus)
+        return (widgetStill(image), focus)
     }
 
     // MARK: The Mac's picture of each event
@@ -633,15 +635,19 @@ enum CameraEventMedia {
         #endif
         if found == nil { found = await picture(file, maxSide: fullSide) }
         guard let image = found, let out = eventFile(key) else { return nil }
-        // A picture that's already a JPEG no larger than that is kept as it came (a frame of the stream, Google's
-        // snapshot): made into a JPEG a second time it only loses.
+        // What goes out (here, to the iPhones, the widgets and the TVs) made clear when it came out washed out or dark
+        // (`PictureTone`); who or what was seen is still looked for in the picture as it came.
+        let clear = await Task.detached(priority: .userInitiated) { PictureTone.clarified(image) }.value
+        let sent = clear ?? image
+        // A picture that's already a JPEG no larger than that, and clear as it is, is kept as it came (a frame of the
+        // stream, Google's snapshot): made into a JPEG a second time it only loses.
         var kept = false
-        if clipTime == nil, file.pathExtension.lowercased() == "jpg", let size = pixelSize(file), max(size.width, size.height) <= fullSide,
+        if clear == nil, clipTime == nil, file.pathExtension.lowercased() == "jpg", let size = pixelSize(file), max(size.width, size.height) <= fullSide,
            let bytes = try? Data(contentsOf: file) {
             kept = (try? bytes.write(to: out, options: .atomic)) != nil
         }
         if !kept {
-            guard let full = jpeg(image, quality: 0.9), (try? full.write(to: out, options: .atomic)) != nil else { return nil }
+            guard let full = jpeg(sent, quality: 0.9), (try? full.write(to: out, options: .atomic)) != nil else { return nil }
         }
         var focus: CGRect?
         if kind != .whole, let subject {
@@ -652,8 +658,8 @@ enum CameraEventMedia {
             let changed = moved
             focus = await Task.detached(priority: .userInitiated) { SubjectCrop.unitFocus(in: look, kind: kind, moved: changed) }.value
         }
-        let still = scaled(image, maxSide: 480).flatMap { jpeg($0, quality: 0.75) }
-        return (out, focus, image, still, clipTime)
+        let still = widgetStill(sent)
+        return (out, focus, sent, still, clipTime)
     }
 
     /// A focus as the push carries it ("x,y,w,h", unit rectangle from the top left).
@@ -696,7 +702,9 @@ enum CameraEventMedia {
     /// about twice the detail in the same bytes; the iPhone turns it back into a JPEG to attach it).
     static func pushThumbnail(_ image: CGImage, focus: CGRect?, budget: Int) -> String? {
         guard budget >= 400 else { return nil }
-        let subject = focus.flatMap { SubjectCrop.crop(image, unit: $0) } ?? image
+        let framed = focus.flatMap { SubjectCrop.crop(image, unit: $0) } ?? image
+        // Clear on its own tones, as the close-up is (the whole picture may be clear while the part cut from it isn't).
+        let subject = PictureTone.clarified(framed) ?? framed
         // What it's for is the alert's small picture (about a hundred pixels across on the screen), so it's sharpness
         // at that size that counts: a good quality first, at the biggest size that fits it, and a lower quality only
         // when even a small picture doesn't fit. (The biggest picture at any quality was tried first before: 300
@@ -744,7 +752,8 @@ enum CameraEventMedia {
     /// [file]'s picture as a JPEG at most [maxSide] pixels across and about [bytes] at most (a lower quality until it
     /// fits): what the family's Google TVs and the LG show with a camera alert (`TVCameraPicture`).
     static func smallJPEG(_ file: URL, maxSide: Int, bytes: Int) async -> Data? {
-        guard let image = await picture(file, maxSide: maxSide) else { return nil }
+        guard let picture = await picture(file, maxSide: maxSide) else { return nil }
+        let image = PictureTone.clarified(picture) ?? picture
         var made: Data?
         for quality in [0.8, 0.7, 0.6, 0.5, 0.4, 0.3] {
             made = jpeg(image, quality: quality)
@@ -756,8 +765,16 @@ enum CameraEventMedia {
     /// A picture of the moment for the TVs & Cameras widget: a JPEG at most 480 pixels across. [time]: a clip's frame
     /// that far in (a second in when it isn't said).
     static func still(_ file: URL, at time: Double = 1) async -> Data? {
-        guard let image = await picture(file, at: time), let small = scaled(image, maxSide: 480) else { return nil }
-        return jpeg(small, quality: 0.75)
+        guard let image = await picture(file, at: time) else { return nil }
+        return widgetStill(image)
+    }
+
+    /// The widgets' still of [image]: at most 480 pixels across, and clear where a wide tile shows it (its middle band,
+    /// for a square doorbell picture) as well as overall (`PictureTone`).
+    static func widgetStill(_ image: CGImage) -> Data? {
+        guard let small = scaled(image, maxSide: 480) else { return nil }
+        let clear = PictureTone.clarified(small, band: PictureTone.wideBand(width: small.width, height: small.height)) ?? small
+        return jpeg(clear, quality: 0.75)
     }
 
     /// The moment as an image at most [maxSide] pixels across: the snapshot itself, or a clip's frame [time] seconds

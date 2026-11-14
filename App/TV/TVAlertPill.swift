@@ -67,6 +67,9 @@ final class TVAlerts {
 
     func start() {
         guard loop == nil, !Demo.isOn else { return }
+        // Back from another app: the connections to the Mac Studio kept from before are dead, and the first alert's
+        // picture asked down one waited out its three seconds (the alert came up without it). Each starts afresh.
+        URLSession.shared.flush {}
         // Earlier alerts' pictures (kept only for opening the camera from the pill) don't pile up.
         Task.detached(priority: .utility) { Self.tidy() }
         // Every second (a few bytes each time, from a Mac in the same house). It was every three, and an alert
@@ -257,7 +260,9 @@ final class TVAlerts {
         // Kept inside the picture.
         square.origin.x = min(max(0, square.minX), w - square.width)
         square.origin.y = min(max(0, square.minY), h - square.height)
-        guard let cut = image.cropping(to: square.integral) else { return nil }
+        guard let cropped = image.cropping(to: square.integral) else { return nil }
+        // Clear on its own tones, as the iPhones' close-up is (a car across the street from the porch came out milky).
+        let cut = PictureTone.clarified(cropped) ?? cropped
         let out = CGSize(width: 192, height: 192)
         let made = UIGraphicsImageRenderer(size: out).image { _ in UIImage(cgImage: cut).draw(in: CGRect(origin: .zero, size: out)) }
         return (image: made.preparingForDisplay() ?? made, cut: unit != nil)

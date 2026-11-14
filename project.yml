@@ -138,6 +138,8 @@ targets:
       - path: App/Shared/CameraEventMedia.swift
       # Frames the alert's small picture on who or what was seen (Vision).
       - path: App/Shared/SubjectCrop.swift
+      # Makes a washed-out or dark alert picture clear (the close-up and the widgets' still made here).
+      - path: App/Shared/PictureTone.swift
       # The TVs & Cameras widget's store: each camera alert's picture goes to the widget too.
       - path: App/Common/PhoneWidgetShare.swift
     settings:

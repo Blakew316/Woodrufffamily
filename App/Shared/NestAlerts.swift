@@ -362,6 +362,13 @@ final class NestAlerts {
             let key = "\(type)|\(session)"
             guard seen[key] == nil else { continue }
             seen[key] = Date()
+            // Alerted for already, before this app started again: not a second alert. (Google sends a second
+            // message for each visit about a minute after it, and an update restarts the app: the visit was alerted
+            // again, with the live picture of an empty drive by then and a sound, in the first one's place.)
+            if Self.alerted(Self.shortID(key)) {
+                PushRelay.log.notice("camera event not alerted: \(type.components(separatedBy: ".").last ?? type, privacy: .public) was alerted for already")
+                continue
+            }
             var title: String?
             switch type {
             case "sdm.devices.events.DoorbellChime.Chime" where doorbell: title = "Someone’s at the door"
@@ -392,9 +399,9 @@ final class NestAlerts {
             // Another event of a visit already alerted for (a person after the ring, motion after a person): not a
             // second alert. A ring after a person or motion alert still goes (it means someone's at the door), and so
             // does a person after a motion alert (with Motion on, the visit's person was never said).
-            if title != nil, let p = posted[session] {
-                let tells = type.hasSuffix(".Chime") ? !p.title.localizedCaseInsensitiveContains("door")
-                    : type.hasSuffix(".Person") && p.title.localizedCaseInsensitiveContains("motion")
+            if title != nil, let was = posted[session]?.title ?? Self.alertedVisit(session) {
+                let tells = type.hasSuffix(".Chime") ? !was.localizedCaseInsensitiveContains("door")
+                    : type.hasSuffix(".Person") && was.localizedCaseInsensitiveContains("motion")
                 if !tells {
                     PushRelay.log.notice("camera event not alerted: \(type.components(separatedBy: ".").last ?? type, privacy: .public) is part of a visit already alerted for")
                     continue
@@ -514,6 +521,7 @@ final class NestAlerts {
             }
             if shown {
                 PushRelay.log.notice("alert for \(body, privacy: .public) already shown from the Mac (not shown twice)")
+                Self.noteAlerted(short, session: session, title: title)
                 return
             }
             // Its picture close on who or what was seen, cut from the full picture (as Google Home's is); with
@@ -544,6 +552,7 @@ final class NestAlerts {
             CameraEventMedia.noteShownHere(short)
             self.quietIfStale(c, happened: happened)
             Notifier.deliver(c, id: id)
+            Self.noteAlerted(short, session: session, title: title)
             // Its one line in the family's log, once its picture is settled.
             let shownAt = Date()
             var line = CameraEventMedia.alertLine(camera: body, title: title, happened: happened, shown: shownAt,
@@ -676,6 +685,7 @@ final class NestAlerts {
                 }
                 self?.quietIfStale(c, happened: happened)
                 Notifier.deliver(c, id: id)
+                if !again { NestAlerts.noteAlerted(short, session: session, title: title) }
                 // The Google TVs' and the LG's card for it: its close-up, else the whole picture (the hub only).
                 if toTVs, !quiet, let forTVs = close ?? shown {
                     let kind = CameraEventMedia.alertKind(title)
@@ -782,6 +792,50 @@ final class NestAlerts {
 
     /// The latest camera event this device alerted for (Send Test Camera Alert sends it again).
     static var lastEvent: LastCameraEvent? { Saved.load(LastCameraEvent.savedKey, as: LastCameraEvent.self) }
+
+    // MARK: What's been alerted for (kept across launches)
+
+    /// Each alert this device sent or showed (its event's short id, with when) and each visit's alert (its event
+    /// session, with when and its title), kept an hour in its settings: a message about one of them that comes after
+    /// the app has started again (an update, or the app ended) isn't a second alert. In memory only, they were: the
+    /// Mac Studio alerted a visit again when Google's second message for it came just after an update restarted it.
+    private static let alertedKeys = "nest.alerted.keys", alertedVisits = "nest.alerted.visits"
+    private static let alertedFor: TimeInterval = 3600
+
+    /// Whether the alert with the short id [short] went out in the last hour.
+    static func alerted(_ short: String) -> Bool {
+        guard let t = (UserDefaults.standard.dictionary(forKey: alertedKeys) as? [String: Double])?[short] else { return false }
+        return Date().timeIntervalSince1970 - t < alertedFor
+    }
+
+    /// The title of the alert that went out for the visit [session] in the last hour, if one did.
+    static func alertedVisit(_ session: String) -> String? {
+        guard let v = (UserDefaults.standard.dictionary(forKey: alertedVisits) as? [String: String])?[session] else { return nil }
+        return visit(v).flatMap { Date().timeIntervalSince1970 - $0.at < alertedFor ? $0.title : nil }
+    }
+
+    /// The alert [short] (for the visit [session], titled [title]) went out.
+    static func noteAlerted(_ short: String, session: String?, title: String) {
+        let d = UserDefaults.standard, now = Date().timeIntervalSince1970
+        var keys = (d.dictionary(forKey: alertedKeys) as? [String: Double] ?? [:]).filter { now - $0.value < alertedFor }
+        keys[short] = now
+        d.set(keys, forKey: alertedKeys)
+        guard let session, !session.isEmpty else { return }
+        var visits = (d.dictionary(forKey: alertedVisits) as? [String: String] ?? [:]).filter {
+            visit($0.value).map { now - $0.at < alertedFor } ?? false
+        }
+        // The door's alert stays the visit's: what a later one in it is checked against (a ring after a person alert
+        // still goes; a person after the ring doesn't).
+        let was = visits[session].flatMap { visit($0)?.title }
+        if !(was?.localizedCaseInsensitiveContains("door") ?? false) { visits[session] = "\(now)|\(title)" }
+        d.set(visits, forKey: alertedVisits)
+    }
+
+    /// A visit as it's kept ("when|title").
+    private static func visit(_ v: String) -> (at: Double, title: String)? {
+        guard let bar = v.firstIndex(of: "|"), let t = Double(v[..<bar]) else { return nil }
+        return (t, String(v[v.index(after: bar)...]))
+    }
 
     /// A short name for an event, the same on every device. Google's event ids are long, and the Mac's push to the
     /// iPhones carries at most 64 characters of it (Apple's limit), so the iPhone's own alert for the same event had
