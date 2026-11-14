@@ -68,6 +68,26 @@ enum CameraEventMedia {
         return Date().timeIntervalSince1970 - t < 3600
     }
 
+    /// Whether the pushes that reach this iPhone are noted (the app group is there): without it, none ever reads as
+    /// having arrived.
+    static var notesPushes: Bool { store != nil }
+
+    /// Noted by the app when it shows its own alert for [key] (the Mac's push hadn't come): the Mac's push for it, if
+    /// it comes after all, takes its place quietly.
+    static func noteShownHere(_ key: String) {
+        guard let s = store, !key.isEmpty else { return }
+        let now = Date().timeIntervalSince1970
+        var keys = (s.dictionary(forKey: "shown.keys") as? [String: Double] ?? [:]).filter { now - $0.value < 3600 }
+        keys[key] = now
+        s.set(keys, forKey: "shown.keys")
+    }
+
+    /// Whether this iPhone showed its own alert for [key] in the last hour.
+    static func shownHere(_ key: String) -> Bool {
+        guard let t = (store?.dictionary(forKey: "shown.keys") as? [String: Double])?[key] else { return false }
+        return Date().timeIntervalSince1970 - t < 3600
+    }
+
     // MARK: The sign-in, kept current by the app
 
     static func keepCredentials(clientID: String?, secret: String?, refresh: String?, access: String?, expires: Double?) {

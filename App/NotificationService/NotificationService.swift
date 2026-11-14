@@ -6,8 +6,8 @@ import WidgetKit
 /// notification, as Google Home does. The small picture the Mac sent in the push goes in at once, so the alert always
 /// has one; then, at the same time, Google's clip or snapshot and the Mac Studio's full-size picture of the event are
 /// asked for, and the first to come replaces it; the Mac Studio's own close-up of who or what was seen, when it comes,
-/// is the alert's picture. Four seconds at most for that when the alert has the Mac's small picture (twenty when it
-/// has none): the alert never waits longer than that.
+/// is the alert's picture. Two seconds at most for that: the alert never waits longer (a better picture the Mac Studio
+/// finds after comes in its own push, which replaces this alert quietly).
 final class NotificationService: UNNotificationServiceExtension, @unchecked Sendable {
     private let lock = NSLock()
     private var handler: ((UNNotificationContent) -> Void)?
@@ -25,11 +25,13 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
         var doorbell: Bool
     }
 
-    /// How long the full picture is waited for (iOS allows about 30 seconds in all) when the alert has no picture yet.
-    private static let budget: TimeInterval = 20
-    /// And when it already has the Mac's small picture: the alert shows within a few seconds. (Away from home the Mac
-    /// Studio's full picture can't be reached at all, and every alert was held the whole twenty seconds for it.)
-    private static let quick: TimeInterval = 4
+    /// How long the full picture is waited for when the alert has no picture yet (iOS allows about 30 seconds in all,
+    /// and every alert without the Mac's small picture was held twenty for it). The Mac Studio's push for a picture it
+    /// finds later replaces the alert quietly.
+    private static let budget: TimeInterval = 2
+    /// And when it already has the Mac's small picture. (Away from home the Mac Studio's full picture can't be reached
+    /// at all, and every alert was held four seconds for it.)
+    private static let quick: TimeInterval = 2
 
     override func didReceive(_ request: UNNotificationRequest, withContentHandler contentHandler: @escaping (UNNotificationContent) -> Void) {
         let c = (request.content.mutableCopy() as? UNMutableNotificationContent) ?? UNMutableNotificationContent()
@@ -39,6 +41,17 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
         func text(_ k: String) -> String? { (info[k] as? String).flatMap { $0.isEmpty ? nil : $0 } }
         let event = text("event"), clip = text("clip"), thumb = text("thumb")
         let key = text("key") ?? request.identifier
+        // The same alert again (the Mac's update of it with a better picture, a second Mac sending it too, or this
+        // iPhone's own copy shown first): in its place, quietly, not a second sound and banner. An update whose alert
+        // never reached this iPhone (it was off the network then, and Apple keeps only the newest push for it) is that
+        // alert, sound and all.
+        if CameraEventMedia.pushArrived(key) || CameraEventMedia.shownHere(key) {
+            c.sound = nil
+            c.interruptionLevel = .passive
+        } else if request.content.interruptionLevel == .passive, CameraEventMedia.notesPushes {
+            c.sound = .default
+            c.interruptionLevel = .active
+        }
         // The app doesn't show its own copy of this alert now, whatever happens to this one.
         CameraEventMedia.notePushKey(key)
         let macFocus = CameraEventMedia.focus(text("f"))
