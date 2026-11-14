@@ -347,7 +347,8 @@ enum CameraHistoryStore {
                 await CameraHistoryClient.keepClip(event)
             }
         }
-        prune()
+        // The folder listed and every kept list and note read off the main thread (it touches only files).
+        await Task.detached(priority: .utility) { prune() }.value
     }
 
     /// A camera's alert just reached this device and woke the app for it (its push asks for that): the event's full
