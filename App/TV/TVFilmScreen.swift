@@ -447,7 +447,12 @@ final class FilmScreen: UIViewController, UIGestureRecognizerDelegate {
         guard let picture, let display = view.window?.avDisplayManager, display.isDisplayCriteriaMatchingEnabled else { return nil }
         self.display = display
         let rate = Self.displayRate(picture.framesASecond)
-        display.preferredDisplayCriteria = AVDisplayCriteria(refreshRate: rate, formatDescription: picture.format)
+        let criteria = AVDisplayCriteria(refreshRate: rate, formatDescription: picture.format)
+        display.preferredDisplayCriteria = criteria
+        // Every other window of the app asks for it too while the film shows: a camera alert's window over the film,
+        // asking for nothing, sent the TV back to the menus' 60 pictures a second three minutes into a film.
+        Self.filmCriteria = criteria
+        for w in Self.windows where w !== view.window { w.avDisplayManager.preferredDisplayCriteria = criteria }
         var took: Double?
         // A TV not yet at the film's rate takes a moment to begin changing: up to two seconds for it, half a second
         // for a second change (the dynamic range after the rate) or for a TV that's at the rate already.
@@ -493,6 +498,18 @@ final class FilmScreen: UIViewController, UIGestureRecognizerDelegate {
     private func releaseDisplay() {
         display?.preferredDisplayCriteria = nil
         display = nil
+        if Self.filmCriteria != nil {
+            Self.filmCriteria = nil
+            for w in Self.windows { w.avDisplayManager.preferredDisplayCriteria = nil }
+        }
+    }
+
+    /// The picture mode the film on screen asks the TV for (nil when there's none): every window of the app asks
+    /// for it while the film shows (`TVAlerts`' window too, made after the film started).
+    static private(set) var filmCriteria: AVDisplayCriteria?
+
+    private static var windows: [UIWindow] {
+        UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.flatMap(\.windows)
     }
 
     override func viewWillDisappear(_ animated: Bool) {

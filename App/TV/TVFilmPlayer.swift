@@ -2,6 +2,7 @@ import UIKit
 import AVFoundation
 import FilmHeights
 import MediaPlayer
+import os
 import WoodruffKit
 
 /// A Drive film played on this Apple TV by the app's own player (`FilmPlayer`) on its own screen (`FilmScreen`),
@@ -96,6 +97,10 @@ final class OwnPlayer {
     private var trialResults: [(way: FilmScreen.PictureWay, frames: Int, dropped: Int, straight: Int)] = []
     private var trialMark: (frames: Int, dropped: Int, straight: Int)?
     private var trialDone = true
+    /// Every ten seconds for the film's first three minutes: frames dropped, the Apple TV's heat, how busy this app
+    /// was and the memory left, said in one line at three minutes (`noteLooks`).
+    private var looks: [String] = []
+    private var lookMark: (frames: Int, dropped: Int, cpu: Double, at: Date)?
     /// The sound session's work, one thing after another and never on the main thread (activating can take a moment).
     private static let soundQueue = DispatchQueue(label: "woodruff.film-sound", qos: .userInitiated)
 
@@ -144,6 +149,8 @@ final class OwnPlayer {
         trialResults = []
         trialMark = nil
         trialDone = false
+        looks = []
+        lookMark = nil
         checkedIndex = false
         said = false
         nextUp = nil
@@ -430,6 +437,16 @@ final class OwnPlayer {
                 }
             }
         }
+        // Every ten seconds for three minutes, a look at how the picture and the Apple TV are doing.
+        if started, player.film.picture != nil, ticks - startedTick <= 180, (ticks - startedTick) % 10 == 0 {
+            let title = play.title, at = ticks - startedTick
+            player.pictureCounts { [weak self] counts in
+                Task { @MainActor in
+                    guard let self, self.current?.id == play.id, let counts else { return }
+                    self.look(counts, at: at, title: title)
+                }
+            }
+        }
         // The TV's picture mode changing while the film plays (to the menus' 60, say): said once each time.
         if started, ticks % 5 == 0, let rate = screen.screenRate, rate != screenRateSeen {
             Diagnostics.shared.notePlayback("\(play.title): \(ticks - startedTick) s in, the TV shows \(rate) pictures a second now (it was \(screenRateSeen.map(String.init) ?? "not known"))")
@@ -656,6 +673,36 @@ final class OwnPlayer {
             words += String(format: ", the film needs %.0f Mb/s", Double(size) * 8 / player.length / 1_000_000)
         }
         Diagnostics.shared.notePlayback(words)
+    }
+
+    /// One ten-second look: frames dropped since the last, the Apple TV's heat (as tvOS says it), this app's share of
+    /// one processor core meanwhile, and the memory left; at three minutes they're said in one line, with the Apple TV's
+    /// model.
+    private func look(_ counts: (frames: Int, dropped: Int, straight: Int), at: Int, title: String) {
+        var use = rusage()
+        getrusage(RUSAGE_SELF, &use)
+        let cpu = Double(use.ru_utime.tv_sec + use.ru_stime.tv_sec) + Double(use.ru_utime.tv_usec + use.ru_stime.tv_usec) / 1_000_000
+        let now = Date()
+        if let mark = lookMark, counts.frames >= mark.frames {
+            let heat: String
+            switch ProcessInfo.processInfo.thermalState {
+            case .nominal: heat = "cool"
+            case .fair: heat = "warm"
+            case .serious: heat = "hot"
+            case .critical: heat = "too hot"
+            @unknown default: heat = "?"
+            }
+            let busy = Int(((cpu - mark.cpu) / max(0.1, now.timeIntervalSince(mark.at)) * 100).rounded())
+            looks.append("\(counts.dropped - mark.dropped)/\(counts.frames - mark.frames) \(heat) \(busy)% \(os_proc_available_memory() >> 20)MB")
+        }
+        lookMark = (counts.frames, counts.dropped, cpu, now)
+        if at >= 180, !looks.isEmpty {
+            var name = utsname()
+            uname(&name)
+            let model = withUnsafePointer(to: &name.machine) { $0.withMemoryRebound(to: CChar.self, capacity: 256) { String(cString: $0) } }
+            Diagnostics.shared.notePlayback("\(title): its first three minutes on \(model), every ten seconds (frames dropped/shown, the Apple TV's heat, this app's share of a core, memory left): " + looks.joined(separator: ", "))
+            looks = []
+        }
     }
 
     /// One look at the renderer's counts in the layouts' trial: the layout just tried is scored by what it counted
