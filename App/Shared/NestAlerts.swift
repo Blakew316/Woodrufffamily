@@ -287,9 +287,12 @@ final class NestAlerts {
     /// up to half an hour late, with a sound): more than two minutes after its event by Google's clock, it goes into
     /// the list quietly, no sound and no banner.
     private func quietIfStale(_ c: UNMutableNotificationContent, happened: Date?) {
+        // (The Apple TV has no banners or sounds of the system's to quiet: its own pill shows alerts.)
+        #if !os(tvOS)
         guard let happened, googleNow.timeIntervalSince(happened) > 120 else { return }
         c.sound = nil
         c.interruptionLevel = .passive
+        #endif
     }
 
     /// Google's clock as its last answer here gave it (the Date it was sent), with this device's clock at that moment.
