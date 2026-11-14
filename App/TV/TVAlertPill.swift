@@ -57,10 +57,18 @@ final class TVAlerts {
     /// The address that answered last, tried first next time.
     @ObservationIgnored private var good: String?
     @ObservationIgnored private var window: UIWindow?
+    /// The screen saver (or Control Center) is over the app: alerts wait for it to go, newest few, as one shown under
+    /// it was over before anybody saw it.
+    @ObservationIgnored private var held = false
 
     private static let shownFor: TimeInterval = 5
     /// How long one stays at least when another is waiting.
     private static let shownAtLeast: TimeInterval = 2.5
+    /// What happened while Woodruff wasn't on screen (another app, or the screen saver) is shown when it is again,
+    /// back this far, the newest `missedAtMost` of it. (Only the last minute was, and anything under the screen saver
+    /// went by unseen.)
+    private static let missedFor: TimeInterval = 600
+    private static let missedAtMost = 3
     private static let slide = Animation.spring(response: 0.5, dampingFraction: 0.86)
 
     // MARK: Asking the Mac Studio
@@ -138,8 +146,11 @@ final class TVAlerts {
         if let c = cursor, feed.now + 60_000 < c { cursor = feed.now }
         let newest = feed.events.map(\.at).max() ?? 0
         cursor = max(cursor ?? 0, newest, first ? feed.now : 0)
-        // Only what just happened: none from before the app opened or while it was away, beyond a few seconds.
-        let fresh = feed.events.filter { feed.now - $0.at <= (first ? 20_000 : 60_000) }.sorted { $0.at < $1.at }
+        // What just happened, and what came while Woodruff was in the background (another app on screen) in the last
+        // ten minutes, the newest few; none from before the app opened, beyond a few seconds.
+        let back: Int64 = first ? 20_000 : Int64(Self.missedFor * 1000)
+        let fresh = Array(feed.events.filter { feed.now - $0.at <= back && seen[$0.key] == nil }.sorted { $0.at < $1.at }
+            .suffix(Self.missedAtMost)) + feed.events.filter { seen[$0.key] != nil }
         seen = seen.filter { $0.value.timeIntervalSinceNow > -3600 }
         for e in fresh {
             // The same alert again: the Mac Studio found a better picture for it after it went. Put in its place while
@@ -271,6 +282,13 @@ final class TVAlerts {
     // MARK: On screen
 
     private func enqueue(_ a: Item) {
+        // Under the screen saver: kept for when it goes (newest few).
+        if held {
+            queue.removeAll { $0.id == a.id }
+            queue.append(a)
+            if queue.count > Self.missedAtMost { queue.removeFirst(queue.count - Self.missedAtMost) }
+            return
+        }
         if let c = current, c.camera == a.camera, !holding {
             // The same camera again: the newer one takes its place.
             noteShown(a)
@@ -317,10 +335,21 @@ final class TVAlerts {
             try? await Task.sleep(nanoseconds: 450_000_000)
             guard let self, !Task.isCancelled else { return }
             self.timer = nil
-            self.queue.removeAll { $0.at.timeIntervalSinceNow < -60 }
-            if !self.queue.isEmpty { self.show(self.queue.removeFirst()); return }
+            self.queue.removeAll { $0.at.timeIntervalSinceNow < -Self.missedFor }
+            // (Under the screen saver the rest wait for it to go: `onScreen`.)
+            if !self.queue.isEmpty, !self.held { self.show(self.queue.removeFirst()); return }
             if self.current == nil { self.hideWindow() }
         }
+    }
+
+    /// Whether Woodruff is what's on screen (not under the screen saver or Control Center): the alerts that waited
+    /// under it come up when it's gone, one after another.
+    func onScreen(_ on: Bool) {
+        guard held == on else { return }
+        held = !on
+        guard on, loop != nil, current == nil, timer == nil else { return }
+        queue.removeAll { $0.at.timeIntervalSinceNow < -Self.missedFor }
+        if !queue.isEmpty { show(queue.removeFirst()) }
     }
 
     /// Back on the remote while it's on the pill: away, with any waiting.

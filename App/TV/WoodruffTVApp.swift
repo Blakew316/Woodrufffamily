@@ -102,10 +102,14 @@ struct WoodruffTVApp: App {
             } else {
                 TVIdle.ended()
             }
+            // The screen saver over the app: camera alerts wait for it to go, then come up (one shown under it was
+            // over before anybody saw it).
+            if phase == .inactive { TVAlerts.shared.onScreen(false) }
             if phase == .active {
                 CameraStreams.shared.foreground()
                 // Asking the Mac Studio for alerts again (only once the launch has started everything else).
                 if AppWake.wentAway { TVAlerts.shared.start() }
+                TVAlerts.shared.onScreen(true)
                 let woke = AppWake.wentAway
                 if woke {
                     AppWake.wentAway = false
