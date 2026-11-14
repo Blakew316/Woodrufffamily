@@ -583,9 +583,10 @@ public final class FilmPlayer: @unchecked Sendable {
         }
     }
 
-    /// How many of the picture's frames Apple's renderer has counted so far, and how many of them it dropped, on any
-    /// thread; nil before there's a picture, or where it doesn't say.
-    public func pictureCounts(_ then: @escaping ((frames: Int, dropped: Int)?) -> Void) {
+    /// How many of the picture's frames Apple's renderer has counted so far, how many of them it dropped, and how many
+    /// went straight to the screen (not painted together with anything), on any thread; nil before there's a picture,
+    /// or where it doesn't say.
+    public func pictureCounts(_ then: @escaping ((frames: Int, dropped: Int, straight: Int)?) -> Void) {
         queue.async {
             #if targetEnvironment(macCatalyst)
             then(nil)
@@ -594,7 +595,8 @@ public final class FilmPlayer: @unchecked Sendable {
             guard #available(macOS 15.0, iOS 18.0, tvOS 18.0, visionOS 2.0, *) else { return then(nil) }
             renderer.loadVideoPerformanceMetrics { metrics in
                 guard let m = metrics else { return then(nil) }
-                then((frames: m.totalNumberOfFrames, dropped: m.numberOfDroppedFrames))
+                then((frames: m.totalNumberOfFrames, dropped: m.numberOfDroppedFrames,
+                      straight: m.numberOfFramesDisplayedUsingOptimizedCompositing))
             }
             #endif
         }

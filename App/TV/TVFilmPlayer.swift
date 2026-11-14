@@ -90,6 +90,12 @@ final class OwnPlayer {
     private var framesSaid = false
     /// How many pictures a second the TV showed at the last look while the film played (a change is said in the log).
     private var screenRateSeen: Int?
+    /// The picture's layouts tried in turn as the film starts (`FilmScreen.PictureWay`), twelve seconds each from
+    /// eight seconds in, by what Apple's renderer counts in each; the best is kept for the rest of the film.
+    private var trialWays: [FilmScreen.PictureWay] = []
+    private var trialResults: [(way: FilmScreen.PictureWay, frames: Int, dropped: Int, straight: Int)] = []
+    private var trialMark: (frames: Int, dropped: Int, straight: Int)?
+    private var trialDone = true
     /// The sound session's work, one thing after another and never on the main thread (activating can take a moment).
     private static let soundQueue = DispatchQueue(label: "woodruff.film-sound", qos: .userInitiated)
 
@@ -134,6 +140,10 @@ final class OwnPlayer {
         frames = nil
         framesSaid = false
         screenRateSeen = nil
+        trialWays = FilmScreen.PictureWay.allCases
+        trialResults = []
+        trialMark = nil
+        trialDone = false
         checkedIndex = false
         said = false
         nextUp = nil
@@ -407,6 +417,19 @@ final class OwnPlayer {
                 }
             }
         }
+        // The picture's layouts tried in turn, from eight seconds in.
+        if started, !trialDone, player.film.picture != nil {
+            let at = ticks - startedTick
+            if at >= 8, (at - 8) % 12 == 0 {
+                let title = play.title
+                player.pictureCounts { [weak self] counts in
+                    Task { @MainActor in
+                        guard let self, self.current?.id == play.id, let screen = self.screen, !self.trialDone else { return }
+                        self.trialStepped(counts, screen: screen, title: title)
+                    }
+                }
+            }
+        }
         // The TV's picture mode changing while the film plays (to the menus' 60, say): said once each time.
         if started, ticks % 5 == 0, let rate = screen.screenRate, rate != screenRateSeen {
             Diagnostics.shared.notePlayback("\(play.title): \(ticks - startedTick) s in, the TV shows \(rate) pictures a second now (it was \(screenRateSeen.map(String.init) ?? "not known"))")
@@ -633,6 +656,50 @@ final class OwnPlayer {
             words += String(format: ", the film needs %.0f Mb/s", Double(size) * 8 / player.length / 1_000_000)
         }
         Diagnostics.shared.notePlayback(words)
+    }
+
+    /// One look at the renderer's counts in the layouts' trial: the layout just tried is scored by what it counted
+    /// since the last look, and the next is put in place. The controls up, the film paused or moved: not a fair look,
+    /// and the trial ends with what it has.
+    private func trialStepped(_ counts: (frames: Int, dropped: Int, straight: Int)?, screen: FilmScreen, title: String) {
+        guard let counts else {
+            trialDone = true
+            return
+        }
+        if let mark = trialMark, let way = trialWays.first {
+            let frames = counts.frames - mark.frames
+            guard frames >= 150, counts.dropped >= mark.dropped, counts.straight >= mark.straight, !screen.controlsShowing else {
+                finishTrial(screen: screen, title: title, cut: true)
+                return
+            }
+            trialResults.append((way: way, frames: frames, dropped: counts.dropped - mark.dropped, straight: counts.straight - mark.straight))
+            trialWays.removeFirst()
+        }
+        if let next = trialWays.first {
+            screen.pictureWay = next
+            trialMark = counts
+        } else {
+            finishTrial(screen: screen, title: title, cut: false)
+        }
+    }
+
+    /// The trial over: the layout whose frames went straight to the screen most, else that dropped fewest, is kept for
+    /// the rest of the film, and the Macs' log says how each did.
+    private func finishTrial(screen: FilmScreen, title: String, cut: Bool) {
+        trialDone = true
+        func share(_ n: Int, _ of: Int) -> Double { Double(n) / Double(max(1, of)) }
+        guard let best = trialResults.min(by: { a, b in
+            let sa = share(a.straight, a.frames), sb = share(b.straight, b.frames)
+            if abs(sa - sb) > 0.05 { return sa > sb }
+            return share(a.dropped, a.frames) < share(b.dropped, b.frames)
+        }) else {
+            screen.pictureWay = .asBefore
+            return
+        }
+        screen.pictureWay = best.way
+        let tried = trialResults.map { "\($0.way.words): \($0.dropped) of \($0.frames) dropped, \($0.straight) straight to the screen" }
+        Diagnostics.shared.notePlayback("\(title): the picture laid out \(trialResults.count) ways for 12 s each\(cut ? " (cut short)" : ""): "
+                                        + tried.joined(separator: "; ") + "; kept: \(best.way.words)")
     }
 
     /// How the picture came, for the Macs' log: its frames as Apple's renderer counts them (dropped ones are the

@@ -179,6 +179,50 @@ final class FilmScreen: UIViewController, UIGestureRecognizerDelegate {
     private var panelKind: Panel?
 
     private var shownControls = false
+    /// The controls (or a panel) are up: what Apple's renderer counts meanwhile isn't the picture alone.
+    var controlsShowing: Bool { shownControls || panel != nil }
+
+    /// Ways the picture is laid out while nothing shows over it, tried in turn as a film starts (`TVFilmPlayer`):
+    /// none of any film's frames had gone straight to the screen, and Apple's display dropped about one 4K Dolby
+    /// Vision frame in eleven, none of them late, painting them together with what was over them.
+    enum PictureWay: Int, CaseIterable {
+        /// As it was: the bar (out of sight, holding the remote's focus) over the picture.
+        case asBefore
+        /// The bar behind the picture while it's out of sight: nothing at all over the film.
+        case barBehind
+        /// That, with the picture opaque on black.
+        case barBehindOpaque
+        /// That, with no black behind the picture.
+        case barBehindClear
+
+        var words: String {
+            switch self {
+            case .asBefore: return "as before"
+            case .barBehind: return "with the bar behind it"
+            case .barBehindOpaque: return "with the bar behind it, opaque"
+            case .barBehindClear: return "with the bar behind it, nothing behind"
+            }
+        }
+    }
+
+    var pictureWay: PictureWay = .asBefore {
+        didSet { if pictureWay != oldValue { layOutPictureWay() } }
+    }
+
+    /// While the controls are out of sight, [pictureWay]; while they show, the bar over the picture as always. (The
+    /// bar keeps the remote's focus either way: only where it sits among the views changes.)
+    private func layOutPictureWay() {
+        guard isViewLoaded else { return }
+        if !controlsShowing, pictureWay != .asBefore {
+            view.insertSubview(bar, belowSubview: picture)
+        } else {
+            view.insertSubview(bar, aboveSubview: controls)
+        }
+        let opaque = pictureWay == .barBehindOpaque
+        picture.display.isOpaque = opaque
+        picture.display.backgroundColor = opaque ? UIColor.black.cgColor : nil
+        view.backgroundColor = pictureWay == .barBehindClear ? .clear : .black
+    }
     private var hideWork: Task<Void, Never>?
     private var refresher: Timer?
     private var focusNext: UIView?
@@ -533,6 +577,7 @@ final class FilmScreen: UIViewController, UIGestureRecognizerDelegate {
         guard isViewLoaded else { return }
         if !shownControls {
             shownControls = true
+            layOutPictureWay()
             bar.quiet = panel != nil
             refresh()
             bar.setNeedsLayout()
@@ -568,6 +613,7 @@ final class FilmScreen: UIViewController, UIGestureRecognizerDelegate {
             guard !self.shownControls else { return }
             self.controls.isHidden = true
             self.shade.isHidden = true
+            self.layOutPictureWay()
         })
     }
 
