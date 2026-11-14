@@ -535,6 +535,7 @@ struct TVRow: View {
     private var line: String {
         if tv.isUnpaired { return "Found on Wi‑Fi · Not paired" }
         if tv.link == "refused" { return tv.alertsHidden ? "Off · link stopped working" : "Link again" }
+        if tv.pairingRefused == true { return "Pair again" }
         // Not answering (asleep with its Wi‑Fi off, or unplugged): said as it is, not "Off", which can't be known.
         if !tv.online {
             let seen = (tv.seen ?? 0) > 0 ? " · seen \(relative(tv.seen))" : ""

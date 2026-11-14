@@ -53,6 +53,10 @@ public struct FleetTV: Identifiable, Hashable, Sendable, Codable {
     public var alertsHidden = false
     /// A Woodruff TV heard on the Wi‑Fi that isn't paired or linked yet (`link == "unpaired"`): where it answers.
     public var foundAt: URL?
+    /// A TV paired here that answers but turns this device's pairing key down (it was reset, or has a new key): it
+    /// needs pairing again here, which isn't the same as off. Until it answers again. (Optional: copies saved before
+    /// it was kept still read.)
+    public var pairingRefused: Bool?
     /// What it shows is paused, and has been for 5 minutes, or was already paused when this app first saw it (an
     /// Android session left behind after leaving YouTube, Netflix or Plex): it no longer counts as playing
     /// (`FleetMerge.pause`).
@@ -894,7 +898,7 @@ public final class Fleet {
                 hubs[i].name = me.name
                 saveHubs()
             }
-        case .failure:
+        case .failure(let error):
             let missed = (failures[id] ?? 0) + 1
             failures[id] = missed
             // One missed answer from a TV that was answering isn't "off" yet: it's asked again right away.
@@ -902,7 +906,8 @@ public final class Fleet {
             // Just woken: the Wi‑Fi may only just be back. A TV that was answering before stays as it was and is
             // asked again (`woke`); `askDue` calls it off once the moment is over and it still hasn't answered.
             if now < forgiveUntil && answers[id]?.isAnswered == true { return }
-            answers[id] = .unreachable
+            // It answered, turning this device's key down (reset, or a new key): it needs pairing again, not "off".
+            answers[id] = (error as? TVError)?.isRefused == true ? .refused : .unreachable
         }
         rebuild()
     }
@@ -1564,6 +1569,8 @@ enum HubAnswer: Equatable, Sendable {
     case answered([TVListEntry])
     /// It didn't answer (twice in a row): it's off, or out of reach from here.
     case unreachable
+    /// It answered, but turned this device's pairing key down (HTTP 401 or 403): it needs pairing again here.
+    case refused
 
     var isAnswered: Bool {
         if case .answered = self { return true }
@@ -1578,7 +1585,8 @@ enum FleetMerge {
     ///   beats one saying it's off, and one whose word about what's playing is believed (below) beats one whose isn't;
     ///   between equals, the hub paired first wins.
     /// - A hub that doesn't answer keeps what was known of it, marked off, and so do the linked TVs only it knew
-    ///   (unless another hub reports them). A hub not heard from yet keeps what was shown before.
+    ///   (unless another hub reports them). A hub that turned this device's key down is marked off too, and as
+    ///   needing pairing again (`pairingRefused`). A hub not heard from yet keeps what was shown before.
     /// - Only a TV that's on is playing anything, or showing anything on screen. What it plays is believed only from
     ///   a fresh answer: none when its hub's answer arrived more than [staleAfter] seconds before [now] (by
     ///   [answeredAt]), nor when that hub passes it on without having heard from it lately ([staleRelays], by
@@ -1612,7 +1620,7 @@ enum FleetMerge {
         for hub in hubs {
             let answer = answers[hub.id]
             if answer?.isAnswered == true { continue }
-            let down = answer == .unreachable
+            let down = answer == .unreachable || answer == .refused
             if merged[hub.id] == nil {
                 var tv = before[hub.id] ?? FleetTV(id: hub.id, name: hub.name, online: false, onScreen: false, playing: nil, version: nil,
                                                    seen: nil, link: "ok", health: nil, hubID: hub.id, routeID: "this",
@@ -1620,7 +1628,7 @@ enum FleetMerge {
                 tv.hubID = hub.id
                 tv.routeID = "this"
                 tv.foundAt = nil
-                if down { tv.online = false; tv.onScreen = false; tv.playing = nil }
+                if down { tv.online = false; tv.onScreen = false; tv.playing = nil; tv.pairingRefused = answer == .refused ? true : nil }
                 merged[hub.id] = tv
             }
             for old in before.values where old.hubID == hub.id && old.id != hub.id && !old.isUnpaired && merged[old.id] == nil {

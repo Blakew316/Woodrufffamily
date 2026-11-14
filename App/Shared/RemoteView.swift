@@ -235,9 +235,10 @@ struct RemoteView: View {
                 .font(.footnote).foregroundStyle(.secondary)
         } else if let tv, !tv.online || tv.link == "refused" {
             HStack(spacing: 6) {
-                Text(tv.link == "refused" ? "\(tv.name) needs linking again" : "\(tv.name) is off")
+                Text(tv.link == "refused" ? "\(tv.name) needs linking again"
+                     : tv.pairingRefused == true ? "\(tv.name) needs pairing again" : "\(tv.name) is off")
                     .font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
-                if fleet.extras[tv.id]?.mac != nil, tv.link != "refused" {
+                if fleet.extras[tv.id]?.mac != nil, tv.link != "refused", tv.pairingRefused != true {
                     Text("·").foregroundStyle(.tertiary)
                     // Wakes it and watches closely, so the remote comes alive the moment the TV answers.
                     Button("Turn On") { fleet.wake(tv) }

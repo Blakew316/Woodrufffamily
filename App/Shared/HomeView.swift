@@ -788,6 +788,7 @@ struct HomeTVTile: View, Equatable {
     private var state: String {
         if tv.isUnpaired { return "Not Paired" }
         if tv.link == "refused" && tv.needsAttention { return "Link Again" }
+        if tv.pairingRefused == true { return "Pair Again" }
         if !tv.online { return "Off" }
         if fleet.isBehind(tv) { return "Update Available" }
         if let p = tv.nowPlaying { return p.isPlaying ? "Playing" : "Paused" }
@@ -797,6 +798,7 @@ struct HomeTVTile: View, Equatable {
     private var idleLine: String {
         if tv.isUnpaired { return "Found on your Wi‑Fi" }
         if tv.link == "refused" { return tv.alertsHidden ? "Off" : "Its link stopped working" }
+        if tv.pairingRefused == true { return "Its pairing key changed" }
         if !tv.online { return "Seen \(relative(tv.seen))" }
         return tv.onScreen ? "Woodruff is on screen" : "Nothing playing"
     }

@@ -400,6 +400,7 @@ private struct BarPillType: ViewModifier {
 
 func statusWord(_ t: FleetTV) -> String {
     if t.link == "refused" { return "Link again" }
+    if t.pairingRefused == true { return "Pair again" }
     if !t.online { return "Off" }
     // A title left paused reads as nothing playing, as it does on its tile.
     if let p = t.nowPlaying { return (p.isPlaying ? "Playing " : "Paused · ") + p.title }

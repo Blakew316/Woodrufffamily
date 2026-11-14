@@ -144,6 +144,8 @@ struct TVDetailView: View {
         }
         .padding(.vertical, 4)
         if tv.link == "refused" { Button("Link Again…") { askRelink = true } }
+        // It turned this device's pairing key down: paired again with the key from its Phone screen.
+        if tv.pairingRefused == true { PageLink("Pair Again") { PairFoundTVView(tv: tv) } }
         if tv.needsAttention {
             Button("Hide These Alerts") { withAnimation { fleet.hideAlerts(tv) } }
         } else if tv.alertsHidden {
@@ -327,6 +329,7 @@ struct TVDetailView: View {
 
     private func verdictTitle(_ tv: FleetTV, _ n: Int) -> String {
         if tv.link == "refused" && !tv.alertsHidden { return "Its Link Stopped Working" }
+        if tv.pairingRefused == true { return "Its Pairing Key Changed" }
         if !tv.online { return "Off or Asleep" }
         if tv.health?.status == "old" { return "Update for Health Reports" }
         if n == 1 { return "1 Thing Needs Attention" }
@@ -340,8 +343,8 @@ struct TVDetailView: View {
         return "Asking \(tv.name)…"
     }
     private func verdictColor(_ tv: FleetTV, _ n: Int) -> Color {
-        if !tv.online && tv.link != "refused" { return .gray }
-        if (tv.link == "refused" && !tv.alertsHidden) || n > 0 { return .orange }
+        if !tv.online && tv.link != "refused" && tv.pairingRefused != true { return .gray }
+        if (tv.link == "refused" && !tv.alertsHidden) || tv.pairingRefused == true || n > 0 { return .orange }
         return .green
     }
 }
@@ -761,7 +764,8 @@ struct SSHSection: View {
 }
 #endif
 
-/// A Woodruff TV heard on the Wi‑Fi that isn't paired yet: pair it with the key from its Phone screen.
+/// A Woodruff TV heard on the Wi‑Fi that isn't paired yet: pair it with the key from its Phone screen. Also one paired
+/// here that turned this device's key down (`pairingRefused`): paired again, at the address it's paired at.
 struct PairFoundTVView: View {
     @Environment(Fleet.self) private var fleet
     var tv: FleetTV
@@ -776,7 +780,8 @@ struct PairFoundTVView: View {
             Section {
                 VStack(alignment: .leading, spacing: 6) {
                     Text(tv.name).font(.title2.bold())
-                    Text("Found on your Wi‑Fi\(tv.foundAt.map { " at \($0.host ?? "")" } ?? ""). Pair it once and it joins the others here.")
+                    Text(tv.pairingRefused == true ? "Its pairing key changed. Pair it again."
+                         : "Found on your Wi‑Fi\(tv.foundAt.map { " at \($0.host ?? "")" } ?? ""). Pair it once and it joins the others here.")
                         .font(.subheadline).foregroundStyle(.secondary)
                 }
                 .padding(.vertical, 4)
@@ -822,7 +827,7 @@ struct PairFoundTVView: View {
     private func pair(_ k: String) {
         let k = k.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !k.isEmpty, !busy else { return }
-        guard let base = tv.foundAt else { note = "\(tv.name) stopped answering on the Wi‑Fi. Make sure it’s on, then try again."; return }
+        guard let base = tv.foundAt ?? fleet.hub(tv.id)?.connection.base else { note = "\(tv.name) stopped answering on the Wi‑Fi. Make sure it’s on, then try again."; return }
         // A pasted link works too (the key is the part after “k=”).
         connect(TVConnection.parse(k) ?? TVConnection(base: base, key: k))
     }
