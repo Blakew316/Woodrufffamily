@@ -194,6 +194,32 @@ class Push(unittest.TestCase):
         self.assertNotIn("aps-environment", ents)
 
 
+class TimeSensitive(unittest.TestCase):
+    """Time Sensitive (the camera alerts through Sleep and Focus) is signed in only when the profile allows it, and only
+    for the app."""
+
+    def profile(self, extra):
+        ents = {"application-identifier": "D8D94SXAG6.com.blakew316.woodruff",
+                "com.apple.developer.team-identifier": "D8D94SXAG6",
+                "get-task-allow": True, "com.apple.developer.homekit": True}
+        ents.update(extra)
+        return {"entitlements": ents}
+
+    def test_profile_with_it(self):
+        ents, problems = signing.build_entitlements(self.profile({signing.TIME_SENSITIVE: True}), "app")
+        self.assertEqual(problems, [])
+        self.assertIs(ents[signing.TIME_SENSITIVE], True)
+
+    def test_profile_without_it(self):
+        ents, problems = signing.build_entitlements(self.profile({}), "app")
+        self.assertEqual(problems, [])
+        self.assertNotIn(signing.TIME_SENSITIVE, ents)
+
+    def test_not_for_widgets(self):
+        ents, _ = signing.build_entitlements(self.profile({signing.TIME_SENSITIVE: True}), "widget")
+        self.assertNotIn(signing.TIME_SENSITIVE, ents)
+
+
 class Devices(unittest.TestCase):
     """Virtual devices the Mac lists (iPhone Mirroring) are left out: apps can't be installed on them."""
 

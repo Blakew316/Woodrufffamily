@@ -53,22 +53,29 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
         // alert, sound and all. (Send Test Camera Alert sends the latest event again under its own id: never a repeat.)
         let test = request.content.title.hasPrefix("Test: ")
         let repeated = !test && (CameraEventMedia.pushArrived(key) || CameraEventMedia.shownHere(key))
+        // When it happened (the Mac says): for the alert's line in the family's log, and for how old it is.
+        let happened = text("h").flatMap { Double($0) }.map { Date(timeIntervalSince1970: $0) }
+        // More than two minutes after its event: the Mac makes such an alert quiet (it went stale while it was made),
+        // and an update that reaches this iPhone that late is old news too. Either stays as quiet as its push.
+        let stale = happened.map { Date().timeIntervalSince($0) > 120 } ?? false
         if repeated {
             c.sound = nil
             c.interruptionLevel = .passive
-        } else if request.content.interruptionLevel == .passive, CameraEventMedia.notesPushes {
+        } else if request.content.interruptionLevel == .passive, CameraEventMedia.notesPushes, !stale {
+            // That alert, as the Mac's first alerts are: Time Sensitive, through Sleep and the other Focuses.
             c.sound = .default
-            c.interruptionLevel = .active
+            c.interruptionLevel = .timeSensitive
         }
+        // Any other first alert keeps the level its push asked for: Time Sensitive from the Mac (as Google Home's
+        // camera alerts are), passive for one the Mac made quiet.
         // The app doesn't show its own copy of this alert now, whatever happens to this one.
         CameraEventMedia.notePushKey(key)
         let macFocus = CameraEventMedia.focus(text("f"))
         // How far into Google's clip the Mac's picture of the event is from, when it's a frame of the clip.
         let clipTime = text("t").flatMap { Double($0) }
         let title = request.content.title
-        // When it happened (the Mac says), for the alert's line in the family's log.
+        // The alert's line in the family's log, with when it happened.
         if !repeated {
-            let happened = text("h").flatMap { Double($0) }.map { Date(timeIntervalSince1970: $0) }
             lock.lock(); entry = (camera: request.content.body, title: title, happened: happened); lock.unlock()
         }
 

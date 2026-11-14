@@ -10,6 +10,7 @@ Run from the repository root: python3 -m unittest discover -s scripts/tests -p '
 import hashlib
 import json
 import os
+import plistlib
 import shutil
 import subprocess
 import sys
@@ -17,6 +18,7 @@ import tempfile
 import unittest
 
 SCRIPTS = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SOURCE = os.path.dirname(SCRIPTS)   # the checkout these tests are in
 BASH = os.environ.get("WOODRUFF_TEST_BASH", "/bin/bash")   # macOS's is 3.2, like the family's Macs
 HEAD = hashlib.sha1(b"checked out").hexdigest()
 WANT = hashlib.sha1(b"asked for").hexdigest()
@@ -167,15 +169,24 @@ class DeployOptions(DeployHarness):
 
 
 APP = "App/iOS/WoodruffFamily.entitlements"
+APP_PUSH = "App/iOS/WoodruffFamilyPush.entitlements"
+APP_BASIC = "App/iOS/WoodruffFamilyBasic.entitlements"
+APP_NO_PUSH = "App/iOS/WoodruffFamily-NoPush.entitlements"
 WIDGETS = "App/Widgets/WoodruffWidgets.entitlements"
 WIDGETS_PUSH = "App/Widgets/WoodruffWidgetsPush.entitlements"
 NOTIFY = "App/NotificationService/WoodruffNotifications.entitlements"
+APP_GROUP = "com.apple.security.application-groups"
+TIME_SENSITIVE = "com.apple.developer.usernotifications.time-sensitive"
 UDID = "00008110-001A2B3C4D5E801E"
+TS_REFUSED = "Apple refused Time Sensitive Notifications for com.blakew316.woodruff (camera alerts through Sleep and Focus)"
 
-# Builds and archives like xcodebuild, signing with the entitlements files it's given (else project.yml's) and refusing
-# what $FAKE/refuse names: "widgets-push" (push in the widgets' entitlements), "notify-group" (the notification
-# extension's app group). Like xcodebuild, it prints every target's entitlements, so push and the app group are named
-# in every log.
+# Builds and archives like xcodebuild, signing with the entitlements files it's given (else project.yml's; the
+# checkout's own copies) and refusing what $FAKE/refuse names: "widgets-push" (push in the widgets' entitlements),
+# "notify-group" (the notification extension's app group), "time-sensitive" (Time Sensitive in the app's: the error
+# names the app group too, as Xcode's does for a profile that has neither), "app-group" (the app group in the app's),
+# "compile-error" (every build, a compile error that names timeSensitive). $FAKE/flaky: how many more builds fail as
+# Apple's servers sometimes make them, naming no entitlement. Like xcodebuild, it prints every target's entitlements, so
+# push, the app group and Time Sensitive are named in every log.
 XCODEBUILD = LOG + r'''
 ents=App/iOS/WoodruffFamily.entitlements
 wents=App/Widgets/WoodruffWidgetsPush.entitlements
@@ -199,6 +210,7 @@ echo "ProcessProductPackaging $ents"
 echo 'Entitlements:'
 echo '    "aps-environment" = development;'
 echo '    "com.apple.security.application-groups" = ("group.com.woodruff.family");'
+echo '    "com.apple.developer.usernotifications.time-sensitive" = 1;'
 refused=""
 if grep -q widgets-push "$FAKE/refuse" 2>/dev/null && [ "$wents" = App/Widgets/WoodruffWidgetsPush.entitlements ]; then
   echo "error: Provisioning profile \"iOS Team Provisioning Profile: com.blakew316.woodruff.widgets\" doesn't include the aps-environment entitlement. (in target 'WoodruffWidgets' from project 'WoodruffFamily')"
@@ -206,6 +218,23 @@ if grep -q widgets-push "$FAKE/refuse" 2>/dev/null && [ "$wents" = App/Widgets/W
 fi
 if grep -q notify-group "$FAKE/refuse" 2>/dev/null && [ -n "$nents" ]; then
   echo "error: Provisioning profile \"iOS Team Provisioning Profile: com.blakew316.woodruff.notifications\" doesn't include the com.apple.security.application-groups entitlement. (in target 'WoodruffNotifications' from project 'WoodruffFamily')"
+  refused=1
+fi
+if grep -q time-sensitive "$FAKE/refuse" 2>/dev/null && grep -q usernotifications.time-sensitive "$ents" 2>/dev/null; then
+  echo "error: Provisioning profile \"iOS Team Provisioning Profile: com.blakew316.woodruff\" doesn't include the com.apple.developer.usernotifications.time-sensitive and com.apple.security.application-groups entitlements. (in target 'WoodruffFamily' from project 'WoodruffFamily')"
+  refused=1
+fi
+if grep -q app-group "$FAKE/refuse" 2>/dev/null && grep -q application-groups "$ents" 2>/dev/null; then
+  echo "error: Provisioning profile \"iOS Team Provisioning Profile: com.blakew316.woodruff\" doesn't include the com.apple.security.application-groups entitlement. (in target 'WoodruffFamily' from project 'WoodruffFamily')"
+  refused=1
+fi
+if grep -q compile-error "$FAKE/refuse" 2>/dev/null; then
+  echo "/repo/App/Shared/NestAlerts.swift:555:42: error: type 'UNNotificationInterruptionLevel' has no member 'timeSensitive'"
+  refused=1
+fi
+if [ -f "$FAKE/flaky" ] && [ "$(cat "$FAKE/flaky")" -gt 0 ]; then
+  echo $(($(cat "$FAKE/flaky") - 1)) >"$FAKE/flaky"
+  echo "error: Communication with Apple failed: the request timed out, so automatic signing couldn't update the provisioning profile. (in target 'WoodruffFamily' from project 'WoodruffFamily')"
   refused=1
 fi
 word=BUILD
@@ -236,7 +265,9 @@ esac
 @unittest.skipUnless(os.path.exists(BASH), "needs " + BASH)
 class SigningRetries(DeployHarness):
     """With --xcode-signing, a build or archive Apple won't sign with everything is tried again without only what it
-    refused: the widgets' push, the notification extension's app group, or both."""
+    refused: the widgets' push, the notification extension's app group, or both; the app group everywhere only once
+    Apple refused it. Never without Time Sensitive: when Apple refuses that, nothing is built without it or the app
+    group, and nothing is installed or uploaded."""
 
     def setUp(self):
         super().setUp()
@@ -249,11 +280,27 @@ class SigningRetries(DeployHarness):
         with open(webrtc, "w") as handle:
             handle.write('#!/bin/sh\necho "WebRTC already here"\n')
         os.chmod(webrtc, 0o755)
+        # The checkout's own entitlements files: the stand-in xcodebuild refuses what they carry.
+        for folder in ("App/iOS", "App/Widgets", "App/NotificationService"):
+            os.makedirs(os.path.join(self.repo, folder))
+            for name in os.listdir(os.path.join(SOURCE, folder)):
+                if name.endswith(".entitlements"):
+                    shutil.copy2(os.path.join(SOURCE, folder, name), os.path.join(self.repo, folder, name))
         self.results = os.path.join(self.tmp, "results.tsv")
 
     def refuse(self, *what):
         with open(os.path.join(self.fake, "refuse"), "w") as handle:
             handle.write("\n".join(what) + "\n")
+
+    def flaky(self, builds):
+        with open(os.path.join(self.fake, "flaky"), "w") as handle:
+            handle.write("%d\n" % builds)
+
+    def failed(self, *part):
+        """deploy.sh with --xcode-signing and part, which fails: its output."""
+        status, out = self.deploy("--branch", "release", "--xcode-signing", *(part + ("--results", self.results)))
+        self.assertEqual(status, 1, out)
+        return out
 
     def xcodebuilds(self):
         """Each xcodebuild run: what it did, and the app's, the widgets' and the notification extension's
@@ -320,6 +367,90 @@ class SigningRetries(DeployHarness):
         self.upload()
         self.assertEqual(self.xcodebuilds(), [("archive", None, None, None), ("archive", None, WIDGETS, None),
                                               ("archive", None, WIDGETS, ""), ("export", None, None, None)])
+
+    def test_iphone_time_sensitive_refused(self):
+        # Its error names the app group too: no build goes without it or without Time Sensitive, and the Mac's own
+        # profiles aren't tried either (that copy would go without the camera add-on). The iPhones keep their build.
+        self.refuse("time-sensitive")
+        out = self.failed("iphone", "--no-launch")
+        self.assertEqual(self.xcodebuilds(), [("build", None, None, None)])
+        rows = self.rows(self.results)
+        self.assertEqual([r[:3] for r in rows], [["iphone-build", "failed", HEAD]])
+        self.assertTrue(rows[0][3].startswith(TS_REFUSED + ", so the iPhones keep the build they have (log "), rows)
+        self.assertIn("hint: turn on Time Sensitive Notifications for com.blakew316.woodruff at developer.apple.com", out)
+        self.assertNotIn("choosing the signing identity and profiles", out)
+        self.assertFalse(any(line.startswith("xcrun [devicectl] [device]") for line in self.calls()))
+
+    def test_iphone_without_the_app_group_once_apple_refused_it(self):
+        self.refuse("app-group")
+        self.iphone()
+        self.assertEqual(self.xcodebuilds(), [("build", None, None, None), ("build", APP, WIDGETS, NOTIFY),
+                                              ("build", APP, WIDGETS_PUSH, ""), ("build", APP, WIDGETS, ""),
+                                              ("build", APP_PUSH, "", "")])
+
+    def test_iphone_never_without_an_app_group_for_another_failure(self):
+        # Two builds fail as Apple's servers can make them fail, and the log names the app group only among the
+        # entitlements it prints: nothing is built without one. Xcode's signing failed, so the Mac's own profiles are
+        # tried next (there are none here).
+        self.flaky(2)
+        out = self.failed("iphone", "--no-launch")
+        self.assertEqual(self.xcodebuilds(), [("build", None, None, None), ("build", APP, WIDGETS, NOTIFY)])
+        self.assertIn("signing it with this Mac's own certificate and profiles instead", out)
+        self.assertEqual([r[:2] for r in self.rows(self.results)], [["iphone-build", "failed"]])
+
+    def test_iphone_compile_error_isnt_a_refusal(self):
+        # It names timeSensitive, but it's no signing error: not said to be Apple's refusal.
+        self.refuse("compile-error")
+        out = self.failed("iphone", "--no-launch")
+        self.assertEqual(self.xcodebuilds(), [("build", None, None, None), ("build", APP, WIDGETS, NOTIFY)])
+        self.assertNotIn("Apple refused", out)
+        self.assertNotIn("Apple refused", self.rows(self.results)[0][3])
+
+    def test_testflight_time_sensitive_refused(self):
+        self.refuse("time-sensitive")
+        out = self.failed("testflight")
+        self.assertEqual(self.xcodebuilds(), [("archive", None, None, None)])
+        rows = self.rows(self.results)
+        self.assertEqual([r[:2] for r in rows], [["testflight", "failed"]])
+        self.assertTrue(rows[0][3].startswith(TS_REFUSED + ", so nothing was uploaded (log "), rows)
+        self.assertIn("hint: turn on Time Sensitive Notifications", out)
+
+    def test_testflight_time_sensitive_refused_with_the_widgets_push(self):
+        self.refuse("widgets-push", "time-sensitive")
+        self.failed("testflight")
+        self.assertEqual(self.xcodebuilds(), [("archive", None, None, None)])
+        self.assertTrue(self.rows(self.results)[0][3].startswith(TS_REFUSED))
+
+    def test_testflight_without_the_app_group_once_apple_refused_it(self):
+        self.refuse("app-group")
+        self.upload()
+        self.assertEqual(self.xcodebuilds(), [("archive", None, None, None), ("archive", None, WIDGETS_PUSH, ""),
+                                              ("archive", APP_PUSH, "", ""), ("export", None, None, None)])
+
+    def test_testflight_never_without_an_app_group_for_another_failure(self):
+        # The archive named the app group only among the entitlements it prints: it isn't archived without one.
+        self.flaky(1)
+        self.failed("testflight")
+        self.assertEqual(self.xcodebuilds(), [("archive", None, None, None)])
+        self.assertEqual([r[:2] for r in self.rows(self.results)], [["testflight", "failed"]])
+
+
+class EntitlementFiles(unittest.TestCase):
+    """The iPhone app's entitlements files deploy.sh signs with: each has Time Sensitive (the camera alerts through
+    Sleep and Focus), so a build without the app group or push still has it, and each goes without only what it's
+    for."""
+
+    @staticmethod
+    def load(name):
+        with open(os.path.join(SOURCE, name), "rb") as handle:
+            return plistlib.load(handle)
+
+    def test_each_has_time_sensitive_and_goes_without_only_its_own(self):
+        full = self.load(APP)
+        self.assertIs(full.get(TIME_SENSITIVE), True)
+        for name, without in ((APP_PUSH, (APP_GROUP,)), (APP_BASIC, (APP_GROUP, "aps-environment")),
+                              (APP_NO_PUSH, (APP_GROUP, "aps-environment"))):
+            self.assertEqual(self.load(name), dict((k, v) for k, v in full.items() if k not in without), name)
 
 
 TV1 = "00008110-000131602193801E"

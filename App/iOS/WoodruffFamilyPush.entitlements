@@ -2,10 +2,13 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<!-- Apple Home and push, without the widgets' app group: what deploy.sh signs with when Xcode can't add the group. -->
+	<!-- Apple Home, push and Time Sensitive camera alerts, without the widgets' app group: what deploy.sh signs with
+	     when Apple refuses the group. -->
 	<key>com.apple.developer.homekit</key>
 	<true/>
 	<key>aps-environment</key>
 	<string>development</string>
+	<key>com.apple.developer.usernotifications.time-sensitive</key>
+	<true/>
 </dict>
 </plist>

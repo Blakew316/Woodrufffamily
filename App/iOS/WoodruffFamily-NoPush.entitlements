@@ -6,5 +6,8 @@
 	     WOODRUFF_ENTITLEMENTS=App/iOS/WoodruffFamily-NoPush.entitlements (everything else works; no instant alerts). -->
 	<key>com.apple.developer.homekit</key>
 	<true/>
+	<!-- The iPhone's own camera alerts through Sleep and the other Focuses. -->
+	<key>com.apple.developer.usernotifications.time-sensitive</key>
+	<true/>
 </dict>
 </plist>

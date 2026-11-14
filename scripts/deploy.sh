@@ -229,6 +229,29 @@ build_succeeded() {  # $1 = xcodebuild status, $2 = its log, $3 = the product it
   [ "$1" -eq 0 ] && grep -q '\*\* BUILD SUCCEEDED \*\*' "$2" 2>/dev/null && [ -d "$3" ]
 }
 
+# An error line of xcodebuild log $1 about signing (a provisioning profile, an entitlement, a capability) that names
+# what extended regex $2 matches, in any case. The log prints every target's entitlements as well, so a mention of
+# one alone says nothing; and a compile error that names it isn't Apple refusing it.
+signing_error() {  # $1 = log, $2 = what it names
+  grep -iE 'error:' "$1" 2>/dev/null | grep -iE 'profile|entitlement|capabilit|signing' | grep -qiE -- "$2"
+}
+
+# Apple refused the Time Sensitive camera alerts (they come through Sleep and the other Focuses). Its error can name
+# the app group as well, so it's looked for first: no build goes without either for it.
+time_sensitive_refused() {  # $1 = log
+  signing_error "$1" 'time.?sensitive'
+}
+
+# Apple refused an app group.
+app_group_refused() {  # $1 = log
+  signing_error "$1" 'application-groups|app.?groups?'
+}
+
+# Apple refused push.
+push_refused() {  # $1 = log
+  signing_error "$1" 'aps-environment|push notifications'
+}
+
 asc_key_args() {  # adds the API key to "sign" when there is one (see ASC_DIR)
   local key id issuer
   for key in "$ASC_DIR"/AuthKey_*.p8; do
@@ -268,6 +291,10 @@ hints() {  # $1 = a log; plain-English hints for failures seen before
   fi
   if grep -q 'No Accounts' "$1"; then
     say "    hint: sign in to Xcode once on this Mac (Xcode > Settings > Accounts > +, Apple ID of team D8D94SXAG6)."
+  fi
+  if time_sensitive_refused "$1"; then
+    say "    hint: turn on Time Sensitive Notifications for $IPHONE_BUNDLE_ID at developer.apple.com (Identifiers);"
+    say "    the next try builds it again."
   fi
   if grep -qi 'developer mode' "$1"; then
     say "    hint: turn on Developer Mode on the iPhone (Settings > Privacy & Security > Developer Mode)."
@@ -1107,7 +1134,7 @@ deploy_iphone() {
   local -a targets usable sign
   local udid name i status identity identity_name cert_expires cert_days app_profile app_uuid app_expires app_days
   local widgets_profile widgets_uuid widgets_expires widgets_days log product copy appex slog vlog
-  local bid item ilog llog installed=0 kept why variant ents wents nents
+  local bid item ilog llog installed=0 kept why variant ents wents nents group=0 built=""
 
   step "iPhone: the iPhones paired with this Mac"
   if ! signing devices >"$devs" 2>"$LOGDIR/iphones.log"; then
@@ -1228,8 +1255,21 @@ deploy_iphone() {
   # push alone (their App ID may lack Push Notifications; the alerts and the app still reload them), then the camera
   # add-on's app group alone (its App ID may lack the group; it then shows the picture the Mac puts in the push), then
   # both, then the app group everywhere (the Home Screen widgets then say to open the app) but with push, then neither.
+  # An app group goes only once Apple has refused one (the camera add-on's after any such error so far; the app's and
+  # the widgets' after one in the build just before), and push only once Apple has refused it too: a build that
+  # failed for something else (Apple out of reach, say) is never tried without them. Time Sensitive (the camera alerts
+  # through Sleep and Focus) never goes, whichever build is tried: when Apple refuses it, the build fails (below) and
+  # the iPhones keep the one they have, even when its error names the app group too.
   for variant in widgets notify both push basic; do
     if [ "$XCODE_SIGNING" -ne 1 ] || build_succeeded "$status" "$log" "$product"; then break; fi
+    if time_sensitive_refused "$log"; then break; fi
+    if app_group_refused "$log"; then group=1; fi
+    case "$variant" in
+      notify | both) [ "$group" -eq 1 ] || continue ;;
+      push) app_group_refused "$log" || continue ;;
+      basic) { [ "$built" = push ] && push_refused "$log"; } || continue ;;
+    esac
+    built=$variant
     case "$variant" in
       widgets) warn "the iPhone build failed; building it again without the widgets' push" ;;
       notify) warn "building it again without the camera add-on's app group instead" ;;
@@ -1254,6 +1294,12 @@ deploy_iphone() {
     status=$?
     show_build "$log"
   done
+  # Not signed with this Mac's own profiles either: that copy would go without the camera add-on, and without Time
+  # Sensitive unless the old profile had it.
+  if [ "$XCODE_SIGNING" -eq 1 ] && ! build_succeeded "$status" "$log" "$product" && time_sensitive_refused "$log"; then
+    iphone_failed "Apple refused Time Sensitive Notifications for $IPHONE_BUNDLE_ID (camera alerts through Sleep and Focus), so the iPhones keep the build they have" "$log"
+    return 1
+  fi
   if [ "$XCODE_SIGNING" -eq 1 ] && ! build_succeeded "$status" "$log" "$product" && [ -z "$IPHONE_FALLBACK" ]; then
     # Xcode couldn't sign (no Apple account in Xcode > Settings > Accounts, or its profiles lack something): sign
     # with this Mac's own certificate and profiles instead, so the iPhones still update.
@@ -1634,7 +1680,9 @@ deploy_testflight() {
     ${VERSION_SETTINGS[@]+"${VERSION_SETTINGS[@]}"} archive </dev/null >"$log" 2>&1
   status=$?
   show_build "$log"
-  if { [ "$status" -ne 0 ] || [ ! -d "$archive" ]; } && widgets_push_refused "$log"; then
+  # Each archive again goes without only what Apple refused, as the iPhone build does, and none once Apple has refused
+  # Time Sensitive (below: nothing is uploaded).
+  if { [ "$status" -ne 0 ] || [ ! -d "$archive" ]; } && ! time_sensitive_refused "$log" && widgets_push_refused "$log"; then
     # Apple wouldn't sign push for the widgets (their App ID lacks Push Notifications): archive without it (the
     # alerts and the app still reload them). Any other failure keeps it for the retries below.
     warn "the archive with the widgets' push failed; archiving again without it"
@@ -1648,9 +1696,9 @@ deploy_testflight() {
     status=$?
     show_build "$log"
   fi
-  if { [ "$status" -ne 0 ] || [ ! -d "$archive" ]; } && grep -q 'application-groups' "$log" 2>/dev/null; then
-    # Apple wouldn't sign the app group: archive without it (the widgets then ask to open the app; camera alerts
-    # still show the picture the Mac puts in the push).
+  if { [ "$status" -ne 0 ] || [ ! -d "$archive" ]; } && ! time_sensitive_refused "$log" && app_group_refused "$log"; then
+    # Apple wouldn't sign the app group (an error that names it): archive without it (the widgets then ask to open the
+    # app; camera alerts still show the picture the Mac puts in the push).
     warn "the archive with the app group failed; archiving again without the camera add-on's app group"
     log="$LOGDIR/testflight-archive-notify.log"
     rm -rf "$archive"
@@ -1661,7 +1709,7 @@ deploy_testflight() {
     status=$?
     show_build "$log"
   fi
-  if { [ "$status" -ne 0 ] || [ ! -d "$archive" ]; } && grep -q 'application-groups' "$log" 2>/dev/null; then
+  if { [ "$status" -ne 0 ] || [ ! -d "$archive" ]; } && ! time_sensitive_refused "$log" && app_group_refused "$log"; then
     warn "archiving again without any app group"
     log="$LOGDIR/testflight-archive-push.log"
     rm -rf "$archive"
@@ -1672,6 +1720,10 @@ deploy_testflight() {
       WOODRUFF_NOTIFY_ENTITLEMENTS= ${VERSION_SETTINGS[@]+"${VERSION_SETTINGS[@]}"} archive </dev/null >"$log" 2>&1
     status=$?
     show_build "$log"
+  fi
+  if { [ "$status" -ne 0 ] || [ ! -d "$archive" ]; } && time_sensitive_refused "$log"; then
+    testflight_failed "Apple refused Time Sensitive Notifications for $IPHONE_BUNDLE_ID (camera alerts through Sleep and Focus), so nothing was uploaded (log $log)" "$log"
+    return 1
   fi
   if [ "$status" -ne 0 ] || ! grep -q '\*\* ARCHIVE SUCCEEDED \*\*' "$log" 2>/dev/null || [ ! -d "$archive" ]; then
     why=$(first_errors "$log")

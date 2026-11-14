@@ -550,6 +550,9 @@ final class NestAlerts {
             PushRelay.log.notice("alert for \(body, privacy: .public) shown here, picture: \(c.attachments.isEmpty ? "none" : how, privacy: .public)")
             // The Mac's push for it, if it comes after all, takes its place quietly.
             CameraEventMedia.noteShownHere(short)
+            // Through Sleep and the other Focuses, as the Mac's pushes and Google Home's camera alerts are: Time
+            // Sensitive. Not a quiet one (caught up later), and quietIfStale, next, still makes a stale one passive.
+            if !quiet { c.interruptionLevel = .timeSensitive }
             self.quietIfStale(c, happened: happened)
             Notifier.deliver(c, id: id)
             Self.noteAlerted(short, session: session, title: title)

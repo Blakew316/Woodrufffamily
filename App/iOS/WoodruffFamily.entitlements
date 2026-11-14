@@ -13,5 +13,8 @@
 	<array>
 		<string>group.com.woodruff.family</string>
 	</array>
+	<!-- Time Sensitive: the camera alerts come through Sleep and the other Focuses, as Google Home's do. -->
+	<key>com.apple.developer.usernotifications.time-sensitive</key>
+	<true/>
 </dict>
 </plist>

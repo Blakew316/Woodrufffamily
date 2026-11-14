@@ -60,11 +60,13 @@ EXTRA_ENTITLEMENTS = {
     "widget": {"get-task-allow": True},
 }
 
-# Added only when the profile allows them (signing goes on without them otherwise): the widgets' app group, and
-# push (aps-environment, with the profile's own value) so alerts arrive while the app is closed.
+# Added only when the profile allows them (signing goes on without them otherwise): the widgets' app group, Time
+# Sensitive (the camera alerts through Sleep and Focus) for the app, and push (aps-environment, with the profile's own
+# value) so alerts arrive while the app is closed.
 APP_GROUP = "group.com.woodruff.family"
+TIME_SENSITIVE = "com.apple.developer.usernotifications.time-sensitive"
 OPTIONAL_ENTITLEMENTS = {
-    "app": {"com.apple.security.application-groups": [APP_GROUP]},
+    "app": {"com.apple.security.application-groups": [APP_GROUP], TIME_SENSITIVE: True},
     "widget": {"com.apple.security.application-groups": [APP_GROUP]},
 }
 

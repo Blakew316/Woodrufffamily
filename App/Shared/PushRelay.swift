@@ -296,7 +296,14 @@ final class PushRelay {
                         passive: Bool = false) -> [String: Any] {
         var aps: [String: Any] = ["alert": ["title": title, "body": body], "thread-id": userInfo["tv"] ?? id.components(separatedBy: "-").first ?? "woodruff"]
         if sound { aps["sound"] = "default" }
-        if passive { aps["interruption-level"] = "passive" }
+        if passive {
+            aps["interruption-level"] = "passive"
+        } else if sound, userInfo["camera"] != nil {
+            // A camera's alert ("Person seen", "Someone's at the door") comes through Sleep and the other Focuses, as
+            // Google Home's do: Time Sensitive, which the iPhone app's entitlement allows. Its quiet updates stay
+            // passive, and every other alert (the TVs', the appliances') keeps the usual level.
+            aps["interruption-level"] = "time-sensitive"
+        }
         if let category { aps["category"] = category }
         // A camera's alert: the iPhone's notification extension fetches its clip or snapshot before it shows, and the
         // app itself is woken for a few seconds (when iOS allows) to keep the event's full picture and its clip for
