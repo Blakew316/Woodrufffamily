@@ -2044,72 +2044,75 @@ struct TitleSheet: View {
         let c = client
         let shown = details(c)
         let season = self.season(of: shown)
+        // The top: the title's own once it's read, else the tile's it was opened from (its picture and name at once).
+        // One view either way, so it stays as the rest arrives: as two, the whole top faded out and in again as the
+        // title came in, its picture dimming for a moment.
+        let head: SheetTop? = shown.map { top($0, c) } ?? TitleCache.shared.tile(id).map { top($0, c) }
         sheetStack {
             ScrollView {
                 VStack(spacing: 0) {
-                    if let d = shown {
+                    if let head {
                         VStack(alignment: .leading, spacing: 0) {
-                            header(top(d, c))
-                            detailStack {
-                                if let o = d.overview { Text(o).font(.body).foregroundStyle(.primary.opacity(0.9)) }
-                                if let cast = d.cast, !cast.isEmpty { Text("Starring " + cast.joined(separator: ", ")).font(.footnote).foregroundStyle(.secondary) }
-                                if let seasons = d.seasons, !seasons.isEmpty {
-                                    Menu {
-                                        Picker("Season", selection: Binding(get: { season }, set: { picked = $0 })) {
-                                            ForEach(Array(seasons.enumerated()), id: \.offset) { i, s in Text(s.name).tag(i) }
+                            header(head)
+                            if let d = shown {
+                                detailStack {
+                                    if let o = d.overview { Text(o).font(.body).foregroundStyle(.primary.opacity(0.9)) }
+                                    if let cast = d.cast, !cast.isEmpty { Text("Starring " + cast.joined(separator: ", ")).font(.footnote).foregroundStyle(.secondary) }
+                                    if let seasons = d.seasons, !seasons.isEmpty {
+                                        Menu {
+                                            Picker("Season", selection: Binding(get: { season }, set: { picked = $0 })) {
+                                                ForEach(Array(seasons.enumerated()), id: \.offset) { i, s in Text(s.name).tag(i) }
+                                            }
+                                        } label: {
+                                            HStack(spacing: 6) {
+                                                Text(seasons[safe: season]?.name ?? "Season").font(.title3.bold())
+                                                Image(systemName: "chevron.down").font(.subheadline.weight(.bold)).foregroundStyle(.secondary)
+                                            }
+                                            .foregroundStyle(.primary)
                                         }
-                                    } label: {
-                                        HStack(spacing: 6) {
-                                            Text(seasons[safe: season]?.name ?? "Season").font(.title3.bold())
-                                            Image(systemName: "chevron.down").font(.subheadline.weight(.bold)).foregroundStyle(.secondary)
+                                        #if os(macOS)
+                                        // Just its name and the arrow, lined up with the text above (no pop-up button around it).
+                                        .menuStyle(.button)
+                                        .buttonStyle(.plain)
+                                        .menuIndicator(.hidden)
+                                        .fixedSize()
+                                        #endif
+                                        .padding(.top, 8)
+                                        if loadingEpisodes && episodes.isEmpty { ProgressView().frame(maxWidth: .infinity) }
+                                        if let episodesNote, episodes.isEmpty && !loadingEpisodes {
+                                            Text(episodesNote).font(.subheadline).foregroundStyle(.secondary)
+                                            ActionButton(action: { await loadEpisodes() }) { Text("Try Again") }
+                                                .buttonStyle(.glass)
                                         }
-                                        .foregroundStyle(.primary)
+                                        ForEach(episodes) { e in
+                                            EpisodeRow(episode: e, still: c?.artURL(e.still, small: true), show: d.title, poster: d.poster,
+                                                       changed: { watchChanged(); Task { await loadEpisodes() } }, played: { played() })
+                                        }
                                     }
-                                    #if os(macOS)
-                                    // Just its name and the arrow, lined up with the text above (no pop-up button around it).
-                                    .menuStyle(.button)
-                                    .buttonStyle(.plain)
-                                    .menuIndicator(.hidden)
-                                    .fixedSize()
-                                    #endif
-                                    .padding(.top, 8)
-                                    if loadingEpisodes && episodes.isEmpty { ProgressView().frame(maxWidth: .infinity) }
-                                    if let episodesNote, episodes.isEmpty && !loadingEpisodes {
-                                        Text(episodesNote).font(.subheadline).foregroundStyle(.secondary)
-                                        ActionButton(action: { await loadEpisodes() }) { Text("Try Again") }
-                                            .buttonStyle(.glass)
-                                    }
-                                    ForEach(episodes) { e in
-                                        EpisodeRow(episode: e, still: c?.artURL(e.still, small: true), show: d.title, poster: d.poster,
-                                                   changed: { watchChanged(); Task { await loadEpisodes() } }, played: { played() })
+                                    if let films = d.films, !films.isEmpty {
+                                        Text("In This Collection").font(.title3.bold()).padding(.top, 8)
+                                        ForEach(films) { e in
+                                            EpisodeRow(episode: e, still: c?.artURL(e.still, small: true), changed: { watchChanged(); Task { await load() } }, played: { played() })
+                                        }
                                     }
                                 }
-                                if let films = d.films, !films.isEmpty {
-                                    Text("In This Collection").font(.title3.bold()).padding(.top, 8)
-                                    ForEach(films) { e in
-                                        EpisodeRow(episode: e, still: c?.artURL(e.still, small: true), changed: { watchChanged(); Task { await load() } }, played: { played() })
+                                .modifier(SheetSectionPadding())
+                            } else {
+                                // Opened from a tile: the rest as it arrives.
+                                Group {
+                                    if let failed {
+                                        VStack(alignment: .leading, spacing: 10) {
+                                            Text("Can’t Load This Title").font(.headline)
+                                            Text(failed).font(.subheadline).foregroundStyle(.secondary)
+                                            ActionButton(action: { await load() }) { Text("Try Again") }
+                                                .buttonStyle(.glass)
+                                        }
+                                    } else {
+                                        ProgressView().frame(maxWidth: .infinity).padding(.top, 20)
                                     }
                                 }
+                                .modifier(SheetSectionPadding())
                             }
-                            .modifier(SheetSectionPadding())
-                        }
-                    } else if let t = TitleCache.shared.tile(id) {
-                        // Opened from a tile: its picture and name at once, the rest as it arrives.
-                        VStack(alignment: .leading, spacing: 0) {
-                            header(top(t, c))
-                            Group {
-                                if let failed {
-                                    VStack(alignment: .leading, spacing: 10) {
-                                        Text("Can’t Load This Title").font(.headline)
-                                        Text(failed).font(.subheadline).foregroundStyle(.secondary)
-                                        ActionButton(action: { await load() }) { Text("Try Again") }
-                                            .buttonStyle(.glass)
-                                    }
-                                } else {
-                                    ProgressView().frame(maxWidth: .infinity).padding(.top, 20)
-                                }
-                            }
-                            .modifier(SheetSectionPadding())
                         }
                     } else if let failed {
                         VStack(spacing: 14) {
