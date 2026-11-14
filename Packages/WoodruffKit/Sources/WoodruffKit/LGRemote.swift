@@ -45,11 +45,16 @@ public actor LGRemote {
     /// The address that worked last time (TLS on 3001, or plain on 3000), tried first next time.
     private var preferred: String?
     private var counter = 0
+    /// Told the key whenever the TV gives one other than the key this connection had (it forgot this device and asked
+    /// "Allow?" again, or none was kept here), so the app keeps it: kept only here, the TV asked again every time the
+    /// app opened.
+    private let onNewKey: (@Sendable (String) -> Void)?
 
     /// [clientKey]: the key the TV gave last time (nil the first time: the TV then asks on screen).
-    public init(host: String, clientKey: String?) {
+    public init(host: String, clientKey: String?, onNewKey: (@Sendable (String) -> Void)? = nil) {
         self.host = host
         self.clientKey = clientKey
+        self.onNewKey = onNewKey
         self.session = URLSession(configuration: .ephemeral, delegate: TrustTVCertificate(host: host), delegateQueue: nil)
     }
 
@@ -90,9 +95,11 @@ public actor LGRemote {
             do {
                 let key = try await register(on: task)
                 guard socket === task else { throw TVError.offline("Disconnected") }
+                let given = key != clientKey
                 clientKey = key
                 registered = true
                 preferred = url
+                if given { onNewKey?(key) }
                 return key
             } catch {
                 lastError = error

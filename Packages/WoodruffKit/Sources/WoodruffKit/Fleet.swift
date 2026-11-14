@@ -1366,10 +1366,24 @@ public final class Fleet {
         let key = read.value
         if let r = lgRemotes[tv.id], r.host == host, lgKeys[tv.id] == key { return r }
         if let old = lgRemotes[tv.id] { Task { await old.disconnect() } }
-        let r = LGRemote(host: host, clientKey: key)
+        let r = LGRemote(host: host, clientKey: key, onNewKey: keepLGKey(tv.id, host: host))
         lgRemotes[tv.id] = r
         lgKeys[tv.id] = key
         return r
+    }
+
+    /// A key an LG TV gave one of its connections outside Connect (it forgot this device and asked "Allow?" again on a
+    /// key press, or no key was kept here yet): kept as the TV's sign-in, so it isn't asked for again when the app next
+    /// opens (and the family's other devices get it too). Not for a connection the TV's address has moved on from.
+    private func keepLGKey(_ id: String, host: String) -> @Sendable (String) -> Void {
+        { [weak self] key in
+            Task { @MainActor in
+                guard let self, self.extras[id]?.lgHost == host, self.lgRemotes[id]?.host == host else { return }
+                // Noted first: the write below makes `lg(for:)` read the key again, and the same key keeps this connection.
+                self.lgKeys[id] = key
+                Keychain.set(key, for: "lg.\(id)")
+            }
+        }
     }
 
     /// Connects LG direct control (the TV asks "Allow?" the first time) and keeps its address and key, once the TV has
@@ -1379,7 +1393,7 @@ public final class Fleet {
         // The connection there before is closed, not just let go of (it kept its socket open).
         if let old = lgRemotes[tv.id] { Task { await old.disconnect() } }
         lgRemotes[tv.id] = nil
-        let r = LGRemote(host: host, clientKey: Keychain.get("lg.\(tv.id)"))
+        let r = LGRemote(host: host, clientKey: Keychain.get("lg.\(tv.id)"), onNewKey: keepLGKey(tv.id, host: host))
         let key = try await r.connect()
         extras[tv.id, default: TVExtras()].lgHost = host
         extras[tv.id]?.platform = .webOS
