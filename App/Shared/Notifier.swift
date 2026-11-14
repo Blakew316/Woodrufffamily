@@ -68,7 +68,8 @@ enum Notifier {
         #if os(macOS)
         if relay {
             let info = c.userInfo.reduce(into: [String: String]()) { out, kv in if let k = kv.key as? String, let v = kv.value as? String { out[k] = v } }
-            PushRelay.shared.relay(id: id, title: c.title, body: c.body, category: c.categoryIdentifier.isEmpty ? nil : c.categoryIdentifier, userInfo: info, sound: c.sound != nil)
+            PushRelay.shared.relay(id: id, title: c.title, body: c.body, category: c.categoryIdentifier.isEmpty ? nil : c.categoryIdentifier, userInfo: info, sound: c.sound != nil,
+                                   passive: c.interruptionLevel == .passive)
         }
         #endif
     }
@@ -87,9 +88,11 @@ final class NotificationHandler: NSObject, UNUserNotificationCenterDelegate, @un
         // Kept in Notification Center too: an alert that arrives while Woodruff is open was only a passing banner.
         let key = notification.request.content.userInfo["key"] as? String
         let camera = (notification.request.content.userInfo["camera"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+        // An update of an alert already shown (its better picture): into the list only, not a second banner.
+        let update = notification.request.content.interruptionLevel == .passive
         DispatchQueue.main.async {
             if let key { MainActor.assumeIsolated { _ = Self.presentedKeys.insert(key) } }
-            completionHandler([.banner, .list, .sound])
+            completionHandler(update ? [.list] : [.banner, .list, .sound])
             #if os(iOS)
             // A camera alert while Woodruff is open: its camera starts connecting now, so a tap on the banner opens it
             // already live (let go again in a minute if it isn't tapped).

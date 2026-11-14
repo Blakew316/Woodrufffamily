@@ -117,6 +117,8 @@ final class CameraShare {
             : t.contains("motion") ? "motion" : t.contains("vehicle") ? "vehicle" : "event"
         // Always after the last one, so an Apple TV asking for newer ones never misses one sent the same millisecond.
         let at = max(Int64(Date().timeIntervalSince1970 * 1000), (recent.last?.at ?? 0) + 1)
+        // The same alert again, with a better picture: in its place (an Apple TV still showing it takes the new one).
+        recent.removeAll { $0.key == key }
         recent.append(CameraShareEvent(key: key, camera: camera, name: name, title: title, kind: kind, at: at,
                                        focus: focus.map { CameraEventMedia.focusText($0) },
                                        event: event.flatMap { $0.isEmpty ? nil : $0 }, clip: clip.flatMap { $0.isEmpty ? nil : $0 }))

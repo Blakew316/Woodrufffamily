@@ -260,9 +260,12 @@ final class PushRelay {
 
     /// Sends one alert to every iPhone (only on the Mac that's the sender; elsewhere nothing happens).
     /// [sound] false: a quiet update of an alert already shown (a camera's clip that came after it).
-    func relay(id: String, title: String, body: String, category: String? = nil, userInfo: [String: String] = [:], sound: Bool = true) {
+    /// [passive]: an update of an alert already shown (a camera's better picture): it replaces it in the list without
+    /// lighting the screen or showing a second banner.
+    func relay(id: String, title: String, body: String, category: String? = nil, userInfo: [String: String] = [:], sound: Bool = true,
+               passive: Bool = false) {
         guard isSender, !tokens.isEmpty else { return }
-        Task { await send(id: id, title: title, body: body, category: category, userInfo: userInfo, sound: sound) }
+        Task { await send(id: id, title: title, body: body, category: category, userInfo: userInfo, sound: sound, passive: passive) }
     }
 
     func sendTest() async {
@@ -289,9 +292,11 @@ final class PushRelay {
     static let pushLimit = 4096
 
     /// A push's payload as Apple gets it.
-    static func payload(id: String, title: String, body: String, category: String?, userInfo: [String: String], sound: Bool) -> [String: Any] {
+    static func payload(id: String, title: String, body: String, category: String?, userInfo: [String: String], sound: Bool,
+                        passive: Bool = false) -> [String: Any] {
         var aps: [String: Any] = ["alert": ["title": title, "body": body], "thread-id": userInfo["tv"] ?? id.components(separatedBy: "-").first ?? "woodruff"]
         if sound { aps["sound"] = "default" }
+        if passive { aps["interruption-level"] = "passive" }
         if let category { aps["category"] = category }
         // A camera's alert: the iPhone's notification extension fetches its clip or snapshot before it shows, and the
         // app itself is woken for a few seconds (when iOS allows) to keep the event's full picture and its clip for
@@ -313,11 +318,13 @@ final class PushRelay {
     /// How many characters of picture a camera's push has room for, with everything else it carries. When a long clip
     /// link (or event id) would leave the picture too little, the push goes without it (`send` leaves it out first,
     /// and the iPhone gets the full picture from this Mac instead).
-    static func thumbnailBudget(id: String, title: String, body: String, userInfo: [String: String], sound: Bool) -> Int {
+    static func thumbnailBudget(id: String, title: String, body: String, userInfo: [String: String], sound: Bool,
+                                passive: Bool = false) -> Int {
         var info = userInfo
         info["thumb"] = ""
         func room() -> Int {
-            let size = encoded(payload(id: id, title: title, body: body, category: nil, userInfo: info, sound: sound))?.count ?? pushLimit
+            let size = encoded(payload(id: id, title: title, body: body, category: nil, userInfo: info, sound: sound,
+                                       passive: passive))?.count ?? pushLimit
             return pushLimit - 32 - size
         }
         var r = room()
@@ -326,9 +333,10 @@ final class PushRelay {
         return min(max(r, 0), 3000)
     }
 
-    private func send(id: String, title: String, body: String, category: String?, userInfo: [String: String], sound: Bool = true) async {
+    private func send(id: String, title: String, body: String, category: String?, userInfo: [String: String], sound: Bool = true,
+                      passive: Bool = false) async {
         guard let auth = token() else { lastError = "The push key couldn’t be read. Add it again."; return }
-        var payload = Self.payload(id: id, title: title, body: body, category: category, userInfo: userInfo, sound: sound)
+        var payload = Self.payload(id: id, title: title, body: body, category: category, userInfo: userInfo, sound: sound, passive: passive)
         guard var data = Self.encoded(payload) else { return }
         // Apple takes at most 4 KB. The picture matters most: the clip's long link goes first (the iPhone can only use
         // it with its own camera sign-in), then the event id, the picture's framing, and only then the picture.
