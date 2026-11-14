@@ -280,11 +280,25 @@ final class SettingsSync {
         observers.append(center.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.leaving() }
         })
+        observers.append(center.addObserver(forName: UIApplication.willTerminateNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.quitting() }
+        })
         #elseif os(macOS)
         observers.append(NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.wokeUp() }
         })
+        observers.append(center.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.quitting() }
+        })
         #endif
+    }
+
+    /// Quitting (the Mac never goes through the background on its way out): a change made since the last look, up to a
+    /// second and a half ago, is stamped now. Left unstamped, it counted as old at the next launch, and could lose to
+    /// the family's copy from before it.
+    private func quitting() {
+        guard prepared else { return }
+        check()
     }
 
     #if os(iOS) || os(tvOS)
