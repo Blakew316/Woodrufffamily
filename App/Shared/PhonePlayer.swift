@@ -1502,7 +1502,8 @@ final class MacPlayer: NSObject, NSWindowDelegate {
             let needs = PhonePlayback.rates(s, player?.currentItem).map { String(format: ", the film needs %.0f Mb/s", $0.needs) } ?? ""
             Diagnostics.shared.notePlayback("\(play.title) via request by request: asked Google for \(s.askedNow())\(needs)")
         }
-        DriveLibrary.shared.flush()
+        // Queued, not waited for, as on iPhone: the window froze as it closed while the whole library was written.
+        DriveLibrary.shared.flush(wait: false)
         // Watch shows where it was left off at once.
         DriveLibrary.shared.playStopped()
         Task { await DriveLibrary.shared.sync() }

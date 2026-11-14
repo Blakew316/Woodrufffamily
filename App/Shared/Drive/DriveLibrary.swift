@@ -215,12 +215,12 @@ final class DriveLibrary: WatchSource {
     }
 
     /// Written now (the player closing, the app going to the background). [wait] false only queues it (still written in
-    /// order, straight away): the Apple TV's player closing, so the page it goes back to isn't held up meanwhile.
+    /// order, straight away): a film's player closing, so the page it goes back to isn't held up meanwhile.
     func flush(wait: Bool = true) {
         storing?.cancel()
         storing = nil
         DiskWriter.write(saved, to: file)
-        // The app leaving (and a film stopping on iPhone and Mac): on disk before this returns, as before.
+        // The app leaving: on disk before this returns, as before.
         if wait { DiskWriter.waitForWrites() }
     }
 
