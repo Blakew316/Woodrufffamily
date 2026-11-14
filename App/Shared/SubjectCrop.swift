@@ -150,18 +150,22 @@ enum SubjectCrop {
     }
 
     /// The people Vision finds in [handler]'s picture, each with how sure it is (unit coordinates, bottom-left origin):
-    /// their figures; else their faces, with head and shoulders round them. The Mac also uses it to pick, of a
-    /// stream's last few seconds, the frame that shows the person best (`StreamMoment`).
+    /// their figures; else their upper bodies; else their faces, with head and shoulders round them. The Mac also uses
+    /// it to pick, of a clip, the frame that shows the person best (`ClipMoment`).
     static func people(_ handler: VNImageRequestHandler) -> [(box: CGRect, confidence: Float)] {
         let found = bodies(handler)
-        // No figure found (half hidden, or very close to a doorbell): the face, with head and shoulders round it.
-        return found.isEmpty ? faces(handler) : found
+        if !found.isEmpty { return found }
+        // No figure found whole (half hidden, or very close to a doorbell): the upper body, else the face with head and
+        // shoulders round it. (The face alone missed anyone turned away from the camera: no close-up of them at all.)
+        let upper = bodies(handler, whole: false)
+        return upper.isEmpty ? faces(handler) : upper
     }
 
-    /// The figures Vision finds in [handler]'s picture (it wants them whole, head to foot).
-    static func bodies(_ handler: VNImageRequestHandler) -> [(box: CGRect, confidence: Float)] {
+    /// The figures Vision finds in [handler]'s picture (it wants them whole, head to foot; [whole] false: the upper
+    /// body, head and shoulders down to the waist, of somebody it can't see whole).
+    static func bodies(_ handler: VNImageRequestHandler, whole: Bool = true) -> [(box: CGRect, confidence: Float)] {
         let humans = VNDetectHumanRectanglesRequest()
-        humans.upperBodyOnly = false
+        humans.upperBodyOnly = !whole
         guard (try? handler.perform([humans])) != nil else { return [] }
         return (humans.results ?? []).filter { $0.confidence >= 0.3 }.map { (box: $0.boundingBox, confidence: $0.confidence) }
     }
