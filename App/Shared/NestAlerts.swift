@@ -1,8 +1,12 @@
 import SwiftUI
 import UserNotifications
+import Network
 import WoodruffKit
 #if canImport(WidgetKit)
 import WidgetKit
+#endif
+#if os(macOS)
+import AppKit
 #endif
 
 /// "Person seen · Front door doorbell", "Someone's at the front door": the cameras' events as notifications
@@ -30,6 +34,13 @@ final class NestAlerts {
     private var listens = 0, messages = 0, lastBeat = Date()
 
     private var loop: Task<Void, Never>?
+    /// The network coming back (and the Mac waking) is a listen at once (`listenNow`).
+    private var network: NWPathMonitor?
+    /// Whether the network was there at its last report (nil before the first).
+    private var networkUp: Bool?
+    #if os(macOS)
+    private var wakeWatch: NSObjectProtocol?
+    #endif
     private var own: String?
     /// When a listen last worked (the Mac's watchdog checks this).
     private(set) var lastHeard: Date?
@@ -73,15 +84,50 @@ final class NestAlerts {
         AlertWatchdog.shared.start()
         #endif
         guard loop == nil, !Demo.isOn else { return }
+        watchNetwork()
         loop = Task { [weak self] in
-            var wait: UInt64 = 2
+            var wait: Double = 1
             while !Task.isCancelled {
                 guard let self else { return }
                 let ok = await self.pullOnce(timeout: 55)
-                wait = ok ? 1 : min(120, wait * 2)
-                try? await Task.sleep(nanoseconds: wait * 1_000_000_000)
+                // After an error, again within a few seconds: 2, 4, 8, then 15 at most, each a little shorter by chance so
+                // the family's devices don't all ask at once. (It doubled to two minutes: a Mac could be that late with
+                // an alert after the network dropped.)
+                wait = ok ? 1 : min(15, max(2, wait * 2))
+                let pause = ok ? wait : wait * Double.random(in: 0.7...1)
+                try? await Task.sleep(nanoseconds: UInt64(pause * 1_000_000_000))
             }
         }
+    }
+
+    /// The network came back, or the Mac woke: listened again at once (the subscription kept), not after the wait the
+    /// last error left, nor down a connection that died meanwhile.
+    func listenNow() {
+        guard loop != nil, let fleet else { return }
+        loop?.cancel(); loop = nil
+        start(fleet)
+    }
+
+    private func watchNetwork() {
+        guard network == nil else { return }
+        let m = NWPathMonitor()
+        m.pathUpdateHandler = { [weak self] path in
+            let up = path.status == .satisfied
+            Task { @MainActor in self?.networkChanged(up) }
+        }
+        m.start(queue: .main)
+        network = m
+        #if os(macOS)
+        wakeWatch = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.listenNow() }
+        }
+        #endif
+    }
+
+    private func networkChanged(_ up: Bool) {
+        let was = networkUp
+        networkUp = up
+        if up, was == false { listenNow() }
     }
 
     /// One listen (the background refresh on iPhone calls this too). True when it worked.
@@ -116,6 +162,8 @@ final class NestAlerts {
             lastHeard = Date()
             return true
         } catch {
+            // Called off to listen again at once (`listenNow`): nothing went wrong.
+            if Task.isCancelled { return false }
             status = error.localizedDescription
             // The subscription went away (unused a day): make it again next time.
             if error.localizedDescription.contains("NOT_FOUND") { own = nil }
