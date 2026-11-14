@@ -471,13 +471,13 @@ struct AllDevicesView: View {
     }
 }
 
+/// Glass and its rim while the tile is off, none while it's on: in the same view either way. (As two views, a tile
+/// tapped on or off was built again from nothing and faded across from its old self, instead of changing.)
 private struct TileGlass: ViewModifier {
     var on: Bool
     func body(content: Content) -> some View {
-        if on { content } else {
-            content.glass(RoundedRectangle(cornerRadius: 22, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).strokeBorder(IconPalette.cyan.opacity(0.22), lineWidth: 1))
-        }
+        content.glass(RoundedRectangle(cornerRadius: 22, style: .continuous), shown: !on)
+            .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).strokeBorder(IconPalette.cyan.opacity(on ? 0 : 0.22), lineWidth: 1))
     }
 }
 

@@ -218,13 +218,13 @@ func deviceSymbol(_ d: HomeDevice) -> String {
     }
 }
 
+/// Glass and its rim while the device is off, none while it's on: in the same view either way. (As two views, a tile
+/// tapped on or off was built again from nothing and faded across from its old self: its symbol never morphed.)
 private struct DeviceGlass: ViewModifier {
     var on: Bool
     func body(content: Content) -> some View {
-        if on { content } else {
-            content.glass(RoundedRectangle(cornerRadius: 20, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).strokeBorder(IconPalette.cyan.opacity(0.22), lineWidth: 1))
-        }
+        content.glass(RoundedRectangle(cornerRadius: 20, style: .continuous), shown: !on)
+            .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).strokeBorder(IconPalette.cyan.opacity(on ? 0 : 0.22), lineWidth: 1))
     }
 }
 

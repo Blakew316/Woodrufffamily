@@ -71,12 +71,13 @@ extension EnvironmentValues {
 // MARK: - Liquid Glass
 
 extension View {
-    /// Liquid Glass in [shape] (iOS 26 / macOS 26), a material on older Macs.
-    @ViewBuilder func glass<S: Shape>(_ shape: S, tint: Color? = nil, interactive: Bool = true) -> some View {
+    /// Liquid Glass in [shape] (iOS 26 / macOS 26), a material on older Macs. [shown] false: no glass, in the same view
+    /// (a tile that's lit has none), so nothing is built again when it comes and goes.
+    @ViewBuilder func glass<S: Shape>(_ shape: S, tint: Color? = nil, interactive: Bool = true, shown: Bool = true) -> some View {
         if #available(iOS 26, macOS 26, *) {
-            self.modifier(GlassIn(shape: shape, tint: tint, interactive: interactive))
+            self.modifier(GlassIn(shape: shape, tint: tint, interactive: interactive, shown: shown))
         } else {
-            self.background { if let tint { shape.fill(tint.gradient) } else { shape.fill(.regularMaterial) } }
+            self.background { if shown { if let tint { shape.fill(tint.gradient) } else { shape.fill(.regularMaterial) } } }
         }
     }
 
@@ -95,13 +96,15 @@ private struct GlassIn<S: Shape>: ViewModifier {
     var shape: S
     var tint: Color?
     var interactive: Bool
+    /// False: none at all (`identity`), in the same view.
+    var shown = true
     @Environment(\.homeArranging) private var arranging
 
     func body(content: Content) -> some View {
         let glass = tint.map { Glass.regular.tint($0).interactive(interactive) } ?? Glass.regular.interactive(interactive)
         content
-            .background { if arranging { shape.fill(.regularMaterial) } }
-            .glassEffect(arranging ? .identity : glass, in: shape)
+            .background { if arranging && shown { shape.fill(.regularMaterial) } }
+            .glassEffect(arranging || !shown ? .identity : glass, in: shape)
     }
 }
 

@@ -383,10 +383,12 @@ struct LightTile: View, Equatable {
     }
 }
 
+/// Glass while the light is off, none while it's on: in the same view either way. (As two views, a tile tapped on or
+/// off was built again from nothing and faded across from its old self, instead of lighting up.)
 private struct OffGlass: ViewModifier {
     var on: Bool
     func body(content: Content) -> some View {
-        if on { content } else { content.glass(RoundedRectangle(cornerRadius: 20, style: .continuous)) }
+        content.glass(RoundedRectangle(cornerRadius: 20, style: .continuous), shown: !on)
     }
 }
 
