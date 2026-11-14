@@ -96,6 +96,12 @@ struct HomeView: View {
         let arranging = layout.arranging
         let player = playerTV
         // Every device, the rooms and the room showing: worked out once for this drawing.
+        #if os(tvOS)
+        // Apple TV shows Favorites and All Devices (which sorts out its own rooms): only Favorites' devices are needed
+        // here. The rooms, and each room's speakers, lights and devices, were worked out at every redraw for nothing.
+        let c = Contents(room: shownRoom([]), rooms: [], devices: layout.favorites.isEmpty ? [] : AccessoryStore.shared.all,
+                         favorites: Set(layout.favorites), speakers: [:], lights: [:], roomDevices: [:])
+        #else
         let devices = AccessoryStore.shared.all
         let h = SmartHome.shared
         let roomOf = h.roomIndex
@@ -103,6 +109,7 @@ struct HomeView: View {
         let c = Contents(room: shownRoom(rooms), rooms: rooms, devices: devices, favorites: Set(layout.favorites),
                          speakers: itemsByRoom(h.speakers) { roomOf[$0.id] }, lights: itemsByRoom(h.lights) { roomOf[$0.id] },
                          roomDevices: itemsByRoom(devices) { roomOf[$0.id] })
+        #endif
         let room = c.room
         @Bindable var scroller = scroller
         ScrollView {
