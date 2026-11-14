@@ -67,6 +67,14 @@ final class SettingsSync {
     /// different entries at the same time both keep their change.
     static let entryKeys: Set<String> = ["ud:smartNames", "ud:smartRooms", "ud:extras", "ud:hiddenAlerts", "ud:pushTokens", "ud:diagnostics",
                                          "ud:familyPairings", "ud:atvRemote.paired", "ud:smartSceneColors"]
+    /// Saved lists kept item by item (a scene by its id, a room by its name), so a list changed on a device that hasn't
+    /// had the family's copy yet adds to the family's instead of replacing it, and an item deleted on one device stays
+    /// deleted. The items' stamps travel beside the list, as an item of their own (`itemStampsKey`) that says which
+    /// copy of the list they're for: builds before this one keep that item on the TVs as they found it and otherwise
+    /// pass it by, and a list that comes without stamps for that copy of it (from one of them) is taken whole, newer
+    /// wins, as before.
+    static let itemKeys: Set<String> = ["ud:scenes", "ud:smartExtraRooms"]
+    static func itemStampsKey(_ k: String) -> String { "e:" + k }
 
     /// "Saved on Living Room, Master Bedroom" for Settings.
     private(set) var status = "Not synced yet"
@@ -439,6 +447,11 @@ final class SettingsSync {
                     entryStamps[k] = SyncMerge.stampEntries(old: old, new: v, stamps: entryStamps[k] ?? [:], now: t,
                                                             automatic: k == "ud:extras" ? automatic : [:])
                 }
+                if Self.itemKeys.contains(k) {
+                    // A list saved here for the first time (the built-in scenes go with the first change made to one)
+                    // only fills in: it never replaces what the family keeps for the same items.
+                    entryStamps[k] = SyncMerge.stampItems(old: old, new: v, stamps: entryStamps[k] ?? [:], now: old.isEmpty ? 0.5 : t)
+                }
                 changed = true
             } else if !v.isEmpty && stamps[k] == nil {
                 stamps[k] = 1   // a key that just started travelling (a newly added TV) counts as old
@@ -675,10 +688,27 @@ final class SettingsSync {
                 continue
             }
 
+            // A list item by item, when its items' stamps came with it (`itemKeys`).
+            if Self.itemKeys.contains(k), let theirs = Self.itemStamps(k, in: items, for: v),
+               let m = SyncMerge.mergeItems(local: local, localStamps: entryStamps[k] ?? [:], localStamp: mine,
+                                            remote: v, remoteStamps: theirs, remoteStamp: t) {
+                if m.value != local { write(k, m.value); last[k] = m.value; written.insert(k) }
+                entryStamps[k] = m.stamps
+                stamps[k] = m.stamp
+                if m.value != v || m.stamps != theirs || m.stamp != t { oursNewer = true }
+                continue
+            }
+
             // Newer wins. On a tie with different values (two old copies), every device picks the same one.
             let takeTheirs = t > mine || (t == mine && v != local && (local.isEmpty || (!v.isEmpty && v > local)))
             if takeTheirs {
-                if v != local { write(k, v); last[k] = v; written.insert(k) }
+                if v != local {
+                    // A list taken whole: its items' stamps follow it (one this device never had only fills in).
+                    if Self.itemKeys.contains(k) {
+                        entryStamps[k] = SyncMerge.stampItems(old: local, new: v, stamps: entryStamps[k] ?? [:], now: local.isEmpty ? 1 : t)
+                    }
+                    write(k, v); last[k] = v; written.insert(k)
+                }
                 stamps[k] = t
             } else if v != local {
                 oursNewer = true
@@ -802,9 +832,25 @@ final class SettingsSync {
             var item: [String: Any] = ["v": v, "t": t]
             if Self.entryKeys.contains(k), let e = entryStamps[k], !e.isEmpty { item["e"] = e }
             items[k] = item
+            // A list's items' stamps, beside it, with which copy of it they're for (`itemKeys`).
+            if Self.itemKeys.contains(k) {
+                let marks: [String: Any] = ["v": Self.listDigest(v), "t": t, "e": entryStamps[k] ?? [:]]
+                items[Self.itemStampsKey(k)] = marks
+            }
         }
         return items
     }
+
+    /// The stamps of the list [k]'s items that came in [items], when they're for the copy of it there ([v]). A list from
+    /// a build before lists were kept item by item comes without them, or (on a TV) beside the stamps of a copy of it
+    /// that such a build has replaced since.
+    private static func itemStamps(_ k: String, in items: [String: [String: Any]], for v: String) -> [String: Double]? {
+        guard let s = items[itemStampsKey(k)], (s["v"] as? String) == listDigest(v) else { return nil }
+        return entryStampsOf(s)
+    }
+
+    /// Which copy of a list its items' stamps are for.
+    private static func listDigest(_ v: String) -> String { Data(SHA256.hash(data: Data(v.utf8))).base64EncodedString() }
 
     // MARK: 1. Kept on the TVs
 

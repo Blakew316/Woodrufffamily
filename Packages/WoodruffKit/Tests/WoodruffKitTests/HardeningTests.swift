@@ -118,6 +118,95 @@ final class HardeningTests: XCTestCase {
                                               automatic: ["tv1": (from: entry(base), to: entry(mac))])["tv1"], 205)
     }
 
+    func testListMergeKeepsTheFamilysItemsAndOnesAddedElsewhere() throws {
+        func ids(_ v: String) -> [String] { ((SyncMerge.object(v) as? [[String: Any]]) ?? []).compactMap { $0["id"] as? String } }
+        let family = #"[{"id":"movie-night","name":"Movie Night (ours)"},{"id":"bedtime","name":"Bedtime"},{"id":"s1","name":"Dinner"}]"#
+        let familyStamps: [String: Double] = ["s1": 300]
+        // A new device saves its first list (its built-in two, and one it added) before the family's copy came: it
+        // only fills in, and is the newer list as a whole.
+        let fresh = #"[{"id":"movie-night","name":"Movie Night"},{"id":"bedtime","name":"Bedtime"},{"id":"s9","name":"Reading"}]"#
+        let freshStamps = SyncMerge.stampItems(old: "", new: fresh, stamps: [:], now: 0.5)
+        let a = try XCTUnwrap(SyncMerge.mergeItems(local: family, localStamps: familyStamps, localStamp: 300,
+                                                   remote: fresh, remoteStamps: freshStamps, remoteStamp: 400))
+        let b = try XCTUnwrap(SyncMerge.mergeItems(local: fresh, localStamps: freshStamps, localStamp: 400,
+                                                   remote: family, remoteStamps: familyStamps, remoteStamp: 300))
+        XCTAssertEqual(a.value, b.value)
+        XCTAssertEqual(a.stamps, b.stamps)
+        XCTAssertEqual(Set(ids(a.value)), ["movie-night", "bedtime", "s1", "s9"])
+        XCTAssertTrue(a.value.contains("Movie Night (ours)"))
+        XCTAssertGreaterThan(a.stamp, 400)   // newer than both, so a build that keeps the list whole takes it
+        // Merging again changes nothing.
+        let again = try XCTUnwrap(SyncMerge.mergeItems(local: a.value, localStamps: a.stamps, localStamp: a.stamp,
+                                                       remote: fresh, remoteStamps: freshStamps, remoteStamp: 400))
+        XCTAssertEqual(again.value, a.value)
+        XCTAssertEqual(again.stamp, a.stamp)
+        // Rooms are names: one added on each device, both stay.
+        let r = try XCTUnwrap(SyncMerge.mergeItems(local: #"["Den","Gym"]"#, localStamps: ["Gym": 10], localStamp: 10,
+                                                   remote: #"["Den","Office"]"#, remoteStamps: ["Office": 11], remoteStamp: 11))
+        XCTAssertEqual(r.value, #"["Den","Office","Gym"]"#)
+    }
+
+    func testListItemDeletedStaysDeleted() throws {
+        let base = #"[{"id":"s1","name":"Dinner"},{"id":"s2","name":"Party"}]"#
+        let deleted = #"[{"id":"s1","name":"Dinner"}]"#
+        let ds = SyncMerge.stampItems(old: base, new: deleted, stamps: [:], now: 600)
+        XCTAssertEqual(ds["s2"], -600)
+        // Against a copy that still has it, and one that's newer as a whole (another scene changed later).
+        let m1 = try XCTUnwrap(SyncMerge.mergeItems(local: base, localStamps: [:], localStamp: 100, remote: deleted, remoteStamps: ds, remoteStamp: 600))
+        XCTAssertEqual(m1.value, deleted)
+        let later = #"[{"id":"s1","name":"Dinner!"},{"id":"s2","name":"Party"}]"#
+        let ls = SyncMerge.stampItems(old: base, new: later, stamps: [:], now: 700)
+        let m2 = try XCTUnwrap(SyncMerge.mergeItems(local: deleted, localStamps: ds, localStamp: 600, remote: later, remoteStamps: ls, remoteStamp: 700))
+        XCTAssertEqual(m2.value, #"[{"id":"s1","name":"Dinner!"}]"#)
+        // Not a list of items with ids: left to be taken whole.
+        XCTAssertNil(SyncMerge.mergeItems(local: #"{"a":1}"#, localStamps: [:], localStamp: 1, remote: base, remoteStamps: [:], remoteStamp: 2))
+    }
+
+    func testListMergeStressConverges() {
+        // Devices adding, changing, deleting and reordering at random, merged in random orders, all end identical, and
+        // every item ends as its last change anywhere said (other than a device's very first save, which fills in).
+        var rng = SystemRandomNumberGenerator()
+        for _ in 0..<200 {
+            var copies: [(value: String, stamps: [String: Double], stamp: Double)] = Array(repeating: ("", [:], 0), count: 4)
+            var lastChange: [String: String?] = [:]
+            var clock = 1.0
+            for _ in 0..<12 {
+                let i = Int.random(in: 0..<4, using: &rng)
+                var list = (SyncMerge.object(copies[i].value) as? [[String: Any]]) ?? []
+                let id = ["a", "b", "c", "d"].randomElement(using: &rng)!
+                let at = list.firstIndex { ($0["id"] as? String) == id }
+                var name: String?? = .none
+                switch Int.random(in: 0..<3, using: &rng) {
+                case 0: if let at { list.remove(at: at); name = .some(nil) }
+                case 1: let n = "n\(Int.random(in: 0..<50, using: &rng))"
+                        if let at { list[at]["name"] = n } else { list.append(["id": id, "name": n]) }
+                        name = .some(n)
+                default: if list.count > 1 { list.swapAt(0, list.count - 1) }
+                }
+                let new = SyncMerge.canonical(list) ?? "[]"
+                guard new != copies[i].value else { continue }
+                clock += 1
+                let first = copies[i].value.isEmpty
+                if let name, !first { lastChange[id] = name } else if name != nil { lastChange[id] = nil }
+                copies[i] = (new, SyncMerge.stampItems(old: copies[i].value, new: new, stamps: copies[i].stamps, now: first ? 0.5 : clock), clock)
+            }
+            for _ in 0..<4 {
+                for i in (0..<4).shuffled(using: &rng) {
+                    for j in (0..<4).shuffled(using: &rng) where i != j {
+                        guard let m = SyncMerge.mergeItems(local: copies[i].value, localStamps: copies[i].stamps, localStamp: copies[i].stamp,
+                                                           remote: copies[j].value, remoteStamps: copies[j].stamps, remoteStamp: copies[j].stamp) else { continue }
+                        copies[i] = (m.value, m.stamps, m.stamp)
+                    }
+                }
+            }
+            XCTAssertEqual(Set(copies.map(\.value)).count, 1)
+            let final = (SyncMerge.object(copies[0].value) as? [[String: Any]]) ?? []
+            for (id, name) in lastChange {
+                XCTAssertEqual(final.first { ($0["id"] as? String) == id }?["name"] as? String, name, "item \(id)")
+            }
+        }
+    }
+
     func testUnstampedEntriesFillInWithoutOverwriting() {
         // A new device's old settings (no stamps) never replace an entry the family set.
         let m = SyncMerge.mergeEntries(local: #"{"a":"old","c":"mine"}"#, localStamps: [:],

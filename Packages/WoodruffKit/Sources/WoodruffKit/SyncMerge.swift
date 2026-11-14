@@ -96,6 +96,58 @@ public enum SyncMerge {
         return (canonical(out) ?? "{}", st)
     }
 
+    /// A saved list's items by id (a scene by its "id", a room's name by itself) and their order; nil when it isn't a
+    /// list of such items. An id that's there twice counts once, where it first is.
+    static func listItems(_ list: String) -> (order: [String], items: [String: Any])? {
+        let all: [Any]
+        if list.isEmpty {
+            all = []
+        } else {
+            guard let a = object(list) as? [Any] else { return nil }
+            all = a
+        }
+        var order: [String] = []
+        var items: [String: Any] = [:]
+        for x in all {
+            guard let id = (x as? String) ?? ((x as? [String: Any])?["id"] as? String) else { return nil }
+            if items[id] == nil { order.append(id); items[id] = x }
+        }
+        return (order, items)
+    }
+
+    /// Per-item stamps for a saved list after a change here, as `stampEntries` makes them for a dictionary: an item
+    /// changed or added gets [now], one removed -[now]. [stamps] as they were when either isn't a list of such items.
+    public static func stampItems(old: String, new: String, stamps: [String: Double], now: Double) -> [String: Double] {
+        guard let o = listItems(old), let n = listItems(new),
+              let ot = canonical(o.items), let nt = canonical(n.items) else { return stamps }
+        return stampEntries(old: ot, new: nt, stamps: stamps, now: now)
+    }
+
+    /// Two copies of a saved list made one, item by item, as `mergeEntries` makes a dictionary one: each item as
+    /// whichever side changed it last says, and a negative stamp is a removal, so an item deleted on one device stays
+    /// deleted. In the order of the copy changed last (on the same stamp, the same one on both sides), then any the
+    /// other added. [localStamp] and [remoteStamp] are each copy's own stamp: the one that comes back is newer than a
+    /// copy's whenever the list is no longer that copy, so a build that keeps the list whole takes it. Nil when either
+    /// isn't a list of items with ids.
+    public static func mergeItems(local: String, localStamps: [String: Double], localStamp: Double,
+                                  remote: String, remoteStamps: [String: Double], remoteStamp: Double)
+        -> (value: String, stamps: [String: Double], stamp: Double)? {
+        guard let l = listItems(local), let r = listItems(remote),
+              let lt = canonical(l.items), let rt = canonical(r.items) else { return nil }
+        let m = mergeEntries(local: lt, localStamps: localStamps, remote: rt, remoteStamps: remoteStamps)
+        guard let kept = object(m.value) as? [String: Any] else { return nil }
+        let remoteFirst = remoteStamp != localStamp ? remoteStamp > localStamp : remote > local
+        var order: [String] = []
+        var seen: Set<String> = []
+        for id in remoteFirst ? r.order + l.order : l.order + r.order where kept[id] != nil && seen.insert(id).inserted {
+            order.append(id)
+        }
+        let value = local.isEmpty && remote.isEmpty ? "" : canonical(order.compactMap { kept[$0] }) ?? "[]"
+        let newest = max(localStamp, remoteStamp)
+        let replaces = (value != local && localStamp == newest) || (value != remote && remoteStamp == newest)
+        return (value, m.stamps, replaces ? stampAfter(newest) : newest)
+    }
+
     /// Two Home layouts made one, part by part: each part (sections and their order, what's hidden, the order of
     /// the tiles, pinned rooms, grouping) as whichever device changed it last says, and every favourite as its own
     /// latest add or remove says. Two devices changing different things both keep their change, and both end up
