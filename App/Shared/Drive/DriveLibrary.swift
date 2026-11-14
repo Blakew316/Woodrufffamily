@@ -687,6 +687,8 @@ final class DriveLibrary: WatchSource {
     }
 
     func library(place: String, sort: String, unwatched: Bool, genre: String?, q: String?, offset: Int, limit: Int) async throws -> LibraryPage {
+        // Every title's names first (the first read of a section after the app opens works them out off the main thread).
+        await nameAll(place == "shows" ? saved.shows : saved.movies)
         var list = place == "shows" ? saved.shows : saved.movies
         if unwatched {
             let started = Set(saved.spots.values.compactMap(\.titleId))
@@ -722,6 +724,18 @@ final class DriveLibrary: WatchSource {
         return n
     }
 
+    /// The names of the titles in [list] that haven't been worked out yet (on the first read after the app opens, every
+    /// one of them), worked out off the main thread: each is a few string foldings, and a section's few hundred held
+    /// the main thread for several milliseconds just as Watch first showed its rows.
+    private func nameAll(_ list: [Entry]) async {
+        let missing = list.compactMap { e -> (id: String, title: String)? in named[e.id]?.title == e.title ? nil : (e.id, e.title) }
+        guard !missing.isEmpty else { return }
+        let made = await Task.detached(priority: .userInitiated) {
+            missing.map { m in (id: m.id, names: Names(title: m.title, norm: TitleNames.normalize(m.title), sort: TitleNames.sortKey(m.title))) }
+        }.value
+        for m in made { named[m.id] = m.names }
+    }
+
     /// Each title's sort key, by id, for sorting [list].
     private func sortKeys(_ list: [Entry]) -> [String: String] {
         var out: [String: String] = [:]
@@ -740,6 +754,8 @@ final class DriveLibrary: WatchSource {
     }
 
     func search(_ q: String) async throws -> SearchResults {
+        await nameAll(saved.movies)
+        await nameAll(saved.shows)
         let words = TitleNames.normalize(String(q.prefix(60)))
         let each = TitleNames.normalize(q).split(separator: " ")
         func rank(_ e: Entry) -> Int {
