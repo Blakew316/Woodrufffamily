@@ -151,7 +151,8 @@ final class FilmScreen: UIViewController, UIGestureRecognizerDelegate {
     /// Play or Pause was pressed on the remote (for the session's own note of it).
     var onPlayPause: (() -> Void)?
 
-    let picture = FilmPictureView()
+    /// (Made again once the TV shows the film's picture mode: `renewPictureLayer`.)
+    private(set) var picture = FilmPictureView()
     private(set) var player: FilmPlayer?
 
     var card = FilmCard(title: "") { didSet { if isViewLoaded { showCard() } } }
@@ -437,6 +438,26 @@ final class FilmScreen: UIViewController, UIGestureRecognizerDelegate {
             MainActor.assumeIsolated { self?.refresh() }
         }
         changed()
+    }
+
+    /// The film's picture goes to a display layer made again, in the same place (`FilmPlayer.usePicture`): one that had
+    /// its first frames while the TV showed another number of pictures a second (the menus' 60) went on timing frames
+    /// for that rate once the TV had changed to the film's, and about one frame in ten was never shown, all through the
+    /// film. Asked once the TV shows the film's mode, and again whenever it changes it while the film is open.
+    func renewPictureLayer() {
+        guard isViewLoaded, let player else { return }
+        let old = picture
+        let fresh = FilmPictureView()
+        fresh.frame = old.frame
+        fresh.autoresizingMask = old.autoresizingMask
+        fresh.display.videoGravity = old.display.videoGravity
+        fresh.display.isOpaque = old.display.isOpaque
+        fresh.display.backgroundColor = old.display.backgroundColor
+        // Where the old one was among the views (the bar may be under it), then the old one goes.
+        view.insertSubview(fresh, aboveSubview: old)
+        picture = fresh
+        player.usePicture(fresh.display.sampleBufferRenderer)
+        old.removeFromSuperview()
     }
 
     /// Asks the TV for the film's frame rate and dynamic range (Match Content) and waits for it to switch: the

@@ -105,6 +105,11 @@ final class OwnPlayer {
     /// was and the memory left, said in one line at three minutes (`noteLooks`).
     private var looks: [String] = []
     private var lookMark: (frames: Int, dropped: Int, cpu: Double, at: Date)?
+    /// What Apple's renderer had counted at the last ten-second check, and the times this film's picture went to a
+    /// display layer made again while it played (`freshLayer`).
+    private var dropMark: (frames: Int, dropped: Int)?
+    private var freshLayers = 0
+    private static let freshLayersMost = 3
     /// The sound session's work, one thing after another and never on the main thread (activating can take a moment).
     private static let soundQueue = DispatchQueue(label: "woodruff.film-sound", qos: .userInitiated)
 
@@ -152,9 +157,13 @@ final class OwnPlayer {
         trialWays = FilmScreen.PictureWay.allCases
         trialResults = []
         trialMark = nil
-        trialDone = false
+        // The layouts' trial is off: every way dropped the same (it wasn't what was over the picture), and a display
+        // layer made again starts the renderer's counts it scored by over.
+        trialDone = true
         looks = []
         lookMark = nil
+        dropMark = nil
+        freshLayers = 0
         checkedIndex = false
         said = false
         nextUp = nil
@@ -210,9 +219,10 @@ final class OwnPlayer {
             let waited = await screen.matchDisplay(to: player.film.picture)
             guard current?.id == play.id, self.screen === screen else { return }
             switchWait = waited
-            // The TV changed its picture mode after the picture's decoder had its first frames: it's emptied and
-            // given them again now, or it drops one frame in ten all through the film.
-            if waited != nil { player.renewPicture() }
+            // The picture's display layer made again now that the TV shows the film's mode: the one it had its first
+            // frames in (under the menus' 60) went on timing them for that, and about one frame in ten was never shown
+            // all through the film. (Emptying that layer and giving it the film again didn't change it.)
+            screen.renewPictureLayer()
             noteFormats(player.film, play, matches: screen.matchesContent, screenRate: screen.screenRate)
             screenRateSeen = screen.screenRate
             player.play()
@@ -471,6 +481,24 @@ final class OwnPlayer {
         if started, ticks % 5 == 0, let rate = screen.screenRate, rate != screenRateSeen {
             Diagnostics.shared.notePlayback("\(play.title): \(ticks - startedTick) s in, the TV shows \(rate) pictures a second now (it was \(screenRateSeen.map(String.init) ?? "not known"))")
             screenRateSeen = rate
+            // The picture's layer times frames for the mode it began in: made again for this one.
+            if !heldForSwitch { freshLayer(player, screen: screen, title: play.title, why: "the TV changed its picture mode") }
+        }
+        // Every ten seconds: a picture still dropping frames (more than one in sixteen, none of it the controls' doing)
+        // goes to a display layer made again, three times a film at most.
+        if started, player.film.picture != nil, (ticks - startedTick) % 10 == 0, (ticks - startedTick) >= 10 {
+            let title = play.title, at = ticks - startedTick
+            player.pictureCounts { [weak self] counts in
+                Task { @MainActor in
+                    guard let self, self.current?.id == play.id, let counts, let player = self.player, let screen = self.screen else { return }
+                    let mark = self.dropMark
+                    self.dropMark = (counts.frames, counts.dropped)
+                    guard let mark, counts.frames >= mark.frames, counts.dropped >= mark.dropped else { return }
+                    let frames = counts.frames - mark.frames, dropped = counts.dropped - mark.dropped
+                    guard frames >= 150, dropped * 16 > frames, player.state == .playing, !screen.controlsShowing, !self.heldForSwitch else { return }
+                    self.freshLayer(player, screen: screen, title: title, why: "\(at) s in, it dropped \(dropped) of \(frames) frames in ten seconds")
+                }
+            }
         }
         if state == .ended {
             // Played to its end: the screen closes, back to the page it was started from.
@@ -711,9 +739,23 @@ final class OwnPlayer {
             if Date().timeIntervalSince(since) >= 0.5 {
                 heldForSwitch = false
                 settledSince = nil
+                // The layer timed its frames for the mode before: made again for this one.
+                screen.renewPictureLayer()
                 player.play()
             }
         }
+    }
+
+    /// The picture goes to a display layer made again while the film is open: the film waits a moment for its picture
+    /// in the new layer (as after a move, without the controls coming up) and goes on. Three times a film at most, each
+    /// said in the Macs' log with [why].
+    private func freshLayer(_ player: FilmPlayer, screen: FilmScreen, title: String, why: String) {
+        guard freshLayers < Self.freshLayersMost else { return }
+        freshLayers += 1
+        // (The new layer's counts start from nothing.)
+        dropMark = nil
+        screen.renewPictureLayer()
+        Diagnostics.shared.notePlayback("\(title): \(why): its picture went to a display layer made again")
     }
 
     /// One ten-second look: frames dropped since the last, the Apple TV's heat (as tvOS says it), this app's share of
@@ -812,6 +854,7 @@ final class OwnPlayer {
             if n.beatRestarted > 0 { words += ", the beat begun again \(n.beatRestarted) times" }
         }
         if n.renewed > 0 { words += ", its decoder emptied and given the film again \(n.renewed) times" }
+        if n.newLayers > 0 { words += ", its picture given to a display layer made again \(n.newLayers) times" }
         if n.pictureOffMost > 0 || n.pictureSteps > 0 {
             words += String(format: ", on the screen’s clock at most %.0f ms from the sound’s (set back on it %ld times)",
                             n.pictureOffMost * 1000, n.pictureSteps)

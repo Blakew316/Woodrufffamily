@@ -156,6 +156,8 @@ public final class FilmPlayer: @unchecked Sendable {
         public var droppedSoFar: [Int] = []
         /// Times the picture's decoder was emptied and given the film again (`renewPicture`).
         public var renewed = 0
+        /// Times the picture went to a display layer made again (`usePicture`).
+        public var newLayers = 0
         /// The picture on the screen's clock: the furthest it was from the sound's (seconds), and the times it was
         /// set back on the sound's (`keepPictureInStep`).
         public var pictureOffMost = 0.0
@@ -599,6 +601,37 @@ public final class FilmPlayer: @unchecked Sendable {
                       straight: m.numberOfFramesDisplayedUsingOptimizedCompositing))
             }
             #endif
+        }
+    }
+
+    /// The picture goes to [renderer] from now on (a display layer made again), in place of the one it went to, which
+    /// is let go and emptied; the new one is given the film from where it is. (Asked while the film plays, it waits
+    /// for the picture as after a move, `judge`: the app pauses it first.)
+    ///
+    /// A display layer that had its first frames while the TV showed another number of pictures a second (the Apple
+    /// TV's menus, at 60) went on timing frames for that rate after the TV changed to the film's 24: about one frame in
+    /// ten fell between two of the TV's and was never shown, all through the film, none of them late (The Master: 319
+    /// of 2,979 in two minutes). Emptied and given the film again, the same layer went on doing it; a layer the TV
+    /// changed its mode under while it played (build 760), or the app put away and brought back (build 669), didn't.
+    public func usePicture(_ renderer: AVSampleBufferVideoRenderer) {
+        queue.async {
+            guard let old = self.pictureRenderer, old !== renderer else { return }
+            if let pipe = self.picturePipe, pipe.requesting {
+                old.stopRequestingMediaData()
+                pipe.requesting = false
+            }
+            self.pictureClock.removeRenderer(old, at: .invalid, completionHandler: nil)
+            old.flush()
+            self.pictureRenderer = renderer
+            self.pictureClock.addRenderer(renderer)
+            self.lock.lock()
+            self.sharedNotes.newLayers += 1
+            self.lock.unlock()
+            if self.opened, self.placed, !self.closed, self.why == nil, !self.ended, let pipe = self.showing {
+                self.reset(pipe, to: self.clock.currentTime())
+                self.fill(pipe)
+            }
+            self.judge()
         }
     }
 
