@@ -76,6 +76,13 @@ final class SceneStore {
               let tv = Fleet.shared.tvs.first(where: { !$0.isUnpaired && $0.name.localizedCaseInsensitiveContains("living") })
         else { return }
         s.tvsOn = [tv.id]
+        // No scenes saved here yet (a new install, or one still waiting for the family code): these are this device's
+        // built-in two, and the family's may not have come yet. Filled in here only: saved, they were the newest
+        // change and replaced the family's scenes on every device. Saved with the first change made to a scene.
+        guard d.object(forKey: "scenes") != nil else {
+            if let i = scenes.firstIndex(where: { $0.id == s.id }) { scenes[i] = s }
+            return
+        }
         save(s)
         d.set(true, forKey: "scenes.filled")
     }
