@@ -336,11 +336,17 @@ struct CachedImage<Placeholder: View, Failure: View>: View {
     @ViewBuilder var placeholder: () -> Placeholder
     @ViewBuilder var failure: () -> Failure
     @State private var loaded: LoadedImage?
+    /// Off the screen a while: scrolled away in a lazy row or grid, which keeps its tiles, and so kept every poster
+    /// scrolled past in memory, beyond the cache's limit. Its picture is let go until it's back (the cache keeps it
+    /// while it can).
+    @State private var away = false
+    /// Letting go of it, a few seconds after it went (any fade it went with has finished by then).
+    @State private var leaving: Task<Void, Never>?
 
     var body: some View {
         // Only ever the picture of the address asked for now: another one's stays behind when the address changes.
         let mine = loaded?.url == url ? loaded : nil
-        let shown = mine?.image ?? url.flatMap { ImageStore.shared.cached($0, maxPixel: maxPixel) }
+        let shown = away ? nil : (mine?.image ?? url.flatMap { ImageStore.shared.cached($0, maxPixel: maxPixel) })
         Group {
             if let shown {
                 Image(platformImage: shown).resizable().aspectRatio(contentMode: contentMode)
@@ -359,6 +365,20 @@ struct CachedImage<Placeholder: View, Failure: View>: View {
             let img = await ImageStore.shared.image(url, maxPixel: maxPixel, storeOnDisk: storeOnDisk)
             guard !Task.isCancelled else { return }
             withAnimation(.easeOut(duration: 0.25)) { loaded = LoadedImage(url: url, image: img) }
+        }
+        .onAppear {
+            leaving?.cancel()
+            leaving = nil
+            if away { away = false }
+        }
+        .onDisappear {
+            leaving?.cancel()
+            leaving = Task {
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                guard !Task.isCancelled else { return }
+                away = true
+                if loaded?.image != nil { loaded = nil }
+            }
         }
     }
 }
