@@ -60,6 +60,10 @@ final class OwnPlayer {
     private var index: FilmIndex.Opened?
     private var current: PhonePlay?
     private var ticker: Timer?
+    /// The film's first fifteen seconds watched for the TV changing its picture mode again (`holdThroughSwitch`).
+    private var settle: Timer?
+    private var heldForSwitch = false
+    private var settledSince: Date?
     private var opening: Task<Void, Never>?
     private var watchdog: Task<Void, Never>?
     /// The film has been told to play; it has played (its first frame moved).
@@ -212,6 +216,22 @@ final class OwnPlayer {
             noteFormats(player.film, play, matches: screen.matchesContent, screenRate: screen.screenRate)
             screenRateSeen = screen.screenRate
             player.play()
+            // The TV changing its picture mode again in the film's first fifteen seconds (its second step, to Dolby
+            // Vision, after the rate): the film holds on its picture until the TV is done, so none of it plays unseen.
+            let began = Date()
+            heldForSwitch = false
+            settledSince = nil
+            settle?.invalidate()
+            settle = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] timer in
+                MainActor.assumeIsolated {
+                    guard let self, let player = self.player, let screen = self.screen, self.current?.id == play.id,
+                          Date().timeIntervalSince(began) < 15 || self.heldForSwitch else {
+                        timer.invalidate()
+                        return
+                    }
+                    self.holdThroughSwitch(player, screen: screen, title: play.title, at: Date().timeIntervalSince(began))
+                }
+            }
             begun = true
             commandsOn()
             ticker?.invalidate()
@@ -675,6 +695,27 @@ final class OwnPlayer {
         Diagnostics.shared.notePlayback(words)
     }
 
+    /// While the TV changes its picture mode early in the film: the film held still from the moment it begins, and on
+    /// again from the same picture half a second after it's done (the TV showing a picture again by then).
+    private func holdThroughSwitch(_ player: FilmPlayer, screen: FilmScreen, title: String, at: Double) {
+        if screen.modeSwitching {
+            settledSince = nil
+            if !heldForSwitch, player.state == .playing || player.state == .waiting {
+                heldForSwitch = true
+                player.pause()
+                Diagnostics.shared.notePlayback(String(format: "%@: %.1f s in, the TV began changing its picture mode again: the film held still until it was done", title, at))
+            }
+        } else if heldForSwitch {
+            let since = settledSince ?? Date()
+            settledSince = since
+            if Date().timeIntervalSince(since) >= 0.5 {
+                heldForSwitch = false
+                settledSince = nil
+                player.play()
+            }
+        }
+    }
+
     /// One ten-second look: frames dropped since the last, the Apple TV's heat (as tvOS says it), this app's share of
     /// one processor core meanwhile, and the memory left; at three minutes they're said in one line, with the Apple TV's
     /// model.
@@ -802,6 +843,9 @@ final class OwnPlayer {
         Task { await DriveLibrary.shared.sync() }
         ticker?.invalidate()
         ticker = nil
+        settle?.invalidate()
+        settle = nil
+        heldForSwitch = false
         if heightsFollowed {
             heightsFollowed = false
             heightsKeeper.stop()

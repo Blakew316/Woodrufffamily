@@ -459,7 +459,9 @@ final class FilmScreen: UIViewController, UIGestureRecognizerDelegate {
         let already = view.window?.screen.maximumFramesPerSecond == Int(rate.rounded())
         for round in 0..<2 {
             var looks = 0
-            let wait = round == 0 && !already ? 40 : 10
+            // (After a first change, up to a second and a half for the second, to Dolby Vision: begun later than half a
+            // second after the first, it came once the film was playing, and the TV went dark a few seconds into it.)
+            let wait = round == 0 ? (already ? 10 : 40) : (took != nil ? 30 : 10)
             while !display.isDisplayModeSwitchInProgress, looks < wait {
                 try? await Task.sleep(nanoseconds: 50_000_000)
                 looks += 1
@@ -503,6 +505,9 @@ final class FilmScreen: UIViewController, UIGestureRecognizerDelegate {
             for w in Self.windows { w.avDisplayManager.preferredDisplayCriteria = nil }
         }
     }
+
+    /// The TV is changing its picture mode right now.
+    var modeSwitching: Bool { display?.isDisplayModeSwitchInProgress ?? false }
 
     /// The picture mode the film on screen asks the TV for (nil when there's none): every window of the app asks
     /// for it while the film shows (`TVAlerts`' window too, made after the film started).
