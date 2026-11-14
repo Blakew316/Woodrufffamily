@@ -80,7 +80,8 @@ public struct TVClient: Sendable {
     public func health() async throws -> HealthReport {
         let req = t.request("GET", "/api/tvs/health", query: ["id": routeID], timeout: 15)
         let d: Data, resp: URLResponse
-        do { (d, resp) = try await URLSession.woodruff.data(for: req) } catch {
+        // As every other question goes (`TVTransport.send`): a connection that died while the app slept is tried once more.
+        do { (d, resp) = try await t.send(req, again: true) } catch {
             throw TVError.offline("Can't reach \(hub.name).")
         }
         let status = (resp as? HTTPURLResponse)?.statusCode ?? 0

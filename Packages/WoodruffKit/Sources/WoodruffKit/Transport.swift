@@ -131,8 +131,9 @@ public struct TVTransport: Sendable {
 
     /// Sends [req]. A connection kept open that has since been closed (by the TV, or by the system while the app
     /// was asleep) fails the first request sent down it, without that ever reaching the TV: a question ([again])
-    /// is then sent once more, on a connection of its own. A command is never repeated.
-    private func send(_ req: URLRequest, again: Bool) async throws -> (Data, URLResponse) {
+    /// is then sent once more, on a connection of its own. A command is never repeated. (`TVClient.health` sends its
+    /// question through here too: it reads the answer itself.)
+    func send(_ req: URLRequest, again: Bool) async throws -> (Data, URLResponse) {
         do {
             return try await session.data(for: req)
         } catch let e as URLError where again && e.code == .networkConnectionLost && !Task.isCancelled {
