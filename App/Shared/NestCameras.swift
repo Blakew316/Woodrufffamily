@@ -1233,9 +1233,19 @@ struct CameraLiveView: View {
                     alertPicture = NSImage(cgImage: frame, size: NSSize(width: frame.width, height: frame.height))
                     return
                 }
-            } else if let img = NSImage(contentsOf: kept) {
-                alertPicture = img
-                return
+            } else {
+                // Read and decoded off the main thread, as the clip's frame is: made with NSImage here, the alert's
+                // full-size picture was read and decoded on it as the camera opened.
+                let file = kept
+                let frame = await Task.detached(priority: .userInitiated) { () -> CGImage? in
+                    guard let src = CGImageSourceCreateWithURL(file as CFURL, nil) else { return nil }
+                    return CGImageSourceCreateImageAtIndex(src, 0, [kCGImageSourceShouldCacheImmediately: true] as CFDictionary)
+                }.value
+                guard !Task.isCancelled else { return }
+                if let frame {
+                    alertPicture = NSImage(cgImage: frame, size: NSSize(width: frame.width, height: frame.height))
+                    return
+                }
             }
         }
         if let t = r.thumb, let d = Data(base64Encoded: t), let img = NSImage(data: d) { alertPicture = img }
