@@ -1448,10 +1448,13 @@ public final class Fleet {
     @discardableResult
     func hello(_ hub: Hub) async throws -> JSONValue {
         let r = try await TVTransport(hub.connection).post("/api/phone/hello", ["id": phone.id, "name": phone.name, "alerts": phone.alerts])
-        // Earlier installs of this app registered under other ids with this device's name: forget those copies.
+        // Earlier installs of this app registered under other ids with this device's name: forget those copies. Only
+        // ones from before each device kept a lasting id ("ios-…", "mac-…"): every iPhone, iPad and Apple TV goes by
+        // "iPhone", so one with a lasting id is another of the family's devices, and forgetting it took its
+        // announcements with it each time this one opened.
         let t = TVTransport(hub.connection)
         for p in r["phones"]?.array ?? [] {
-            guard let id = p["id"]?.string, id != phone.id,
+            guard let id = p["id"]?.string, id != phone.id, !id.hasPrefix("ios-"), !id.hasPrefix("mac-"),
                   p["name"]?.string?.caseInsensitiveCompare(phone.name) == .orderedSame else { continue }
             _ = try? await t.post("/api/phone/delete", ["id": id])
         }
